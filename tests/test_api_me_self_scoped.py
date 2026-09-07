@@ -8,6 +8,7 @@ the scope passed to the underlying list services.
 import uuid
 from contextlib import contextmanager
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -433,3 +434,134 @@ def test_my_invoice_detail_404_when_not_owned(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         me_api.my_invoice(invoice_id=str(uuid.uuid4()), db=None, principal=principal)
     assert exc.value.status_code == 404
+
+
+def test_billing_document_routes_are_self_scoped_and_downloadable():
+    paths = {getattr(route, "path", "") for route in me_api.router.routes}
+    assert "/me/invoices/{invoice_id}/pdf" in paths
+    assert "/me/payments/{payment_id}" in paths
+    assert "/me/payments/{payment_id}/receipt/pdf" in paths
+    assert "/me/ledger/{entry_id}" in paths
+
+
+def test_my_payment_detail_404_when_not_owned(monkeypatch):
+    principal = _subscriber_principal()
+    payment = SimpleNamespace(account_id=uuid.uuid4())
+    monkeypatch.setattr(
+        me_api.billing_service.payments,
+        "get",
+        lambda *, db, payment_id: payment,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        me_api.my_payment(payment_id=str(uuid.uuid4()), db=None, principal=principal)
+
+    assert exc.value.status_code == 404
+
+
+def test_my_payment_detail_returns_owned_payment(monkeypatch):
+    principal = _subscriber_principal()
+    payment = SimpleNamespace(account_id=principal["subscriber_id"])
+    monkeypatch.setattr(
+        me_api.billing_service.payments,
+        "get",
+        lambda *, db, payment_id: payment,
+    )
+
+    assert (
+        me_api.my_payment(payment_id="payment-1", db=None, principal=principal)
+        is payment
+    )
+
+
+def test_my_ledger_entry_404_when_not_owned(monkeypatch):
+    principal = _subscriber_principal()
+    entry = SimpleNamespace(account_id=uuid.uuid4())
+    monkeypatch.setattr(
+        me_api.billing_service.ledger_entries,
+        "get",
+        lambda *, db, entry_id: entry,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        me_api.my_ledger_entry(entry_id="entry-1", db=None, principal=principal)
+
+    assert exc.value.status_code == 404
+
+
+def test_my_invoice_pdf_delegates_owned_document(monkeypatch):
+    principal = _subscriber_principal()
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(),
+        account_id=principal["subscriber_id"],
+    )
+    monkeypatch.setattr(
+        me_api.billing_service.invoices,
+        "get",
+        lambda *, db, invoice_id: invoice,
+    )
+    captured = {}
+
+    def resolve_download(db, *, invoice, requested_by_id):
+        captured.update(invoice=invoice, requested_by_id=requested_by_id)
+        return SimpleNamespace(
+            filename="invoice-INV-1.pdf",
+            stream=SimpleNamespace(
+                chunks=iter([b"%PDF-test"]),
+                content_type="application/pdf",
+                content_length=9,
+            ),
+        )
+
+    monkeypatch.setattr(
+        me_api.billing_invoice_pdf_service,
+        "resolve_download",
+        resolve_download,
+    )
+
+    response = me_api.my_invoice_pdf(
+        invoice_id=str(invoice.id),
+        db=None,
+        principal=principal,
+    )
+
+    assert response.media_type == "application/pdf"
+    assert response.headers["content-disposition"] == (
+        'attachment; filename="invoice-INV-1.pdf"'
+    )
+    assert captured == {
+        "invoice": invoice,
+        "requested_by_id": principal["subscriber_id"],
+    }
+
+
+def test_my_payment_receipt_pdf_uses_customer_scoped_owner(monkeypatch):
+    principal = _subscriber_principal()
+    captured = {}
+
+    def build_download(db, *, subscriber_id, payment_id):
+        captured.update(subscriber_id=subscriber_id, payment_id=payment_id)
+        return SimpleNamespace(
+            content=b"%PDF-receipt",
+            content_type="application/pdf",
+            filename="receipt-RCP-1.pdf",
+        )
+
+    monkeypatch.setattr(
+        me_api.payment_receipts_service,
+        "build_customer_receipt_pdf_download",
+        build_download,
+    )
+
+    response = me_api.my_payment_receipt_pdf(
+        payment_id="payment-1",
+        db=None,
+        principal=principal,
+    )
+
+    assert response.body == b"%PDF-receipt"
+    assert response.media_type == "application/pdf"
+    assert captured == {
+        "subscriber_id": principal["subscriber_id"],
+        "payment_id": "payment-1",
+    }

@@ -59,4 +59,109 @@ void main() {
       expect(find.text('Top-up destination'), findsOneWidget);
     },
   );
+
+  testWidgets('Payment rows open the exact payment detail route',
+      (tester) async {
+    final payment = Payment(
+      id: 'payment-1',
+      amount: 2500,
+      currency: 'NGN',
+      status: 'succeeded',
+    );
+    final router = GoRouter(
+      initialLocation: '/billing',
+      routes: [
+        GoRoute(path: '/billing', builder: (_, __) => const InvoicesScreen()),
+        GoRoute(
+          path: '/billing/payments/:id',
+          builder: (_, state) =>
+              Scaffold(body: Text('Payment ${state.pathParameters['id']}')),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          currentUserProvider.overrideWithValue(null),
+          invoicesProvider.overrideWith((_) async => _emptyPage<Invoice>()),
+          paymentsProvider.overrideWith(
+            (_) async => pagination.Page(
+              items: [payment],
+              count: 1,
+              limit: 50,
+              offset: 0,
+            ),
+          ),
+          ledgerProvider.overrideWith((_) async => _emptyPage<LedgerTxn>()),
+          balanceProvider.overrideWith(
+            (_) async => AccountBalance(creditBalance: 0, currency: 'NGN'),
+          ),
+        ],
+        child: MaterialApp.router(routerConfig: router),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Payments'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('payment-payment-1')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Payment payment-1'), findsOneWidget);
+  });
+
+  testWidgets('Activity rows open the exact activity detail route',
+      (tester) async {
+    final entry = LedgerTxn(
+      id: 'ledger-1',
+      entryType: 'credit',
+      amount: 2500,
+      currency: 'NGN',
+      createdAt: DateTime(2026),
+      source: 'payment',
+      paymentId: 'payment-1',
+    );
+    final router = GoRouter(
+      initialLocation: '/billing',
+      routes: [
+        GoRoute(path: '/billing', builder: (_, __) => const InvoicesScreen()),
+        GoRoute(
+          path: '/billing/activity/:id',
+          builder: (_, state) =>
+              Scaffold(body: Text('Activity ${state.pathParameters['id']}')),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          currentUserProvider.overrideWithValue(null),
+          invoicesProvider.overrideWith((_) async => _emptyPage<Invoice>()),
+          paymentsProvider.overrideWith((_) async => _emptyPage<Payment>()),
+          ledgerProvider.overrideWith(
+            (_) async => pagination.Page(
+              items: [entry],
+              count: 1,
+              limit: 50,
+              offset: 0,
+            ),
+          ),
+          balanceProvider.overrideWith(
+            (_) async => AccountBalance(creditBalance: 0, currency: 'NGN'),
+          ),
+        ],
+        child: MaterialApp.router(routerConfig: router),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Activity'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('activity-ledger-1')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Activity ledger-1'), findsOneWidget);
+  });
 }

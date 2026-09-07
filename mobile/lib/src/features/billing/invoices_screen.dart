@@ -132,12 +132,23 @@ class InvoicesScreen extends ConsumerWidget {
                           return Card(
                             margin: EdgeInsets.zero,
                             child: ListTile(
+                              key: ValueKey('payment-${p.id}'),
                               leading: const Icon(Icons.payments_outlined),
                               title: Text(Fmt.money(p.amount, p.currency)),
-                              subtitle: Text(Fmt.dateTime(p.paidAt)),
-                              trailing: StatusChip.fromPresentation(
-                                p.statusPresentation,
+                              subtitle:
+                                  Text(Fmt.dateTime(p.paidAt ?? p.createdAt)),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  StatusChip.fromPresentation(
+                                    p.statusPresentation,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  const Icon(Icons.chevron_right),
+                                ],
                               ),
+                              onTap: () =>
+                                  context.push('/billing/payments/${p.id}'),
                             ),
                           );
                         },
@@ -403,16 +414,18 @@ class _LedgerTile extends StatelessWidget {
     return Card(
       margin: EdgeInsets.zero,
       child: ListTile(
+        key: ValueKey('activity-${txn.id}'),
         leading: Icon(
           credit ? Icons.south_west : Icons.north_east,
           color: color,
         ),
         title: Text(txn.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-        subtitle: Text(Fmt.dateTime(txn.createdAt)),
+        subtitle: Text(Fmt.dateTime(txn.occurredAt)),
         trailing: Text(
           '$sign${Fmt.money(txn.amount, txn.currency)}',
           style: TextStyle(color: color, fontWeight: FontWeight.w600),
         ),
+        onTap: () => context.push('/billing/activity/${txn.id}'),
       ),
     );
   }

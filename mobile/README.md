@@ -8,7 +8,7 @@ FastAPI backend in this repo (`app/`, served at `/api/v1`).
 | Area | Screens | Backend |
 | --- | --- | --- |
 | **Auth** | Login (local / RADIUS), MFA (TOTP), profile, change password | `POST /auth/login`, `/auth/mfa/verify`, `/auth/refresh`, `/auth/logout`, `GET·PATCH /auth/me`, `POST /auth/me/password` |
-| **Billing** | Invoice list + detail, payment history | `GET /invoices`, `/invoices/{id}`, `/payments`, `/dashboard` |
+| **Billing** | Invoice/payment/activity lists and details, PDF invoice and receipt downloads | Self-scoped `GET /me/invoices`, `/me/payments`, `/me/ledger` detail and PDF routes |
 | **Usage** | Data quota buckets with progress, per-period stats | `GET /quota-buckets`, `/radius-accounting-sessions` |
 | **Subscriptions** | Service list on the dashboard | `GET /subscriptions` |
 | **Support** | Ticket list, detail + replies, create ticket | `GET·POST /support/tickets`, `/support/tickets/{id}`, `/support/tickets/{id}/comments` |
@@ -143,8 +143,9 @@ caller's own `subscriber_id`:
 
 | App call | Endpoint |
 | --- | --- |
-| invoices list / detail | `GET /api/v1/me/invoices`, `/me/invoices/{id}` |
-| payment history | `GET /api/v1/me/payments` |
+| invoices list / detail / PDF | `GET /api/v1/me/invoices`, `/me/invoices/{id}`, `/me/invoices/{id}/pdf` |
+| payment history / detail / receipt PDF | `GET /api/v1/me/payments`, `/me/payments/{id}`, `/me/payments/{id}/receipt/pdf` |
+| account activity list / detail | `GET /api/v1/me/ledger`, `/me/ledger/{id}` |
 | services / plan | `GET /api/v1/me/subscriptions` |
 | data usage (quota) | `GET /api/v1/me/quota-buckets` |
 | data usage (sessions) | `GET /api/v1/me/radius-accounting-sessions` |

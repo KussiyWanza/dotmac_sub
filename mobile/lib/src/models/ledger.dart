@@ -9,6 +9,7 @@ class LedgerTxn {
     required this.amount,
     required this.currency,
     required this.createdAt,
+    this.effectiveAt,
     this.source,
     this.memo,
     this.invoiceId,
@@ -20,6 +21,7 @@ class LedgerTxn {
   final double amount;
   final String currency;
   final DateTime? createdAt;
+  final DateTime? effectiveAt;
   final String? source; // invoice | payment | adjustment | refund | credit_note
   final String? memo;
   final String? invoiceId;
@@ -28,6 +30,7 @@ class LedgerTxn {
   /// Credits (payments, refunds in) increase the customer's standing; debits
   /// (charges) reduce it. Used for sign + colour in the UI.
   bool get isCredit => entryType == 'credit';
+  DateTime? get occurredAt => effectiveAt ?? createdAt;
 
   /// A human label for what this entry is, preferring the memo.
   String get title {
@@ -50,6 +53,8 @@ class LedgerTxn {
         currency: json['currency'] as String? ?? 'NGN',
         createdAt:
             DateTime.tryParse(json['created_at']?.toString() ?? '')?.toLocal(),
+        effectiveAt: DateTime.tryParse(json['effective_date']?.toString() ?? '')
+            ?.toLocal(),
         source: json['source'] as String?,
         memo: json['memo'] as String?,
         invoiceId: json['invoice_id']?.toString(),
