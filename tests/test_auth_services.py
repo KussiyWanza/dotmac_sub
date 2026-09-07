@@ -9,7 +9,14 @@ from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from app.models.auth import AuthProvider, SessionStatus, UserCredential
+from app.models.auth import (
+    AuthProvider,
+    SessionStatus,
+    UserCredential,
+)
+from app.models.auth import (
+    Session as AuthSession,
+)
 from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.rbac import Role, SystemUserRole
 from app.models.subscriber import UserType
@@ -566,6 +573,52 @@ def test_web_login_submit_supports_system_user(db_session, monkeypatch):
     assert response.status_code == 303
     assert response.headers.get("location") == "/admin/dashboard"
     assert "session_token=" in response.headers.get("set-cookie", "")
+
+
+@pytest.mark.parametrize(
+    "user_type", (UserType.customer, UserType.reseller, UserType.vendor)
+)
+def test_web_admin_login_rejects_non_staff_system_users_before_session_issuance(
+    db_session, monkeypatch, user_type: UserType
+):
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    user = SystemUser(
+        first_name="Portal",
+        last_name="User",
+        email=f"{user_type.value}-portal@example.com",
+        user_type=user_type,
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.flush()
+    credential = UserCredential(
+        system_user_id=user.id,
+        provider=AuthProvider.local,
+        username=user.email,
+        password_hash=hash_password("secret"),
+        is_active=True,
+    )
+    project_staff_login(db_session, user=user, credential=credential)
+    db_session.commit()
+
+    response = web_auth_service.login_submit(
+        _make_request(),
+        db_session,
+        user.email,
+        "secret",
+        False,
+        "/admin/dashboard",
+    )
+
+    assert response.status_code == 401
+    assert "Administrator access is required" in response.body.decode()
+    assert "session_token=" not in response.headers.get("set-cookie", "")
+    assert (
+        db_session.query(AuthSession)
+        .filter(AuthSession.system_user_id == user.id)
+        .count()
+        == 0
+    )
 
 
 def test_web_login_submit_forces_admin_mfa_enrollment(db_session, monkeypatch):
