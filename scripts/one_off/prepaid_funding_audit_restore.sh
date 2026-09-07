@@ -37,7 +37,8 @@ AUDIT_VOLUME="${AUDIT_VOLUME:-dotmac_sub_funding_audit_data}"
 AUDIT_NETWORK="${AUDIT_NETWORK:-dotmac_sub_funding_audit_net}"
 AUDIT_IMAGE="${AUDIT_IMAGE:-postgis/postgis:16-3.4-alpine}"
 APP_CONTAINER="${APP_CONTAINER:-dotmac_sub_app}"
-BACKUP_DIR="${BACKUP_DIR:-/var/backups/dotmac_sub}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/dotmac_sub/deployments}"
+LEGACY_BACKUP_DIR="${LEGACY_BACKUP_DIR:-/var/backups/dotmac_sub}"
 OUT_DIR="${OUT_DIR:-/var/backups/dotmac_sub/funding_audit}"
 ENV_FILE="${ENV_FILE:-/root/dotmac_sub/.env}"
 # A 2.4G gzip dump expands to roughly 25G of heap plus indexes. Refuse to start
@@ -79,8 +80,11 @@ latest_dump() {
   # Newest deploy-time backup. These are plain SQL + gzip, --no-owner
   # --no-privileges (see scripts/db_backup.sh), which restores cleanly as any
   # superuser into a fresh database.
-  find "${BACKUP_DIR}" -maxdepth 1 -type f -name 'dotmac_sub_*.sql.gz' \
-    -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-
+  for directory in "${BACKUP_DIR}" "${LEGACY_BACKUP_DIR}"; do
+    [[ -d "${directory}" ]] || continue
+    find "${directory}" -maxdepth 1 -type f -name 'dotmac_sub_run_*.sql.gz' \
+      -printf '%T@ %p\n' 2>/dev/null
+  done | sort -n | tail -1 | cut -d' ' -f2-
 }
 
 require_audit_up() {
@@ -110,7 +114,7 @@ cmd_provision() {
   fi
 
   [[ -n "${dump}" ]] || dump="$(latest_dump)"
-  [[ -n "${dump}" ]] || die "no dump found in ${BACKUP_DIR} (pass --dump PATH)"
+  [[ -n "${dump}" ]] || die "no deployment dump found (pass --dump PATH)"
   [[ -f "${dump}" ]] || die "dump not found: ${dump}"
   [[ -s "${dump}" ]] || die "dump is empty: ${dump}"
 

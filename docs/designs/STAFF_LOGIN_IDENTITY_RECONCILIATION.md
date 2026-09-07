@@ -11,6 +11,16 @@ The email remains the human-facing login identifier. Credential state is an
 internal authentication record and cannot independently choose another staff
 username.
 
+### Admin portal admission
+
+The admin login flow admits only an active `SystemUser` whose `user_type` is
+`system_user`. A customer, reseller, or vendor record may share the
+`system_users` table for identity compatibility, but it is not staff and is
+refused after credential verification and before any session is issued. The
+admin route repeats this check so an older session cannot bypass the admission
+rule. Customer, reseller, and vendor portal logins use their own destinations
+and remain unaffected.
+
 ## Previous failure mode
 
 The administrative profile adapter updated only an active credential when an

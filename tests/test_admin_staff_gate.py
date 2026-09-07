@@ -10,6 +10,8 @@ the staff gate in place.
 import pytest
 from fastapi import HTTPException
 
+from app.models.subscriber import UserType
+from app.models.system_user import SystemUser
 from app.web.admin import router as admin_router
 from app.web.auth.dependencies import require_admin_web_auth, require_web_auth
 
@@ -43,5 +45,35 @@ def test_staff_gate_rejects_missing_principal_type():
 
 
 def test_staff_gate_allows_system_user():
-    auth = {"principal_type": "system_user", "principal_id": "p"}
+    auth = {
+        "principal_type": "system_user",
+        "principal_id": "p",
+        "subscriber": SystemUser(
+            first_name="Admin",
+            last_name="User",
+            email="admin@example.test",
+            user_type=UserType.system_user,
+            is_active=True,
+        ),
+    }
     assert require_admin_web_auth(auth) is auth
+
+
+@pytest.mark.parametrize(
+    "user_type", (UserType.customer, UserType.reseller, UserType.vendor)
+)
+def test_staff_gate_rejects_non_staff_system_user(user_type: UserType):
+    auth = {
+        "principal_type": "system_user",
+        "principal_id": "p",
+        "subscriber": SystemUser(
+            first_name="Non",
+            last_name="Staff",
+            email=f"{user_type.value}@example.test",
+            user_type=user_type,
+            is_active=True,
+        ),
+    }
+    with pytest.raises(HTTPException) as exc:
+        require_admin_web_auth(auth)
+    assert exc.value.status_code == 403
