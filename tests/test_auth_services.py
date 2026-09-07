@@ -525,6 +525,32 @@ def test_web_login_submit_redirects_to_mfa_when_required(monkeypatch, db_session
     assert "mfa_pending=mfa-token" in response.headers.get("set-cookie", "")
 
 
+def test_web_login_submit_rolls_back_before_rendering_failure(monkeypatch, db_session):
+    rollback = Mock(wraps=db_session.rollback)
+    monkeypatch.setattr(db_session, "rollback", rollback)
+
+    def fail_login(**_kwargs):
+        raise RuntimeError("session issuance failed")
+
+    monkeypatch.setattr(
+        web_auth_service.auth_flow_service.auth_flow,
+        "login",
+        fail_login,
+    )
+
+    response = web_auth_service.login_submit(
+        _make_request(),
+        db_session,
+        "admin",
+        "secret",
+        False,
+        "",
+    )
+
+    assert response.status_code == 401
+    rollback.assert_called_once_with()
+
+
 def test_web_login_submit_supports_system_user(db_session, monkeypatch):
     monkeypatch.setenv("JWT_SECRET", "test-secret")
 

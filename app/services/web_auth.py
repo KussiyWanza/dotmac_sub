@@ -208,6 +208,10 @@ def login_submit(
         _set_remember_cookie(response, db, request, remember)
         return response
     except Exception as exc:
+        # A database exception leaves PostgreSQL transactions unusable until
+        # rollback. The error page reads auth settings, so recover the session
+        # before deriving its presentation context.
+        db.rollback()
         error_msg = "Invalid credentials"
         if hasattr(exc, "detail"):
             detail = exc.detail

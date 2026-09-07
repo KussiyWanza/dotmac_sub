@@ -1,6 +1,7 @@
 import hashlib
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pyotp
 import pytest
@@ -8,6 +9,7 @@ from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from fastapi.routing import APIRoute
 from jose import jwt
+from sqlalchemy.exc import OperationalError
 from starlette.requests import Request
 
 from app.api.auth_flow import router as auth_flow_router
@@ -55,6 +57,43 @@ def _make_request(user_agent: str = "pytest"):
         "client": ("127.0.0.1", 12345),
     }
     return Request(scope)
+
+
+def test_session_issuance_retries_postgresql_deadlock_once(monkeypatch, db_session):
+    attempts = 0
+    rollbacks = 0
+
+    def issue_once(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OperationalError(
+                "SELECT ... FOR UPDATE",
+                {},
+                SimpleNamespace(sqlstate="40P01"),
+            )
+        return {"access_token": "access", "refresh_token": "refresh"}
+
+    original_rollback = db_session.rollback
+
+    def rollback():
+        nonlocal rollbacks
+        rollbacks += 1
+        original_rollback()
+
+    monkeypatch.setattr(AuthFlow, "_issue_tokens_once", staticmethod(issue_once))
+    monkeypatch.setattr(db_session, "rollback", rollback)
+
+    result = AuthFlow._issue_tokens(
+        db_session,
+        "subscriber",
+        "00000000-0000-0000-0000-000000000001",
+        _make_request(),
+    )
+
+    assert result == {"access_token": "access", "refresh_token": "refresh"}
+    assert attempts == 2
+    assert rollbacks == 1
 
 
 def _route_requires_auth(path: str) -> bool:

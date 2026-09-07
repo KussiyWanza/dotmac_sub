@@ -24,7 +24,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy import func
 from sqlalchemy import select as sa_select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -1827,7 +1827,48 @@ class AuthFlow(ListResponseMixin):
         request: Request | None = None,
         *,
         staff_binding: staff_party_authentication.StaffSessionBinding | None = None,
-    ):
+    ) -> dict[str, str]:
+        """Issue one session, retrying a transaction-level deadlock once.
+
+        Credential and MFA success evidence is committed before this boundary.
+        A deadlock rollback therefore discards only the incomplete session and
+        presence projection; the complete attempt can safely be replayed.
+        """
+
+        for attempt in range(2):
+            try:
+                return AuthFlow._issue_tokens_once(
+                    db,
+                    principal_type_or_principal_id,
+                    principal_id_or_request,
+                    request,
+                    staff_binding=staff_binding,
+                )
+            except OperationalError as exc:
+                # PostgreSQL rejects every subsequent statement until the
+                # failed transaction is explicitly rolled back.
+                db.rollback()
+                sqlstate = getattr(exc.orig, "sqlstate", None)
+                if sqlstate != "40P01" or attempt == 1:
+                    raise
+                logger.warning(
+                    "auth_session_issue_deadlock_retry",
+                    extra={
+                        "event": "auth_session_issue_deadlock_retry",
+                        "attempt": attempt + 2,
+                    },
+                )
+        raise RuntimeError("unreachable session issuance retry state")
+
+    @staticmethod
+    def _issue_tokens_once(
+        db: Session,
+        principal_type_or_principal_id: str,
+        principal_id_or_request: str | Request,
+        request: Request | None = None,
+        *,
+        staff_binding: staff_party_authentication.StaffSessionBinding | None = None,
+    ) -> dict[str, str]:
         # Backward compatibility: older callers passed (db, principal_id, request)
         # and implicitly targeted subscriber principals.
         if request is None:
