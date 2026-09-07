@@ -74,6 +74,7 @@ from app.models.sales import (
     SalesOrderStatus,
 )
 from app.models.subscriber import Subscriber
+from app.schemas.portal import MyQuotesResponse, QuoteItem
 from app.schemas.sales import (
     LeadCreate,
     QuoteCreate,
@@ -391,6 +392,10 @@ def _find_project_id_for_quote(db: Session, quote_id: UUID) -> str | None:
 # Mirror parity: quotes_mirror.read_for_subscriber counts these as closed.
 _PORTAL_CLOSED_QUOTE_STATUSES = ("accepted", "rejected", "expired")
 
+NATIVE_QUOTE_ACTIONS_UNAVAILABLE_MESSAGE = (
+    "Online quoting is temporarily unavailable. Please contact support to continue."
+)
+
 # Sentinel for build_portal_quote_payload's optional pre-resolved project id —
 # distinct from ``None`` (a resolved "no install project" answer).
 _UNSET_PROJECT_ID = "__unset__"
@@ -409,11 +414,12 @@ def native_read_enabled(db: Session) -> bool:
 
 
 def native_write_enabled(db: Session) -> bool:
-    """Select native quote writes or CRM
-    write-through. OFF (default) — quote requests and the deposit
-    initiate/accept tail write through to the CRM via ``quotes_mirror``;
-    ON — ``SelfServeQuotes.request_quote`` / ``accept_with_deposit`` own the
-    write in sub's native ``quotes`` table (no CRM link required)."""
+    """Select native quote writes.
+
+    OFF (default) delegates to the retired mirror command owner, which refuses
+    the request without contacting CRM. ON makes ``SelfServeQuotes`` the native
+    request/accept owner (no CRM link required).
+    """
     return control_registry.is_enabled(db, "quotes.native_write")
 
 
@@ -463,10 +469,11 @@ class SelfServeQuotes:
         )
 
     @staticmethod
-    def read_for_subscriber(db: Session, subscriber_id: str) -> dict:
+    def read_for_subscriber(db: Session, subscriber_id: str) -> MyQuotesResponse:
         """Native ``GET /me/quotes`` / web-portal payload — the exact response
-        shell ``quotes_mirror.read_for_subscriber`` served (§2.5):
-        ``{quotes[], total, open}`` with ``build_portal_quote_payload`` items.
+        shell ``quotes_mirror.read_for_subscriber`` served (§2.5), including
+        owner-supplied action availability, with ``build_portal_quote_payload``
+        items.
         Customer read surfaces use this owner behind
         ``quotes_native_read_enabled``."""
         rows = SelfServeQuotes.list_for_subscribers(db, subscriber_id)
@@ -474,19 +481,25 @@ class SelfServeQuotes:
         # each in — no per-quote metadata->>'quote_id' scan.
         project_ids = _find_project_ids_for_quotes(db, [q.id for q in rows])
         items = [
-            build_portal_quote_payload(db, q, project_id=project_ids.get(str(q.id)))
+            QuoteItem.model_validate(
+                build_portal_quote_payload(db, q, project_id=project_ids.get(str(q.id)))
+            )
             for q in rows
         ]
         open_count = sum(
-            1 for i in items if i["status"] not in _PORTAL_CLOSED_QUOTE_STATUSES
+            1 for item in items if item.status not in _PORTAL_CLOSED_QUOTE_STATUSES
         )
-        return {
-            "quotes": items,
-            "total": len(items),
-            "open": open_count,
-            "source_state": "native",
-            "actions_available": True,
-        }
+        actions_available = native_write_enabled(db)
+        return MyQuotesResponse(
+            quotes=items,
+            total=len(items),
+            open=open_count,
+            source_state="native",
+            actions_available=actions_available,
+            actions_unavailable_message=(
+                None if actions_available else NATIVE_QUOTE_ACTIONS_UNAVAILABLE_MESSAGE
+            ),
+        )
 
     @staticmethod
     def request_quote(

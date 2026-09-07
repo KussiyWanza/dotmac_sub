@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/billing_document_presenter.dart';
 import '../models/addon.dart';
 import '../models/account_health.dart';
 import '../models/connection_status.dart';
@@ -43,6 +44,10 @@ import 'auth_controller.dart';
 
 final billingRepositoryProvider = Provider<BillingRepository>(
   (ref) => BillingRepository(ref.watch(apiClientProvider).dio),
+);
+
+final billingDocumentPresenterProvider = Provider<BillingDocumentPresenter>(
+  (_) => const NativeBillingDocumentPresenter(),
 );
 
 final usageRepositoryProvider = Provider<UsageRepository>(
@@ -225,9 +230,23 @@ final paymentsProvider = FutureProvider.autoDispose<Page<Payment>>((ref) async {
   return ref.watch(billingRepositoryProvider).payments();
 });
 
+final paymentProvider = FutureProvider.autoDispose.family<Payment, String>((
+  ref,
+  id,
+) async {
+  cacheFor(ref);
+  return ref.watch(billingRepositoryProvider).payment(id);
+});
+
 final ledgerProvider = FutureProvider.autoDispose<Page<LedgerTxn>>((ref) async {
   cacheFor(ref);
   return ref.watch(billingRepositoryProvider).ledger();
+});
+
+final ledgerEntryProvider =
+    FutureProvider.autoDispose.family<LedgerTxn, String>((ref, id) async {
+  cacheFor(ref);
+  return ref.watch(billingRepositoryProvider).ledgerEntry(id);
 });
 
 final balanceProvider = FutureProvider.autoDispose<AccountBalance>((ref) async {
@@ -576,7 +595,7 @@ final ticketCommentsProvider = FutureProvider.autoDispose
   return ref.watch(supportRepositoryProvider).comments(ticketId);
 });
 
-final quotesProvider = FutureProvider.autoDispose<List<Quote>>((ref) async {
+final quotesProvider = FutureProvider.autoDispose<QuotesPage>((ref) async {
   cacheFor(ref);
   return ref.watch(quotesRepositoryProvider).quotes();
 });

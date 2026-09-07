@@ -36,7 +36,7 @@
         </div>
         {% if can(request, "crm:sales_order:write") %}
         <div class="flex flex-wrap gap-2">
-            <a href="/admin/sales/sales-order/{{ order.id }}/edit" class="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">Edit</a>
+            <a href="/admin/sales/sales-order/{{ order.id }}/edit" class="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">Edit</a>
             <button type="button" data-delete-open class="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 dark:border-red-900 dark:bg-slate-800 dark:text-red-300">Delete</button>
         </div>
         {% endif %}

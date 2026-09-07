@@ -81,7 +81,7 @@
                         <h1 class="truncate text-base font-bold text-slate-950 dark:text-white">Comments</h1>
                         <p class="mt-0.5 text-xs font-medium text-slate-500">{{ count }} social post thread{% if count != 1 %}s{% endif %}</p>
                     </div>
-                    <a href="/admin/inbox" class="inline-flex min-h-8 items-center rounded border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">Inbox</a>
+                    <a href="/admin/inbox" class="inline-flex min-h-8 items-center rounded border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">Inbox</a>
                 </div>
                 <form method="get" action="/admin/inbox/comments" class="mt-3 space-y-3">
                     {% if selected_id %}<input type="hidden" name="conversation_id" value="{{ selected_id }}">{% endif %}
@@ -155,9 +155,9 @@
 
             {% if page_meta.total_items > 0 %}
             <nav class="flex shrink-0 items-center justify-between border-t border-slate-200 px-4 py-2.5 text-xs font-semibold dark:border-slate-800" aria-label="Comment post pagination">
-                {% if page_meta.has_previous %}<a href="{{ list_query.url('/admin/inbox/comments', page=page_meta.page - 1) }}" class="rounded border border-slate-300 bg-white px-3 py-2 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">Back</a>{% else %}<span></span>{% endif %}
+                {% if page_meta.has_previous %}<a href="{{ list_query.url('/admin/inbox/comments', page=page_meta.page - 1) }}" class="rounded border border-slate-300 bg-white px-3 py-2 text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">Back</a>{% else %}<span></span>{% endif %}
                 <span class="tabular-nums text-slate-500">Page {{ page_meta.page }} of {{ page_meta.total_pages }}</span>
-                {% if page_meta.has_next %}<a href="{{ list_query.url('/admin/inbox/comments', page=page_meta.page + 1) }}" class="rounded border border-slate-300 bg-white px-3 py-2 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">Next</a>{% else %}<span></span>{% endif %}
+                {% if page_meta.has_next %}<a href="{{ list_query.url('/admin/inbox/comments', page=page_meta.page + 1) }}" class="rounded border border-slate-300 bg-white px-3 py-2 text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">Next</a>{% else %}<span></span>{% endif %}
             </nav>
             {% endif %}
         </aside>
@@ -178,7 +178,7 @@
                         </p>
                     </div>
                 </div>
-                <a href="/admin/inbox?conversation_id={{ selected_post.timeline.id }}" class="group relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300" aria-label="Open full inbox thread">
+                <a href="/admin/inbox?conversation_id={{ selected_post.timeline.id }}" class="group relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300" aria-label="Open full inbox thread">
                     <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
                     <span role="tooltip" class="pointer-events-none absolute right-0 top-full z-20 mt-2 hidden whitespace-nowrap rounded bg-slate-950 px-2 py-1 text-[11px] font-semibold text-white shadow-lg group-hover:block group-focus-visible:block dark:bg-white dark:text-slate-950">Open full inbox thread</span>
                 </a>

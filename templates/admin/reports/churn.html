@@ -34,7 +34,7 @@
                 <option value="90">Last 90 Days</option>
                 <option value="365">Last Year</option>
             </select>
-            <button type="submit" class="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
+            <button type="submit" class="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
                 Export
             </button>
@@ -74,7 +74,7 @@
     </div>
 
     {# ── Churn Trend Chart ── #}
-    {% call report_chart_card("Churn Trend", churn_chart, "churn-trend-chart", icon='<svg class="h-4 w-4 text-teal-600 dark:text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/></svg>', color="teal", min_height=280) %}
+    {% call report_chart_card("Churn Trend", churn_chart, "churn-trend-chart", icon='<svg class="h-4 w-4 text-teal-600 dark:text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/></svg>', color="teal", min_height=168) %}
         <script>
         document.addEventListener('DOMContentLoaded', function() {
             const ctx = document.getElementById('churn-trend-chart');
@@ -116,7 +116,7 @@
     {% endcall %}
 
     {# ── Churn Reasons and Recent Cancellations ── #}
-    <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+    <div class="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
         {% call card("Churn Reasons", icon='<svg class="h-4 w-4 text-rose-600 dark:text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>', color="rose") %}
             {% if churn_reasons %}
             <div class="chart-container mb-3">
@@ -145,7 +145,7 @@
                     colors: ['#ef4444', '#f97316', '#f59e0b', '#eab308', '#84cc16']
                 };
                 if (chartData.labels.length > 0) {
-                    const chart = DotmacCharts.createDoughnutChart(ctx, chartData, { plugins: { legend: { display: false } } });
+                    const chart = DotmacCharts.createDoughnutChart(ctx, chartData, { legend: { display: false } });
                     DotmacCharts.registerChart('churn-reasons-chart', chart);
                 }
             });

@@ -5732,6 +5732,18 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/me/invoices/{invoice_id}/pdf": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:invoice_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "a2431939694c",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/me/ledger": {
    "params": [
     "header:authorization",
@@ -5746,6 +5758,18 @@
    "request": null,
    "responses": {
     "200": "cf908605dbeb",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/me/ledger/{entry_id}": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:entry_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "97e0baea011b",
     "422": "a11c9d9b2af8"
    }
   },
@@ -5797,6 +5821,30 @@
    "request": null,
    "responses": {
     "200": "3edab48bd4d3",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/me/payments/{payment_id}": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:payment_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "43c096131c5b",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/me/payments/{payment_id}/receipt/pdf": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:payment_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "a2431939694c",
     "422": "a11c9d9b2af8"
    }
   },
@@ -19881,7 +19929,7 @@
   "MyLocationRequestRead": "7a095cc41e3d",
   "MyPaymentMethodRead": "9490ed29f797",
   "MyProjectsResponse": "d1e5df424960",
-  "MyQuotesResponse": "f8071945ba5f",
+  "MyQuotesResponse": "c3a030bfc4b0",
   "MyReferralsResponse": "8f11934342e6",
   "MyWorkOrdersResponse": "8ea011ae6981",
   "NasConfigBackupCreate": "72d66e37aa86",

@@ -23,13 +23,13 @@
             {% for d in [7, 30, 90] %}
             <a href="/admin/reports/bandwidth?days={{ d }}"
                class="rounded-lg px-3 py-2 text-sm font-semibold transition-all
-               {% if request.query_params.get('days') == d|string %}bg-blue-600 text-white shadow-sm{% else %}border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300{% endif %}">
+               {% if request.query_params.get('days') == d|string %}bg-blue-600 text-white shadow-sm{% else %}border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300{% endif %}">
                 {{ d }}d
             </a>
             {% endfor %}
             {% if can(request, "reports:network:export") %}
             <a href="/admin/reports/bandwidth/export?date_from={{ date_from }}&date_to={{ date_to }}"
-               class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
+               class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
                 Export CSV
             </a>
             {% endif %}

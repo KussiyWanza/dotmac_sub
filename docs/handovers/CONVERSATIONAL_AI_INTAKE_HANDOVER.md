@@ -6,8 +6,9 @@ Branch: `feature/conversational-ai-intake-v2`
 ## Goal
 
 Implement governed conversational AI intake for WhatsApp, Facebook Messenger and
-Instagram direct messages for Dotmac ISP support. Email, chat widget and public
-comment channels remain outside AI intake.
+Instagram direct messages and explicitly scoped native Fiber, customer-portal,
+and reseller-portal chat widgets for Dotmac ISP support. Email and
+public comment channels remain outside AI intake.
 
 ## Confirmed Requirements
 
@@ -151,7 +152,8 @@ Also run focused browser/admin checks for:
 - Production NCC data cleanup collection remains disabled by default and must
   not be enabled without compliance approval.
 - Admins must configure explicit provider/account scopes; no global/private
-  channel catch-all is allowed for activation.
+  channel catch-all is allowed for activation. Registered widget scopes are
+  documented in `docs/CHAT_LIVE_SETUP.md` and activate independently.
 - The incomplete-task assignment blocker is intentionally not implemented in
   this correction. Team Inbox needs an approved typed eligibility interface from
   the authoritative task domain before adding that cross-domain rule.
@@ -172,7 +174,8 @@ Also run focused browser/admin checks for:
 
 1. Apply migrations only to a disposable/staging database.
 2. Configure one WhatsApp account scope and one test team.
-3. Verify email, chat widget and public comments bypass AI.
+3. Verify email and public comments bypass AI, and chat widget bypasses AI when
+   its exact policy is absent or inactive.
 4. Verify a supported channel with no matching scope bypasses AI.
 5. Verify welcome, clarification, handoff and queue messages are AI-labelled.
 6. Verify human reply/takeover suppresses in-flight AI output.

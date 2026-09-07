@@ -1,6 +1,12 @@
 from pathlib import Path
 
 
+def test_invoice_status_cards_keep_a_subdued_dark_mode_hover_background():
+    template = Path("templates/admin/billing/_invoices_list.html").read_text()
+
+    assert "dark:hover:bg-slate-700" in template
+
+
 def test_invoice_detail_consumes_server_owned_status_presentation():
     template = Path("templates/admin/billing/invoice_detail.html").read_text()
 

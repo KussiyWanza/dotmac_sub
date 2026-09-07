@@ -99,10 +99,17 @@ class AiIntakeConfigUpsert(BaseModel):
     @classmethod
     def supported_conversational_channel(cls, value: str) -> str:
         normalized = "_".join(value.lower().replace("-", "_").split())
-        allowed = {"whatsapp", "facebook_messenger", "instagram_dm", "any"}
+        allowed = {
+            "whatsapp",
+            "facebook_messenger",
+            "instagram_dm",
+            "chat_widget",
+            "any",
+        }
         if normalized not in allowed:
             raise ValueError(
-                "AI intake supports WhatsApp, Facebook Messenger, and Instagram only"
+                "AI intake supports WhatsApp, Facebook Messenger, Instagram, "
+                "and chat widget only"
             )
         return normalized
 

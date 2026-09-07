@@ -13,7 +13,7 @@
         color='amber',
         color2='orange'
     ) %}
-        <a href="/admin/support/tickets" class="inline-flex items-center rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Cancel</a>
+        <a href="/admin/support/tickets" class="inline-flex items-center rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Cancel</a>
     {% endcall %}
 
     {% if error %}
@@ -292,7 +292,7 @@
         </fieldset>
 
         <div class="flex justify-end gap-3">
-            <a href="{% if form_mode == 'edit' and ticket %}/admin/support/tickets/{{ ticket.id }}{% else %}/admin/support/tickets{% endif %}" class="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Cancel</a>
+            <a href="{% if form_mode == 'edit' and ticket %}/admin/support/tickets/{{ ticket.id }}{% else %}/admin/support/tickets{% endif %}" class="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Cancel</a>
             <button class="rounded-xl bg-gradient-to-r from-amber-500 to-orange-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm shadow-amber-500/20 hover:shadow-md">{% if form_mode == 'edit' %}Save Changes{% else %}Create Ticket{% endif %}</button>
         </div>
     </form>

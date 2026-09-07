@@ -4,16 +4,16 @@ Existing rows remain unchanged. Technician links become optional while the
 canonical person and system-user evidence continues to identify new staff
 submissions.
 
-Revision ID: 582_staff_expense_requesters
-Revises: 581_inbox_delivery_status_index
+Revision ID: 583_staff_expense_requesters
+Revises: 582_ai_intake_resolved_state
 """
 
 import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "582_staff_expense_requesters"
-down_revision: str | None = "581_inbox_delivery_status_index"
+revision: str = "583_staff_expense_requesters"
+down_revision: str | None = "582_ai_intake_resolved_state"
 branch_labels: tuple[str, ...] | None = None
 depends_on: str | None = None
 

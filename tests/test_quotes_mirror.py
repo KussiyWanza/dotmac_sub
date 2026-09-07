@@ -145,11 +145,16 @@ def test_historical_read_preserves_payload_and_sync_timestamp_without_refresh(
     with patch.object(quotes_mirror, "reconcile_subscriber") as refresh:
         result = quotes_mirror.read_for_subscriber_result(db_session, str(sub.id))
         refresh.assert_not_called()
+    payload = result.payload.model_dump(mode="json")
     assert result.state == quotes_mirror.QuoteReadState.retired
-    assert result.payload["actions_available"] is False
-    assert result.payload["total"] == 1
-    assert result.payload["quotes"][0]["deposit_amount"] == "37500.00"
-    assert result.payload["quotes"][0]["id"] == "q1"
+    assert payload["actions_available"] is False
+    assert (
+        payload["actions_unavailable_message"]
+        == quotes_mirror.PORTAL_QUOTE_UNAVAILABLE_MESSAGE
+    )
+    assert payload["total"] == 1
+    assert payload["quotes"][0]["deposit_amount"] == "37500.00"
+    assert payload["quotes"][0]["id"] == "q1"
     assert (
         db_session.get(QuoteSyncState, sub.id).synced_at.replace(tzinfo=UTC) == original
     )
@@ -160,7 +165,7 @@ def test_cold_historical_read_is_retired_without_creating_sync_state(db_session)
     sub = _subscriber(db_session)
     result = quotes_mirror.read_for_subscriber_result(db_session, str(sub.id))
     assert result.state == quotes_mirror.QuoteReadState.retired
-    assert result.payload["quotes"] == []
+    assert result.payload.quotes == []
     assert db_session.get(QuoteSyncState, sub.id) is None
 
 

@@ -14,11 +14,42 @@ import '../../widgets/skeleton.dart';
 import '../../widgets/status_chip.dart';
 import 'invoice_pay_button.dart';
 
-class InvoicesScreen extends ConsumerWidget {
+class InvoicesScreen extends ConsumerStatefulWidget {
   const InvoicesScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<InvoicesScreen> createState() => _InvoicesScreenState();
+}
+
+class _InvoicesScreenState extends ConsumerState<InvoicesScreen>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabController;
+  int _selectedTab = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 3, vsync: this)
+      ..addListener(_handleTabChanged);
+  }
+
+  void _handleTabChanged() {
+    if (!_tabController.indexIsChanging &&
+        _selectedTab != _tabController.index) {
+      setState(() => _selectedTab = _tabController.index);
+    }
+  }
+
+  @override
+  void dispose() {
+    _tabController
+      ..removeListener(_handleTabChanged)
+      ..dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final invoices = ref.watch(invoicesProvider);
     final payments = ref.watch(paymentsProvider);
 
@@ -33,18 +64,30 @@ class InvoicesScreen extends ConsumerWidget {
           ),
           const AccountAvatarButton(),
         ],
-        bottom: const TabBar(tabs: [
-          Tab(text: 'Invoices'),
-          Tab(text: 'Payments'),
-          Tab(text: 'Activity'),
-        ]),
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: const [
+            Tab(text: 'Invoices'),
+            Tab(text: 'Payments'),
+            Tab(text: 'Activity'),
+          ],
+        ),
       ),
+      floatingActionButton: _selectedTab == 1
+          ? FloatingActionButton.extended(
+              tooltip: 'Make a payment',
+              onPressed: () => context.push('/topup'),
+              icon: const Icon(Icons.add_card_outlined),
+              label: const Text('Make payment'),
+            )
+          : null,
       body: Column(
         children: [
           const OfflineBanner(),
           const _BillingPrimaryAction(),
           Expanded(
             child: TabBarView(
+              controller: _tabController,
               children: [
                 RefreshIndicator(
                   onRefresh: () async {
@@ -132,12 +175,23 @@ class InvoicesScreen extends ConsumerWidget {
                           return Card(
                             margin: EdgeInsets.zero,
                             child: ListTile(
+                              key: ValueKey('payment-${p.id}'),
                               leading: const Icon(Icons.payments_outlined),
                               title: Text(Fmt.money(p.amount, p.currency)),
-                              subtitle: Text(Fmt.dateTime(p.paidAt)),
-                              trailing: StatusChip.fromPresentation(
-                                p.statusPresentation,
+                              subtitle:
+                                  Text(Fmt.dateTime(p.paidAt ?? p.createdAt)),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  StatusChip.fromPresentation(
+                                    p.statusPresentation,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  const Icon(Icons.chevron_right),
+                                ],
                               ),
+                              onTap: () =>
+                                  context.push('/billing/payments/${p.id}'),
                             ),
                           );
                         },
@@ -188,7 +242,7 @@ class InvoicesScreen extends ConsumerWidget {
           ),
         ],
       ),
-    ).withTabs();
+    );
   }
 }
 
@@ -403,16 +457,18 @@ class _LedgerTile extends StatelessWidget {
     return Card(
       margin: EdgeInsets.zero,
       child: ListTile(
+        key: ValueKey('activity-${txn.id}'),
         leading: Icon(
           credit ? Icons.south_west : Icons.north_east,
           color: color,
         ),
         title: Text(txn.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-        subtitle: Text(Fmt.dateTime(txn.createdAt)),
+        subtitle: Text(Fmt.dateTime(txn.occurredAt)),
         trailing: Text(
           '$sign${Fmt.money(txn.amount, txn.currency)}',
           style: TextStyle(color: color, fontWeight: FontWeight.w600),
         ),
+        onTap: () => context.push('/billing/activity/${txn.id}'),
       ),
     );
   }
@@ -436,9 +492,4 @@ class _ScrollableEmpty extends StatelessWidget {
       ),
     );
   }
-}
-
-extension _Tabbed on Scaffold {
-  /// Wrap the scaffold in a DefaultTabController matching the three tabs above.
-  Widget withTabs() => DefaultTabController(length: 3, child: this);
 }

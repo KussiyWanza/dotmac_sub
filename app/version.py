@@ -20,3 +20,13 @@ def get_app_version() -> str:
     except OSError:
         return "unknown"
     return version or "unknown"
+
+
+@lru_cache(maxsize=1)
+def get_app_revision() -> str | None:
+    """Return the immutable deployed source revision when the host provides it."""
+
+    revision = (
+        os.getenv("APP_REVISION") or os.getenv("GIT_SHA") or os.getenv("COMMIT_SHA")
+    )
+    return revision.strip() if revision and revision.strip() else None

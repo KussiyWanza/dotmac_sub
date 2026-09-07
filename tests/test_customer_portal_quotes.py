@@ -39,9 +39,18 @@ def test_route_is_registered():
 def test_native_quote_read_still_uses_native_owner(db_session, monkeypatch):
     from unittest.mock import MagicMock
 
+    from app.schemas.portal import MyQuotesResponse
     from app.web.customer import quotes
 
-    native = MagicMock(return_value={"quotes": [], "total": 0, "open": 0})
+    native = MagicMock(
+        return_value=MyQuotesResponse(
+            quotes=[],
+            total=0,
+            open=0,
+            source_state="native",
+            actions_available=True,
+        )
+    )
     historical = MagicMock()
     monkeypatch.setattr(
         quotes.selfserve_service, "native_read_enabled", lambda db: True

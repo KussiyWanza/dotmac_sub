@@ -16,7 +16,7 @@
             <h1 class="text-2xl font-bold text-slate-900 dark:text-white">Change ONT</h1>
             <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Replace the active ONT assignment for this subscriber and subscription.</p>
         </div>
-        <a href="/admin/catalog/subscriptions/{{ subscription.id }}" class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Cancel</a>
+        <a href="/admin/catalog/subscriptions/{{ subscription.id }}" class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Cancel</a>
     </div>
 
     {% if change_ont.error %}
@@ -85,7 +85,7 @@
         </div>
 
         <div class="flex items-center justify-end gap-3">
-            <a href="/admin/catalog/subscriptions/{{ subscription.id }}" class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Cancel</a>
+            <a href="/admin/catalog/subscriptions/{{ subscription.id }}" class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Cancel</a>
             <button type="submit" :disabled="submitting || {{ 'true' if not assignment or not change_ont.eligible_onts else 'false' }}" class="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50">
                 <span x-text="submitting ? 'Changing...' : 'Confirm Change ONT'">Confirm Change ONT</span>
             </button>

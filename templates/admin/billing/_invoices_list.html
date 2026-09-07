@@ -3,7 +3,7 @@
     {% set bucket = status_totals[key] %}
     {% set href = list_query.url('/admin/billing/invoices', filters={'status': none if key == 'all' else key}) %}
     {% set active = (not status and key == 'all') or status == key %}
-        <a href="{{ href }}" hx-get="{{ href }}" hx-target="#invoice-list" hx-push-url="true" class="rounded-xl border px-3 py-2.5 transition {% if active %}border-primary-300 bg-primary-50 text-primary-900 dark:border-primary-700 dark:bg-primary-950/40 dark:text-primary-100{% else %}border-slate-200 bg-white text-slate-700 hover:border-primary-200 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-primary-800{% endif %}">
+        <a href="{{ href }}" hx-get="{{ href }}" hx-target="#invoice-list" hx-push-url="true" class="rounded-xl border px-3 py-2.5 transition {% if active %}border-primary-300 bg-primary-50 text-primary-900 dark:border-primary-700 dark:bg-primary-950/40 dark:text-primary-100{% else %}border-slate-200 bg-white text-slate-700 hover:border-primary-200 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-primary-800 dark:hover:bg-slate-700{% endif %}">
         <div class="flex items-center justify-between gap-2">
             <span class="text-sm font-semibold">{{ label }}</span>
             <span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600 dark:bg-slate-700 dark:text-slate-300">{{ bucket.count }}</span>

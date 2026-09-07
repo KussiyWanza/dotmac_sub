@@ -73,6 +73,14 @@ class InvoicePaymentPresentment:
     payment_url: str | None
 
 
+@dataclass(frozen=True)
+class InvoicePdfDownload:
+    """Canonical invoice document returned to an authorized adapter."""
+
+    filename: str
+    stream: StreamResult
+
+
 def _normalize_requested_by_id(db: Session, requested_by_id: str | None) -> str | None:
     candidate = str(requested_by_id or "").strip()
     if not candidate:
@@ -1431,6 +1439,51 @@ def maybe_finalize_stalled_export(
 
 def download_filename(invoice: Invoice) -> str:
     return f"invoice-{_safe_invoice_number(invoice)}.pdf"
+
+
+def resolve_download(
+    db: Session,
+    *,
+    invoice: Invoice,
+    requested_by_id: str | None = None,
+) -> InvoicePdfDownload:
+    """Return a fresh canonical PDF stream, generating the export when needed."""
+
+    latest = maybe_finalize_stalled_export(db, get_latest_export(db, str(invoice.id)))
+    if is_export_cache_valid(db, invoice, latest):
+        if latest is None:  # Defensive narrowing for the type checker.
+            raise ObjectNotFoundError("Missing invoice PDF export")
+        try:
+            return InvoicePdfDownload(
+                filename=download_filename(invoice),
+                stream=stream_export(db, latest),
+            )
+        except Exception:
+            logger.debug(
+                "Failed streaming cached invoice PDF for invoice %s",
+                invoice.id,
+                exc_info=True,
+            )
+
+    try:
+        generated = generate_export_now(
+            db,
+            invoice_id=str(invoice.id),
+            requested_by_id=requested_by_id,
+        )
+        if is_export_cache_valid(db, invoice, generated):
+            return InvoicePdfDownload(
+                filename=download_filename(invoice),
+                stream=stream_export(db, generated),
+            )
+    except Exception as exc:
+        logger.warning(
+            "Failed resolving invoice PDF download for invoice %s",
+            invoice.id,
+            exc_info=True,
+        )
+        raise ObjectNotFoundError(f"Invoice PDF unavailable for {invoice.id}") from exc
+    raise ObjectNotFoundError(f"Invoice PDF unavailable for {invoice.id}")
 
 
 def _invoice_owner_subscriber_id(invoice: Invoice):

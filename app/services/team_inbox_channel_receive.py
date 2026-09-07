@@ -5,6 +5,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import UUID
 
@@ -25,6 +26,7 @@ from app.models.team_inbox import (
 )
 from app.schemas.ai_intake import (
     AiIntakeContextMessage,
+    AiIntakeMessageRole,
     AiIntakeOutcome,
     AiIntakeReason,
     AiIntakeRequest,
@@ -35,9 +37,11 @@ from app.schemas.ai_intake import (
 from app.services import (
     ai_conversation_intake,
     ai_intake,
+    team_inbox_assignment,
     team_inbox_automation,
     team_inbox_media,
     team_inbox_operations,
+    team_inbox_outbound,
     team_inbox_participants,
     team_inbox_realtime,
     team_inbox_routing,
@@ -74,6 +78,7 @@ _OPAQUE_CONTACT_CHANNELS = {
     InboxChannelType.instagram_comment.value,
     InboxChannelType.chat_widget.value,
 }
+_NATIVE_WIDGET_AI_SURFACES = frozenset({"customer", "reseller_portal"})
 
 
 def _inbound_attachment_observation(
@@ -139,6 +144,25 @@ class InboundChannelReceiveResult:
     subscriber_id: str | None = None
     reseller_id: str | None = None
     resolution_status: str = "unmatched"
+
+
+class WidgetAiIntakeAdmissionStatus(StrEnum):
+    started = "started"
+    skipped = "skipped"
+    failed = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedWidgetAiIntakeCommand:
+    conversation_id: UUID
+    message_id: UUID
+    created_conversation: bool
+
+
+@dataclass(frozen=True, slots=True)
+class WidgetAiIntakeAdmissionOutcome:
+    status: WidgetAiIntakeAdmissionStatus
+    session_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -499,17 +523,29 @@ def _recent_intake_context(
         .all()
     )
     context: list[AiIntakeContextMessage] = []
+    row: InboxMessage
     for row in reversed(rows):
         body = _message_body(row.body)
         if not body:
             continue
+        if row.direction == InboxMessageDirection.internal.value:
+            continue
+        if row.direction == InboxMessageDirection.inbound.value:
+            role = AiIntakeMessageRole.customer
+        else:
+            message_metadata = dict(row.metadata_ or {})
+            if (
+                str(message_metadata.get("sender_type") or "").lower() == "ai"
+                or str(message_metadata.get("author_type") or "").lower() == "ai"
+            ):
+                role = AiIntakeMessageRole.ai
+            elif message_metadata.get("sent_by_person_id"):
+                role = AiIntakeMessageRole.human_agent
+            else:
+                continue
         context.append(
             AiIntakeContextMessage(
-                direction=(
-                    "inbound"
-                    if row.direction == InboxMessageDirection.inbound.value
-                    else "outbound"
-                ),
+                role=role,
                 body=body[: ai_intake.MAX_CONTEXT_CHARS],
             )
         )
@@ -638,6 +674,161 @@ def _run_optional_receive_step(
     if owner_command_active(db):
         return execute_owner_savepoint(db, operation)
     return operation()
+
+
+def _start_ai_intake_for_persisted_widget_message(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    message: InboxMessage,
+    created_conversation: bool,
+) -> ai_conversation_intake.AiSessionContext | None:
+    """Start eligible native-widget intake after its inbound fact is durable.
+
+    Widget visitors have no provider webhook.  This shared Inbox admission path
+    gives their first persisted message the same explicit policy, route gate,
+    session pinning, and human-takeover protections as private-message intake.
+    """
+
+    metadata = dict(message.metadata_ or {})
+    fiber_chat = (conversation.metadata_ or {}).get("fiber_chat")
+    if isinstance(fiber_chat, dict):
+        site_id = str(fiber_chat.get("site_id") or "").strip()
+        if site_id:
+            metadata.setdefault("provider", "fiber_website")
+            metadata.setdefault("provider_account_scope", site_id)
+    surface = str((conversation.metadata_ or {}).get("surface") or "").strip()
+    if surface in _NATIVE_WIDGET_AI_SURFACES:
+        metadata.setdefault("provider", "native_widget")
+        metadata.setdefault("provider_account_scope", surface)
+    payload = InboundChannelPayload(
+        channel_type=InboxChannelType.chat_widget.value,
+        contact_address=conversation.contact_address or "widget-visitor",
+        body=message.body or "",
+        external_message_id=message.external_message_id,
+        external_thread_id=message.external_thread_id,
+        subscriber_id=conversation.subscriber_id,
+        metadata=metadata,
+    )
+    request, outcome = _classify_inbound(
+        db,
+        conversation=conversation,
+        created_conversation=created_conversation,
+        payload=payload,
+        body=_message_body(message.body),
+        metadata=metadata,
+    )
+    conversation_metadata = dict(conversation.metadata_ or {})
+    if request is None:
+        conversation_metadata["ai_intake"] = ai_intake.route_metadata(outcome)
+        conversation.metadata_ = conversation_metadata
+        _record_data_cleaning_eligibility(
+            conversation,
+            DataCleaningEligibility(
+                eligible=False,
+                reason=DataCleaningEligibilityReason.invalid_configuration,
+            ),
+        )
+        return None
+    conversation_metadata["ai_intake"] = ai_intake.conversation_state(request, outcome)
+    conversation.metadata_ = conversation_metadata
+    session_context = ai_conversation_intake.ensure_session_for_outcome(
+        db,
+        conversation=conversation,
+        outcome=outcome,
+        provider=request.provider,
+        account_scope=request.account_scope,
+        created_conversation=created_conversation,
+        initial_inbound_message_id=message.id,
+    )
+    if session_context is not None:
+        ai_conversation_intake.transition_conversation_status(
+            db,
+            conversation=conversation,
+            status=InboxConversationStatus.pending,
+            reason=team_inbox_status.InboxStatusReason.ai_intake_started,
+            source_id=f"ai-intake-started:{session_context.session.id}",
+        )
+        ai_conversation_intake.mark_conversation_ai_metadata(
+            conversation,
+            session=session_context.session,
+            active=True,
+        )
+    _record_data_cleaning_eligibility(
+        conversation,
+        ai_intake.evaluate_data_cleaning_eligibility(
+            db,
+            request=request,
+            primary_service_team_id=conversation.primary_service_team_id,
+        ),
+    )
+    return session_context
+
+
+def start_ai_intake_for_persisted_widget_message(
+    db: Session,
+    *,
+    command: PersistedWidgetAiIntakeCommand,
+) -> WidgetAiIntakeAdmissionOutcome:
+    """Run optional widget AI admission without risking the inbound fact."""
+
+    try:
+
+        def admit() -> ai_conversation_intake.AiSessionContext | None:
+            conversation = db.get(InboxConversation, command.conversation_id)
+            message = db.get(InboxMessage, command.message_id)
+            if conversation is None or message is None:
+                raise ValueError("Persisted widget AI intake target was not found")
+            if (
+                conversation.channel_type != InboxChannelType.chat_widget.value
+                or message.channel_type != InboxChannelType.chat_widget.value
+                or message.conversation_id != conversation.id
+            ):
+                raise ValueError("Persisted widget AI intake target is invalid")
+            return _start_ai_intake_for_persisted_widget_message(
+                db,
+                conversation=conversation,
+                message=message,
+                created_conversation=command.created_conversation,
+            )
+
+        session_context = _run_optional_receive_step(
+            db,
+            admit,
+        )
+        return WidgetAiIntakeAdmissionOutcome(
+            status=(
+                WidgetAiIntakeAdmissionStatus.started
+                if session_context is not None
+                else WidgetAiIntakeAdmissionStatus.skipped
+            ),
+            session_id=(
+                session_context.session.id if session_context is not None else None
+            ),
+        )
+    except Exception as exc:
+        logger.warning(
+            "Chat widget AI intake admission failed",
+            extra={
+                "event": "chat_widget_ai_intake_admission_failed",
+                "conversation_id": str(command.conversation_id),
+                "message_id": str(command.message_id),
+                "error_type": type(exc).__name__,
+            },
+        )
+        conversation = db.get(InboxConversation, command.conversation_id)
+        if conversation is not None:
+            conversation_metadata = dict(conversation.metadata_ or {})
+            conversation_metadata["ai_intake"] = {
+                "status": AiIntakeStatus.failed.value,
+                "reason": AiIntakeReason.context_error.value,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+            conversation.metadata_ = conversation_metadata
+            db.flush()
+        return WidgetAiIntakeAdmissionOutcome(
+            status=WidgetAiIntakeAdmissionStatus.failed
+        )
 
 
 def receive_inbound_channel(
@@ -774,49 +965,12 @@ def receive_inbound_channel(
             reason=AiIntakeReason.context_error,
         )
     metadata.update(ai_intake.route_metadata(intake_outcome))
-    ai_session_context = None
     if intake_request is not None:
         conversation_metadata = dict(conversation.metadata_ or {})
         conversation_metadata["ai_intake"] = ai_intake.conversation_state(
             intake_request, intake_outcome
         )
         conversation.metadata_ = conversation_metadata
-        try:
-
-            def start_ai_session() -> ai_conversation_intake.AiSessionContext | None:
-                session_context = ai_conversation_intake.ensure_session_for_outcome(
-                    db,
-                    conversation=conversation,
-                    outcome=intake_outcome,
-                    provider=intake_request.provider,
-                    account_scope=intake_request.account_scope,
-                    created_conversation=created_conversation,
-                )
-                if session_context is not None:
-                    ai_conversation_intake.transition_conversation_status(
-                        db,
-                        conversation=conversation,
-                        status=InboxConversationStatus.pending,
-                        reason=team_inbox_status.InboxStatusReason.ai_intake_started,
-                        source_id=f"ai-intake-started:{session_context.session.id}",
-                    )
-                    ai_conversation_intake.mark_conversation_ai_metadata(
-                        conversation,
-                        session=session_context.session,
-                        active=True,
-                    )
-                return session_context
-
-            ai_session_context = _run_optional_receive_step(db, start_ai_session)
-        except Exception as exc:
-            logger.warning(
-                "AI intake session creation failed",
-                extra={
-                    "event": "ai_intake_session_failure",
-                    "conversation_id": str(conversation.id),
-                    "error_type": type(exc).__name__,
-                },
-            )
         cleaning_eligibility = ai_intake.evaluate_data_cleaning_eligibility(
             db,
             request=intake_request,
@@ -832,21 +986,37 @@ def receive_inbound_channel(
             ),
         )
 
+    provider_key = str(metadata.get("provider") or "default")[:80]
+    account_scope_key = str(
+        metadata.get("provider_account_scope")
+        or metadata.get("page_or_account_id")
+        or metadata.get("phone_number_id")
+        or "default"
+    )[:160]
+    media_first_policy = (
+        ai_conversation_intake.resolve_media_first_handoff_policy(
+            db,
+            channel_type=channel_type,
+            provider=provider_key,
+            account_scope=account_scope_key,
+        )
+        if created_conversation and has_attachment and not body
+        else None
+    )
     # Resolve push-channel ownership before creating the message so WhatsApp,
     # Messenger and Instagram threads enter the normal team queue path.
     routing_decision = team_inbox_routing.resolve_channel_routing_decision(
         db,
         channel_type=channel_type,
-        provider=str(metadata.get("provider") or "") or None,
-        account_scope=str(
-            metadata.get("provider_account_scope")
-            or metadata.get("page_or_account_id")
-            or metadata.get("phone_number_id")
-            or ""
-        )
-        or None,
+        provider=provider_key,
+        account_scope=account_scope_key,
         fallback_service_team_id=(
             payload.fallback_service_team_id
+            or (
+                media_first_policy.fallback_team_id
+                if media_first_policy is not None
+                else None
+            )
             or team_inbox_routing.default_service_team_id(db)
         ),
         metadata=metadata,
@@ -936,6 +1106,125 @@ def receive_inbound_channel(
         message=message,
         provider=str(metadata.get("provider") or "") or None,
     )
+    if media_first_policy is not None:
+        attachment_types = sorted(
+            {
+                str(
+                    item.get("type")
+                    or item.get("media_type")
+                    or item.get("content_type")
+                    or "attachment"
+                )[:80]
+                for item in (
+                    attachments if isinstance(attachments, (list, tuple)) else ()
+                )
+                if isinstance(item, dict)
+            }
+        )
+        delivery = team_inbox_outbound.send_ai_intake_message(
+            db,
+            conversation=conversation,
+            body_text=media_first_policy.customer_message,
+            metadata={
+                "automation_kind": "ai_intake_media_first_handoff",
+                "ai_display_name": media_first_policy.display_name,
+                "ai_intake_policy_id": str(media_first_policy.policy_id),
+                "ai_intake_policy_version_id": str(
+                    media_first_policy.policy_version_id
+                ),
+                "ai_message_purpose": "media_first_handoff",
+                "ai_response_source": "template",
+            },
+            dedupe_key=f"ai-intake-media-first:{message.id}",
+        )
+        note = team_inbox_operations.create_internal_note(
+            db,
+            conversation=conversation,
+            body=(
+                "AI Intake did not inspect this media-only first message. "
+                "Preserved attachment types: "
+                + (", ".join(attachment_types) or "attachment")
+                + ". The conversation was routed for human review."
+            ),
+            actor_person_id=None,
+            metadata={
+                "source": "ai_intake_media_first_handoff",
+                "inbound_message_id": str(message.id),
+                "policy_version_id": str(media_first_policy.policy_version_id),
+                "delivery_status": delivery.kind,
+            },
+        )
+        conversation_metadata = dict(conversation.metadata_ or {})
+        conversation_metadata["ai_handling"] = False
+        conversation_metadata["ai_intake"] = {
+            "status": "escalated",
+            "reason": "media_only_first_message",
+            "policy_version_id": str(media_first_policy.policy_version_id),
+            "inbound_message_id": str(message.id),
+            "handoff_note_id": str(note.id),
+            "handoff_message_delivery": delivery.kind,
+            "destination_team_id": routing_decision.primary_service_team_id,
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        conversation.metadata_ = conversation_metadata
+        if routing_decision.primary_service_team_id:
+            team_inbox_assignment.assign_conversation_to_available_agent(
+                db,
+                conversation=conversation,
+                service_team_id=routing_decision.primary_service_team_id,
+                reason="AI intake media-only first message",
+                source="escalation",
+            )
+        logger.info(
+            "AI intake media-only first contact routed",
+            extra={
+                "event": "ai_intake_media_first_handoff",
+                "conversation_id": str(conversation.id),
+                "inbound_message_id": str(message.id),
+                "policy_version_id": str(media_first_policy.policy_version_id),
+                "destination_team_id": routing_decision.primary_service_team_id,
+                "delivery_status": delivery.kind,
+            },
+        )
+    if intake_request is not None:
+        try:
+
+            def start_ai_session() -> ai_conversation_intake.AiSessionContext | None:
+                session_context = ai_conversation_intake.ensure_session_for_outcome(
+                    db,
+                    conversation=conversation,
+                    outcome=intake_outcome,
+                    provider=intake_request.provider,
+                    account_scope=intake_request.account_scope,
+                    created_conversation=created_conversation,
+                    initial_inbound_message_id=message.id,
+                )
+                if session_context is not None:
+                    ai_conversation_intake.transition_conversation_status(
+                        db,
+                        conversation=conversation,
+                        status=InboxConversationStatus.pending,
+                        reason=team_inbox_status.InboxStatusReason.ai_intake_started,
+                        source_id=f"ai-intake-started:{session_context.session.id}",
+                    )
+                    ai_conversation_intake.mark_conversation_ai_metadata(
+                        conversation,
+                        session=session_context.session,
+                        active=True,
+                    )
+                return session_context
+
+            _run_optional_receive_step(db, start_ai_session)
+        except Exception as exc:
+            logger.warning(
+                "AI intake session creation failed",
+                extra={
+                    "event": "ai_intake_session_failure",
+                    "conversation_id": str(conversation.id),
+                    "message_id": str(message.id),
+                    "error_type": type(exc).__name__,
+                },
+            )
     conversation.last_message_at = received_at
     # A conversation snoozed "until the customer replies" wakes here — this is
     # the reply.

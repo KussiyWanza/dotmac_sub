@@ -133,6 +133,46 @@ def test_customer_session_can_store_impersonation_marker(db_session, subscriber)
     assert session["return_to"] == "/reseller/accounts"
 
 
+def test_customer_impersonation_banner_uses_recoverable_exit_link():
+    template = Path("templates/layouts/customer.html").read_text()
+
+    assert (
+        'href="/portal/auth/stop-impersonation?next={{ impersonation_return_to | urlencode }}"'
+        in template
+    )
+    assert 'method="post" action="/portal/auth/stop-impersonation"' not in template
+
+
+def test_customer_stop_impersonation_invalidates_session_and_returns_to_admin(
+    monkeypatch,
+):
+    invalidated: list[str] = []
+    monkeypatch.setattr(
+        web_customer_auth_service.customer_portal,
+        "invalidate_customer_session",
+        invalidated.append,
+    )
+    request = _request_with_cookie(
+        web_customer_auth_service.customer_portal.SESSION_COOKIE_NAME,
+        "impersonation-session",
+    )
+
+    response = web_customer_auth_service.customer_stop_impersonation(
+        request,
+        "/admin/customers/person/customer-id",
+    )
+
+    assert invalidated == ["impersonation-session"]
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/customers/person/customer-id"
+    assert (
+        _response_cookies(response)[
+            web_customer_auth_service.customer_portal.SESSION_COOKIE_NAME
+        ]
+        == ""
+    )
+
+
 def test_customer_login_allows_pppoe_when_local_credential_password_differs(
     db_session, subscriber, monkeypatch
 ):
