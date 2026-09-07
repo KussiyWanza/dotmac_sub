@@ -707,21 +707,43 @@ SERVICES: tuple[SOTService, ...] = (
         module="app.services.field.expense_requests",
         owns=(
             "field expense request submission",
+            "expense receipt staging for submitted claims",
             "field expense vendor picker",
         ),
-        depends_on=("operations.work_orders",),
+        depends_on=(
+            "auth.permission_gate",
+            "operations.expense_categories",
+            "operations.work_orders",
+        ),
         notes=(
-            "One typed command creates and submits a technician expense request "
-            "atomically. The client reference and normalized fingerprint make "
-            "network retries safe. The vendor picker is read-only and only "
-            "projects active vendor labels for field expense entry."
+            "One typed command creates and submits an expense request atomically. "
+            "Field clients retain assigned-technician scope; the staff web adapter "
+            "supplies exact RBAC-authorized work-order evidence and the actor is "
+            "derived from the authenticated session. Receipt metadata is staged "
+            "flush-only inside the same command. The client reference and normalized "
+            "fingerprint make retries safe. The vendor picker remains read-only."
         ),
         contract=ServiceContract(
             concerns=(
                 ConcernContract(
                     name="field expense request submission",
                     role=OwnerRole.COMMAND_WRITER,
-                    input_names=("canonical service work-order state",),
+                    input_names=(
+                        "canonical service work-order state",
+                        "authenticated requester and work-order access evidence",
+                        "ERP-owned expense category rules",
+                        "validated receipt content",
+                    ),
+                    canonical_writer="operations.expense_requests",
+                ),
+                ConcernContract(
+                    name="expense receipt staging for submitted claims",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=(
+                        "canonical service work-order state",
+                        "authenticated requester and work-order access evidence",
+                        "validated receipt content",
+                    ),
                     canonical_writer="operations.expense_requests",
                 ),
                 ConcernContract(
@@ -736,8 +758,36 @@ SERVICES: tuple[SOTService, ...] = (
                     owner="operations.work_orders",
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
                     source=(
-                        "Active assigned WorkOrder and technician scope plus "
-                        "validated receipt attachment evidence"
+                        "Active WorkOrder identity; assigned-technician scope for field "
+                        "clients or exact route-authorized work-order identity for staff"
+                    ),
+                ),
+                AuthorityInput(
+                    name="authenticated requester and work-order access evidence",
+                    owner="auth.permission_gate",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "Authenticated system-user identity and global, reseller, or "
+                        "region operations:dispatch:read access resolved for the exact "
+                        "work order"
+                    ),
+                ),
+                AuthorityInput(
+                    name="ERP-owned expense category rules",
+                    owner="operations.expense_categories",
+                    kind=AuthorityKind.DERIVED_PROJECTION,
+                    source=(
+                        "Live ERP category identity, receipt requirement, and "
+                        "per-claim maximum observed before submission"
+                    ),
+                ),
+                AuthorityInput(
+                    name="validated receipt content",
+                    owner="operations.expense_requests",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "Validated private receipt bytes and content-addressed stored-file "
+                        "metadata staged in the expense owner transaction"
                     ),
                 ),
                 AuthorityInput(
@@ -753,8 +803,9 @@ SERVICES: tuple[SOTService, ...] = (
             transaction=TransactionContract(
                 mode=TransactionMode.OWNER_MANAGED,
                 boundary=(
-                    "Create, submit, work-order activity marking, and optional ERP "
-                    "delivery staging complete in one owner transaction. The "
+                    "Create, submit, optional receipt metadata, work-order activity "
+                    "marking, and optional ERP delivery staging complete in one owner "
+                    "transaction. Receipt storage is a flush-only participant; the "
                     "vendor picker performs a read-only session-scoped query."
                 ),
                 locking="The command locks the scoped active work order.",
@@ -775,7 +826,9 @@ SERVICES: tuple[SOTService, ...] = (
                 mapping_owner="field expense request API adapter",
                 retryable_codes=(),
                 fail_closed_on=(
-                    "unknown technician or work order",
+                    "unknown requester or work order",
+                    "missing exact staff work-order authorization evidence",
+                    "unavailable or invalid ERP category rules",
                     "invalid receipt evidence",
                     "client-reference fingerprint conflict",
                 ),
@@ -804,8 +857,14 @@ SERVICES: tuple[SOTService, ...] = (
                 ),
             ),
             steward="field operations and finance",
-            design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
-            test_refs=("tests/test_field_expense_requests.py",),
+            design_refs=(
+                "docs/designs/WORK_ORDER_EXPENSE_ENTRY.md",
+                "docs/SOT_RELATIONSHIP_MAP.md",
+            ),
+            test_refs=(
+                "tests/test_field_expense_requests.py",
+                "tests/test_work_order_expense_web.py",
+            ),
         ),
     ),
     SOTService(
