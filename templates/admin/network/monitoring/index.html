@@ -99,7 +99,7 @@
     <div class="mb-2 flex justify-end">
         <button hx-get="/admin/network/monitoring/kpi"
                 hx-target="#monitoring-kpi-container" hx-swap="innerHTML"
-                class="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                class="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
             <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
             Refresh
         </button>
@@ -249,7 +249,7 @@
     <div class="mb-2 flex justify-end">
         <button hx-get="/admin/network/monitoring/bandwidth"
                 hx-target="#monitoring-bandwidth-container" hx-swap="innerHTML"
-                class="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                class="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
             <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
             Refresh
         </button>
@@ -470,7 +470,7 @@
             </select>
             <button type="submit" class="inline-flex items-center rounded-lg border border-primary-300 bg-primary-50 px-3 py-2 text-sm font-medium text-primary-700 hover:bg-primary-100 dark:border-primary-700 dark:bg-primary-900/20 dark:text-primary-300">Search</button>
             {% if query %}
-            <a href="/admin/network/monitoring" class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Clear</a>
+            <a href="/admin/network/monitoring" class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Clear</a>
             {% endif %}
         </form>
         {% if device_health %}
@@ -608,11 +608,11 @@
             {% if device_health_pagination.total_pages > 1 %}
             <nav class="flex items-center gap-2" aria-label="Monitoring device pagination">
                 {% if device_health_pagination.has_prev %}
-                <a href="{{ request.url.include_query_params(page=device_health_pagination.page - 1, per_page=device_health_pagination.per_page) }}" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Previous</a>
+                <a href="{{ request.url.include_query_params(page=device_health_pagination.page - 1, per_page=device_health_pagination.per_page) }}" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Previous</a>
                 {% endif %}
                 <span class="px-2 text-sm text-slate-600 dark:text-slate-400">Page {{ device_health_pagination.page }} of {{ device_health_pagination.total_pages }}</span>
                 {% if device_health_pagination.has_next %}
-                <a href="{{ request.url.include_query_params(page=device_health_pagination.page + 1, per_page=device_health_pagination.per_page) }}" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Next</a>
+                <a href="{{ request.url.include_query_params(page=device_health_pagination.page + 1, per_page=device_health_pagination.per_page) }}" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Next</a>
                 {% endif %}
             </nav>
             {% endif %}

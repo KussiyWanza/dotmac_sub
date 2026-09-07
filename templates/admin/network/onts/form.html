@@ -13,7 +13,7 @@
             </nav>
             <h1 class="text-lg font-bold text-slate-900 dark:text-white">{{ ont.serial_number if ont else 'Add ONT' }}</h1>
         </div>
-        <a href="/admin/network/onts{{ ('/' ~ ont.id) if ont else '' }}" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
+        <a href="/admin/network/onts{{ ('/' ~ ont.id) if ont else '' }}" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
             Cancel
         </a>
     </div>
@@ -240,7 +240,7 @@
 
         {# Form Actions #}
         <div class="flex justify-end gap-2">
-            <a href="/admin/network/onts{{ ('/' ~ ont.id) if ont else '' }}" class="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
+            <a href="/admin/network/onts{{ ('/' ~ ont.id) if ont else '' }}" class="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
                 Cancel
             </a>
             <button type="submit" class="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">

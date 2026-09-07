@@ -217,7 +217,10 @@ def test_render_project_detail_vendor_delivery_respects_finance_scope(
 def test_render_project_forms(db_session, base_context, fiber_project):
     create_ctx = web_projects.build_project_form_context(db_session)
     create_ctx.update({"page_title": "New Project", "form_mode": "create"})
-    _render("admin/projects/project_form.html", base_context, create_ctx)
+    create_html = _render("admin/projects/project_form.html", base_context, create_ctx)
+    assert 'name="owner_person_id"' in create_html
+    assert 'name="project_manager_person_id"' in create_html
+    assert 'name="manager_person_id"' not in create_html
 
     edit_ctx = web_projects.build_project_form_context(
         db_session, project=fiber_project
@@ -225,6 +228,7 @@ def test_render_project_forms(db_session, base_context, fiber_project):
     edit_ctx.update({"page_title": "Edit Project", "form_mode": "edit"})
     html = _render("admin/projects/project_form.html", base_context, edit_ctx)
     assert "Fiber install render" in html
+    assert 'name="manager_person_id"' not in html
     assert 'data-typeahead-url="/admin/projects/customers/search"' in html
     assert 'name="subscriber_id"' in html
     assert str(fiber_project.subscriber_id) in html

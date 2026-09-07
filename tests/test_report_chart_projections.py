@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from typing import NoReturn
 
@@ -65,6 +66,25 @@ def test_revenue_chart_distinguishes_zero_value_observation_from_no_observation(
     present = project(1)
     assert present.is_present
     assert present.series[0].values == (0.0, 0.0)
+
+
+def test_revenue_report_uses_compact_side_by_side_chart_and_payments() -> None:
+    source = Path("templates/admin/reports/revenue.html").read_text()
+
+    assert "data-revenue-overview-grid" in source
+    assert "lg:grid-cols-2" in source
+    assert "min_height=240" in source
+    assert "max-h-[288px] overflow-x-hidden overflow-y-auto" in source
+    assert "w-full table-fixed" in source
+    assert "{% call data_table() %}" not in source
+
+
+def test_admin_billing_revenue_trend_height_is_increased_by_twenty_percent() -> None:
+    source = Path("templates/admin/billing/index.html").read_text()
+
+    assert 'id="revenue-trend-chart"' in source
+    assert 'style="height: 187.2px;"' in source
+    assert 'style="height: 156px;"' not in source
 
 
 def test_network_charts_render_empty_inventory_and_configured_zero_use_pool(
@@ -145,6 +165,32 @@ def test_churn_chart_has_an_explicit_empty_state(
 
     assert result.churn_chart.is_empty
     assert "No cancellations" in str(result.churn_chart.message)
+
+
+def test_churn_report_uses_reduced_trend_chart_height() -> None:
+    source = Path("templates/admin/reports/churn.html").read_text()
+
+    assert '"churn-trend-chart"' in source
+    assert "min_height=168" in source
+    assert "min_height=280" not in source
+
+
+def test_churn_reasons_keep_labels_below_chart_without_duplicate_legend() -> None:
+    source = Path("templates/admin/reports/churn.html").read_text()
+
+    chart_position = source.index('id="churn-reasons-chart"')
+    breakdown_position = source.index("{% for reason, count in churn_reasons.items() %}")
+    assert chart_position < breakdown_position
+    assert "{ legend: { display: false } }" in source
+    assert "{ plugins: { legend: { display: false } } }" not in source
+
+
+def test_recent_cancellations_card_keeps_its_natural_height() -> None:
+    source = Path("templates/admin/reports/churn.html").read_text()
+
+    assert "grid grid-cols-1 items-start gap-6 lg:grid-cols-2" in source
+    assert "recent_cancellations | length > 10" not in source
+    assert "max-height: 520px" not in source
 
 
 def test_revenue_category_query_failure_is_unavailable_not_empty(
@@ -273,3 +319,13 @@ def test_report_chart_macro_always_renders_a_visible_state() -> None:
     assert 'data-report-chart-state="present"' in present_html
     assert 'id="test-chart"' in present_html
     assert "chartWouldInitialize" in present_html
+
+
+def test_technician_secondary_cards_use_compact_independent_heights() -> None:
+    template = Path("templates/admin/reports/technician.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "grid grid-cols-1 items-start gap-6 lg:grid-cols-2" in template
+    assert 'chart-container mb-3" style="min-height: 160px;' in template
+    assert "justify-between border-b border-slate-100 py-1" in template

@@ -30,6 +30,53 @@ class TicketSlaExportQuery:
     open_only: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class TicketSlaViolationPageQuery:
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    open_only: bool = False
+    page: int = 1
+    per_page: int = 15
+
+
+@dataclass(frozen=True, slots=True)
+class TicketSlaViolationRecord:
+    ticket_id: str
+    ticket_reference: str
+    ticket_url: str
+    title: str
+    status: str
+    priority: str
+    region: str
+    service_team_id: str | None
+    service_team: str
+    assignee_person_id: str | None
+    assignee: str
+    sla_status: str
+    started_at: datetime
+    due_at: datetime
+    breached_at: datetime
+    breach_minutes: int
+    breach_duration: str
+
+
+@dataclass(frozen=True, slots=True)
+class TicketSlaViolationPage:
+    rows: tuple[TicketSlaViolationRecord, ...]
+    page: int
+    per_page: int
+    total_count: int
+    total_pages: int
+
+    @property
+    def has_previous(self) -> bool:
+        return self.page > 1
+
+    @property
+    def has_next(self) -> bool:
+        return self.page < self.total_pages
+
+
 def _as_aware_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -301,6 +348,90 @@ def violation_records(
             }
         )
     return records
+
+
+def violation_page(
+    db: Session, *, query: TicketSlaViolationPageQuery
+) -> TicketSlaViolationPage:
+    """Return one bounded page of ticket SLA breaches for the admin queue."""
+
+    base = (
+        db.query(SlaBreach, SlaClock, Ticket, ServiceTeam, SystemUser)
+        .join(SlaClock, SlaClock.id == SlaBreach.clock_id)
+        .join(Ticket, Ticket.id == SlaClock.entity_id)
+        .outerjoin(ServiceTeam, ServiceTeam.id == Ticket.service_team_id)
+        .outerjoin(SystemUser, SystemUser.id == Ticket.assigned_to_person_id)
+        .filter(SlaClock.entity_type == WorkflowEntityType.ticket.value)
+        .filter(Ticket.is_active.is_(True))
+    )
+    if query.start_at:
+        base = base.filter(SlaBreach.breached_at >= query.start_at)
+    if query.end_at:
+        base = base.filter(SlaBreach.breached_at <= query.end_at)
+    if query.open_only:
+        base = base.filter(SlaBreach.status != SlaBreachStatus.resolved.value)
+
+    per_page = max(int(query.per_page), 1)
+    total_count = int(base.count())
+    total_pages = max(1, (total_count + per_page - 1) // per_page)
+    page = min(max(int(query.page), 1), total_pages)
+    raw_rows = (
+        base.order_by(SlaBreach.breached_at.desc(), SlaBreach.created_at.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+        .all()
+    )
+    records: list[TicketSlaViolationRecord] = []
+    for breach, clock, ticket, team, assignee in raw_rows:
+        ended_at = (
+            clock.completed_at
+            if breach.status == SlaBreachStatus.resolved.value
+            else None
+        )
+        minutes = _duration_minutes(breach.breached_at, ended_at)
+        reference = ticket.number or str(ticket.id)
+        assignee_name = (
+            assignee.display_name
+            or " ".join(
+                part for part in [assignee.first_name, assignee.last_name] if part
+            ).strip()
+            if assignee
+            else ""
+        )
+        records.append(
+            TicketSlaViolationRecord(
+                ticket_id=str(ticket.id),
+                ticket_reference=reference,
+                ticket_url=f"/admin/support/tickets/{reference}",
+                title=ticket.title,
+                status=ticket.status,
+                priority=ticket.priority,
+                region=ticket.region or "Unassigned",
+                service_team_id=(
+                    str(ticket.service_team_id) if ticket.service_team_id else None
+                ),
+                service_team=team.name if team else "Unassigned",
+                assignee_person_id=(
+                    str(ticket.assigned_to_person_id)
+                    if ticket.assigned_to_person_id
+                    else None
+                ),
+                assignee=assignee_name or "Unassigned",
+                sla_status=breach.status,
+                started_at=clock.started_at,
+                due_at=clock.due_at,
+                breached_at=breach.breached_at,
+                breach_minutes=minutes,
+                breach_duration=_duration_label(minutes),
+            )
+        )
+    return TicketSlaViolationPage(
+        rows=tuple(records),
+        page=page,
+        per_page=per_page,
+        total_count=total_count,
+        total_pages=total_pages,
+    )
 
 
 def build_violation_export_csv(db: Session, query: TicketSlaExportQuery) -> str:

@@ -2,129 +2,16 @@
 
 from __future__ import annotations
 
-import logging
-from collections import Counter
-from typing import TypedDict
-
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.services import crm_api, crm_reporting
+from app.services import crm_reporting
 from app.services.auth_dependencies import require_permission
 from app.web.templates import templates
 
 router = APIRouter(tags=["web-admin-customer-retention"])
-logger = logging.getLogger(__name__)
-
-
-def _float_value(value: object) -> float:
-    if value is None:
-        return 0.0
-    if isinstance(value, str):
-        return float(value or 0)
-    if isinstance(value, (int, float)):
-        return float(value)
-    return float(str(value or 0))
-
-
-class RetentionRow(TypedDict):
-    customer_id: str
-    name: str
-    phone: str
-    email: str
-    status: str
-    location: str
-    plan: str
-    balance: float
-    next_bill_date: str
-    billing_start_date: str
-    blocked_date: str
-    risk_segment: str
-    recommended_action: str
-
-
-def _risk_segment(row: dict[str, object]) -> str:
-    if str(row.get("blocked_date") or "").strip():
-        return "Suspended"
-    if _float_value(row.get("balance")) > 0:
-        return "Due Soon"
-    return "Active"
-
-
-def _recommended_action(segment: str, balance: float) -> str:
-    if segment == "Suspended":
-        return "Review the blocked account and confirm restore conditions."
-    if balance >= 50000:
-        return "Prioritize the account for billing follow-up."
-    return "Review billing position and keep the account under observation."
-
-
-def _normalize_rows(raw_rows: list[dict[str, object]]) -> list[RetentionRow]:
-    rows: list[RetentionRow] = []
-    for raw in raw_rows:
-        balance = _float_value(raw.get("balance"))
-        segment = _risk_segment(raw)
-        if segment == "Active":
-            continue
-        customer_id = str(raw.get("id") or "").strip()
-        if not customer_id:
-            continue
-        rows.append(
-            {
-                "customer_id": customer_id,
-                "name": str(raw.get("name") or "Unknown customer"),
-                "phone": str(raw.get("phone") or ""),
-                "email": str(raw.get("email") or ""),
-                "status": str(raw.get("status") or "Unknown"),
-                "location": str(raw.get("location") or "Unknown location"),
-                "plan": str(raw.get("service_plan") or "N/A"),
-                "balance": balance,
-                "next_bill_date": str(raw.get("next_bill_date") or ""),
-                "billing_start_date": str(raw.get("billing_start_date") or ""),
-                "blocked_date": str(raw.get("blocked_date") or ""),
-                "risk_segment": segment,
-                "recommended_action": _recommended_action(segment, balance),
-            }
-        )
-    rows.sort(
-        key=lambda row: (
-            0 if row["risk_segment"] == "Suspended" else 1,
-            -row["balance"],
-            row["name"].casefold(),
-        )
-    )
-    return rows
-
-
-def _load_rows(db: Session, search: str | None) -> list[RetentionRow]:
-    try:
-        raw_rows, _total = crm_api.billing_risk_rows(db, page=1, per_page=10000)
-    except Exception as exc:
-        logger.warning(
-            "customer_retention_billing_risk_unavailable",
-            extra={"error_type": type(exc).__name__},
-        )
-        return []
-    rows = _normalize_rows(raw_rows)
-    term = str(search or "").strip().casefold()
-    if not term:
-        return rows
-    return [
-        row
-        for row in rows
-        if any(
-            term in value.casefold()
-            for value in (
-                row["customer_id"],
-                row["name"],
-                row["phone"],
-                row["email"],
-                row["location"],
-            )
-        )
-    ]
 
 
 def _base_context(request: Request, db: Session, active_page: str) -> dict[str, object]:
@@ -147,27 +34,42 @@ def _base_context(request: Request, db: Session, active_page: str) -> dict[str, 
 def customer_retention_tracker(
     request: Request,
     search: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    rows = _load_rows(db, search)
-    segments = Counter(row["risk_segment"] for row in rows)
-    total = len(rows)
+    report_page = crm_reporting.get_customer_retention_page(
+        db=db,
+        query=crm_reporting.CustomerRetentionPageQuery(search=search, page=page),
+    )
+    rows = report_page.rows
+    segment_counts = (
+        ("Suspended", report_page.suspended_count),
+        ("Due Soon", report_page.due_soon_count),
+    )
+    total = report_page.tracked_count
     segment_breakdown = [
         {
             "segment": segment,
             "count": count,
             "share_pct": round((count / total) * 100, 1) if total else 0,
         }
-        for segment, count in segments.most_common()
+        for segment, count in segment_counts
+        if count
     ]
     context = _base_context(request, db, "customer-retention")
     context.update(
         {
             "rows": rows,
             "search": search or "",
-            "tracked_count": total,
-            "revenue_at_risk": round(sum(row["balance"] for row in rows), 2),
+            "tracked_count": report_page.tracked_count,
+            "revenue_at_risk": report_page.revenue_at_risk,
             "segment_breakdown": segment_breakdown,
+            "page": report_page.page,
+            "per_page": report_page.per_page,
+            "total_pages": report_page.total_pages,
+            "total_count": report_page.total_count,
+            "has_previous": report_page.has_previous,
+            "has_next": report_page.has_next,
             "crm_state_unavailable": True,
         }
     )
@@ -204,8 +106,13 @@ def customer_retention_profile(
     request: Request,
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    rows = _load_rows(db, customer_id)
-    customer = next((row for row in rows if row["customer_id"] == customer_id), None)
+    report_page = crm_reporting.get_customer_retention_page(
+        db=db,
+        query=crm_reporting.CustomerRetentionPageQuery(search=customer_id),
+    )
+    customer = next(
+        (row for row in report_page.rows if row.customer_id == customer_id), None
+    )
     context = _base_context(request, db, "customer-retention")
     context.update(
         {

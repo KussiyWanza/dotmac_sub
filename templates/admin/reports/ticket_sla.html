@@ -48,7 +48,7 @@
         {{ stats_card("SLA Clocks", summary.total_clocks | default(0), icon='<svg class="h-5 w-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3M5 11h14M5 19h14a2 2 0 002-2v-6H3v6a2 2 0 002 2z"/></svg>', color="teal", color2="cyan") }}
         {{ stats_card("Breaches", summary.total_breaches | default(0), icon='<svg class="h-5 w-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M4.93 19h14.14c1.54 0 2.5-1.67 1.73-3L13.73 4c-.77-1.33-2.69-1.33-3.46 0L3.2 16c-.77 1.33.19 3 1.73 3z"/></svg>', color="red", color2="rose") }}
         {{ stats_card("Breach Rate", ("%.1f" | format((summary.breach_rate | default(0)) * 100)) ~ "%", icon='<svg class="h-5 w-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z"/></svg>', color="amber", color2="orange") }}
-        {{ stats_card("Listed Breaches", violations | length, icon='<svg class="h-5 w-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5h6m-7 4h8m-9 4h10m-8 4h6"/></svg>', color="blue", color2="indigo") }}
+        {{ stats_card("Listed Breaches", violation_page.total_count, icon='<svg class="h-5 w-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5h6m-7 4h8m-9 4h10m-8 4h6"/></svg>', color="blue", color2="indigo") }}
     </div>
 
     {# ── On-demand AI insight for this report ─────────────────── #}
@@ -112,8 +112,17 @@
 
     {% call card("SLA Breach Queue", color="teal", padding=False) %}
     {% if violations %}
-    <div class="overflow-x-auto">
-        <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
+    <div class="hidden lg:block">
+        <table class="w-full table-fixed divide-y divide-slate-200 dark:divide-slate-700">
+            <colgroup>
+                <col class="w-[19%]">
+                <col class="w-[10%]">
+                <col class="w-[16%]">
+                <col class="w-[14%]">
+                <col class="w-[15%]">
+                <col class="w-[15%]">
+                <col class="w-[11%]">
+            </colgroup>
             {{ table_head([
                 {"label": "Ticket"},
                 {"label": "Status"},
@@ -126,27 +135,60 @@
             <tbody class="divide-y divide-slate-100 bg-white dark:divide-slate-700/50 dark:bg-slate-800">
                 {% for row in violations %}
                 {% call table_row(color="teal") %}
-                <td class="px-6 py-4">
-                    <a href="{{ row.ticket_url }}" class="text-sm font-semibold text-teal-700 hover:text-teal-900 dark:text-teal-300 dark:hover:text-teal-100">{{ row.ticket_reference }}</a>
-                    <p class="mt-1 max-w-xs truncate text-xs text-slate-500 dark:text-slate-400">{{ row.title }}</p>
+                <td class="px-3 py-3">
+                    <a href="{{ row.ticket_url }}" class="text-xs font-semibold text-teal-700 hover:text-teal-900 dark:text-teal-300 dark:hover:text-teal-100">{{ row.ticket_reference }}</a>
+                    <p class="mt-1 truncate text-xs text-slate-500 dark:text-slate-400" title="{{ row.title }}">{{ row.title }}</p>
                 </td>
-                <td class="whitespace-nowrap px-6 py-4">
+                <td class="px-3 py-3">
                     {{ status_badge(row.status | replace('_', ' ') | title, row.status if row.status in ['open', 'pending', 'closed', 'canceled'] else 'default', size="sm") }}
                 </td>
-                <td class="whitespace-nowrap px-6 py-4 text-sm text-slate-700 dark:text-slate-300">{{ row.service_team }}</td>
-                <td class="whitespace-nowrap px-6 py-4 text-sm text-slate-700 dark:text-slate-300">{{ row.assignee }}</td>
-                <td class="whitespace-nowrap px-6 py-4 text-xs text-slate-500 dark:text-slate-400">{{ row.due_at | app_datetime('%Y-%m-%d %H:%M', '-') }}</td>
-                <td class="whitespace-nowrap px-6 py-4 text-xs text-slate-500 dark:text-slate-400">{{ row.breached_at | app_datetime('%Y-%m-%d %H:%M', '-') }}</td>
-                <td class="whitespace-nowrap px-6 py-4 text-sm font-semibold text-red-700 dark:text-red-300">{{ row.breach_duration }}</td>
+                <td class="break-words px-3 py-3 text-xs text-slate-700 dark:text-slate-300">{{ row.service_team }}</td>
+                <td class="break-words px-3 py-3 text-xs text-slate-700 dark:text-slate-300">{{ row.assignee }}</td>
+                <td class="break-words px-3 py-3 text-xs leading-5 text-slate-500 dark:text-slate-400">{{ row.due_at | app_datetime('%Y-%m-%d %H:%M', '-') }}</td>
+                <td class="break-words px-3 py-3 text-xs leading-5 text-slate-500 dark:text-slate-400">{{ row.breached_at | app_datetime('%Y-%m-%d %H:%M', '-') }}</td>
+                <td class="break-words px-3 py-3 text-xs font-semibold text-red-700 dark:text-red-300">{{ row.breach_duration }}</td>
                 {% endcall %}
                 {% endfor %}
             </tbody>
         </table>
     </div>
+    <div class="divide-y divide-slate-200 dark:divide-slate-700 lg:hidden">
+        {% for row in violations %}
+        <article class="space-y-3 px-4 py-4">
+            <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                    <a href="{{ row.ticket_url }}" class="text-sm font-semibold text-teal-700 hover:text-teal-900 dark:text-teal-300 dark:hover:text-teal-100">{{ row.ticket_reference }}</a>
+                    <p class="mt-1 truncate text-xs text-slate-500 dark:text-slate-400" title="{{ row.title }}">{{ row.title }}</p>
+                </div>
+                {{ status_badge(row.status | replace('_', ' ') | title, row.status if row.status in ['open', 'pending', 'closed', 'canceled'] else 'default', size="sm") }}
+            </div>
+            <dl class="grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
+                <div><dt class="font-medium text-slate-500 dark:text-slate-400">Team</dt><dd class="mt-1 break-words text-slate-700 dark:text-slate-200">{{ row.service_team }}</dd></div>
+                <div><dt class="font-medium text-slate-500 dark:text-slate-400">Assignee</dt><dd class="mt-1 break-words text-slate-700 dark:text-slate-200">{{ row.assignee }}</dd></div>
+                <div><dt class="font-medium text-slate-500 dark:text-slate-400">Due</dt><dd class="mt-1 text-slate-700 dark:text-slate-200">{{ row.due_at | app_datetime('%Y-%m-%d %H:%M', '-') }}</dd></div>
+                <div><dt class="font-medium text-slate-500 dark:text-slate-400">Breached</dt><dd class="mt-1 text-slate-700 dark:text-slate-200">{{ row.breached_at | app_datetime('%Y-%m-%d %H:%M', '-') }}</dd></div>
+            </dl>
+            <p class="text-xs font-semibold text-red-700 dark:text-red-300">Over target: {{ row.breach_duration }}</p>
+        </article>
+        {% endfor %}
+    </div>
     {% else %}
     <div class="px-6 py-8 text-center text-sm text-slate-500 dark:text-slate-400">No SLA breaches found for this filter.</div>
     {% endif %}
     {% endcall %}
+
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <p class="text-sm text-slate-500 dark:text-slate-400">
+            {% if violation_page.total_count %}Showing {{ ((violation_page.page - 1) * violation_page.per_page) + 1 }}–{{ [violation_page.page * violation_page.per_page, violation_page.total_count] | min }} of {{ violation_page.total_count }} breaches{% else %}No breaches to display{% endif %}
+        </p>
+        {% if violation_page.total_pages > 1 %}
+        <nav class="flex items-center justify-end gap-2" aria-label="SLA breach queue pages">
+            {% if violation_page.has_previous %}<a href="?date_from={{ date_from }}&date_to={{ date_to }}&open_only={{ 'true' if open_only else 'false' }}&page={{ violation_page.page - 1 }}" class="inline-flex h-10 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">Previous</a>{% endif %}
+            <span class="px-2 text-sm text-slate-500 dark:text-slate-400">Page {{ violation_page.page }} of {{ violation_page.total_pages }}</span>
+            {% if violation_page.has_next %}<a href="?date_from={{ date_from }}&date_to={{ date_to }}&open_only={{ 'true' if open_only else 'false' }}&page={{ violation_page.page + 1 }}" class="inline-flex h-10 items-center justify-center rounded-xl bg-teal-600 px-4 text-sm font-semibold text-white hover:bg-teal-700">Next</a>{% endif %}
+        </nav>
+        {% endif %}
+    </div>
 </div>
 
 {{ animation_styles() }}

@@ -90,7 +90,7 @@ log("Provision script executed for device");</pre>
 
         <div class="flex justify-end gap-4">
             <a href="/admin/network/tr069/provisions{% if selected_server_id %}?acs_server_id={{ selected_server_id }}{% endif %}"
-                class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300">Cancel</a>
+                class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 dark:border-slate-600 dark:text-slate-300">Cancel</a>
             <button type="submit" class="rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700">
                 {% if is_edit %}Update Provision{% else %}Create Provision{% endif %}
             </button>

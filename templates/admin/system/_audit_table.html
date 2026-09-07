@@ -62,13 +62,13 @@
         <button hx-get="/admin/system/audit?page={{ page - 1 }}&per_page={{ per_page }}"
                 hx-target="#audit-table"
                 hx-include="#audit-filters [name]"
-                class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Previous</button>
+                class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Previous</button>
         {% endif %}
         {% if page < total_pages %}
         <button hx-get="/admin/system/audit?page={{ page + 1 }}&per_page={{ per_page }}"
                 hx-target="#audit-table"
                 hx-include="#audit-filters [name]"
-                class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Next</button>
+                class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Next</button>
         {% endif %}
     </div>
 </div>
