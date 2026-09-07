@@ -556,7 +556,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d postgres"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -739,7 +739,7 @@ jobs:
           docker run -d --name ci-db --network ci-net \
             -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
             -e POSTGRES_DB=dotmac_sub_ci \
-            --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d dotmac_sub_ci" --health-interval 5s \
+            --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d postgres" --health-interval 5s \
             --health-retries 10 postgis/postgis:16-3.4
           docker run -d --name ci-redis --network ci-net redis:7
           for i in $(seq 1 30); do
@@ -751,7 +751,7 @@ jobs:
           # an opaque "database connection or role operation failed", naming
           # migrations for a fault that was service startup. Readiness is a
           # precondition of this step, so prove it here and fail loudly.
-          if [ "$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' ci-db)" != "healthy" ] || ! docker exec ci-db pg_isready -h 127.0.0.1 -U postgres -d dotmac_sub_ci >/dev/null 2>&1; then
+          if [ "$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' ci-db)" != "healthy" ] || ! docker exec ci-db pg_isready -h 127.0.0.1 -U postgres -d postgres >/dev/null 2>&1; then
             echo "::error::ci-db did not become ready within 60s"
             docker inspect --format='status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' ci-db || true
             docker logs ci-db || true
