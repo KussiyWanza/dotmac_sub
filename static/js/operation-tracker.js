@@ -64,14 +64,13 @@ class OperationTracker {
         }
 
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        // If no token provided, WebSocket will use session_token cookie automatically
-        let url = `${protocol}//${window.location.host}/ws/inbox`;
-        if (this.token) {
-            url += `?token=${encodeURIComponent(this.token)}`;
-        }
+        // Same-origin sessions use their HttpOnly cookie. API tokens travel in
+        // the WebSocket subprotocol header, never in a logged request URL.
+        const url = `${protocol}//${window.location.host}/ws/inbox`;
+        const protocols = this.token ? ['dotmac-auth', this.token] : [];
 
         try {
-            this.ws = new WebSocket(url);
+            this.ws = protocols.length ? new WebSocket(url, protocols) : new WebSocket(url);
             this._setupEventHandlers();
         } catch (error) {
             console.error('[OperationTracker] Connection error:', error);

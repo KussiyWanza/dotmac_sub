@@ -200,7 +200,7 @@ exit 0
         "REPO_DIR": str(repo_root),
         "DEPLOY_LOCK_FILE": str(tmp_path / "deploy.lock"),
         "DEPLOY_BACKUP_MODE": "skip_staging",
-        "IMAGE_RETAIN_COUNT": "0",
+        "IMAGE_RETAIN_COUNT": "5",
         "HEALTH_TIMEOUT_SECONDS": "0" if not health_success else "180",
         "CANDIDATE_DRAIN_SECONDS": "0",
         "BACKGROUND_RUNTIME_TIMEOUT_SECONDS": "0",

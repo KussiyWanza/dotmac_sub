@@ -1,10 +1,41 @@
 import json
 import logging
 import logging.config
+import re
 import sys
 from datetime import UTC, datetime
+from typing import Any
 
 _BASE_LOG_RECORD_FIELDS = set(logging.makeLogRecord({}).__dict__.keys())
+_SENSITIVE_QUERY_VALUE = re.compile(
+    r"([?&](?:token|access_token|refresh_token|visitor_token)=)[^&\s\"']+",
+    re.IGNORECASE,
+)
+
+
+def redact_sensitive_query_values(value: str) -> str:
+    """Redact URL query credentials before a record reaches any formatter."""
+
+    return _SENSITIVE_QUERY_VALUE.sub(r"\1<redacted>", value)
+
+
+def _redact_log_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_sensitive_query_values(value)
+    if isinstance(value, tuple):
+        return tuple(_redact_log_value(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _redact_log_value(item) for key, item in value.items()}
+    return value
+
+
+class SensitiveQueryFilter(logging.Filter):
+    """Protect proxy/server request-line logs that contain query credentials."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = _redact_log_value(record.msg)
+        record.args = _redact_log_value(record.args)
+        return True
 
 
 class StderrStreamHandler(logging.StreamHandler):
@@ -79,6 +110,11 @@ def configure_logging() -> None:
     logging_config = {
         "version": 1,
         "disable_existing_loggers": False,
+        "filters": {
+            "sensitive_query": {
+                "()": SensitiveQueryFilter,
+            }
+        },
         "formatters": {
             "json": {
                 "()": JsonLogFormatter,
@@ -91,6 +127,7 @@ def configure_logging() -> None:
                 # pytest caused an "I/O operation on closed file" cascade.
                 "()": StderrStreamHandler,
                 "formatter": "json",
+                "filters": ["sensitive_query"],
             }
         },
         "root": {"handlers": ["default"], "level": "INFO"},

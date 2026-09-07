@@ -89,17 +89,17 @@
                 <div class="mt-4 grid gap-4 sm:grid-cols-2">
                     <div>
                         <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">New Password</label>
-                        <input type="password" name="new_password"
+                        <input type="password" name="new_password" id="new_password" minlength="8" autocomplete="new-password"
                                class="block w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Confirm Password</label>
-                        <input type="password" name="confirm_password"
+                        <input type="password" name="confirm_password" id="confirm_password" minlength="8" autocomplete="new-password"
                                class="block w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                     </div>
                 </div>
                 <div class="mt-3 flex items-center gap-2">
-                    <input type="checkbox" name="require_password_change" id="require_password_change" checked
+                    <input type="checkbox" name="require_password_change" id="require_password_change"
                            class="h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700">
                     <label for="require_password_change" class="text-sm text-slate-700 dark:text-slate-300">Require password change on next login</label>
                 </div>

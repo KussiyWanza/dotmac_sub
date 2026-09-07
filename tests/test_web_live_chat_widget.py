@@ -55,6 +55,8 @@ def test_live_chat_js_handles_reconnect_subscription_and_pending_identity() -> N
     assert "payload.from_customer" in js
     assert 'if (ev.key === "Escape")' in js
     assert 'document.addEventListener("keydown", trapFocus)' in js
+    assert '["dotmac-auth", state.session.visitor_token]' in js
+    assert 'ws_url + "?token="' not in js
 
 
 def test_live_chat_css_covers_contrast_pending_and_safe_area_states() -> None:
@@ -87,6 +89,8 @@ def test_public_fiber_widget_uses_native_team_inbox_contract() -> None:
     assert "session.api_base + path" in js
     assert "session.ws_url" in js
     assert "crm.dotmac.io" not in js
+    assert '["dotmac-auth", session.visitor_token]' in js
+    assert 'ws_url) + "?token="' not in js
 
 
 def test_public_fiber_widget_websocket_is_origin_scoped() -> None:

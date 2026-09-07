@@ -11,7 +11,7 @@ from app.services.realtime_subscriptions import (
     RealtimeSubscriptionError,
     authorize_topic,
 )
-from app.websocket.auth import authenticate_websocket
+from app.websocket.auth import accepted_auth_subprotocol, authenticate_websocket
 from app.websocket.events import (
     EventType,
     InboundMessage,
@@ -36,7 +36,7 @@ async def inbox_websocket(websocket: WebSocket):
     - typing: Broadcast typing indicator
     - ping: Keep-alive ping
     """
-    await websocket.accept()
+    await websocket.accept(subprotocol=accepted_auth_subprotocol(websocket))
 
     # Authenticate
     auth_result = await authenticate_websocket(websocket)
