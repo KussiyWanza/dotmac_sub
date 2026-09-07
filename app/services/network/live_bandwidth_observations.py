@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SAMPLE_FRESHNESS_SECONDS = 120
 DEFAULT_STREAM_INTERVAL_SECONDS = 1.0
+DEFAULT_EXTERNAL_REFRESH_SECONDS = 5.0
+DEFAULT_EXTERNAL_TIMEOUT_SECONDS = 2.0
 DIRECT_PROBE_LOCK_SECONDS = 300
 
 
@@ -118,6 +120,26 @@ class LiveBandwidthStreamQuery:
     subscription_id: UUID
     sample_freshness_seconds: int = DEFAULT_SAMPLE_FRESHNESS_SECONDS
     interval_seconds: float = DEFAULT_STREAM_INTERVAL_SECONDS
+    refresh_interval_seconds: float = DEFAULT_EXTERNAL_REFRESH_SECONDS
+    external_timeout_seconds: float = DEFAULT_EXTERNAL_TIMEOUT_SECONDS
+
+    def __post_init__(self) -> None:
+        if self.sample_freshness_seconds < 1:
+            raise ValueError("sample_freshness_seconds must be positive")
+        if self.interval_seconds <= 0:
+            raise ValueError("interval_seconds must be positive")
+        if self.refresh_interval_seconds <= 0:
+            raise ValueError("refresh_interval_seconds must be positive")
+        if self.external_timeout_seconds <= 0:
+            raise ValueError("external_timeout_seconds must be positive")
+
+
+@dataclass(frozen=True)
+class _StreamReading:
+    rx_bps: float
+    tx_bps: float
+    observed_at: datetime
+    source: LiveBandwidthSource
 
 
 class LiveBandwidthProbeObservation(BaseModel):
@@ -244,12 +266,39 @@ def probe_live_bandwidth(
         _release_direct_probe(client, target.device_id, token)
 
 
+def _latest_postgres_reading(
+    subscription_id: UUID,
+    cutoff: datetime,
+) -> _StreamReading | None:
+    """Read one recent sample in a worker thread, never on the ASGI event loop."""
+
+    with db_session_adapter.read_session() as sse_db:
+        latest = (
+            sse_db.query(BandwidthSample)
+            .filter(
+                BandwidthSample.subscription_id == subscription_id,
+                BandwidthSample.sample_at >= cutoff,
+            )
+            .order_by(BandwidthSample.sample_at.desc())
+            .first()
+        )
+        if latest is None:
+            return None
+        return _StreamReading(
+            rx_bps=float(latest.rx_bps or 0),
+            tx_bps=float(latest.tx_bps or 0),
+            observed_at=latest.sample_at,
+            source=LiveBandwidthSource.POSTGRES_SAMPLE,
+        )
+
+
 async def live_bandwidth_events(
     query: LiveBandwidthStreamQuery,
     *,
     is_disconnected: Callable[[], Awaitable[bool]],
 ) -> AsyncIterator[dict[str, str]]:
-    """Yield owner-resolved observations and refresh poller demand evidence."""
+    """Yield bounded, cached observations without blocking the ASGI event loop."""
+
     metrics_store = get_metrics_store()
     redis_client: async_redis.Redis | None = None
     try:
@@ -259,77 +308,91 @@ async def live_bandwidth_events(
             "active_viewer_redis_init_failed error_type=%s", type(exc).__name__
         )
 
+    last_good: _StreamReading | None = None
+    next_refresh_at = 0.0
     try:
         while not await is_disconnected():
-            if redis_client is not None:
-                try:
-                    await redis_client.zadd(
-                        settings.bandwidth_active_viewers_key,
-                        {str(query.subscription_id): time.time()},
-                    )
-                except Exception as exc:
-                    logger.debug(
-                        "active_viewer_heartbeat_failed error_type=%s",
-                        type(exc).__name__,
-                    )
+            now = datetime.now(UTC)
+            cutoff = now - timedelta(seconds=query.sample_freshness_seconds)
+            reading = (
+                last_good
+                if last_good is not None and last_good.observed_at >= cutoff
+                else None
+            )
+            refresh_due = time.monotonic() >= next_refresh_at
 
-            current: dict[str, float] = {"rx_bps": 0.0, "tx_bps": 0.0}
-            has_sample = False
-            source = LiveBandwidthSource.UNAVAILABLE
-            observed_at = datetime.now(UTC)
-            try:
-                observation = await metrics_store.get_current_bandwidth_observation(
-                    str(query.subscription_id)
-                )
-                current = {
-                    "rx_bps": observation.rx_bps,
-                    "tx_bps": observation.tx_bps,
-                }
-                observed_at = observation.observed_at or observed_at
-                has_sample = bool(
-                    observation.has_sample
-                    and observation.observed_at is not None
-                    and observation.observed_at
-                    >= datetime.now(UTC)
-                    - timedelta(seconds=max(1, query.sample_freshness_seconds))
-                )
-                if has_sample:
-                    source = LiveBandwidthSource.VICTORIAMETRICS
-            except Exception as exc:
-                logger.debug(
-                    "live_bandwidth_metrics_query_failed error_type=%s",
-                    type(exc).__name__,
-                )
-
-            if not has_sample:
-                try:
-                    cutoff = datetime.now(UTC) - timedelta(
-                        seconds=max(1, query.sample_freshness_seconds)
-                    )
-                    with db_session_adapter.read_session() as sse_db:
-                        latest = (
-                            sse_db.query(BandwidthSample)
-                            .filter(
-                                BandwidthSample.subscription_id
-                                == query.subscription_id,
-                                BandwidthSample.sample_at >= cutoff,
-                            )
-                            .order_by(BandwidthSample.sample_at.desc())
-                            .first()
+            if refresh_due:
+                next_refresh_at = time.monotonic() + query.refresh_interval_seconds
+                if redis_client is not None:
+                    try:
+                        await asyncio.wait_for(
+                            redis_client.zadd(
+                                settings.bandwidth_active_viewers_key,
+                                {str(query.subscription_id): time.time()},
+                            ),
+                            timeout=query.external_timeout_seconds,
                         )
-                        if latest is not None:
-                            current = {
-                                "rx_bps": float(latest.rx_bps or 0),
-                                "tx_bps": float(latest.tx_bps or 0),
-                            }
-                            observed_at = latest.sample_at
-                            has_sample = True
-                            source = LiveBandwidthSource.POSTGRES_SAMPLE
+                    except Exception as exc:
+                        logger.debug(
+                            "active_viewer_heartbeat_failed error_type=%s",
+                            type(exc).__name__,
+                        )
+
+                candidate: _StreamReading | None = None
+                try:
+                    observation = await asyncio.wait_for(
+                        metrics_store.get_current_bandwidth_observation(
+                            str(query.subscription_id)
+                        ),
+                        timeout=query.external_timeout_seconds,
+                    )
+                    if (
+                        observation.has_sample
+                        and observation.observed_at is not None
+                        and observation.observed_at >= cutoff
+                    ):
+                        candidate = _StreamReading(
+                            rx_bps=observation.rx_bps,
+                            tx_bps=observation.tx_bps,
+                            observed_at=observation.observed_at,
+                            source=LiveBandwidthSource.VICTORIAMETRICS,
+                        )
                 except Exception as exc:
                     logger.debug(
-                        "live_bandwidth_db_fallback_failed error_type=%s",
+                        "live_bandwidth_metrics_query_failed error_type=%s",
                         type(exc).__name__,
                     )
+
+                if candidate is None:
+                    try:
+                        candidate = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                _latest_postgres_reading,
+                                query.subscription_id,
+                                cutoff,
+                            ),
+                            timeout=query.external_timeout_seconds,
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "live_bandwidth_db_fallback_failed error_type=%s",
+                            type(exc).__name__,
+                        )
+
+                if candidate is not None:
+                    last_good = candidate
+                    reading = candidate
+
+            if reading is None:
+                current = {"rx_bps": 0.0, "tx_bps": 0.0}
+                observed_at = now
+                source = LiveBandwidthSource.UNAVAILABLE
+                has_sample = False
+            else:
+                current = {"rx_bps": reading.rx_bps, "tx_bps": reading.tx_bps}
+                observed_at = reading.observed_at
+                source = reading.source
+                has_sample = True
 
             payload = live_event_payload(
                 current,
@@ -342,7 +405,10 @@ async def live_bandwidth_events(
     finally:
         if redis_client is not None:
             try:
-                await redis_client.aclose()
+                await asyncio.wait_for(
+                    redis_client.aclose(),
+                    timeout=query.external_timeout_seconds,
+                )
             except Exception as exc:
                 logger.debug(
                     "active_viewer_redis_cleanup_failed error_type=%s",
