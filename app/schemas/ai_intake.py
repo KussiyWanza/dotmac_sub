@@ -83,6 +83,73 @@ class AiIntakeCategory(StrEnum):
     unknown = "unknown"
 
 
+class AiIntakeMessageRole(StrEnum):
+    customer = "customer"
+    ai = "ai"
+    human_agent = "human_agent"
+
+
+class AiIntakeConnectivityState(StrEnum):
+    down = "down"
+    slow = "slow"
+    intermittent = "intermittent"
+    working = "working"
+    unknown = "unknown"
+
+
+class AiIntakeDeviceScope(StrEnum):
+    all_devices = "all_devices"
+    one_device = "one_device"
+    some_devices = "some_devices"
+    unknown = "unknown"
+
+
+class AiIntakeConnectionMedium(StrEnum):
+    wifi = "wifi"
+    ethernet = "ethernet"
+    both = "both"
+    unknown = "unknown"
+
+
+class AiIntakeConnectionPattern(StrEnum):
+    constant = "constant"
+    intermittent = "intermittent"
+    unknown = "unknown"
+
+
+class AiIntakeLosState(StrEnum):
+    red = "red"
+    not_red = "not_red"
+    off = "off"
+    unknown = "unknown"
+
+
+class AiIntakeAnswerStatus(StrEnum):
+    pending = "pending"
+    answered = "answered"
+    partially_answered = "partially_answered"
+    unclear = "unclear"
+    declined = "declined"
+    corrected = "corrected"
+
+
+class AiIntakeNextAction(StrEnum):
+    ask_question = "ask_question"
+    provide_guidance = "provide_guidance"
+    wait_for_customer = "wait_for_customer"
+    resolve = "resolve"
+    handoff = "handoff"
+
+
+class AiIntakeResponsePurpose(StrEnum):
+    acknowledgement_question = "acknowledgement_question"
+    clarification = "clarification"
+    guidance = "guidance"
+    status_update = "status_update"
+    resolution = "resolution"
+    handoff = "handoff"
+
+
 class AiIntakeStatus(StrEnum):
     skipped = "skipped"
     classifying = "classifying"
@@ -144,8 +211,34 @@ class AiIntakeReason(StrEnum):
 class AiIntakeContextMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    direction: str = Field(pattern="^(inbound|outbound)$")
+    role: AiIntakeMessageRole
     body: str = Field(min_length=1, max_length=1200)
+
+
+class AiIntakeExtractedFacts(BaseModel):
+    """Bounded customer-statement facts; never hidden reasoning."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    connectivity_state: AiIntakeConnectivityState = AiIntakeConnectivityState.unknown
+    issue_started_when: str | None = Field(default=None, max_length=80)
+    device_scope: AiIntakeDeviceScope = AiIntakeDeviceScope.unknown
+    connection_medium: AiIntakeConnectionMedium = AiIntakeConnectionMedium.unknown
+    connection_pattern: AiIntakeConnectionPattern = AiIntakeConnectionPattern.unknown
+    router_powered: StrictBool | None = None
+    restart_attempted: StrictBool | None = None
+    los_state: AiIntakeLosState = AiIntakeLosState.unknown
+    affected_location_or_service: str | None = Field(default=None, max_length=120)
+    speed_test_download_mbps: Annotated[
+        float | None, Field(default=None, strict=True, ge=0, le=100000)
+    ] = None
+    speed_test_upload_mbps: Annotated[
+        float | None, Field(default=None, strict=True, ge=0, le=100000)
+    ] = None
+    human_requested: StrictBool = False
+    portal_id: str | None = Field(default=None, max_length=32)
+    registered_email: str | None = Field(default=None, max_length=254)
+    registered_phone: str | None = Field(default=None, max_length=32)
 
 
 class AiIntakeRequest(BaseModel):
@@ -182,6 +275,9 @@ class AiProviderClassification(BaseModel):
     summary: str | None = Field(default=None, max_length=500)
     party_type: AiIntakePartyType = AiIntakePartyType.unknown
     party_type_confidence: Annotated[float, Field(strict=True, ge=0.0, le=1.0)] = 0.0
+    message_facts: AiIntakeExtractedFacts = Field(
+        default_factory=lambda: AiIntakeExtractedFacts()
+    )
 
     @model_validator(mode="after")
     def validate_follow_up_shape(self) -> AiProviderClassification:
@@ -203,6 +299,9 @@ class AiIntakeClassification(BaseModel):
     summary: str | None = Field(default=None, max_length=500)
     party_type: AiIntakePartyType = AiIntakePartyType.unknown
     party_type_confidence: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
+    message_facts: AiIntakeExtractedFacts = Field(
+        default_factory=lambda: AiIntakeExtractedFacts()
+    )
 
     @model_validator(mode="after")
     def validate_follow_up_shape(self) -> AiIntakeClassification:
@@ -224,6 +323,91 @@ class AiIntakeOutcome(BaseModel):
     provider: str | None = Field(default=None, max_length=80)
     model: str | None = Field(default=None, max_length=160)
     duration_ms: Annotated[int, Field(ge=0)] = 0
+
+
+class AiIntakeSafeCustomerIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    identified: bool = False
+    subscriber_status: str | None = Field(default=None, max_length=40)
+
+
+class AiIntakeRadiusContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    state: str | None = Field(default=None, max_length=40)
+    active_session_count: Annotated[int | None, Field(default=None, ge=0)]
+    observed_at: datetime | None = None
+
+
+class AiIntakeOntContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    effective_state: str | None = Field(default=None, max_length=40)
+
+
+class AiIntakeMonitoringContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: str | None = Field(default=None, max_length=40)
+    radius: AiIntakeRadiusContext | None = None
+    onts: tuple[AiIntakeOntContext, ...] = ()
+
+
+class AiIntakePlaybookStepContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    key: str | None = Field(default=None, max_length=120)
+    action: AiIntakeNextAction
+    approved_instruction: str = Field(min_length=1, max_length=800)
+
+
+class AiCustomerResponseCompositionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    intent: AiIntakeIntent
+    category: AiIntakeCategory
+    latest_customer_statement: str = Field(min_length=1, max_length=1200)
+    recent_messages: tuple[AiIntakeContextMessage, ...] = ()
+    facts: AiIntakeExtractedFacts
+    missing_fact_keys: tuple[str, ...] = ()
+    asked_question_keys: tuple[str, ...] = ()
+    troubleshooting_completed: tuple[str, ...] = ()
+    customer_identity: AiIntakeSafeCustomerIdentity
+    monitoring: AiIntakeMonitoringContext | None = None
+    playbook_step: AiIntakePlaybookStepContext
+    business_tone: str = Field(min_length=1, max_length=1000)
+    approved_isp_information: str | None = Field(default=None, max_length=4000)
+    issue_already_acknowledged: bool = False
+
+
+class AiProviderCustomerResponse(BaseModel):
+    """Untrusted composition output before backend policy validation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    response_text: str = Field(min_length=1, max_length=800)
+    purpose: AiIntakeResponsePurpose
+    follow_up_fact_key: str | None = Field(default=None, max_length=80)
+    acknowledges_issue: StrictBool = False
+
+
+class AiCustomerResponseCompositionOutcome(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    response_text: str = Field(min_length=1, max_length=800)
+    purpose: AiIntakeResponsePurpose
+    follow_up_fact_key: str | None = Field(default=None, max_length=80)
+    acknowledges_issue: bool = False
+    response_source: str = Field(pattern="^(model|playbook|template)$")
+    provider: str | None = Field(default=None, max_length=80)
+    model: str | None = Field(default=None, max_length=160)
+    endpoint: str | None = Field(default=None, max_length=20)
+    fallback_used: bool = False
+    tokens_in: Annotated[int | None, Field(default=None, ge=0)] = None
+    tokens_out: Annotated[int | None, Field(default=None, ge=0)] = None
+    duration_ms: Annotated[int, Field(ge=0)] = 0
+    safety_reason: str | None = Field(default=None, max_length=120)
 
 
 class DataCleaningEligibility(BaseModel):

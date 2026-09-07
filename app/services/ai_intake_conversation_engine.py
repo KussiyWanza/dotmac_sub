@@ -7,6 +7,7 @@ owner for routing, queueing, assignment, outbound delivery, and human takeover.
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -17,7 +18,11 @@ from sqlalchemy.orm import Session
 
 from app.models.ai_intake import AiIntakePolicyVersion, AiIntakeSession
 from app.models.team_inbox import InboxConversation
-from app.schemas.ai_intake import AiIntakeClassification
+from app.schemas.ai_intake import (
+    AiIntakeAnswerStatus,
+    AiIntakeClassification,
+    AiIntakeExtractedFacts,
+)
 from app.services.common import coerce_uuid
 from app.services.customer_identity_normalization import (
     normalize_email_identifier,
@@ -53,6 +58,12 @@ HUMAN_RE = re.compile(
     r"speak\s+(?:to|with)\s+someone|talk\s+(?:to|with)\s+someone)\b",
     re.I,
 )
+SPEED_TEST_RE = re.compile(
+    r"\b(?:(?P<down>\d+(?:\.\d+)?)\s*(?:mbps|mb/s)\s*(?:down(?:load)?)?)"
+    r"(?:\s*(?:and|,|/)\s*(?P<up>\d+(?:\.\d+)?)\s*(?:mbps|mb/s)\s*"
+    r"(?:up(?:load)?)?)?",
+    re.I,
+)
 APPROVED_HANDOFF_SUMMARY_VARIABLES = frozenset(
     {
         "customer",
@@ -79,6 +90,8 @@ SUPPORTED_RULE_CONDITIONS = frozenset(
         "field_present",
         "field_value",
         "monitoring_status",
+        "radius_status",
+        "ont_status",
         "tool_result",
         "turn_count",
         "human_requested",
@@ -147,6 +160,55 @@ class ToolDescriptor:
 
 
 @dataclass(slots=True)
+class QuestionState:
+    key: str
+    expected_fact: str
+    prompt: str
+    answer_status: AiIntakeAnswerStatus = AiIntakeAnswerStatus.pending
+    attempts: int = 1
+    asked_at: str | None = None
+    answered_at: str | None = None
+
+    @classmethod
+    def from_dict(cls, value: dict[str, object]) -> QuestionState | None:
+        key = str(value.get("key") or "").strip()
+        expected = str(value.get("expected_fact") or key).strip()
+        prompt = str(value.get("prompt") or "").strip()
+        if not key or not expected or not prompt:
+            return None
+        try:
+            answer_status = AiIntakeAnswerStatus(
+                str(value.get("answer_status") or AiIntakeAnswerStatus.pending.value)
+            )
+        except ValueError:
+            answer_status = AiIntakeAnswerStatus.unclear
+        try:
+            attempts = int(str(value.get("attempts") or 1))
+        except (TypeError, ValueError):
+            attempts = 1
+        return cls(
+            key=key,
+            expected_fact=expected,
+            prompt=prompt,
+            answer_status=answer_status,
+            attempts=max(1, min(attempts, 2)),
+            asked_at=_text_or_none(value.get("asked_at")),
+            answered_at=_text_or_none(value.get("answered_at")),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "key": self.key,
+            "expected_fact": self.expected_fact,
+            "prompt": self.prompt,
+            "answer_status": self.answer_status.value,
+            "attempts": self.attempts,
+            "asked_at": self.asked_at,
+            "answered_at": self.answered_at,
+        }
+
+
+@dataclass(slots=True)
 class ConversationalState:
     conversation_id: str
     session_id: str
@@ -180,6 +242,9 @@ class ConversationalState:
     start_time: str | None = None
     turn_count: int = 0
     clarification_count: int = 0
+    question_history: list[QuestionState] = field(default_factory=list)
+    acknowledged_issue_key: str | None = None
+    last_response_source: str | None = None
 
     @classmethod
     def load(
@@ -190,6 +255,11 @@ class ConversationalState:
     ) -> ConversationalState:
         raw = dict(session.metadata_ or {}).get(STATE_KEY)
         if isinstance(raw, dict):
+            question_history = [
+                parsed
+                for item in _dict_list(raw.get("question_history"))
+                if (parsed := QuestionState.from_dict(item)) is not None
+            ]
             return cls(
                 conversation_id=str(raw.get("conversation_id") or conversation.id),
                 session_id=str(raw.get("session_id") or session.id),
@@ -239,6 +309,9 @@ class ConversationalState:
                 start_time=_text_or_none(raw.get("start_time")),
                 turn_count=int(raw.get("turn_count") or 0),
                 clarification_count=int(raw.get("clarification_count") or 0),
+                question_history=question_history,
+                acknowledged_issue_key=_text_or_none(raw.get("acknowledged_issue_key")),
+                last_response_source=_text_or_none(raw.get("last_response_source")),
             )
         return cls(
             conversation_id=str(conversation.id),
@@ -286,6 +359,11 @@ class ConversationalState:
             "start_time": self.start_time,
             "turn_count": self.turn_count,
             "clarification_count": self.clarification_count,
+            "question_history": [
+                question.to_dict() for question in self.question_history[-12:]
+            ],
+            "acknowledged_issue_key": self.acknowledged_issue_key,
+            "last_response_source": self.last_response_source,
         }
 
 
@@ -344,14 +422,21 @@ def run_conversational_turn(
     tool_mode: str = "live_read_only",
 ) -> ConversationEngineDecision:
     state = ConversationalState.load(conversation=conversation, session=session)
-    policy = _policy(version)
+    policy = _policy(version, channel=conversation.channel_type)
     now = now or datetime.now(UTC)
     state.turn_count += 1
     _append_statement(state, latest_body)
-    _merge_contact_from_conversation(state, conversation, db)
     facts = extract_facts(latest_body)
     _merge_facts(state, facts)
     _merge_classification(state, classification)
+    latest_facts = dict(facts)
+    if classification is not None:
+        latest_facts.update(
+            _meaningful_understanding_facts(classification.message_facts)
+        )
+    _link_latest_answer(
+        state, latest_body=latest_body, latest_facts=latest_facts, now=now
+    )
 
     if state.current_intent != state.previous_intent and state.previous_intent:
         _record_event(session, "intent_changed", now, state=state)
@@ -367,16 +452,7 @@ def run_conversational_turn(
             ),
         )
 
-    if session.expires_at is not None and session.expires_at <= now:
-        return _handoff_decision(
-            policy,
-            state,
-            reason="timeout",
-            response=_handoff_response(
-                policy,
-                default="I will pass this to the support team so they can continue.",
-            ),
-        )
+    _merge_contact_from_conversation(state, conversation, db)
 
     _identify_customer(
         db,
@@ -402,7 +478,12 @@ def run_conversational_turn(
                 action="respond",
                 state=state,
                 response_text=_identifier_retry_question(requested),
-                metadata={"reason": "identifier_reply_missing_value"},
+                metadata={
+                    "reason": "identifier_reply_missing_value",
+                    "question_key": requested,
+                    "next_action": "ask_question",
+                    "response_source": "template",
+                },
             )
         return _handoff_decision(
             policy,
@@ -428,7 +509,12 @@ def run_conversational_turn(
                 action="respond",
                 state=state,
                 response_text=_identifier_question(requested_identifier),
-                metadata={"reason": "missing_customer_identifier"},
+                metadata={
+                    "reason": "missing_customer_identifier",
+                    "question_key": requested_identifier,
+                    "next_action": "ask_question",
+                    "response_source": "template",
+                },
             )
         return _handoff_decision(
             policy,
@@ -444,7 +530,7 @@ def run_conversational_turn(
         )
 
     if _should_run_monitoring(state, policy):
-        result = execute_tool(
+        result, latency_ms = _execute_timed_tool(
             db,
             "subscriber_monitoring",
             {"subscriber_id": state.subscriber_id},
@@ -452,8 +538,14 @@ def run_conversational_turn(
             conversation=conversation,
             tool_mode=tool_mode,
         )
-        _record_tool_result(state, "subscriber_monitoring", result)
-        if result["status"] == "unavailable":
+        _record_tool_result(
+            state, "subscriber_monitoring", result, latency_ms=latency_ms
+        )
+        if result["status"] == "unavailable" and _tool_failure_requires_handoff(
+            policy,
+            tool_key="subscriber_monitoring",
+            status="unavailable",
+        ):
             return _handoff_decision(
                 policy,
                 state,
@@ -466,7 +558,11 @@ def run_conversational_turn(
                     ),
                 ),
             )
-        if result["status"] == "unauthorized":
+        if result["status"] == "unauthorized" and _tool_failure_requires_handoff(
+            policy,
+            tool_key="subscriber_monitoring",
+            status="unauthorized",
+        ):
             return _handoff_decision(
                 policy,
                 state,
@@ -498,23 +594,25 @@ def run_conversational_turn(
         return rule_decision
 
     if _technical_issue(state) and _monitoring_offline(state):
-        if "los_status" not in state.already_requested_fields:
-            state.already_requested_fields = _with_unique(
-                state.already_requested_fields, "los_status"
-            )
-            state.troubleshooting_completed = _with_unique(
-                state.troubleshooting_completed, "monitoring_checked"
-            )
-            return ConversationEngineDecision(
-                action="respond",
-                state=state,
-                response_text=(
-                    "Your connection is currently appearing offline from our side. "
-                    "Is the router or ONU powered on, and are you seeing any red "
-                    "warning light?"
-                ),
-                metadata={"reason": "troubleshooting_los_check"},
-            )
+        state.troubleshooting_completed = _with_unique(
+            state.troubleshooting_completed, "monitoring_checked"
+        )
+
+    follow_up = _next_useful_question(state, policy, now=now)
+    if follow_up is not None:
+        return ConversationEngineDecision(
+            action="respond",
+            state=state,
+            response_text=follow_up.prompt,
+            metadata={
+                "reason": "useful_missing_fact",
+                "question_key": follow_up.key,
+                "expected_fact": follow_up.expected_fact,
+                "answer_status": follow_up.answer_status.value,
+                "next_action": "ask_question",
+                "response_source": "template",
+            },
+        )
 
     if _should_handoff_after_classification(state, policy):
         return _handoff_decision(
@@ -527,10 +625,38 @@ def run_conversational_turn(
             ),
         )
 
-    return ConversationEngineDecision(
-        action="continue_classifier",
-        state=state,
-        metadata={"reason": "legacy_classifier_path"},
+    if state.classification_requires_follow_up:
+        question = _record_question(
+            state,
+            key="intent_clarification",
+            expected_fact="intent",
+            prompt=(
+                state.classification_follow_up_question
+                or "Could you briefly tell me what you need help with?"
+            ),
+            now=now,
+        )
+        return ConversationEngineDecision(
+            action="respond",
+            state=state,
+            response_text=question.prompt,
+            metadata={
+                "reason": "classifier_clarification",
+                "question_key": question.key,
+                "expected_fact": question.expected_fact,
+                "next_action": "ask_question",
+                "response_source": "template",
+            },
+        )
+
+    return _handoff_decision(
+        policy,
+        state,
+        reason="unsupported_or_troubleshooting_exhausted",
+        response=_handoff_response(
+            policy,
+            default="I will pass the details I have collected to the support team.",
+        ),
     )
 
 
@@ -547,7 +673,7 @@ def render_handoff_summary(
     channel: str,
     destination_team_name: str | None = None,
 ) -> str:
-    policy = _policy(version)
+    policy = _policy(version, channel=channel)
     handoff_policy = _dict(policy.get("handoff"))
     template = str(handoff_policy.get("summary_template") or "").strip()
     values = _summary_values(
@@ -599,8 +725,34 @@ def extract_facts(text: str) -> dict[str, object]:
         for item in ("not browsing", "internet is down", "no internet", "not working")
     ):
         facts["connectivity_problem"] = True
+        facts["connectivity_state"] = "down"
     if "slow" in lowered:
         facts["slow_internet"] = True
+        facts["connectivity_problem"] = False
+        facts["connectivity_state"] = "slow"
+    if any(
+        item in lowered for item in ("intermittent", "keeps dropping", "on and off")
+    ):
+        facts["connection_pattern"] = "intermittent"
+        facts["connectivity_state"] = "intermittent"
+    elif any(item in lowered for item in ("all the time", "constantly", "constant")):
+        facts["connection_pattern"] = "constant"
+    if any(
+        item in lowered for item in ("all devices", "every device", "all my devices")
+    ):
+        facts["device_scope"] = "all_devices"
+    elif any(
+        item in lowered for item in ("one device", "only my phone", "only my laptop")
+    ):
+        facts["device_scope"] = "one_device"
+    has_wifi = "wi-fi" in lowered or "wifi" in lowered or "wireless" in lowered
+    has_ethernet = any(item in lowered for item in ("ethernet", "wired", "cable"))
+    if has_wifi and has_ethernet:
+        facts["connection_medium"] = "both"
+    elif has_wifi:
+        facts["connection_medium"] = "wifi"
+    elif has_ethernet:
+        facts["connection_medium"] = "ethernet"
     if any(
         item in lowered
         for item in (
@@ -628,9 +780,12 @@ def extract_facts(text: str) -> dict[str, object]:
         facts["organization_account"] = True
     if "restart" in lowered or "reboot" in lowered:
         facts["router_restarted"] = True
+        facts["restart_attempted"] = True
     outage_context = OUTAGE_CONTEXT_RE.search(value)
     if outage_context:
-        facts["outage_context"] = outage_context.group(0).strip()[:80]
+        issue_started_when = outage_context.group(0).strip()[:80]
+        facts["outage_context"] = issue_started_when
+        facts["issue_started_when"] = issue_started_when
     if (
         "router is on" in lowered
         or "router on" in lowered
@@ -640,10 +795,36 @@ def extract_facts(text: str) -> dict[str, object]:
     ):
         facts["router_powered"] = True
     if "los" in lowered and "red" in lowered:
-        facts["los_red"] = True
+        if any(item in lowered for item in ("not red", "isn't red", "is not red")):
+            facts["los_red"] = False
+            facts["los_state"] = "not_red"
+        else:
+            facts["los_red"] = True
+            facts["los_state"] = "red"
+    if any(item in lowered for item in ("router is off", "router off", "not powered")):
+        facts["router_powered"] = False
+    speed = SPEED_TEST_RE.search(value)
+    if speed:
+        facts["speed_test_download_mbps"] = float(speed.group("down"))
+        if speed.group("up"):
+            facts["speed_test_upload_mbps"] = float(speed.group("up"))
     if "actually" in lowered and "slow" in lowered and "works" in lowered:
         facts["connectivity_problem"] = False
+        facts["slow_internet"] = True
+        facts["connectivity_state"] = "slow"
     return facts
+
+
+def _meaningful_understanding_facts(
+    facts: AiIntakeExtractedFacts,
+) -> dict[str, object]:
+    values = facts.model_dump(mode="json", exclude_none=True)
+    meaningful: dict[str, object] = {}
+    for key, value in values.items():
+        if value in {"unknown", ""} or (key == "human_requested" and value is False):
+            continue
+        meaningful[key] = value
+    return meaningful
 
 
 def execute_tool(
@@ -672,6 +853,27 @@ def execute_tool(
     if key == "subscriber_monitoring":
         return _subscriber_monitoring(db, inputs)
     return {"status": "unavailable", "reason": "tool_not_implemented"}
+
+
+def _execute_timed_tool(
+    db: Session,
+    key: str,
+    inputs: dict[str, object],
+    *,
+    policy: dict[str, object],
+    conversation: InboxConversation | None = None,
+    tool_mode: str = "live_read_only",
+) -> tuple[dict[str, object], int]:
+    started = time.perf_counter()
+    result = execute_tool(
+        db,
+        key,
+        inputs,
+        policy=policy,
+        conversation=conversation,
+        tool_mode=tool_mode,
+    )
+    return result, max(0, int((time.perf_counter() - started) * 1000))
 
 
 def _simulated_tool_result(key: str, inputs: dict[str, object]) -> dict[str, object]:
@@ -792,12 +994,48 @@ def _subscriber_monitoring(db: Session, inputs: dict[str, object]) -> dict[str, 
     return result
 
 
-def _policy(version: AiIntakePolicyVersion | None) -> dict[str, object]:
+def _policy(
+    version: AiIntakePolicyVersion | None, *, channel: str | None = None
+) -> dict[str, object]:
     metadata = dict(version.metadata_ or {}) if version is not None else {}
     policy = dict(metadata.get("conversation_policy") or {})
     conversation_templates = _dict(metadata.get("conversation_templates"))
     standard_handoff = str(conversation_templates.get("standard_handoff") or "").strip()
     policy["tools"] = metadata.get("tools") or policy.get("tools") or {}
+    policy["intent_definitions"] = (
+        (version.intent_definitions if version is not None else None)
+        or metadata.get("intent_definitions")
+        or policy.get("intent_definitions")
+        or []
+    )
+    policy["business_tone"] = str(
+        (version.business_tone if version is not None else None)
+        or metadata.get("business_tone")
+        or policy.get("business_tone")
+        or ""
+    ).strip()
+    policy["approved_isp_information"] = str(
+        (version.approved_isp_information if version is not None else None)
+        or metadata.get("approved_isp_information")
+        or policy.get("approved_isp_information")
+        or ""
+    ).strip()
+    for key in PLAYBOOK_POLICY_KEYS:
+        if key not in policy and isinstance(metadata.get(key), list):
+            policy[key] = metadata[key]
+    if channel:
+        overrides = _dict(metadata.get("channel_overrides"))
+        channel_override = _dict(overrides.get(channel))
+        for key in (
+            "business_tone",
+            "approved_isp_information",
+            "troubleshooting_rules",
+            "playbooks",
+            "first_line_playbooks",
+            "handoff",
+        ):
+            if key in channel_override:
+                policy[key] = channel_override[key]
     policy["permitted_identifiers"] = (
         metadata.get("permitted_identifiers")
         or policy.get("permitted_identifiers")
@@ -874,9 +1112,20 @@ def _merge_facts(state: ConversationalState, facts: dict[str, object]) -> None:
         elif key == "portal_id" and value:
             state.portal_id = str(value)
         elif key == "human_requested":
-            state.human_requested = bool(value)
+            if value:
+                state.human_requested = True
         else:
             state.collected_facts[key] = value
+    connectivity_state = str(facts.get("connectivity_state") or "")
+    if connectivity_state == "working":
+        state.collected_facts["connectivity_problem"] = False
+        state.collected_facts["slow_internet"] = False
+    elif connectivity_state == "slow":
+        state.collected_facts["connectivity_problem"] = False
+        state.collected_facts["slow_internet"] = True
+    elif connectivity_state == "down":
+        state.collected_facts["connectivity_problem"] = True
+        state.collected_facts["slow_internet"] = False
 
 
 def _merge_classification(
@@ -887,11 +1136,227 @@ def _merge_classification(
     next_intent = classification.intent.value
     if state.current_intent and state.current_intent != next_intent:
         state.previous_intent = state.current_intent
+    next_category = classification.category.value
+    issue_changed = bool(
+        (state.current_intent and state.current_intent != next_intent)
+        or (state.category and state.category != next_category)
+    )
     state.current_intent = next_intent
-    state.category = classification.category.value
+    state.category = next_category
+    if issue_changed:
+        state.acknowledged_issue_key = None
     state.confidence = classification.confidence
     state.classification_requires_follow_up = classification.requires_follow_up
     state.classification_follow_up_question = classification.follow_up_question
+    _merge_facts(state, _meaningful_understanding_facts(classification.message_facts))
+
+
+QUESTION_PROMPTS: dict[str, str] = {
+    "issue_started_when": "When did the problem start?",
+    "device_scope": "Is the issue affecting every device or only one device?",
+    "connection_medium": (
+        "Is the issue the same over Wi-Fi and a wired Ethernet connection?"
+    ),
+    "connection_pattern": "Is the issue constant, or does it come and go?",
+    "router_powered": "Is your router or ONU powered on right now?",
+    "restart_attempted": "Have you restarted the router since the issue began?",
+    "los_state": "Is the LOS light on the ONU red, off, or not showing red?",
+}
+
+
+def _canonical_fact_key(field: str) -> str:
+    return {
+        "outage_context": "issue_started_when",
+        "los_status": "los_state",
+        "router_restarted": "restart_attempted",
+    }.get(field, field)
+
+
+def _fact_is_known(state: ConversationalState, field: str) -> bool:
+    key = _canonical_fact_key(field)
+    if key in {"portal_id", "registered_email", "registered_phone"}:
+        return bool(getattr(state, key))
+    value = state.collected_facts.get(key)
+    return value not in (None, "", "unknown")
+
+
+def _link_latest_answer(
+    state: ConversationalState,
+    *,
+    latest_body: str,
+    latest_facts: dict[str, object],
+    now: datetime,
+) -> None:
+    pending = next(
+        (
+            question
+            for question in reversed(state.question_history)
+            if question.answer_status
+            in {AiIntakeAnswerStatus.pending, AiIntakeAnswerStatus.unclear}
+        ),
+        None,
+    )
+    if pending is None:
+        return
+    expected = _canonical_fact_key(pending.expected_fact)
+    if _fact_is_known(state, expected) and (
+        expected in latest_facts
+        or pending.expected_fact in latest_facts
+        or expected in _meaningful_latest_model_fact_keys(state, expected)
+    ):
+        pending.answer_status = (
+            AiIntakeAnswerStatus.corrected
+            if "actually" in latest_body.lower()
+            else AiIntakeAnswerStatus.answered
+        )
+        pending.answered_at = now.isoformat()
+        state.missing_facts = [
+            item
+            for item in state.missing_facts
+            if _canonical_fact_key(item) != expected
+        ]
+        return
+    lowered = latest_body.strip().lower()
+    if any(
+        phrase in lowered
+        for phrase in ("don't know", "do not know", "not sure", "no idea")
+    ):
+        pending.answer_status = AiIntakeAnswerStatus.unclear
+    elif any(
+        phrase in lowered
+        for phrase in ("rather not", "prefer not", "won't say", "will not say")
+    ):
+        pending.answer_status = AiIntakeAnswerStatus.declined
+        pending.answered_at = now.isoformat()
+    else:
+        pending.answer_status = AiIntakeAnswerStatus.partially_answered
+
+
+def _meaningful_latest_model_fact_keys(
+    state: ConversationalState, expected: str
+) -> set[str]:
+    # The merged state is authoritative; this hook deliberately does not infer
+    # that an unrelated sentence answered the pending question.
+    return {expected} if expected == "intent" and bool(state.current_intent) else set()
+
+
+def _record_question(
+    state: ConversationalState,
+    *,
+    key: str,
+    expected_fact: str,
+    prompt: str,
+    now: datetime,
+) -> QuestionState:
+    existing = next(
+        (item for item in reversed(state.question_history) if item.key == key), None
+    )
+    if existing is not None:
+        existing.attempts = min(2, existing.attempts + 1)
+        existing.answer_status = AiIntakeAnswerStatus.pending
+        existing.asked_at = now.isoformat()
+        existing.prompt = prompt
+        return existing
+    question = QuestionState(
+        key=key,
+        expected_fact=expected_fact,
+        prompt=prompt,
+        asked_at=now.isoformat(),
+    )
+    state.question_history.append(question)
+    state.already_requested_fields = _with_unique(
+        state.already_requested_fields, expected_fact
+    )
+    state.missing_facts = _with_unique(state.missing_facts, expected_fact)
+    state.clarification_count += 1
+    return question
+
+
+def _required_question_keys(
+    state: ConversationalState, policy: dict[str, object]
+) -> tuple[str, ...]:
+    configured: list[str] = []
+    for raw in _list(policy.get("intent_definitions")):
+        definition = _dict(raw)
+        if str(definition.get("intent") or definition.get("key") or "") != str(
+            state.current_intent or ""
+        ):
+            continue
+        for item in _list(definition.get("required_fields")):
+            key = _canonical_fact_key(str(item).strip())
+            if key in QUESTION_PROMPTS and key not in configured:
+                configured.append(key)
+    if configured:
+        return tuple(configured)
+    if not _technical_issue(state):
+        return ()
+    if _monitoring_offline(state):
+        return ("router_powered", "los_state", "issue_started_when", "device_scope")
+    connectivity = str(state.collected_facts.get("connectivity_state") or "")
+    if connectivity == "slow" or state.collected_facts.get("slow_internet"):
+        return (
+            "device_scope",
+            "issue_started_when",
+            "connection_medium",
+            "connection_pattern",
+        )
+    if connectivity == "intermittent":
+        return ("issue_started_when", "device_scope", "connection_medium")
+    return ("issue_started_when", "device_scope", "router_powered", "los_state")
+
+
+def _next_useful_question(
+    state: ConversationalState, policy: dict[str, object], *, now: datetime
+) -> QuestionState | None:
+    pending = next(
+        (
+            question
+            for question in reversed(state.question_history)
+            if question.answer_status
+            in {
+                AiIntakeAnswerStatus.pending,
+                AiIntakeAnswerStatus.unclear,
+                AiIntakeAnswerStatus.partially_answered,
+            }
+        ),
+        None,
+    )
+    if pending is not None and not _fact_is_known(state, pending.expected_fact):
+        if pending.attempts < 2 and pending.answer_status in {
+            AiIntakeAnswerStatus.unclear,
+            AiIntakeAnswerStatus.partially_answered,
+        }:
+            prompt = "No problem. " + QUESTION_PROMPTS.get(
+                pending.expected_fact, pending.prompt
+            )
+            return _record_question(
+                state,
+                key=pending.key,
+                expected_fact=pending.expected_fact,
+                prompt=prompt,
+                now=now,
+            )
+        if pending.answer_status is AiIntakeAnswerStatus.pending:
+            return pending
+    for fact_key in _required_question_keys(state, policy):
+        if _fact_is_known(state, fact_key):
+            continue
+        prior = next(
+            (item for item in reversed(state.question_history) if item.key == fact_key),
+            None,
+        )
+        if prior is not None and (
+            prior.attempts >= 2 or prior.answer_status is AiIntakeAnswerStatus.declined
+        ):
+            continue
+        return _record_question(
+            state,
+            key=fact_key,
+            expected_fact=fact_key,
+            prompt=QUESTION_PROMPTS[fact_key],
+            now=now,
+        )
+    return None
 
 
 def _identify_customer(
@@ -908,7 +1373,7 @@ def _identify_customer(
         value = _identifier_value(state, identifier_type)
         if not value:
             continue
-        result = execute_tool(
+        result, latency_ms = _execute_timed_tool(
             db,
             "customer_lookup",
             {
@@ -920,7 +1385,7 @@ def _identify_customer(
             conversation=conversation,
             tool_mode=tool_mode,
         )
-        _record_tool_result(state, "customer_lookup", result)
+        _record_tool_result(state, "customer_lookup", result, latency_ms=latency_ms)
         if result.get("status") == "found":
             state.subscriber_id = str(result["subscriber_id"])
             state.service_account_identity = {
@@ -934,7 +1399,11 @@ def _identify_customer(
 
 
 def _record_tool_result(
-    state: ConversationalState, key: str, result: dict[str, object]
+    state: ConversationalState,
+    key: str,
+    result: dict[str, object],
+    *,
+    latency_ms: int | None = None,
 ) -> None:
     result_payload: dict[str, object] = {
         item_key: item_value
@@ -946,11 +1415,12 @@ def _record_tool_result(
         "status": result.get("status"),
         "at": datetime.now(UTC).isoformat(),
         "result": result_payload,
+        "latency_ms": latency_ms,
     }
     state.tool_executions.append(entry)
     if result.get("status") in {"unavailable", "unauthorized"}:
         state.tool_errors.append(entry)
-    if key == "subscriber_monitoring" and result.get("status") == "available":
+    if key == "subscriber_monitoring":
         state.monitoring_results.append(result_payload)
 
 
@@ -1043,7 +1513,9 @@ def _should_run_monitoring(
         item.get("tool") == "subscriber_monitoring" for item in state.tool_executions
     ):
         return False
-    return _tool_enabled(policy, "subscriber_monitoring")
+    return _tool_enabled_for_intent(
+        policy, "subscriber_monitoring", state.current_intent
+    )
 
 
 def _technical_issue(state: ConversationalState) -> bool:
@@ -1083,6 +1555,8 @@ def _configured_playbook_decision(
                 tool_key = str(raw_step.get("tool") or "").strip()
                 if not tool_key:
                     continue
+                if not _tool_enabled_for_intent(policy, tool_key, state.current_intent):
+                    continue
                 if any(item.get("tool") == tool_key for item in state.tool_executions):
                     continue
                 inputs: dict[str, object] = {}
@@ -1090,7 +1564,7 @@ def _configured_playbook_decision(
                     if not state.subscriber_id:
                         continue
                     inputs["subscriber_id"] = state.subscriber_id
-                result = execute_tool(
+                result, latency_ms = _execute_timed_tool(
                     db,
                     tool_key,
                     inputs,
@@ -1098,7 +1572,7 @@ def _configured_playbook_decision(
                     conversation=conversation,
                     tool_mode=tool_mode,
                 )
-                _record_tool_result(state, tool_key, result)
+                _record_tool_result(state, tool_key, result, latency_ms=latency_ms)
                 continue
             if action in {"respond", "provide_guidance"}:
                 step_key = _playbook_step_key(playbook_key, index, raw_step)
@@ -1119,6 +1593,8 @@ def _configured_playbook_decision(
                                 raw_step.get("reason") or "playbook_guidance"
                             ),
                             "playbook": playbook_key,
+                            "next_action": "provide_guidance",
+                            "response_source": "playbook",
                         },
                     )
             if action == "request_field":
@@ -1127,37 +1603,54 @@ def _configured_playbook_decision(
                     continue
                 if _field_value(state, field) not in (None, "", False):
                     continue
-                if field in state.already_requested_fields:
-                    return None
-                state.missing_facts = _with_unique(state.missing_facts, field)
-                state.already_requested_fields = _with_unique(
-                    state.already_requested_fields,
-                    field,
+                if _fact_is_known(state, field):
+                    continue
+                prior = next(
+                    (
+                        item
+                        for item in reversed(state.question_history)
+                        if item.key == field
+                    ),
+                    None,
                 )
-                state.clarification_count += 1
+                if prior is not None and prior.attempts >= 2:
+                    return None
                 response = str(raw_step.get("response") or _field_question(field))
+                question = _record_question(
+                    state,
+                    key=field,
+                    expected_fact=_canonical_fact_key(field),
+                    prompt=_playbook_response(playbook, state, response),
+                    now=datetime.now(UTC),
+                )
                 return ConversationEngineDecision(
                     action="respond",
                     state=state,
-                    response_text=_playbook_response(playbook, state, response),
+                    response_text=question.prompt,
                     metadata={
                         "reason": str(
                             raw_step.get("reason") or "playbook_required_field"
                         ),
                         "playbook": playbook_key,
+                        "question_key": question.key,
+                        "expected_fact": question.expected_fact,
+                        "next_action": "ask_question",
+                        "response_source": "playbook",
                     },
                 )
             if action == "mark_resolved":
                 state.resolution_status = "resolved"
                 response = str(raw_step.get("response") or "").strip()
                 return ConversationEngineDecision(
-                    action="respond",
+                    action="resolved",
                     state=state,
                     response_text=response
                     or "Thanks. I have recorded this as resolved from the details provided.",
                     metadata={
                         "reason": str(raw_step.get("reason") or "playbook_resolved"),
                         "playbook": playbook_key,
+                        "next_action": "resolve",
+                        "response_source": "playbook",
                     },
                 )
             if action == "handoff":
@@ -1279,6 +1772,8 @@ def _configured_troubleshooting_decision(
             tool_key = str(raw.get("tool") or "").strip()
             if not tool_key:
                 continue
+            if not _tool_enabled_for_intent(policy, tool_key, state.current_intent):
+                continue
             if any(item.get("tool") == tool_key for item in state.tool_executions):
                 continue
             inputs: dict[str, object] = {}
@@ -1286,7 +1781,7 @@ def _configured_troubleshooting_decision(
                 if not state.subscriber_id:
                     continue
                 inputs["subscriber_id"] = state.subscriber_id
-            result = execute_tool(
+            result, latency_ms = _execute_timed_tool(
                 db,
                 tool_key,
                 inputs,
@@ -1294,7 +1789,7 @@ def _configured_troubleshooting_decision(
                 conversation=conversation,
                 tool_mode=tool_mode,
             )
-            _record_tool_result(state, tool_key, result)
+            _record_tool_result(state, tool_key, result, latency_ms=latency_ms)
             continue
         if action in {"respond", "provide_guidance"}:
             response = str(raw.get("response") or "").strip()
@@ -1303,31 +1798,48 @@ def _configured_troubleshooting_decision(
                     action="respond",
                     state=state,
                     response_text=response[:800],
-                    metadata={"reason": "troubleshooting_guidance"},
+                    metadata={
+                        "reason": "troubleshooting_guidance",
+                        "next_action": "provide_guidance",
+                        "response_source": "playbook",
+                    },
                 )
         if action == "request_field":
             field = str(raw.get("field") or raw.get("tool") or "").strip()
-            if field and field not in state.already_requested_fields:
-                state.missing_facts = _with_unique(state.missing_facts, field)
-                state.already_requested_fields = _with_unique(
-                    state.already_requested_fields, field
+            if field and not _fact_is_known(state, field):
+                response = str(raw.get("response") or _field_question(field))
+                question = _record_question(
+                    state,
+                    key=field,
+                    expected_fact=_canonical_fact_key(field),
+                    prompt=response,
+                    now=datetime.now(UTC),
                 )
-                state.clarification_count += 1
                 return ConversationEngineDecision(
                     action="respond",
                     state=state,
-                    response_text=str(raw.get("response") or _field_question(field)),
-                    metadata={"reason": "troubleshooting_required_field"},
+                    response_text=question.prompt,
+                    metadata={
+                        "reason": "troubleshooting_required_field",
+                        "question_key": question.key,
+                        "expected_fact": question.expected_fact,
+                        "next_action": "ask_question",
+                        "response_source": "playbook",
+                    },
                 )
         if action == "mark_resolved":
             state.resolution_status = "resolved"
             response = str(raw.get("response") or "").strip()
             return ConversationEngineDecision(
-                action="respond",
+                action="resolved",
                 state=state,
                 response_text=response
                 or "Thanks. I have recorded this as resolved from the details provided.",
-                metadata={"reason": "troubleshooting_resolved"},
+                metadata={
+                    "reason": "troubleshooting_resolved",
+                    "next_action": "resolve",
+                    "response_source": "playbook",
+                },
             )
         if action == "handoff":
             return _handoff_decision(
@@ -1386,11 +1898,26 @@ def _condition_matches(
     if condition_type == "monitoring_status":
         latest = state.monitoring_results[-1] if state.monitoring_results else {}
         return _compare_value(
-            latest.get("service_state"),
+            str(latest.get("status") or "") or None,
             {
                 **condition,
                 "value": condition.get("value", condition.get("monitoring_status")),
             },
+        )
+    if condition_type == "radius_status":
+        latest = state.monitoring_results[-1] if state.monitoring_results else {}
+        radius = latest.get("radius_observation")
+        radius_state = (
+            str(radius.get("state") or "") if isinstance(radius, dict) else ""
+        )
+        return _compare_value(radius_state or None, condition)
+    if condition_type == "ont_status":
+        latest = state.monitoring_results[-1] if state.monitoring_results else {}
+        onts = latest.get("ont_observations")
+        return isinstance(onts, list) and any(
+            _compare_value(str(item.get("effective_state") or "") or None, condition)
+            for item in onts
+            if isinstance(item, dict)
         )
     if condition_type == "tool_result":
         tool = str(condition.get("tool") or "").strip()
@@ -1507,12 +2034,21 @@ def _summary_values(
     latest_monitoring = state.monitoring_results[-1] if state.monitoring_results else {}
     monitoring = ""
     if latest_monitoring:
+        radius = _dict(latest_monitoring.get("radius_observation"))
+        ont_states = sorted(
+            {
+                str(item.get("effective_state") or "").strip()
+                for item in _list(latest_monitoring.get("ont_observations"))
+                if isinstance(item, Mapping)
+                and str(item.get("effective_state") or "").strip()
+            }
+        )
         monitoring = "; ".join(
             f"{key}={value}"
             for key, value in (
                 ("status", latest_monitoring.get("status")),
-                ("service_state", latest_monitoring.get("service_state")),
-                ("radius_online", latest_monitoring.get("radius_online")),
+                ("radius_state", radius.get("state")),
+                ("ont_states", ",".join(ont_states) if ont_states else None),
             )
             if value is not None
         )
@@ -1696,6 +2232,35 @@ def _tool_enabled(policy: dict[str, object], key: str) -> bool:
     if isinstance(tools, list):
         return key in tools
     return False
+
+
+def _tool_enabled_for_intent(
+    policy: dict[str, object], key: str, intent: str | None
+) -> bool:
+    if not _tool_enabled(policy, key):
+        return False
+    for raw in _list(policy.get("intent_definitions")):
+        definition = _dict(raw)
+        definition_intent = str(
+            definition.get("intent") or definition.get("key") or ""
+        ).strip()
+        if definition_intent != str(intent or ""):
+            continue
+        allowed = [str(item).strip() for item in _list(definition.get("allowed_tools"))]
+        return not allowed or key in allowed
+    return True
+
+
+def _tool_failure_requires_handoff(
+    policy: Mapping[str, object], *, tool_key: str, status: str
+) -> bool:
+    configured = policy.get("tool_failure_handoff_statuses")
+    if not isinstance(configured, Mapping):
+        return False
+    raw_statuses = configured.get(tool_key)
+    if not isinstance(raw_statuses, list | tuple):
+        return False
+    return status in {str(item).strip() for item in raw_statuses if str(item).strip()}
 
 
 def _append_statement(state: ConversationalState, text: str) -> None:

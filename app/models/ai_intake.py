@@ -208,8 +208,8 @@ class AiIntakeSession(Base):
         CheckConstraint(
             "state IN ('eligible', 'welcome_pending', 'collecting_intent', "
             "'awaiting_customer', 'classified', 'handoff_requested', 'completed', "
-            "'stopped_human_takeover', 'fallback_escalated', 'expired', 'failed', "
-            "'ineligible')",
+            "'resolved', 'stopped_human_takeover', 'fallback_escalated', 'expired', "
+            "'failed', 'ineligible')",
             name="ck_ai_intake_sessions_state",
         ),
     )

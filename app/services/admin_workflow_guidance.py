@@ -344,8 +344,10 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         "Use search, lifecycle, assignment, channel, team, and activity filters to narrow the queue.",
         "Use All only when historical conversations should be included; use Active or a specific status for operational work.",
         "Open the conversation or linked ticket before acting, then return to the same filtered queue context.",
+        "On Channel routing, save and validate an AI intake draft before activation; review the exact channel scope, allowed tools, playbook, tone, follow-up limits, and long-term inactive-session expiry.",
         notes=(
             "Historical inbox views load bounded pages and may show that more results are available before an exact final total is known.",
+            "Awaiting-customer AI sessions remain resumable. Their long-term expiry ends AI ownership without assigning or queueing a human.",
             "In Manager AI, select a Conversation or use Period Review with a period and any channel or status filters, then submit your question with Ask AI.",
             "Read the response under Answer; emphasis and lists are formatted, while HTML-like text remains plain text. Verify AI advice against the source conversations before acting.",
         ),

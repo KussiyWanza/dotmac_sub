@@ -244,6 +244,7 @@ DOMAIN = DomainSOT(
                 "AI generation attempt evidence",
                 "customer-message intake eligibility policy",
                 "bounded customer-message intent classification",
+                "bounded customer-response composition",
                 "customer contact-data cleaning eligibility policy",
             ),
             depends_on=(
@@ -260,7 +261,10 @@ DOMAIN = DomainSOT(
                 "AiIntakeConfig remains the compatibility runtime policy source, "
                 "while AiIntakePolicyVersion snapshots customer-visible prompt "
                 "content for conversational intake. The owner classifies WhatsApp, "
-                "Facebook Messenger, and Instagram DM only, records session and "
+                "Facebook Messenger, Instagram DM, and scoped native Fiber, portal, "
+                "and mobile chat widgets. Widget intake begins from the first "
+                "persisted visitor "
+                "message; the owner records session and "
                 "generation evidence, and returns validated destination-team "
                 "metadata. The composable conversation engine persists structured "
                 "operational facts only, never chain-of-thought, and can invoke "
@@ -272,7 +276,12 @@ DOMAIN = DomainSOT(
                 "decision contract; it does not own checkpoints, routing, queueing "
                 "or assignment. Data-cleaning eligibility reads only the exact linked "
                 "Subscriber and direct residential-customer facts; saving is owned "
-                "by customer.profile_commands."
+                "by customer.profile_commands. The existing gateway separately "
+                "composes customer wording for a backend-approved next action; a "
+                "typed validator rejects invented facts, unsafe promises, repeated "
+                "questions, and internal terminology. Customer inactivity remains "
+                "awaiting_customer until long-term expiry and never requests human "
+                "assignment by itself."
             ),
             contract=ServiceContract(
                 concerns=(
@@ -354,6 +363,7 @@ DOMAIN = DomainSOT(
                         input_names=(
                             "bounded redacted inbound message projection",
                             "observed provider classification response",
+                            "observed provider response composition",
                         ),
                         canonical_writer="ai.intake",
                     ),
@@ -373,6 +383,16 @@ DOMAIN = DomainSOT(
                             "enabled matching AI intake configuration",
                             "bounded redacted inbound message projection",
                             "observed provider classification response",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="bounded customer-response composition",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "active AI intake policy version",
+                            "bounded redacted inbound message projection",
+                            "approved conversational next action",
+                            "observed provider response composition",
                         ),
                     ),
                     ConcernContract(
@@ -457,7 +477,25 @@ DOMAIN = DomainSOT(
                         name="bounded redacted inbound message projection",
                         owner="communications.team_inbox_observations",
                         kind=AuthorityKind.OBSERVATION,
-                        source="Latest normalized customer message plus at most three relevant messages.",
+                        source="Latest normalized customer message plus at most six role-aware customer-visible messages.",
+                    ),
+                    AuthorityInput(
+                        name="approved conversational next action",
+                        owner="ai.intake",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "Policy-constrained question, guidance, resolution, or "
+                            "handoff selected by the backend conversational engine."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="observed provider response composition",
+                        owner="external:llm_provider",
+                        kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                        source=(
+                            "Strict JSON wording candidate returned through ai.gateway "
+                            "and accepted only after backend safety validation."
+                        ),
                     ),
                     AuthorityInput(
                         name="observed provider classification response",
@@ -848,8 +886,8 @@ DOMAIN = DomainSOT(
                 transaction=TransactionContract(
                     mode=TransactionMode.OWNER_MANAGED,
                     boundary="Session processing enters execute_owner_command once and delegates Inbox consequences to Team Inbox owners.",
-                    locking="Ready sessions are selected with row locks and skip_locked; human takeover and customer-wait timeout races are rechecked before dispatch.",
-                    idempotency="Session/message/generation, welcome, timeout-deadline, and outbound dedupe keys suppress duplicate webhook and worker execution.",
+                    locking="Ready sessions are selected with row locks and skip_locked; human takeover, customer reply, and long-term wait-expiry races are rechecked before consequences.",
+                    idempotency="Session/message/generation, welcome, wait-expiry, and outbound dedupe keys suppress duplicate webhook and worker execution.",
                     retries="Beat reruns pick up incomplete sessions; failed sessions are recorded and safely escalated.",
                 ),
                 errors=ErrorContract(

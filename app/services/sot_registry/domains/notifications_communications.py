@@ -3208,6 +3208,7 @@ DOMAIN = DomainSOT(
                 "communications.team_inbox_threads",
                 "communications.team_inbox_contact_resolution",
                 "communications.team_inbox_routing",
+                "ai.intake",
                 "communications.conversation_lead_relationships",
                 "sales.capture",
                 "party.registry",
@@ -3221,7 +3222,9 @@ DOMAIN = DomainSOT(
                 "arbitrate between. Anonymous fiber-site sessions are "
                 "exact-origin and rate controlled by the adapter, use "
                 "Party-first prospect capture only for unmatched identity, and "
-                "retain ambiguous identity for human review."
+                "retain ambiguous identity for human review. The first persisted "
+                "widget visitor message requests optional, exact-scope AI intake; "
+                "missing or inactive policy leaves the human Inbox path unchanged."
             ),
             contract=_team_inbox_contract(
                 service_name="communications.team_inbox_widget",
@@ -3270,6 +3273,16 @@ DOMAIN = DomainSOT(
                         owner="communications.team_inbox_threads",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source="Native chat-widget conversation and message chronology.",
+                    ),
+                    AuthorityInput(
+                        name="enabled matching AI intake configuration",
+                        owner="ai.intake",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "Exact registered chat-widget surface policy and channel "
+                            "AI-routing permission evaluated after the first visitor "
+                            "message is persisted."
+                        ),
                     ),
                 ),
                 transaction_mode=TransactionMode.OWNER_MANAGED,
@@ -3936,9 +3949,9 @@ DOMAIN = DomainSOT(
                         owner="ai.intake",
                         kind=AuthorityKind.DERIVED_PROJECTION,
                         source=(
-                            "Expired AI awaiting-customer session deadline, "
-                            "customer-reply race evidence, and configured fallback or "
-                            "mapped destination team."
+                            "Long-term AI awaiting-customer session expiry and "
+                            "customer-reply or human-takeover race evidence. Inactivity "
+                            "expires the AI session without human routing or assignment."
                         ),
                     ),
                     AuthorityInput(
@@ -3964,7 +3977,6 @@ DOMAIN = DomainSOT(
                 transaction_mode=TransactionMode.OWNER_MANAGED,
                 domain_error_codes=(
                     "communications.team_inbox_maintenance.invalid_location_repair_scope",
-                    "communications.team_inbox_maintenance.ai_intake_timeout_handoff_failed",
                     "communications.team_inbox_maintenance.conversation_not_found",
                     "communications.team_inbox_maintenance.profile_target_changed",
                     "communications.team_inbox_maintenance.profile_name_missing",
