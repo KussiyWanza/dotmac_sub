@@ -4,7 +4,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-
 QUOTE_ACTIONS_UNAVAILABLE_MESSAGE = (
     "Online quoting is unavailable. Nothing was charged and no quote was "
     "changed. Please contact support to continue."

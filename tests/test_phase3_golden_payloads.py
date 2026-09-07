@@ -270,9 +270,7 @@ def test_me_quotes_native_open_count_matches_mirror_semantics(db_session):
     assert statuses[str(accepted.id)] == "accepted"
 
 
-def test_native_quote_actions_follow_the_write_cutover_control(
-    db_session, monkeypatch
-):
+def test_native_quote_actions_follow_the_write_cutover_control(db_session, monkeypatch):
     sub = _subscriber(db_session)
     monkeypatch.setattr(selfserve_service, "native_write_enabled", lambda db: False)
     unavailable = selfserve_service.selfserve_quotes.read_for_subscriber(

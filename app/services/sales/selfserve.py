@@ -393,8 +393,7 @@ def _find_project_id_for_quote(db: Session, quote_id: UUID) -> str | None:
 _PORTAL_CLOSED_QUOTE_STATUSES = ("accepted", "rejected", "expired")
 
 NATIVE_QUOTE_ACTIONS_UNAVAILABLE_MESSAGE = (
-    "Online quoting is temporarily unavailable. Please contact support to "
-    "continue."
+    "Online quoting is temporarily unavailable. Please contact support to continue."
 )
 
 # Sentinel for build_portal_quote_payload's optional pre-resolved project id —
@@ -483,9 +482,7 @@ class SelfServeQuotes:
         project_ids = _find_project_ids_for_quotes(db, [q.id for q in rows])
         items = [
             QuoteItem.model_validate(
-                build_portal_quote_payload(
-                    db, q, project_id=project_ids.get(str(q.id))
-                )
+                build_portal_quote_payload(db, q, project_id=project_ids.get(str(q.id)))
             )
             for q in rows
         ]
@@ -500,9 +497,7 @@ class SelfServeQuotes:
             source_state="native",
             actions_available=actions_available,
             actions_unavailable_message=(
-                None
-                if actions_available
-                else NATIVE_QUOTE_ACTIONS_UNAVAILABLE_MESSAGE
+                None if actions_available else NATIVE_QUOTE_ACTIONS_UNAVAILABLE_MESSAGE
             ),
         )
 
