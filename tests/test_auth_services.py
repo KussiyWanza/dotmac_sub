@@ -69,6 +69,7 @@ def _make_request(user_agent: str = "pytest") -> Request:
         "type": "http",
         "method": "POST",
         "path": "/auth/login",
+        "query_string": b"",
         "headers": [(b"user-agent", user_agent.encode("utf-8"))],
         "client": ("127.0.0.1", 12345),
     }
