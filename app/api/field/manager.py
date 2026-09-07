@@ -1,11 +1,15 @@
 from dataclasses import asdict
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.schemas.common import ListResponse
+from app.schemas.dispatch import (
+    WorkOrderAssignmentQueueRead,
+    WorkOrderAssignmentQueueUpdate,
+)
 from app.schemas.field import (
     FieldEquipmentCustodyRead,
     FieldEquipmentIssueRequest,
@@ -14,6 +18,7 @@ from app.schemas.field import (
     FieldManagerExpenseRejectRequest,
     FieldManagerJob,
     FieldManagerJobAssignRequest,
+    FieldManagerJobUnassignRequest,
     FieldManagerMaterialRejectRequest,
     FieldManagerMeResponse,
     FieldManagerSummary,
@@ -43,6 +48,7 @@ from app.services.vendor_purchase_invoices import (
     ReviewVendorPurchaseInvoiceCommand,
     vendor_purchase_invoices,
 )
+from app.services.work_order_commands import work_order_commands
 
 router = APIRouter(prefix="/manager", tags=["field-manager"])
 
@@ -201,6 +207,29 @@ def field_manager_assign_job(
         scheduled_start=payload.scheduled_start,
         scheduled_end=payload.scheduled_end,
         status=payload.status,
+        auth=auth,
+        request_id=request_id,
+    )
+
+
+@router.post(
+    "/assignments/{assignment_queue_id}/unassign",
+    response_model=WorkOrderAssignmentQueueRead,
+)
+def field_manager_unassign_job(
+    assignment_queue_id: UUID,
+    payload: FieldManagerJobUnassignRequest,
+    auth: dict = Depends(_dispatch_write),
+    request_id: str | None = Header(default=None, alias="X-Request-ID"),
+    db: Session = Depends(get_db),
+):
+    return work_order_commands.update_queue_entry(
+        db=db,
+        queue_id=str(assignment_queue_id),
+        payload=WorkOrderAssignmentQueueUpdate(
+            status="skipped",
+            reason=payload.reason,
+        ),
         auth=auth,
         request_id=request_id,
     )
