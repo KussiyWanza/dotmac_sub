@@ -556,6 +556,43 @@ def test_billing_health_snapshot_publishes_bounded_observations(monkeypatch):
     assert labels[("prepaid_coverage_quarantined", "all")] == 4.0
 
 
+def test_fully_populated_billing_snapshot_fits_registered_cardinality(monkeypatch):
+    """Every bounded billing dimension must fit the registered state limit."""
+    from app.services import observability
+
+    monkeypatch.setattr("app.services.app_cache.set_json", lambda *_args: True)
+    runners = tuple(
+        billing_health.RunnerHeartbeat(
+            task_name=task_name,
+            enabled=True,
+            interval_seconds=300,
+            last_success=None,
+            age_seconds=1.0,
+            stale=False,
+        )
+        for task_name in billing_health._CRITICAL_RUNNERS
+    )
+    snapshot = _snap(
+        runners=runners,
+        account_credit_invariant_breakdown={
+            f"invariant_{index}": 0 for index in range(7)
+        },
+        expected_renewal_accounts_by_day={f"day_{index}": 0 for index in range(14)},
+        negative_prepaid_balance_count=0,
+        negative_prepaid_balance_total=Decimal("0.00"),
+        payment_success_ratio_7d=1.0,
+    )
+
+    observations = billing_health.billing_health_observations(snapshot)
+
+    assert len(observations) == observability.BILLING_HEALTH_MAX_OBSERVATIONS
+    assert observability.publish_state_snapshot(
+        billing_health.BILLING_HEALTH_OBSERVABILITY_DOMAIN,
+        observations,
+        now=datetime(2026, 9, 7, tzinfo=UTC),
+    )
+
+
 def test_billing_profile_integrity_counts_mismatch_and_mixed_modes(db_session):
     offer = _offer(db_session)
     mismatch = _subscriber(db_session, email="profile-mismatch@example.com")
