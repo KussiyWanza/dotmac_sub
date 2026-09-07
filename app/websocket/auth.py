@@ -8,9 +8,42 @@ from app.services.auth_flow import decode_access_token
 from app.services.db_session_adapter import db_session_adapter
 from app.services.team_inbox_widget import decode_widget_token
 
+WEBSOCKET_AUTH_SUBPROTOCOL = "dotmac-auth"
+
+
+def _requested_subprotocols(websocket: WebSocket) -> tuple[str, ...]:
+    raw = websocket.headers.get("sec-websocket-protocol") or ""
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
+def accepted_auth_subprotocol(websocket: WebSocket) -> str | None:
+    protocols = _requested_subprotocols(websocket)
+    if WEBSOCKET_AUTH_SUBPROTOCOL in protocols:
+        return WEBSOCKET_AUTH_SUBPROTOCOL
+    return None
+
+
+def _subprotocol_token(websocket: WebSocket) -> str | None:
+    protocols = _requested_subprotocols(websocket)
+    try:
+        marker = protocols.index(WEBSOCKET_AUTH_SUBPROTOCOL)
+    except ValueError:
+        return None
+    token_index = marker + 1
+    return protocols[token_index] if token_index < len(protocols) else None
+
 
 def _websocket_token(websocket: WebSocket) -> str | None:
-    return websocket.query_params.get("token") or websocket.cookies.get("session_token")
+    # Browsers cannot set Authorization on a WebSocket handshake. Carry public
+    # widget credentials in Sec-WebSocket-Protocol so they do not enter request
+    # URLs, browser history, Nginx access logs, or Uvicorn request-line logs.
+    # Cookies remain the preferred same-origin staff mechanism. The query
+    # fallback supports one rolling-deployment window for older widget clients.
+    return (
+        _subprotocol_token(websocket)
+        or websocket.cookies.get("session_token")
+        or websocket.query_params.get("token")
+    )
 
 
 async def authenticate_staff_websocket(websocket: WebSocket) -> dict | None:
@@ -56,13 +89,11 @@ async def authenticate_websocket(websocket: WebSocket) -> dict | None:
     """
     Authenticate WebSocket connection.
 
-    Extracts JWT from query param (?token=) or cookie (session_token).
+    Extracts JWT from the auth subprotocol or same-origin session cookie, with
+    a temporary query-token fallback for rolling-deployment compatibility.
     Returns {subscriber_id, session_id} if valid, None otherwise.
     """
-    token = websocket.query_params.get("token")
-
-    if not token:
-        token = websocket.cookies.get("session_token")
+    token = _websocket_token(websocket)
 
     if not token:
         await websocket.close(code=4001, reason="Authentication required")

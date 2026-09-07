@@ -32,6 +32,9 @@ server {
 
     # WebSocket
     location /ws {
+        # Handshake request lines may contain legacy query credentials.
+        # Never persist WebSocket URLs in the edge access log.
+        access_log off;
         proxy_pass http://127.0.0.1:8001;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
