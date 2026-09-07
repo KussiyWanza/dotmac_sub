@@ -1,7 +1,7 @@
 """Allow the terminal resolved AI intake session state.
 
-Revision ID: 581_ai_intake_resolved_state
-Revises: 580_invoice_line_tax_snapshots
+Revision ID: 582_ai_intake_resolved_state
+Revises: 581_inbox_delivery_status_index
 Create Date: 2026-09-07
 """
 
@@ -11,8 +11,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "581_ai_intake_resolved_state"
-down_revision: str | None = "580_invoice_line_tax_snapshots"
+revision: str = "582_ai_intake_resolved_state"
+down_revision: str | None = "581_inbox_delivery_status_index"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
