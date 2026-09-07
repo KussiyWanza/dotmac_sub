@@ -116,6 +116,7 @@ def test_repository_heads_match_alembics_effective_dependency_heads() -> None:
     assert repository_heads() == frozenset(
         {
             "581_ai_intake_resolved_state",
+            "581_inbox_delivery_status_index",
             "bi_0001_billing",
             "cl_0001_collections",
             "ib_0001_conversations",
