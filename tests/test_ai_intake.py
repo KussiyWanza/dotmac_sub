@@ -10,9 +10,18 @@ from app.models.ai_intake import AiIntakeConfig
 from app.models.service_team import ServiceTeam
 from app.schemas.ai_intake import (
     CUSTOMER_TYPE_FOLLOW_UP_QUESTION,
+    AiCustomerResponseCompositionRequest,
+    AiIntakeCategory,
     AiIntakeContextMessage,
+    AiIntakeExtractedFacts,
+    AiIntakeIntent,
+    AiIntakeMessageRole,
+    AiIntakeMonitoringContext,
+    AiIntakeNextAction,
+    AiIntakePlaybookStepContext,
     AiIntakeReason,
     AiIntakeRequest,
+    AiIntakeSafeCustomerIdentity,
     AiIntakeStatus,
 )
 from app.schemas.ai_operations import AiIntakeConfigUpsert
@@ -332,7 +341,9 @@ def test_customer_content_is_redacted_and_context_is_bounded(db_session, monkeyp
     )
 
     recent = tuple(
-        AiIntakeContextMessage(direction="inbound", body=f"message {index}")
+        AiIntakeContextMessage(
+            role=AiIntakeMessageRole.customer, body=f"message {index}"
+        )
         for index in range(5)
     )
     ai_intake.classify_message(
@@ -347,12 +358,246 @@ def test_customer_content_is_redacted_and_context_is_bounded(db_session, monkeyp
     assert "[redacted-email]" in prompt
     assert "[redacted-phone]" in prompt
     assert len(json.loads(prompt)["latest_inbound_message"]) <= 1200
-    assert len(json.loads(prompt)["recent_messages"]) == 3
+    assert len(json.loads(prompt)["recent_messages"]) == 5
 
 
 def test_email_cannot_be_configured_for_ai_intake():
     with pytest.raises(ValidationError):
         AiIntakeConfigUpsert(scope_key="email", channel_type="email")
+
+
+def test_chat_widget_can_be_configured_for_ai_intake():
+    policy = AiIntakeConfigUpsert(
+        scope_key="fiber_website:fiber.dotmac.ng",
+        channel_type="chat_widget",
+    )
+
+    assert policy.channel_type == "chat_widget"
+
+
+def _composition_request() -> AiCustomerResponseCompositionRequest:
+    return AiCustomerResponseCompositionRequest(
+        intent=AiIntakeIntent.technical_support,
+        category=AiIntakeCategory.slow_internet,
+        latest_customer_statement=(
+            "My internet has been slow on every device since yesterday."
+        ),
+        facts=AiIntakeExtractedFacts(
+            connectivity_state="slow",
+            device_scope="all_devices",
+            issue_started_when="since yesterday",
+        ),
+        missing_fact_keys=("connection_medium",),
+        asked_question_keys=(),
+        customer_identity=AiIntakeSafeCustomerIdentity(identified=True),
+        playbook_step=AiIntakePlaybookStepContext(
+            key="connection_medium",
+            action=AiIntakeNextAction.ask_question,
+            approved_instruction=(
+                "Ask whether the slowdown is the same on Wi-Fi and Ethernet."
+            ),
+        ),
+        business_tone="Warm, concise and practical.",
+        issue_already_acknowledged=False,
+    )
+
+
+def test_response_composition_uses_existing_gateway_and_returns_empathy(
+    db_session, monkeypatch
+):
+    gateway = _Gateway(
+        json.dumps(
+            {
+                "response_text": (
+                    "I'm sorry the connection has been slow since yesterday. "
+                    "Is it the same over Wi-Fi and Ethernet?"
+                ),
+                "purpose": "acknowledgement_question",
+                "follow_up_fact_key": "connection_medium",
+                "acknowledges_issue": True,
+            }
+        )
+    )
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+
+    outcome = ai_intake.compose_customer_response(
+        db_session,
+        request=_composition_request(),
+        fallback_text="Is it the same over Wi-Fi and Ethernet?",
+        fallback_source="template",
+    )
+
+    assert outcome.response_source == "model"
+    assert outcome.acknowledges_issue is True
+    assert "since yesterday" in outcome.response_text
+    assert outcome.follow_up_fact_key == "connection_medium"
+    assert len(gateway.calls) == 1
+
+
+def test_response_validator_rejects_invented_monitoring_and_falls_back(
+    db_session, monkeypatch
+):
+    gateway = _Gateway(
+        json.dumps(
+            {
+                "response_text": (
+                    "Your line appears currently offline from our side. "
+                    "Is it the same over Wi-Fi and Ethernet?"
+                ),
+                "purpose": "acknowledgement_question",
+                "follow_up_fact_key": "connection_medium",
+                "acknowledges_issue": True,
+            }
+        )
+    )
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+
+    outcome = ai_intake.compose_customer_response(
+        db_session,
+        request=_composition_request(),
+        fallback_text="Is it the same over Wi-Fi and Ethernet?",
+        fallback_source="template",
+    )
+
+    assert outcome.response_source == "template"
+    assert outcome.safety_reason == "invented_monitoring"
+    assert "currently offline" not in outcome.response_text
+    assert outcome.response_text.startswith("I'm sorry the connection has been slow")
+    assert "since yesterday" in outcome.response_text
+
+
+def test_response_validator_does_not_treat_monitoring_no_data_as_offline(
+    db_session, monkeypatch
+):
+    gateway = _Gateway(
+        json.dumps(
+            {
+                "response_text": (
+                    "Our monitoring shows your line is currently offline. "
+                    "Is it the same over Wi-Fi and Ethernet?"
+                ),
+                "purpose": "acknowledgement_question",
+                "follow_up_fact_key": "connection_medium",
+                "acknowledges_issue": False,
+            }
+        )
+    )
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+    request = _composition_request().model_copy(
+        update={"monitoring": AiIntakeMonitoringContext(status="no_data")}
+    )
+
+    outcome = ai_intake.compose_customer_response(
+        db_session,
+        request=request,
+        fallback_text="Is it the same over Wi-Fi and Ethernet?",
+        fallback_source="template",
+    )
+
+    assert outcome.response_source == "template"
+    assert outcome.safety_reason == "unverified_monitoring"
+    assert "offline" not in outcome.response_text.lower()
+
+
+@pytest.mark.parametrize(
+    ("response_text", "request_updates", "follow_up_fact_key", "expected_reason"),
+    [
+        (
+            "Is it slow on Wi-Fi? Is it also slow over Ethernet?",
+            {},
+            "connection_medium",
+            "question_count_mismatch",
+        ),
+        (
+            "Is it affecting every device?",
+            {
+                "missing_fact_keys": ("connection_medium",),
+                "asked_question_keys": ("device_scope",),
+            },
+            "device_scope",
+            "repeated_or_unapproved_question",
+        ),
+        (
+            "I'm sorry again. Is it the same over Wi-Fi and Ethernet?",
+            {"issue_already_acknowledged": True},
+            "connection_medium",
+            "repeated_apology",
+        ),
+        (
+            "I'm sorry, and I apologize. Is it the same over Wi-Fi and Ethernet?",
+            {},
+            "connection_medium",
+            "excessive_apology",
+        ),
+        (
+            "There is an outage. Is it the same over Wi-Fi and Ethernet?",
+            {},
+            "connection_medium",
+            "invented_outage",
+        ),
+        (
+            "We received your payment. Is it the same over Wi-Fi and Ethernet?",
+            {},
+            "connection_medium",
+            "unsupported_payment_confirmation",
+        ),
+        (
+            "It will be fixed shortly. Is it the same over Wi-Fi and Ethernet?",
+            {},
+            "connection_medium",
+            "unsupported_promise",
+        ),
+        (
+            "This is a router fault. Is it the same over Wi-Fi and Ethernet?",
+            {},
+            "connection_medium",
+            "unsupported_diagnosis",
+        ),
+        (
+            "Your email is customer@example.com. Is it the same over Wi-Fi and Ethernet?",
+            {},
+            "connection_medium",
+            "unauthorized_customer_information",
+        ),
+        (
+            "The LangGraph classifier needs another detail. Is it the same over Wi-Fi and Ethernet?",
+            {},
+            "connection_medium",
+            "internal_terminology",
+        ),
+    ],
+)
+def test_response_validator_rejects_unsafe_model_compositions(
+    db_session,
+    monkeypatch,
+    response_text,
+    request_updates,
+    follow_up_fact_key,
+    expected_reason,
+):
+    gateway = _Gateway(
+        json.dumps(
+            {
+                "response_text": response_text,
+                "purpose": "acknowledgement_question",
+                "follow_up_fact_key": follow_up_fact_key,
+                "acknowledges_issue": False,
+            }
+        )
+    )
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+    request = _composition_request().model_copy(update=request_updates)
+
+    outcome = ai_intake.compose_customer_response(
+        db_session,
+        request=request,
+        fallback_text="Is it the same over Wi-Fi and Ethernet?",
+        fallback_source="template",
+    )
+
+    assert outcome.response_source == "template"
+    assert outcome.safety_reason == expected_reason
+    assert outcome.response_text != response_text
 
 
 def test_low_confidence_allows_one_controlled_follow_up_then_fallback(

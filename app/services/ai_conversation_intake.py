@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from app.models.ai_intake import (
@@ -37,10 +39,20 @@ from app.models.team_inbox import (
 )
 from app.schemas.ai_intake import (
     DEFAULT_CLARIFICATION_QUESTIONS,
+    AiCustomerResponseCompositionRequest,
     AiIntakeCategory,
     AiIntakeClassification,
+    AiIntakeContextMessage,
+    AiIntakeExtractedFacts,
     AiIntakeIntent,
+    AiIntakeMessageRole,
+    AiIntakeMonitoringContext,
+    AiIntakeNextAction,
+    AiIntakeOntContext,
     AiIntakeOutcome,
+    AiIntakePlaybookStepContext,
+    AiIntakeRadiusContext,
+    AiIntakeSafeCustomerIdentity,
     AiIntakeStatus,
     normalize_clarification_questions,
 )
@@ -82,8 +94,10 @@ SUPPORTED_CONVERSATIONAL_CHANNELS = frozenset(
         InboxChannelType.whatsapp.value,
         InboxChannelType.facebook_messenger.value,
         InboxChannelType.instagram_dm.value,
+        InboxChannelType.chat_widget.value,
     }
 )
+_NATIVE_WIDGET_AI_SCOPES = frozenset({"customer", "reseller_portal"})
 logger = logging.getLogger(__name__)
 SUPPORTED_CONVERSATION_ENGINE_MODES = frozenset(
     {
@@ -96,6 +110,7 @@ TERMINAL_SESSION_STATES = frozenset(
         "completed",
         "stopped_human_takeover",
         "fallback_escalated",
+        "resolved",
         "expired",
         "failed",
         "ineligible",
@@ -109,6 +124,7 @@ DEFAULT_WELCOME_MESSAGE = (
 DEFAULT_QUEUE_POSITION_UPDATE_MINUTES = 10
 DEFAULT_QUEUE_HEARTBEAT_MINUTES = 30
 DEFAULT_CUSTOMER_RESPONSE_TIMEOUT_MINUTES = 5
+DEFAULT_CUSTOMER_WAIT_EXPIRY_HOURS = 72
 DEFAULT_QUEUE_TEMPLATES = {
     "initial": (
         "All our agents are currently engaged. You are number {position} in the "
@@ -186,6 +202,52 @@ class AiSessionContext:
     session: AiIntakeSession
     policy: AiIntakePolicy | None
     version: AiIntakePolicyVersion | None
+
+
+@dataclass(frozen=True, slots=True)
+class AiMediaFirstHandoffPolicy:
+    policy_id: UUID
+    policy_version_id: UUID
+    display_name: str
+    customer_message: str
+    fallback_team_id: UUID | None
+
+
+def resolve_media_first_handoff_policy(
+    db: Session,
+    *,
+    channel_type: str,
+    provider: str,
+    account_scope: str,
+) -> AiMediaFirstHandoffPolicy | None:
+    policy = (
+        db.query(AiIntakePolicy)
+        .filter(AiIntakePolicy.channel_type == channel_type)
+        .filter(AiIntakePolicy.provider == provider)
+        .filter(AiIntakePolicy.account_scope == account_scope)
+        .filter(AiIntakePolicy.is_enabled.is_(True))
+        .one_or_none()
+    )
+    if policy is None or policy.active_version_id is None:
+        return None
+    version = db.get(AiIntakePolicyVersion, policy.active_version_id)
+    if version is None or not version.is_active or version.status != "activated":
+        return None
+    metadata = dict(version.metadata_ or {})
+    templates = _mapping_dict(metadata.get("conversation_templates"))
+    message = str(templates.get("media_first_handoff") or "").strip()
+    if not message:
+        message = (
+            "Thanks for sending that. I cannot review attachments here, so I "
+            "am passing this to our support team to take a closer look."
+        )
+    return AiMediaFirstHandoffPolicy(
+        policy_id=policy.id,
+        policy_version_id=version.id,
+        display_name=version.display_name or DEFAULT_DISPLAY_NAME,
+        customer_message=message[:800],
+        fallback_team_id=policy.fallback_team_id,
+    )
 
 
 @dataclass(slots=True)
@@ -463,13 +525,25 @@ def _validate_provider_scope(
     db: Session, *, channel_type: str, provider: str, account_scope: str
 ) -> None:
     if channel_type not in SUPPORTED_CONVERSATIONAL_CHANNELS:
-        raise ValueError("AI intake supports only WhatsApp, Messenger and Instagram DM")
+        raise ValueError(
+            "AI intake supports only WhatsApp, Messenger, Instagram DM, and chat widget"
+        )
     if account_scope.lower() in {"any", "global", "default"}:
         raise ValueError("AI intake draft policy requires an explicit account scope")
     if channel_type == InboxChannelType.whatsapp.value:
         _validate_whatsapp_provider_scope(
             db, provider=provider, account_scope=account_scope
         )
+        return
+    if channel_type == InboxChannelType.chat_widget.value:
+        fiber_scope = provider == "fiber_website" and account_scope == "fiber.dotmac.ng"
+        native_scope = (
+            provider == "native_widget" and account_scope in _NATIVE_WIDGET_AI_SCOPES
+        )
+        if not fiber_scope and not native_scope:
+            raise ValueError(
+                "Chat widget AI intake requires a registered Fiber or portal scope"
+            )
         return
     _validate_meta_social_provider_scope(
         db,
@@ -682,11 +756,20 @@ def _copy_version_payload(
     if command.tool_config is not None:
         metadata["tools"] = dict(command.tool_config)
     if command.conversation_policy is not None:
-        metadata["conversation_policy"] = dict(command.conversation_policy)
+        metadata["conversation_policy"] = {
+            **_mapping_dict(metadata.get("conversation_policy")),
+            **dict(command.conversation_policy),
+        }
     if command.conversation_templates is not None:
-        metadata["conversation_templates"] = dict(command.conversation_templates)
+        metadata["conversation_templates"] = {
+            **_mapping_dict(metadata.get("conversation_templates")),
+            **dict(command.conversation_templates),
+        }
     if command.channel_overrides is not None:
-        metadata["channel_overrides"] = dict(command.channel_overrides)
+        metadata["channel_overrides"] = {
+            **_mapping_dict(metadata.get("channel_overrides")),
+            **dict(command.channel_overrides),
+        }
     return {
         "display_name": command.display_name
         or (base.display_name if base is not None else DEFAULT_DISPLAY_NAME),
@@ -748,7 +831,10 @@ def _create_or_update_draft_policy_version_locked(
     )
     if existing_draft is not None and not command.replace_existing_draft:
         raise ValueError("AI intake policy already has an editable draft")
-    payload = _copy_version_payload(base, command)
+    effective_base = base or existing_draft
+    if effective_base is None and policy.active_version_id is not None:
+        effective_base = db.get(AiIntakePolicyVersion, policy.active_version_id)
+    payload = _copy_version_payload(effective_base, command)
     version = existing_draft
     if version is None:
         payload_metadata = _mapping_dict(payload.pop("metadata_", {}))
@@ -761,7 +847,9 @@ def _create_or_update_draft_policy_version_locked(
             metadata_={
                 **payload_metadata,
                 "created_reason": command.context.reason,
-                "base_version_id": str(base.id) if base is not None else None,
+                "base_version_id": (
+                    str(effective_base.id) if effective_base is not None else None
+                ),
             },
             **payload,
         )
@@ -957,6 +1045,23 @@ def _validate_engine_policy(version: AiIntakePolicyVersion) -> None:
     for key in tools:
         if key not in ai_intake_conversation_engine.TOOL_CATALOG:
             raise ValueError("AI intake tool configuration contains an unknown tool")
+    failure_handoffs = policy.get("tool_failure_handoff_statuses")
+    if failure_handoffs is not None:
+        if not isinstance(failure_handoffs, Mapping):
+            raise ValueError("AI intake tool failure handoff policy must be an object")
+        for tool_key, raw_statuses in failure_handoffs.items():
+            if str(tool_key) not in ai_intake_conversation_engine.TOOL_CATALOG:
+                raise ValueError(
+                    "AI intake tool failure handoff policy references an unknown tool"
+                )
+            if not isinstance(raw_statuses, list | tuple) or any(
+                str(status) not in {"unavailable", "unauthorized"}
+                for status in raw_statuses
+            ):
+                raise ValueError(
+                    "AI intake tool failure handoff statuses must be unavailable "
+                    "or unauthorized"
+                )
     _validate_engine_playbooks(policy, tools)
     rules = policy.get("troubleshooting_rules")
     if rules is not None:
@@ -1549,6 +1654,16 @@ def _customer_response_timeout_minutes(
     )
 
 
+def _customer_wait_expiry_hours(rules: Mapping[str, object] | None) -> int:
+    source = dict(rules or {})
+    return _bounded_int(
+        source.get("customer_wait_expiry_hours"),
+        default=DEFAULT_CUSTOMER_WAIT_EXPIRY_HOURS,
+        minimum=24,
+        maximum=720,
+    )
+
+
 def configured_customer_response_timeout_minutes(
     db: Session,
     *,
@@ -1612,6 +1727,22 @@ def _session_customer_response_timeout_minutes(
     )
 
 
+def _session_customer_wait_expiry_hours(
+    session: AiIntakeSession,
+    *,
+    version: AiIntakePolicyVersion | None = None,
+) -> int:
+    if version is not None and isinstance(version.escalation_rules, Mapping):
+        return _customer_wait_expiry_hours(version.escalation_rules)
+    metadata = dict(session.metadata_ or {})
+    return _bounded_int(
+        metadata.get("customer_wait_expiry_hours"),
+        default=DEFAULT_CUSTOMER_WAIT_EXPIRY_HOURS,
+        minimum=24,
+        maximum=720,
+    )
+
+
 def record_customer_wait(
     session: AiIntakeSession,
     *,
@@ -1621,19 +1752,22 @@ def record_customer_wait(
     now: datetime | None = None,
 ) -> datetime:
     started_at = (now or datetime.now(UTC)).astimezone(UTC)
-    timeout_minutes = _session_customer_response_timeout_minutes(
-        session, version=version
-    )
-    expires_at = started_at + timedelta(minutes=timeout_minutes)
+    expiry_hours = _session_customer_wait_expiry_hours(session, version=version)
+    expires_at = started_at + timedelta(hours=expiry_hours)
     session.customer_wait_started_at = started_at
-    session.customer_wait_expires_at = expires_at
+    # This legacy column previously drove a five-minute handoff. It is kept
+    # clear so stale-session recovery cannot confuse customer waiting with AI
+    # failure. ``expires_at`` owns long-term, non-handoff expiry.
+    session.customer_wait_expires_at = None
+    session.expires_at = expires_at
     metadata = dict(session.metadata_ or {})
     metadata.update(
         {
             "customer_wait_started_at": started_at.isoformat(),
-            "customer_wait_expires_at": expires_at.isoformat(),
-            "customer_response_timeout_minutes": timeout_minutes,
+            "customer_wait_expires_at": None,
+            "customer_wait_expiry_hours": expiry_hours,
             "customer_wait_reason": reason,
+            "waiting_reason": "awaiting_customer",
         }
     )
     if inbound_message_id is not None:
@@ -1649,8 +1783,9 @@ def record_customer_wait(
             if inbound_message_id is not None
             else None,
             "customer_wait_started_at": started_at.isoformat(),
-            "customer_wait_expires_at": expires_at.isoformat(),
-            "timeout_minutes": timeout_minutes,
+            "customer_wait_expires_at": None,
+            "session_expires_at": expires_at.isoformat(),
+            "expiry_hours": expiry_hours,
             "reason": reason,
         },
     )
@@ -2293,6 +2428,7 @@ def ensure_session_for_outcome(
     provider: str,
     account_scope: str,
     created_conversation: bool,
+    initial_inbound_message_id: UUID,
 ) -> AiSessionContext | None:
     if not created_conversation or outcome.config_id is None:
         return None
@@ -2315,12 +2451,7 @@ def ensure_session_for_outcome(
         # classification can produce a clarification question or handoff.
         state = "welcome_pending"
         policy_metadata = dict(policy.metadata_ or {})
-        timeout_minutes = _bounded_int(
-            policy_metadata.get("customer_response_timeout_minutes"),
-            default=DEFAULT_CUSTOMER_RESPONSE_TIMEOUT_MINUTES,
-            minimum=1,
-            maximum=1440,
-        )
+        expiry_hours = _customer_wait_expiry_hours(version.escalation_rules)
         session = AiIntakeSession(
             conversation_id=conversation.id,
             policy_id=policy.id,
@@ -2337,19 +2468,21 @@ def ensure_session_for_outcome(
             if outcome.classification
             else float(policy_metadata.get("confidence_threshold") or 0),
             fallback_team_id=outcome.fallback_team_id or policy.fallback_team_id,
-            expires_at=now
-            + timedelta(
-                minutes=int(
-                    (policy.metadata_ or {}).get("max_intake_duration_minutes") or 10
-                )
-            ),
+            expires_at=now + timedelta(hours=expiry_hours),
             metadata_={
                 "ai_handling": True,
                 "created_from": "team_inbox_receive",
-                "customer_response_timeout_minutes": timeout_minutes,
+                "customer_wait_expiry_hours": expiry_hours,
+                "initial_inbound_message_id": str(initial_inbound_message_id),
             },
         )
         db.add(session)
+    else:
+        session_metadata = dict(session.metadata_ or {})
+        session_metadata.setdefault(
+            "initial_inbound_message_id", str(initial_inbound_message_id)
+        )
+        session.metadata_ = session_metadata
     session.policy_id = policy.id
     session.policy_version_id = version.id
     session.legacy_config_id = outcome.config_id
@@ -2410,6 +2543,8 @@ def record_generation_attempt(
     model: str | None = None,
     duration_ms: int | None = None,
     error_code: str | None = None,
+    provider_request_id: str | None = None,
+    metadata: Mapping[str, object] | None = None,
 ) -> AiIntakeGenerationAttempt:
     turn_number = max(1, session.turn_count or 1)
     dedupe = (
@@ -2433,15 +2568,165 @@ def record_generation_attempt(
         message_purpose=purpose,
         provider=provider,
         model=model,
+        provider_request_id=provider_request_id,
         status=status,
         duration_ms=duration_ms,
         error_code=error_code,
+        metadata_=dict(metadata or {}),
         idempotency_key=dedupe,
-        generated_at=datetime.now(UTC) if status == "queued" else None,
+        generated_at=(
+            datetime.now(UTC)
+            if status in {"queued", "generated", "safe_fallback"}
+            else None
+        ),
     )
     db.add(attempt)
     db.flush()
     return attempt
+
+
+def _session_engine_enabled(
+    db: Session,
+    *,
+    session: AiIntakeSession,
+    version: AiIntakePolicyVersion | None,
+) -> bool:
+    version_metadata = (
+        dict(version.metadata_ or {})
+        if version is not None and isinstance(version.metadata_, Mapping)
+        else {}
+    )
+    if "conversational_engine_enabled" in version_metadata:
+        return bool(version_metadata.get("conversational_engine_enabled"))
+    legacy_config = (
+        db.get(AiIntakeConfig, session.legacy_config_id)
+        if session.legacy_config_id is not None
+        else None
+    )
+    legacy_metadata = (
+        dict(legacy_config.metadata_ or {})
+        if legacy_config is not None and isinstance(legacy_config.metadata_, Mapping)
+        else {}
+    )
+    return bool(legacy_metadata.get("conversational_engine_enabled"))
+
+
+def _safe_enum(enum_type: type[AiIntakeIntent] | type[AiIntakeCategory], value: str):
+    try:
+        return enum_type(value)
+    except ValueError:
+        return enum_type("unknown")
+
+
+def _composition_facts(
+    state: ai_intake_conversation_engine.ConversationalState,
+) -> AiIntakeExtractedFacts:
+    raw = dict(state.collected_facts)
+    values = {
+        key: raw.get(key) for key in AiIntakeExtractedFacts.model_fields if key in raw
+    }
+    values.update(
+        {
+            "portal_id": state.portal_id,
+            "registered_email": state.registered_email,
+            "registered_phone": state.registered_phone,
+            "human_requested": state.human_requested,
+        }
+    )
+    try:
+        return AiIntakeExtractedFacts.model_validate(values)
+    except (TypeError, ValueError):
+        return AiIntakeExtractedFacts(
+            human_requested=state.human_requested,
+            portal_id=state.portal_id,
+            registered_email=state.registered_email,
+            registered_phone=state.registered_phone,
+        )
+
+
+def _composition_monitoring(
+    state: ai_intake_conversation_engine.ConversationalState,
+) -> AiIntakeMonitoringContext | None:
+    if not state.monitoring_results:
+        return None
+    latest = state.monitoring_results[-1]
+    radius_raw = latest.get("radius_observation")
+    radius = None
+    if isinstance(radius_raw, Mapping):
+        radius = AiIntakeRadiusContext(
+            state=str(radius_raw.get("state") or "") or None,
+            active_session_count=(
+                int(radius_raw["active_session_count"])
+                if radius_raw.get("active_session_count") is not None
+                else None
+            ),
+            observed_at=radius_raw.get("observed_at"),
+        )
+    onts_raw = latest.get("ont_observations")
+    onts = tuple(
+        AiIntakeOntContext(
+            effective_state=str(item.get("effective_state") or "") or None
+        )
+        for item in (onts_raw if isinstance(onts_raw, list) else [])
+        if isinstance(item, Mapping)
+    )
+    return AiIntakeMonitoringContext(
+        status=str(latest.get("status") or "") or None,
+        radius=radius,
+        onts=onts,
+    )
+
+
+def _composition_request(
+    *,
+    version: AiIntakePolicyVersion | None,
+    inbound: InboxMessage,
+    recent: tuple[AiIntakeContextMessage, ...],
+    decision: ai_intake_conversation_engine.ConversationEngineDecision,
+) -> AiCustomerResponseCompositionRequest:
+    state = decision.state
+    next_action_value = str(decision.metadata.get("next_action") or "")
+    if not next_action_value:
+        next_action_value = {
+            "resolved": AiIntakeNextAction.resolve.value,
+            "handoff": AiIntakeNextAction.handoff.value,
+        }.get(decision.action, AiIntakeNextAction.provide_guidance.value)
+    next_action = AiIntakeNextAction(next_action_value)
+    question_key = str(decision.metadata.get("question_key") or "").strip() or None
+    policy = ai_intake_conversation_engine._policy(
+        version, channel=str(inbound.channel_type)
+    )
+    return AiCustomerResponseCompositionRequest(
+        intent=_safe_enum(AiIntakeIntent, state.current_intent or "unknown"),
+        category=_safe_enum(AiIntakeCategory, state.category or "unknown"),
+        latest_customer_statement=str(inbound.body or "")[:1200],
+        recent_messages=recent,
+        facts=_composition_facts(state),
+        missing_fact_keys=tuple(state.missing_facts[-12:]),
+        asked_question_keys=tuple(item.key for item in state.question_history[-12:]),
+        troubleshooting_completed=tuple(state.troubleshooting_completed[-12:]),
+        customer_identity=AiIntakeSafeCustomerIdentity(
+            identified=bool(state.subscriber_id),
+            subscriber_status=str(
+                state.service_account_identity.get("subscriber_status") or ""
+            )
+            or None,
+        ),
+        monitoring=_composition_monitoring(state),
+        playbook_step=AiIntakePlaybookStepContext(
+            key=question_key,
+            action=next_action,
+            approved_instruction=(decision.response_text or "Continue safely.")[:800],
+        ),
+        business_tone=str(
+            policy.get("business_tone")
+            or "Warm, calm, concise, practical, and proportionate."
+        )[:1000],
+        approved_isp_information=(
+            str(policy.get("approved_isp_information") or "")[:4000] or None
+        ),
+        issue_already_acknowledged=bool(state.acknowledged_issue_key),
+    )
 
 
 def mark_handoff_requested(
@@ -2570,10 +2855,51 @@ def process_ready_sessions(
     )
 
 
+def _next_unprocessed_inbound(
+    db: Session, *, session: AiIntakeSession, conversation: InboxConversation
+) -> InboxMessage | None:
+    metadata = dict(session.metadata_ or {})
+    initial: InboxMessage | None = None
+    raw_initial_id = metadata.get("initial_inbound_message_id")
+    if raw_initial_id:
+        try:
+            initial_id = UUID(str(raw_initial_id))
+        except ValueError:
+            initial_id = None
+        if initial_id is not None:
+            candidate = db.get(InboxMessage, initial_id)
+            if (
+                candidate is not None
+                and candidate.conversation_id == conversation.id
+                and candidate.direction == InboxMessageDirection.inbound.value
+            ):
+                initial = candidate
+                if not metadata.get(f"processed_inbound:{candidate.id}"):
+                    return candidate
+    lower_bound = (
+        initial.created_at
+        if initial is not None
+        else session.created_at - timedelta(minutes=5)
+    )
+    rows = (
+        db.query(InboxMessage)
+        .filter(InboxMessage.conversation_id == conversation.id)
+        .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
+        .filter(InboxMessage.created_at >= lower_bound)
+        .order_by(InboxMessage.created_at.asc(), InboxMessage.id.asc())
+        .all()
+    )
+    return next(
+        (row for row in rows if not metadata.get(f"processed_inbound:{row.id}")),
+        None,
+    )
+
+
 def _process_one_session(
     db: Session, *, session: AiIntakeSession, conversation: InboxConversation
 ) -> bool:
-    from app.schemas.ai_intake import AiIntakeContextMessage, AiIntakeRequest
+    turn_started = time.perf_counter()
+    from app.schemas.ai_intake import AiIntakeRequest
     from app.services import (
         ai_intake,
         team_inbox_assignment,
@@ -2581,12 +2907,10 @@ def _process_one_session(
         team_inbox_routing,
     )
 
-    inbound = (
-        db.query(InboxMessage)
-        .filter(InboxMessage.conversation_id == conversation.id)
-        .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
-        .order_by(InboxMessage.created_at.desc())
-        .first()
+    inbound = _next_unprocessed_inbound(
+        db,
+        session=session,
+        conversation=conversation,
     )
     if inbound is None or not inbound.body:
         return False
@@ -2671,6 +2995,27 @@ def _process_one_session(
     processed_key = f"processed_inbound:{inbound.id}"
     if dict(session.metadata_ or {}).get(processed_key):
         return False
+    session_metadata = dict(session.metadata_ or {})
+    session_metadata.update(
+        {
+            "selected_inbound_message_id": str(inbound.id),
+            "selected_inbound_external_id": str(inbound.external_message_id or "")[:255]
+            or None,
+            "selected_inbound_at": datetime.now(UTC).isoformat(),
+        }
+    )
+    session.metadata_ = session_metadata
+    logger.info(
+        "ai intake inbound selected for turn",
+        extra={
+            "event": "ai_intake_inbound_selected",
+            "conversation_id": str(conversation.id),
+            "session_id": str(session.id),
+            "inbound_message_id": str(inbound.id),
+            "external_message_id": str(inbound.external_message_id or "") or None,
+            "session_state": session.state,
+        },
+    )
     was_awaiting_customer = session.state == "awaiting_customer"
     if was_awaiting_customer:
         clear_customer_wait(session, reason="customer_response")
@@ -2688,22 +3033,44 @@ def _process_one_session(
     recent_rows = (
         db.query(InboxMessage)
         .filter(InboxMessage.conversation_id == conversation.id)
-        .order_by(InboxMessage.created_at.desc())
+        .filter(
+            or_(
+                InboxMessage.created_at < inbound.created_at,
+                and_(
+                    InboxMessage.created_at == inbound.created_at,
+                    InboxMessage.id <= inbound.id,
+                ),
+            )
+        )
+        .order_by(InboxMessage.created_at.desc(), InboxMessage.id.desc())
         .limit(ai_intake.MAX_RECENT_MESSAGES)
         .all()
     )
-    recent = tuple(
-        AiIntakeContextMessage(
-            direction=(
-                "inbound"
-                if row.direction == InboxMessageDirection.inbound.value
-                else "outbound"
-            ),
-            body=str(row.body or "")[: ai_intake.MAX_CONTEXT_CHARS],
+    recent_items: list[AiIntakeContextMessage] = []
+    for row in reversed(recent_rows):
+        body = str(row.body or "").strip()
+        if not body or row.direction == InboxMessageDirection.internal.value:
+            continue
+        if row.direction == InboxMessageDirection.inbound.value:
+            role = AiIntakeMessageRole.customer
+        else:
+            row_metadata = dict(row.metadata_ or {})
+            if (
+                str(row_metadata.get("sender_type") or "").lower() == "ai"
+                or str(row_metadata.get("author_type") or "").lower() == "ai"
+            ):
+                role = AiIntakeMessageRole.ai
+            elif row_metadata.get("sent_by_person_id"):
+                role = AiIntakeMessageRole.human_agent
+            else:
+                continue
+        recent_items.append(
+            AiIntakeContextMessage(
+                role=role,
+                body=body[: ai_intake.MAX_CONTEXT_CHARS],
+            )
         )
-        for row in reversed(recent_rows)
-        if str(row.body or "").strip()
-    )
+    recent = tuple(recent_items)
     request = AiIntakeRequest(
         channel_type=conversation.channel_type,
         provider=session.provider,
@@ -2721,10 +3088,13 @@ def _process_one_session(
         follow_up_count=session.turn_count,
     )
     outcome = ai_intake.classify_message(db, request)
+    engine_enabled = _session_engine_enabled(db, session=session, version=version)
     metadata.update(ai_intake.route_metadata(outcome))
-    if outcome.status == AiIntakeStatus.awaiting_follow_up:
-        metadata.setdefault("ai_intake_engine_action", "continue_classifier")
-        metadata.setdefault("ai_intake_engine_reason", "legacy_classifier_path")
+    if outcome.status == AiIntakeStatus.awaiting_follow_up and not engine_enabled:
+        metadata.setdefault("ai_intake_engine_action", "legacy_clarification")
+        metadata.setdefault(
+            "ai_intake_engine_reason", "legacy_classifier_clarification"
+        )
     inbound.metadata_ = metadata
     conversation_metadata = dict(conversation.metadata_ or {})
     conversation_metadata["ai_intake"] = ai_intake.conversation_state(request, outcome)
@@ -2752,7 +3122,7 @@ def _process_one_session(
     engine_handoff_state: ai_intake_conversation_engine.ConversationalState | None = (
         None
     )
-    if outcome.status == AiIntakeStatus.awaiting_follow_up:
+    if outcome.status == AiIntakeStatus.awaiting_follow_up and not engine_enabled:
         delivery_question = " ".join(
             str(
                 metadata.get("ai_intake_follow_up_question")
@@ -2856,25 +3226,6 @@ def _process_one_session(
             engine_handoff_state.confidence = outcome.classification.confidence
         ai_intake_conversation_engine.persist_state(session, engine_handoff_state)
 
-    version_metadata = (
-        dict(version.metadata_ or {})
-        if version is not None and isinstance(version.metadata_, Mapping)
-        else {}
-    )
-    engine_enabled = bool(version_metadata.get("conversational_engine_enabled"))
-    if "conversational_engine_enabled" not in version_metadata:
-        legacy_config = (
-            db.get(AiIntakeConfig, session.legacy_config_id)
-            if session.legacy_config_id is not None
-            else None
-        )
-        legacy_metadata = (
-            dict(legacy_config.metadata_ or {})
-            if legacy_config is not None
-            and isinstance(legacy_config.metadata_, Mapping)
-            else {}
-        )
-        engine_enabled = bool(legacy_metadata.get("conversational_engine_enabled"))
     if engine_enabled and not engine_forced_handoff:
         engine_name = "composable_v1"
         if ai_intake_graph.langgraph_engine_enabled(version):
@@ -2929,6 +3280,27 @@ def _process_one_session(
         metadata["ai_intake_engine"] = engine_name
         metadata["ai_intake_engine_action"] = decision.action
         metadata["ai_intake_engine_reason"] = decision.metadata.get("reason")
+        raw_node_trace = decision.metadata.get("node_trace")
+        node_trace = (
+            [str(item) for item in raw_node_trace if str(item)][-40:]
+            if isinstance(raw_node_trace, list | tuple)
+            else []
+        )
+        metadata["ai_intake_graph_node_trace"] = node_trace
+        metadata["ai_intake_graph_transition_trace"] = [
+            f"{source}->{target}"
+            for source, target in zip(node_trace, node_trace[1:], strict=False)
+        ]
+        metadata["ai_intake_question_key"] = decision.metadata.get("question_key")
+        metadata["ai_intake_answer_status"] = decision.metadata.get("answer_status")
+        metadata["ai_intake_tool_results"] = [
+            {
+                "tool": item.get("tool"),
+                "status": item.get("status"),
+                "latency_ms": item.get("latency_ms"),
+            }
+            for item in decision.state.tool_executions[-6:]
+        ]
         if decision.state.current_intent:
             metadata["ai_intent"] = decision.state.current_intent
         if decision.state.category:
@@ -2958,21 +3330,117 @@ def _process_one_session(
         )
         conversation_metadata["ai_intake"] = intake_metadata
         conversation.metadata_ = conversation_metadata
+        composition_attempt: AiIntakeGenerationAttempt | None = None
+        composition = None
+        if (
+            decision.action in {"respond", "handoff", "resolved"}
+            and decision.response_text
+        ):
+            composition = ai_intake.compose_customer_response(
+                db,
+                request=_composition_request(
+                    version=version,
+                    inbound=inbound,
+                    recent=recent,
+                    decision=decision,
+                ),
+                fallback_text=decision.response_text,
+                fallback_source=str(
+                    decision.metadata.get("response_source") or "template"
+                ),
+            )
+            decision = ai_intake_conversation_engine.ConversationEngineDecision(
+                action=decision.action,
+                state=decision.state,
+                response_text=composition.response_text,
+                handoff_summary=decision.handoff_summary,
+                metadata={
+                    **decision.metadata,
+                    "response_source": composition.response_source,
+                    "composition_template_version": (
+                        ai_intake.RESPONSE_COMPOSITION_VERSION
+                    ),
+                    "composition_safety_reason": composition.safety_reason,
+                },
+            )
+            if composition.acknowledges_issue:
+                decision.state.acknowledged_issue_key = (
+                    decision.state.category or decision.state.current_intent
+                )
+            decision.state.last_response_source = composition.response_source
+            ai_intake_conversation_engine.persist_state(session, decision.state)
+            composition_attempt = record_generation_attempt(
+                db,
+                session=session,
+                purpose="response_composition",
+                status=(
+                    "generated"
+                    if composition.response_source == "model"
+                    else "safe_fallback"
+                ),
+                inbound_message_id=inbound.id,
+                provider=composition.provider,
+                model=composition.model,
+                duration_ms=composition.duration_ms,
+                error_code=composition.safety_reason,
+                metadata={
+                    "endpoint": composition.endpoint,
+                    "fallback_used": composition.fallback_used,
+                    "response_source": composition.response_source,
+                    "template_version": ai_intake.RESPONSE_COMPOSITION_VERSION,
+                    "question_key": decision.metadata.get("question_key"),
+                    "tokens_in": composition.tokens_in,
+                    "tokens_out": composition.tokens_out,
+                    "app_revision": (
+                        os.getenv("APP_REVISION")
+                        or os.getenv("GIT_SHA")
+                        or os.getenv("COMMIT_SHA")
+                    ),
+                },
+            )
+            metadata["ai_intake_response_source"] = composition.response_source
+            metadata["ai_intake_question_key"] = decision.metadata.get("question_key")
+            metadata["ai_intake_composition_template_version"] = (
+                ai_intake.RESPONSE_COMPOSITION_VERSION
+            )
+            metadata["ai_intake_turn_latency_ms"] = max(
+                0, int((time.perf_counter() - turn_started) * 1000)
+            )
+            inbound.metadata_ = metadata
         if decision.action == "respond":
+            response_metadata = ai_message_metadata(
+                session=session,
+                version=version,
+                purpose="conversation",
+                provider=composition.provider if composition is not None else None,
+                model=composition.model if composition is not None else None,
+            )
+            response_metadata.update(
+                {
+                    "ai_response_source": (
+                        composition.response_source
+                        if composition is not None
+                        else decision.metadata.get("response_source")
+                    ),
+                    "ai_question_key": decision.metadata.get("question_key"),
+                    "ai_answer_status": decision.metadata.get("answer_status"),
+                    "ai_composition_template_version": (
+                        ai_intake.RESPONSE_COMPOSITION_VERSION
+                    ),
+                }
+            )
             delivery = team_inbox_outbound.send_ai_intake_message(
                 db,
                 conversation=conversation,
                 body_text=decision.response_text or "",
-                metadata=ai_message_metadata(
-                    session=session,
-                    version=version,
-                    purpose="conversation",
-                ),
+                metadata=response_metadata,
                 dedupe_key=f"ai-intake-conversation:{session.id}:{inbound.id}",
             )
             generation.outbound_message_id = (
                 UUID(delivery.message_id) if delivery.message_id else None
             )
+            if composition_attempt is not None and delivery.message_id:
+                composition_attempt.outbound_message_id = UUID(delivery.message_id)
             logger.info(
                 "ai intake response delivery resolved",
                 extra={
@@ -3035,33 +3503,110 @@ def _process_one_session(
             engine_handoff_state = decision.state
             engine_handoff_state.escalation_reason = "response_delivery_failed"
             engine_handoff_state.handoff_status = "requested"
+        if decision.action == "resolved":
+            resolution_metadata = ai_message_metadata(
+                session=session,
+                version=version,
+                purpose="resolution",
+                provider=composition.provider if composition is not None else None,
+                model=composition.model if composition is not None else None,
+            )
+            resolution_metadata["ai_response_source"] = (
+                composition.response_source
+                if composition is not None
+                else decision.metadata.get("response_source")
+            )
+            resolution_metadata["ai_composition_template_version"] = (
+                ai_intake.RESPONSE_COMPOSITION_VERSION
+            )
+            delivery = team_inbox_outbound.send_ai_intake_message(
+                db,
+                conversation=conversation,
+                body_text=decision.response_text or "",
+                metadata=resolution_metadata,
+                dedupe_key=f"ai-intake-resolution:{session.id}:{inbound.id}",
+            )
+            if delivery.kind != "queued":
+                engine_forced_handoff = True
+                engine_handoff_state = decision.state
+                engine_handoff_state.escalation_reason = "resolution_delivery_failed"
+                engine_handoff_state.handoff_status = "requested"
+            else:
+                outbound_id = UUID(delivery.message_id) if delivery.message_id else None
+                generation.outbound_message_id = outbound_id
+                if composition_attempt is not None:
+                    composition_attempt.outbound_message_id = outbound_id
+                session_metadata = dict(session.metadata_ or {})
+                session_metadata.update(
+                    {
+                        "resolution_reason": decision.metadata.get("reason"),
+                        "resolved_inbound_message_id": str(inbound.id),
+                    }
+                )
+                session.metadata_ = session_metadata
+                complete_session(session, state="resolved")
+                transition_conversation_status(
+                    db,
+                    conversation=conversation,
+                    status=InboxConversationStatus.resolved,
+                    reason=team_inbox_status.InboxStatusReason.ai_intake_resolved,
+                    source_id=f"ai-intake-resolved:{session.id}:{inbound.id}",
+                )
+                mark_conversation_ai_metadata(
+                    conversation, session=session, active=False
+                )
+                mark_inbound_processed(
+                    session,
+                    inbound_message_id=inbound.id,
+                    generation_attempt_id=(
+                        composition_attempt.id
+                        if composition_attempt is not None
+                        else generation.id
+                    ),
+                )
+                return True
         if decision.action == "handoff":
             metadata["ai_intake_status"] = "classified"
             inbound.metadata_ = metadata
             if decision.response_text:
+                handoff_metadata = ai_message_metadata(
+                    session=session,
+                    version=version,
+                    purpose="handoff",
+                    provider=(
+                        composition.provider if composition is not None else None
+                    ),
+                    model=composition.model if composition is not None else None,
+                )
+                handoff_metadata.update(
+                    {
+                        "ai_response_source": (
+                            composition.response_source
+                            if composition is not None
+                            else decision.metadata.get("response_source")
+                        ),
+                        "ai_composition_template_version": (
+                            ai_intake.RESPONSE_COMPOSITION_VERSION
+                        ),
+                    }
+                )
                 team_inbox_outbound.send_ai_intake_message(
                     db,
                     conversation=conversation,
                     body_text=decision.response_text,
-                    metadata=ai_message_metadata(
-                        session=session,
-                        version=version,
-                        purpose="handoff",
-                    ),
+                    metadata=handoff_metadata,
                     dedupe_key=f"ai-intake-handoff-message:{session.id}:{inbound.id}",
                 )
             engine_forced_handoff = True
             engine_handoff_state = decision.state
-        elif not engine_forced_handoff and decision.action != "continue_classifier":
-            session.state = "failed"
-            complete_session(session, state="failed")
-            mark_conversation_ai_metadata(conversation, session=session, active=False)
-            mark_inbound_processed(
-                session,
-                inbound_message_id=inbound.id,
-                generation_attempt_id=generation.id,
-            )
-            return True
+        elif not engine_forced_handoff:
+            metadata["ai_intake_engine_action"] = "handoff"
+            metadata["ai_intake_engine_reason"] = "unsupported_engine_action"
+            inbound.metadata_ = metadata
+            decision.state.escalation_reason = "unsupported_engine_action"
+            decision.state.handoff_status = "requested"
+            engine_forced_handoff = True
+            engine_handoff_state = decision.state
     follow_up_question = (
         outcome.classification.follow_up_question
         if outcome.classification is not None
@@ -3085,8 +3630,10 @@ def _process_one_session(
         )
         if not delivery_question:
             delivery_question = DEFAULT_CLARIFICATION_QUESTIONS[0]
-        metadata.setdefault("ai_intake_engine_action", "continue_classifier")
-        metadata.setdefault("ai_intake_engine_reason", "legacy_classifier_path")
+        metadata.setdefault("ai_intake_engine_action", "legacy_clarification")
+        metadata.setdefault(
+            "ai_intake_engine_reason", "legacy_classifier_clarification"
+        )
         inbound.metadata_ = metadata
         delivery = team_inbox_outbound.send_ai_intake_follow_up(
             db,

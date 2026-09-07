@@ -41,6 +41,7 @@ class InboxStatusReason(StrEnum):
     ai_fallback_escalation = "ai_fallback_escalation"
     ai_human_takeover = "ai_human_takeover"
     ai_intake_expired = "ai_intake_expired"
+    ai_intake_resolved = "ai_intake_resolved"
     ai_intake_failed = "ai_intake_failed"
     historical_reconstruction = "historical_reconstruction"
 

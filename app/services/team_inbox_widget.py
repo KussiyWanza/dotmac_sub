@@ -32,6 +32,7 @@ from app.services import auth_flow as auth_flow_service
 from app.services import (
     conversation_lead_relationships,
     team_inbox_automation,
+    team_inbox_channel_receive,
     team_inbox_participants,
     team_inbox_realtime,
     team_inbox_routing,
@@ -748,6 +749,14 @@ def broker_fiber_visitor_session(
     conversation.first_message_at = conversation.first_message_at or now
     conversation.last_message_at = now
     db.flush()
+    team_inbox_channel_receive.start_ai_intake_for_persisted_widget_message(
+        db,
+        command=team_inbox_channel_receive.PersistedWidgetAiIntakeCommand(
+            conversation_id=conversation.id,
+            message_id=message.id,
+            created_conversation=True,
+        ),
+    )
     team_inbox_participants.record_message_participants(
         db,
         conversation=conversation,
@@ -866,7 +875,8 @@ def list_session_messages(
                 else None,
                 "sender_type": "visitor"
                 if message.direction == InboxMessageDirection.inbound.value
-                else "agent",
+                else str((message.metadata_ or {}).get("sender_type") or "agent"),
+                "author_name": (message.metadata_ or {}).get("author_name"),
                 "from_customer": message.direction
                 == InboxMessageDirection.inbound.value,
             }
@@ -887,9 +897,21 @@ def add_visitor_message(
     clean_body = str(body or "").strip()
     if not clean_body:
         raise _error("message_required", "Message body is required.")
-    conversation = db.get(InboxConversation, principal.conversation_id)
+    conversation = (
+        db.query(InboxConversation)
+        .filter(InboxConversation.id == principal.conversation_id)
+        .with_for_update()
+        .one_or_none()
+    )
     if conversation is None or not conversation.is_active:
         raise _error("conversation_not_found", "Conversation not found.")
+    is_first_inbound_message = (
+        db.query(InboxMessage.id)
+        .filter(InboxMessage.conversation_id == conversation.id)
+        .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
+        .first()
+        is None
+    )
     now = datetime.now(UTC)
     metadata = {
         "source": "native_chat_widget",
@@ -918,6 +940,14 @@ def add_visitor_message(
             source_id=f"widget-reopen:{conversation.id}:{uuid.uuid4()}",
         )
     db.flush()
+    team_inbox_channel_receive.start_ai_intake_for_persisted_widget_message(
+        db,
+        command=team_inbox_channel_receive.PersistedWidgetAiIntakeCommand(
+            conversation_id=conversation.id,
+            message_id=message.id,
+            created_conversation=is_first_inbound_message,
+        ),
+    )
     payload = team_inbox_realtime.message_event_payload(
         conversation_id=str(conversation.id),
         message_id=str(message.id),

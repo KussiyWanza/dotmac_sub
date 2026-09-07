@@ -37,6 +37,7 @@ SUPPORTED_NOTICE_CHANNELS = frozenset(
         InboxChannelType.whatsapp.value,
         InboxChannelType.facebook_messenger.value,
         InboxChannelType.instagram_dm.value,
+        InboxChannelType.chat_widget.value,
     }
 )
 NOTICE_INITIAL = "initial"

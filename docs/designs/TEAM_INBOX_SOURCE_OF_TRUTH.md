@@ -93,15 +93,15 @@ always excludes the conversation. The maintenance owner locks each candidate
 conversation and rechecks assignment and message evidence in the owner
 transaction before applying the audited status transition.
 
-AI customer-response timeout is a separate maintenance consequence. The AI
-session row owns the persisted `awaiting_customer` deadline, but Team Inbox owns
-what happens after it expires: the maintenance owner locks the expired session
-and conversation, rejects races with newer customer replies or human takeover,
-backfills a fresh policy-derived deadline for legacy waits that have no deadline,
-creates one private handoff summary note, applies the normal routing plan, and
-uses the existing assignment/FIFO queue services. Queue notices, handoff notices
-and agent assignment remain Team Inbox consequences with their existing dedupe
-and audit evidence; AI does not create queue records directly.
+AI customer waiting is not an escalation signal. The AI session owns
+`awaiting_customer`, the wait start, and a separate long-term `expires_at` based
+on `customer_wait_expiry_hours`. Team Inbox maintenance locks only sessions past
+that long-term expiry, rejects races with a newer customer reply or human
+takeover, and closes the inactive session/conversation without creating a note,
+assignment, or FIFO queue entry. Legacy five-minute wait rows are extended onto
+the long-term lifecycle before any consequence. Human routing still occurs only
+for a recorded explicit handoff reason such as a human request, unsupported
+issue, policy boundary, required tool failure, or exhausted troubleshooting.
 ## Inbound flow and idempotency
 
 1. The adapter verifies the provider signature or SMTP envelope and reduces the
@@ -231,7 +231,8 @@ Queue communication is also owned by Team Inbox routing. `inbox_queue_notificati
 records initial position notices, movement updates, fifteen-minute unchanged
 heartbeats, handoff notices, dedupe keys, delivery outcome and outbound message
 links. Customer-visible queue messages are sent only through Team Inbox
-outbound intents and only for WhatsApp, Facebook Messenger and Instagram DM.
+outbound intents and only for WhatsApp, Facebook Messenger, Instagram DM, and
+the native chat widget.
 Queue messages never invent estimated wait times. Promotion, transfer,
 resolution, cancellation or assignment stops further queue updates.
 

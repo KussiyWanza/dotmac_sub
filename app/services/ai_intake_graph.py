@@ -188,12 +188,19 @@ def run_ai_intake_graph(
             conversation=conversation,
             session=session,
         )
+    decision = engine._handoff_decision(
+        engine._policy(version, channel=conversation.channel_type),
+        state,
+        reason="graph_completed_without_action",
+        response="I will pass the details I have collected to the support team.",
+    )
     return engine.ConversationEngineDecision(
-        action=str(result.get("graph_action") or "continue_classifier"),
-        state=state,
-        response_text=_text_or_none(result.get("response_text")),
+        action=decision.action,
+        state=decision.state,
+        response_text=decision.response_text,
+        handoff_summary=decision.handoff_summary,
         metadata={
-            "reason": str(result.get("graph_reason") or "langgraph_complete"),
+            **decision.metadata,
             "engine": LANGGRAPH_ENGINE_MODE,
             "node_trace": result.get("node_trace") or [],
         },
@@ -207,7 +214,7 @@ def graph_topology() -> dict[str, tuple[str, ...]]:
         "load_policy": ("load_state",),
         "load_state": ("understand_message",),
         "understand_message": ("merge_facts",),
-        "merge_facts": ("identify_customer",),
+        "merge_facts": ("handoff", "identify_customer"),
         "identify_customer": ("determine_missing_information",),
         "determine_missing_information": (
             "request_identifier",
@@ -265,7 +272,11 @@ def _build_graph(state_graph: Any, runtime: _GraphRuntime) -> Any:
     builder.add_edge("load_policy", "load_state")
     builder.add_edge("load_state", "understand_message")
     builder.add_edge("understand_message", "merge_facts")
-    builder.add_edge("merge_facts", "identify_customer")
+    builder.add_conditional_edges(
+        "merge_facts",
+        _route_after_merge,
+        {"handoff": "handoff", "identify_customer": "identify_customer"},
+    )
     builder.add_edge("identify_customer", "determine_missing_information")
     builder.add_conditional_edges(
         "determine_missing_information",
@@ -311,7 +322,9 @@ def _build_graph(state_graph: Any, runtime: _GraphRuntime) -> Any:
 
 def _load_policy(runtime: _GraphRuntime):
     def node(state: AiIntakeGraphState) -> AiIntakeGraphState:
-        policy = engine._policy(runtime.version)
+        policy = engine._policy(
+            runtime.version, channel=runtime.conversation.channel_type
+        )
         allowed_tools = [
             key for key in engine.TOOL_CATALOG if engine._tool_enabled(policy, key)
         ]
@@ -393,8 +406,33 @@ def _merge_facts(runtime: _GraphRuntime):
     def node(state: AiIntakeGraphState) -> AiIntakeGraphState:
         dotmac_state = _dotmac_state(state)
         before_intent = dotmac_state.current_intent
-        engine._merge_facts(dotmac_state, dict(state.get("new_facts") or {}))
+        latest_facts = dict(state.get("new_facts") or {})
+        engine._merge_facts(dotmac_state, latest_facts)
         engine._merge_classification(dotmac_state, runtime.classification)
+        if runtime.classification is not None:
+            latest_facts.update(
+                engine._meaningful_understanding_facts(
+                    runtime.classification.message_facts
+                )
+            )
+        engine._link_latest_answer(
+            dotmac_state,
+            latest_body=runtime.latest_body,
+            latest_facts=latest_facts,
+            now=runtime.now,
+        )
+        if dotmac_state.human_requested:
+            return _set_graph_decision(
+                state,
+                dotmac_state=dotmac_state,
+                action="handoff",
+                reason="human_requested",
+                response=engine._handoff_response(
+                    _policy(state),
+                    default="I will pass this to a support agent now.",
+                ),
+                node="merge_facts",
+            )
         if dotmac_state.current_intent != before_intent and before_intent:
             engine._record_event(
                 runtime.session,
@@ -489,20 +527,6 @@ def _determine_missing_information(runtime: _GraphRuntime):
                 ),
                 node="determine_missing_information",
             )
-        if runtime.session.expires_at is not None and runtime.session.expires_at <= (
-            runtime.now
-        ):
-            return _set_graph_decision(
-                state,
-                dotmac_state=dotmac_state,
-                action="handoff",
-                reason="timeout",
-                response=engine._handoff_response(
-                    policy,
-                    default="I will pass this to the support team so they can continue.",
-                ),
-                node="determine_missing_information",
-            )
         if engine._requires_identity_before_tools(dotmac_state, policy):
             requested = engine._next_identifier_to_request(dotmac_state, policy)
             if requested is not None:
@@ -544,24 +568,29 @@ def _request_identifier(runtime: _GraphRuntime):
     def node(state: AiIntakeGraphState) -> AiIntakeGraphState:
         dotmac_state = _dotmac_state(state)
         requested = str(state.get("selected_tool") or "").strip()
-        if requested:
-            dotmac_state.missing_facts = engine._with_unique(
-                dotmac_state.missing_facts,
-                requested,
-            )
-            dotmac_state.already_requested_fields = engine._with_unique(
-                dotmac_state.already_requested_fields,
-                requested,
-            )
-            dotmac_state.clarification_count += 1
         response = engine._identifier_question(requested)
+        question = engine._record_question(
+            dotmac_state,
+            key=requested,
+            expected_fact=requested,
+            prompt=response,
+            now=runtime.now,
+        )
         _log_node("request_identifier", runtime, field=requested)
-        return _set_graph_decision(
+        return _set_existing_decision(
             state,
-            dotmac_state=dotmac_state,
-            action="respond",
-            reason="missing_customer_identifier",
-            response=response,
+            engine.ConversationEngineDecision(
+                action="respond",
+                state=dotmac_state,
+                response_text=question.prompt,
+                metadata={
+                    "reason": "missing_customer_identifier",
+                    "question_key": question.key,
+                    "expected_fact": question.expected_fact,
+                    "next_action": "ask_question",
+                    "response_source": "template",
+                },
+            ),
             node="request_identifier",
         )
 
@@ -595,7 +624,7 @@ def _execute_tool(runtime: _GraphRuntime):
         selected = str(state.get("selected_tool") or "").strip()
         result: dict[str, object] = {"status": "unavailable", "reason": "no_tool"}
         if selected == "subscriber_monitoring" and dotmac_state.subscriber_id:
-            result = engine.execute_tool(
+            result, latency_ms = engine._execute_timed_tool(
                 runtime.db,
                 selected,
                 {"subscriber_id": dotmac_state.subscriber_id},
@@ -603,7 +632,9 @@ def _execute_tool(runtime: _GraphRuntime):
                 conversation=runtime.conversation,
                 tool_mode=runtime.tool_mode,
             )
-            engine._record_tool_result(dotmac_state, selected, result)
+            engine._record_tool_result(
+                dotmac_state, selected, result, latency_ms=latency_ms
+            )
         _log_node(
             "execute_tool",
             runtime,
@@ -623,7 +654,11 @@ def _interpret_tool_result(runtime: _GraphRuntime):
         policy = _policy(state)
         result = state.get("tool_result")
         status = result.get("status") if isinstance(result, dict) else None
-        if status == "unavailable":
+        if status == "unavailable" and engine._tool_failure_requires_handoff(
+            policy,
+            tool_key="subscriber_monitoring",
+            status="unavailable",
+        ):
             return _set_graph_decision(
                 state,
                 dotmac_state=dotmac_state,
@@ -638,7 +673,11 @@ def _interpret_tool_result(runtime: _GraphRuntime):
                 ),
                 node="interpret_tool_result",
             )
-        if status == "unauthorized":
+        if status == "unauthorized" and engine._tool_failure_requires_handoff(
+            policy,
+            tool_key="subscriber_monitoring",
+            status="unauthorized",
+        ):
             return _set_graph_decision(
                 state,
                 dotmac_state=dotmac_state,
@@ -696,27 +735,29 @@ def _troubleshoot(runtime: _GraphRuntime):
         if engine._technical_issue(dotmac_state) and engine._monitoring_offline(
             dotmac_state
         ):
-            if "los_status" not in dotmac_state.already_requested_fields:
-                dotmac_state.already_requested_fields = engine._with_unique(
-                    dotmac_state.already_requested_fields,
-                    "los_status",
-                )
-                dotmac_state.troubleshooting_completed = engine._with_unique(
-                    dotmac_state.troubleshooting_completed,
-                    "monitoring_checked",
-                )
-                return _set_graph_decision(
-                    state,
-                    dotmac_state=dotmac_state,
+            dotmac_state.troubleshooting_completed = engine._with_unique(
+                dotmac_state.troubleshooting_completed,
+                "monitoring_checked",
+            )
+        question = engine._next_useful_question(dotmac_state, policy, now=runtime.now)
+        if question is not None:
+            return _set_existing_decision(
+                state,
+                engine.ConversationEngineDecision(
                     action="respond",
-                    reason="troubleshooting_los_check",
-                    response=(
-                        "Your connection is currently appearing offline from our side. "
-                        "Is the router or ONU powered on, and are you seeing any red "
-                        "warning light?"
-                    ),
-                    node="troubleshoot",
-                )
+                    state=dotmac_state,
+                    response_text=question.prompt,
+                    metadata={
+                        "reason": "useful_missing_fact",
+                        "question_key": question.key,
+                        "expected_fact": question.expected_fact,
+                        "answer_status": question.answer_status.value,
+                        "next_action": "ask_question",
+                        "response_source": "template",
+                    },
+                ),
+                node="troubleshoot",
+            )
         if engine._should_handoff_after_classification(dotmac_state, policy):
             return _set_graph_decision(
                 state,
@@ -731,23 +772,52 @@ def _troubleshoot(runtime: _GraphRuntime):
                 ),
                 node="troubleshoot",
             )
-        _log_node("troubleshoot", runtime, matched=False)
-        return _trace(
-            state,
-            "troubleshoot",
-            {
-                "dotmac_state": dotmac_state,
-                "graph_action": "continue_classifier",
-                "graph_reason": "legacy_classifier_path",
-            },
+        if dotmac_state.classification_requires_follow_up:
+            question = engine._record_question(
+                dotmac_state,
+                key="intent_clarification",
+                expected_fact="intent",
+                prompt=(
+                    dotmac_state.classification_follow_up_question
+                    or "Could you briefly tell me what you need help with?"
+                ),
+                now=runtime.now,
+            )
+            return _set_existing_decision(
+                state,
+                engine.ConversationEngineDecision(
+                    action="respond",
+                    state=dotmac_state,
+                    response_text=question.prompt,
+                    metadata={
+                        "reason": "classifier_clarification",
+                        "question_key": question.key,
+                        "expected_fact": question.expected_fact,
+                        "next_action": "ask_question",
+                        "response_source": "template",
+                    },
+                ),
+                node="troubleshoot",
+            )
+        decision = engine._handoff_decision(
+            policy,
+            dotmac_state,
+            reason="unsupported_or_troubleshooting_exhausted",
+            response=engine._handoff_response(
+                policy,
+                default=(
+                    "I will pass the details I have collected to the support team."
+                ),
+            ),
         )
+        return _set_existing_decision(state, decision, node="troubleshoot")
 
     return node
 
 
 def _decide_next_action(runtime: _GraphRuntime):
     def node(state: AiIntakeGraphState) -> AiIntakeGraphState:
-        action = str(state.get("graph_action") or "continue_classifier")
+        action = str(state.get("graph_action") or "handoff")
         reason = str(state.get("graph_reason") or "langgraph_decision")
         _log_node("decide_next_action", runtime, action=action, reason=reason)
         return _trace(state, "decide_next_action", {})
@@ -758,14 +828,26 @@ def _decide_next_action(runtime: _GraphRuntime):
 def _compose_response(runtime: _GraphRuntime):
     def node(state: AiIntakeGraphState) -> AiIntakeGraphState:
         dotmac_state = _dotmac_state(state)
+        completed_trace = [*(state.get("node_trace") or []), "compose_response"][-40:]
+        existing = state.get("decision")
+        existing_metadata = (
+            dict(existing.metadata)
+            if isinstance(existing, engine.ConversationEngineDecision)
+            else {}
+        )
         decision = engine.ConversationEngineDecision(
             action=str(state.get("graph_action") or "respond"),
             state=dotmac_state,
             response_text=_text_or_none(state.get("response_text")),
             metadata={
-                "reason": str(state.get("graph_reason") or "response_ready"),
+                **existing_metadata,
+                "reason": str(
+                    existing_metadata.get("reason")
+                    or state.get("graph_reason")
+                    or "response_ready"
+                ),
                 "engine": LANGGRAPH_ENGINE_MODE,
-                "node_trace": state.get("node_trace") or [],
+                "node_trace": completed_trace,
             },
         )
         _log_node(
@@ -782,6 +864,7 @@ def _compose_response(runtime: _GraphRuntime):
 def _handoff(runtime: _GraphRuntime):
     def node(state: AiIntakeGraphState) -> AiIntakeGraphState:
         dotmac_state = _dotmac_state(state)
+        completed_trace = [*(state.get("node_trace") or []), "handoff"][-40:]
         policy = _policy(state)
         reason = str(state.get("graph_reason") or "handoff")
         response = _text_or_none(
@@ -804,7 +887,7 @@ def _handoff(runtime: _GraphRuntime):
             metadata={
                 **decision.metadata,
                 "engine": LANGGRAPH_ENGINE_MODE,
-                "node_trace": state.get("node_trace") or [],
+                "node_trace": completed_trace,
             },
         )
         _log_node("handoff", runtime, reason=reason)
@@ -824,15 +907,27 @@ def _handoff(runtime: _GraphRuntime):
 def _resolved(runtime: _GraphRuntime):
     def node(state: AiIntakeGraphState) -> AiIntakeGraphState:
         dotmac_state = _dotmac_state(state)
+        completed_trace = [*(state.get("node_trace") or []), "resolved"][-40:]
         dotmac_state.resolution_status = "resolved"
+        existing = state.get("decision")
+        existing_metadata = (
+            dict(existing.metadata)
+            if isinstance(existing, engine.ConversationEngineDecision)
+            else {}
+        )
         decision = engine.ConversationEngineDecision(
             action="resolved",
             state=dotmac_state,
             response_text=_text_or_none(state.get("response_text")),
             metadata={
-                "reason": str(state.get("graph_reason") or "resolved"),
+                **existing_metadata,
+                "reason": str(
+                    existing_metadata.get("reason")
+                    or state.get("graph_reason")
+                    or "resolved"
+                ),
                 "engine": LANGGRAPH_ENGINE_MODE,
-                "node_trace": state.get("node_trace") or [],
+                "node_trace": completed_trace,
             },
         )
         _log_node("resolved", runtime)
@@ -851,6 +946,10 @@ def _route_missing_information(state: AiIntakeGraphState) -> str:
     return "select_tool"
 
 
+def _route_after_merge(state: AiIntakeGraphState) -> str:
+    return "handoff" if state.get("graph_action") == "handoff" else "identify_customer"
+
+
 def _route_selected_tool(state: AiIntakeGraphState) -> str:
     action = state.get("graph_action")
     if action == "handoff":
@@ -865,14 +964,14 @@ def _route_tool_result(state: AiIntakeGraphState) -> str:
 
 
 def _route_next_action(state: AiIntakeGraphState) -> str:
-    action = str(state.get("graph_action") or "continue_classifier")
+    action = str(state.get("graph_action") or "handoff")
     if action == "handoff":
         return "handoff"
     if action == "resolved":
         return "resolved"
     if action == "respond":
         return "compose_response"
-    return "end"
+    return "handoff"
 
 
 def _set_existing_decision(
@@ -980,10 +1079,11 @@ def _serialize_recent_messages(
 ) -> tuple[dict[str, str], ...]:
     serialized: list[dict[str, str]] = []
     for message in recent_messages:
-        direction = str(getattr(message, "direction", "") or "")
+        role_value = getattr(message, "role", "")
+        role = str(getattr(role_value, "value", role_value) or "")
         body = str(getattr(message, "body", "") or "").strip()
         if body:
-            serialized.append({"direction": direction[:20], "body": body[:1200]})
+            serialized.append({"role": role[:20], "body": body[:1200]})
     return tuple(serialized[-6:])
 
 
