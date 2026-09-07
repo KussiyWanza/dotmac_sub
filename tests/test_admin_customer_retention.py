@@ -1,12 +1,7 @@
 from __future__ import annotations
 
-from uuid import uuid4
-
 from jinja2 import nodes
 
-from app.models.collections import DunningCase
-from app.models.subscriber import Subscriber
-from app.services import crm_reporting
 from app.web.admin import build_router
 from app.web.admin import customer_retention as retention
 
@@ -55,47 +50,6 @@ def test_retention_templates_only_import_published_ui_macros():
             name for name in imported_names if not hasattr(macro_module, name)
         )
         assert missing == [], f"{template_name} imports unavailable macros: {missing}"
-
-
-def test_retention_page_fetches_twenty_rows_at_a_time(db_session):
-    subscribers = [
-        Subscriber(
-            first_name="Retention",
-            last_name=f"Customer {index:02d}",
-            email=f"retention-{uuid4().hex}@example.com",
-        )
-        for index in range(30)
-    ]
-    paid_customer = Subscriber(
-        first_name="Paid",
-        last_name="Customer",
-        email=f"paid-{uuid4().hex}@example.com",
-    )
-    db_session.add_all([*subscribers, paid_customer])
-    db_session.flush()
-    db_session.add_all(
-        DunningCase(account_id=subscriber.id) for subscriber in subscribers
-    )
-    db_session.commit()
-
-    first = crm_reporting.get_customer_retention_page(
-        db_session, query=crm_reporting.CustomerRetentionPageQuery(page=1)
-    )
-    second = crm_reporting.get_customer_retention_page(
-        db_session, query=crm_reporting.CustomerRetentionPageQuery(page=2)
-    )
-
-    assert len(first.rows) == 20
-    assert first.total_count == 30
-    assert first.has_next
-    assert second.page == 2
-    assert len(second.rows) == 10
-    assert str(paid_customer.id) not in {
-        row.customer_id for row in (*first.rows, *second.rows)
-    }
-    assert {row.customer_id for row in first.rows}.isdisjoint(
-        row.customer_id for row in second.rows
-    )
 
 
 def test_retention_tracker_exposes_bottom_right_pagination_controls():

@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.models.collections import DunningCase
 from app.models.network import OLTDevice, OntUnit, OnuOnlineStatus
 from app.models.provisioning import (
     AppointmentStatus,
@@ -14,7 +15,7 @@ from app.models.provisioning import (
     ServiceOrder,
     ServiceOrderStatus,
 )
-from app.models.subscriber import SubscriberStatus
+from app.models.subscriber import Subscriber, SubscriberStatus
 from app.services import crm_reporting, provisioning_managers, web_reports
 from app.services.sot_registry.registry import registry_validation_errors
 from app.services.ui_contracts import ChartProjection
@@ -100,6 +101,47 @@ def test_every_operational_report_has_a_typed_empty_state(db_session, slug):
     assert len(report.columns) > 0
     expected_header = (report.export_columns or report.columns)[0]
     assert crm_reporting.build_csv(report).startswith(expected_header)
+
+
+def test_retention_page_fetches_twenty_rows_at_a_time(db_session):
+    subscribers = [
+        Subscriber(
+            first_name="Retention",
+            last_name=f"Customer {index:02d}",
+            email=f"retention-{uuid4().hex}@example.com",
+        )
+        for index in range(30)
+    ]
+    paid_customer = Subscriber(
+        first_name="Paid",
+        last_name="Customer",
+        email=f"paid-{uuid4().hex}@example.com",
+    )
+    db_session.add_all([*subscribers, paid_customer])
+    db_session.flush()
+    db_session.add_all(
+        DunningCase(account_id=subscriber.id) for subscriber in subscribers
+    )
+    db_session.commit()
+
+    first = crm_reporting.get_customer_retention_page(
+        db_session, query=crm_reporting.CustomerRetentionPageQuery(page=1)
+    )
+    second = crm_reporting.get_customer_retention_page(
+        db_session, query=crm_reporting.CustomerRetentionPageQuery(page=2)
+    )
+
+    assert len(first.rows) == 20
+    assert first.total_count == 30
+    assert first.has_next
+    assert second.page == 2
+    assert len(second.rows) == 10
+    assert str(paid_customer.id) not in {
+        row.customer_id for row in (*first.rows, *second.rows)
+    }
+    assert {row.customer_id for row in first.rows}.isdisjoint(
+        row.customer_id for row in second.rows
+    )
 
 
 def test_agent_performance_period_defaults_and_presets_use_lagos_boundaries():
