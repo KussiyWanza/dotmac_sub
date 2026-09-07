@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 
 import pytest
 
@@ -52,7 +53,8 @@ def _request(
     return process_paystack_webhook(db=db, body=body, signature=signature)
 
 
-def test_verified_payment_event_is_processed_once(db_session, monkeypatch):
+def test_verified_payment_event_is_processed_once(db_session, monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="app.services.api_billing_webhooks")
     binding = _install(db_session, monkeypatch)
     payload = {
         "event": "transfer.success",
@@ -69,6 +71,18 @@ def test_verified_payment_event_is_processed_once(db_session, monkeypatch):
     assert receipt.state == "processed"
     assert receipt.attempt_count == 1
     assert db_session.query(PaymentProviderEvent).count() == 1
+    records = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "payment_webhook_consequence_confirmed"
+    ]
+    assert len(records) == 2
+    assert {record.replayed for record in records} == {False, True}
+    for record in records:
+        assert record.source_provider_event_id == "paystack-payment-inbox-1"
+        assert record.receipt_id == str(receipt.id)
+        assert record.provider_event_id is not None
+        assert record.consequence_status == "ok"
 
 
 def test_processed_receipt_replay_still_validates_provider(db_session, monkeypatch):
