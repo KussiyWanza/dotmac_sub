@@ -19,6 +19,52 @@ DateTime? _toDate(dynamic v) {
   return DateTime.tryParse(v.toString())?.toLocal();
 }
 
+enum QuoteSourceState { native, retired, unknown }
+
+/// The complete `/me/quotes` read contract, including the command owner's
+/// decision about whether the customer may request another quote.
+class QuotesPage {
+  QuotesPage({
+    required this.quotes,
+    required this.total,
+    required this.open,
+    required this.sourceState,
+    required this.actionsAvailable,
+    this.actionsUnavailableMessage,
+  });
+
+  final List<Quote> quotes;
+  final int total;
+  final int open;
+  final QuoteSourceState sourceState;
+  final bool actionsAvailable;
+  final String? actionsUnavailableMessage;
+
+  factory QuotesPage.fromJson(Map<String, dynamic> json) {
+    final sourceState = switch (json['source_state']) {
+      'native' => QuoteSourceState.native,
+      'retired' => QuoteSourceState.retired,
+      _ => QuoteSourceState.unknown,
+    };
+    final unavailableMessage = json['actions_unavailable_message']?.toString();
+    return QuotesPage(
+      quotes: [
+        for (final item in (json['quotes'] as List? ?? const []))
+          if (_asMap(item) case final quote?) Quote.fromJson(quote),
+      ],
+      total: (json['total'] as num?)?.toInt() ?? 0,
+      open: (json['open'] as num?)?.toInt() ?? 0,
+      sourceState: sourceState,
+      // Fail closed when an older or malformed server omits eligibility.
+      actionsAvailable: json['actions_available'] == true,
+      actionsUnavailableMessage:
+          unavailableMessage == null || unavailableMessage.trim().isEmpty
+              ? null
+              : unavailableMessage,
+    );
+  }
+}
+
 /// Format a decimal-string amount as Naira with thousands separators.
 String naira(String amount) {
   final value = double.tryParse(amount) ?? 0;

@@ -16,6 +16,7 @@ from app.models.team_inbox import InboxChannelType, InboxConversation
 from app.schemas.ai_intake import (
     AiIntakeCategory,
     AiIntakeClassification,
+    AiIntakeExtractedFacts,
     AiIntakeIntent,
 )
 from app.services import (
@@ -134,6 +135,7 @@ def _classification(
     *,
     requires_follow_up: bool = False,
     follow_up_question: str | None = None,
+    message_facts: AiIntakeExtractedFacts | None = None,
 ):
     return AiIntakeClassification(
         intent=AiIntakeIntent(intent),
@@ -143,6 +145,7 @@ def _classification(
         requires_follow_up=requires_follow_up,
         follow_up_question=follow_up_question,
         summary="Customer needs support.",
+        message_facts=message_facts or AiIntakeExtractedFacts(),
     )
 
 
@@ -168,10 +171,11 @@ def test_identified_subscriber_does_not_request_portal_id(db_session, monkeypatc
         classification=_classification(),
     )
 
-    assert decision.action == "continue_classifier"
+    assert decision.action == "respond"
+    assert decision.metadata["question_key"] == "device_scope"
     assert "Portal ID" not in (decision.response_text or "")
     assert decision.state.subscriber_id == str(subscriber.id)
-    assert decision.state.monitoring_results == []
+    assert decision.state.monitoring_results == [{"status": "no_data"}]
     assert any(
         item["tool"] == "subscriber_monitoring" and item["status"] == "no_data"
         for item in decision.state.tool_executions
@@ -462,7 +466,7 @@ def test_monitoring_no_data_and_unavailable_are_not_offline(db_session, monkeypa
             session_id=str(uuid4()),
             policy_version_id=None,
             channel="whatsapp",
-            monitoring_results=[result] if result["status"] == "available" else [],
+            monitoring_results=[result],
         )
         assert result == {"status": status.value}
         assert engine._monitoring_offline(state) is False
@@ -503,9 +507,9 @@ def test_first_turn_handoff_rule_is_ignored_at_runtime(db_session):
         ),
     )
 
-    assert decision.action == "continue_classifier"
-    assert decision.metadata["reason"] == "legacy_classifier_path"
-    assert decision.state.escalation_reason is None
+    assert decision.action == "handoff"
+    assert decision.metadata["reason"] == "unsupported_or_troubleshooting_exhausted"
+    assert decision.metadata["reason"] != "bad_immediate_handoff"
 
 
 def test_rich_first_message_extracts_existing_facts(db_session):
@@ -603,7 +607,9 @@ def test_configured_no_internet_playbook_asks_first_line_steps(db_session):
     assert second.action == "respond"
     assert "red LOS" in (second.response_text or "")
     assert "Sorry about the downtime." not in (second.response_text or "")
-    assert "los_status" in second.state.already_requested_fields
+    assert "los_state" in second.state.already_requested_fields
+    assert second.metadata["question_key"] == "los_status"
+    assert second.metadata["expected_fact"] == "los_state"
 
 
 def test_no_internet_without_playbook_does_not_auto_handoff_after_classification(
@@ -635,9 +641,9 @@ def test_no_internet_without_playbook_does_not_auto_handoff_after_classification
         classification=_classification(),
     )
 
-    assert decision.action == "continue_classifier"
-    assert decision.metadata["reason"] == "legacy_classifier_path"
-    assert decision.response_text is None
+    assert decision.action == "respond"
+    assert decision.metadata["reason"] == "useful_missing_fact"
+    assert decision.metadata["question_key"] == "issue_started_when"
 
 
 def test_monitoring_troubleshooting_then_red_los_handoff_retains_state(db_session):
@@ -667,7 +673,7 @@ def test_monitoring_troubleshooting_then_red_los_handoff_retains_state(db_sessio
     )
 
     assert first.action == "respond"
-    assert "red warning light" in (first.response_text or "")
+    assert "powered on" in (first.response_text or "")
     assert second.action == "handoff"
     assert second.state.collected_facts["router_restarted"] is True
     assert second.state.collected_facts["router_powered"] is True
@@ -675,7 +681,9 @@ def test_monitoring_troubleshooting_then_red_los_handoff_retains_state(db_sessio
     assert second.state.escalation_reason == "red_los"
 
 
-def test_monitoring_unavailable_escalates_without_diagnosis(db_session, monkeypatch):
+def test_monitoring_unavailable_continues_without_diagnosis_by_default(
+    db_session, monkeypatch
+):
     subscriber = _subscriber(db_session)
     conversation = _conversation(db_session, subscriber_id=subscriber.id)
     version = _version(db_session)
@@ -698,9 +706,52 @@ def test_monitoring_unavailable_escalates_without_diagnosis(db_session, monkeypa
         classification=_classification(),
     )
 
+    assert decision.action == "respond"
+    assert decision.state.escalation_reason is None
+    assert decision.metadata["question_key"] == "issue_started_when"
+    assert decision.state.tool_errors[-1]["status"] == "unavailable"
+
+
+def test_monitoring_unavailable_hands_off_only_when_policy_requires_it(
+    db_session, monkeypatch
+):
+    subscriber = _subscriber(db_session)
+    conversation = _conversation(db_session, subscriber_id=subscriber.id)
+    version = _version(
+        db_session,
+        metadata={
+            "tools": {
+                "customer_lookup": {"enabled": True},
+                "subscriber_monitoring": {"enabled": True},
+            },
+            "conversation_policy": {
+                "tool_failure_handoff_statuses": {
+                    "subscriber_monitoring": ["unavailable"]
+                }
+            },
+        },
+    )
+    session = _session(db_session, conversation, version)
+
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("monitoring down")
+
+    monkeypatch.setattr(
+        engine.support_monitoring,
+        "project_support_monitoring",
+        _raise,
+    )
+    decision = engine.run_conversational_turn(
+        db_session,
+        conversation=conversation,
+        session=session,
+        version=version,
+        latest_body="No internet.",
+        classification=_classification(),
+    )
+
     assert decision.action == "handoff"
     assert decision.state.escalation_reason == "monitoring_unavailable"
-    assert "could not complete" in (decision.response_text or "")
 
 
 def test_duplicate_customer_identifiers_are_not_a_directory_search(db_session):
@@ -851,14 +902,15 @@ def test_follow_up_classification_is_not_handed_off_by_engine(db_session):
         ),
     )
 
-    assert decision.action == "continue_classifier"
+    assert decision.action == "respond"
+    assert decision.metadata["question_key"] == "intent_clarification"
     assert decision.state.classification_requires_follow_up is True
     assert decision.state.classification_follow_up_question == (
         "Please tell me what you need help with today."
     )
 
 
-def test_turn_limit_and_timeout_escalate(db_session):
+def test_turn_limit_escalates_but_session_expiry_does_not_handoff(db_session):
     conversation = _conversation(db_session)
     version = _version(db_session, metadata={"conversation_policy": {"max_turns": 1}})
     session = _session(db_session, conversation, version)
@@ -892,7 +944,238 @@ def test_turn_limit_and_timeout_escalate(db_session):
     )
 
     assert limited.state.escalation_reason == "turn_limit"
-    assert timed_out.state.escalation_reason == "timeout"
+    assert timed_out.state.escalation_reason != "timeout"
+    assert timed_out.action == "respond"
+
+
+def test_slow_issue_skips_facts_already_supplied_and_asks_one_useful_question(
+    db_session,
+):
+    subscriber = _subscriber(db_session)
+    conversation = _conversation(db_session, subscriber_id=subscriber.id)
+    version = _version(
+        db_session,
+        metadata={
+            "tools": {
+                "customer_lookup": {"enabled": True},
+                "subscriber_monitoring": {"enabled": False},
+            }
+        },
+    )
+    session = _session(db_session, conversation, version)
+
+    decision = engine.run_conversational_turn(
+        db_session,
+        conversation=conversation,
+        session=session,
+        version=version,
+        latest_body="My internet has been slow on every device since yesterday.",
+        classification=_classification(category="slow_internet"),
+    )
+
+    assert decision.action == "respond"
+    assert decision.metadata["question_key"] == "connection_medium"
+    assert "every device" not in (decision.response_text or "").lower()
+    assert (decision.response_text or "").count("?") == 1
+    assert decision.state.collected_facts["device_scope"] == "all_devices"
+    assert decision.state.collected_facts["issue_started_when"] == "since yesterday"
+
+
+def test_model_fact_correction_replaces_stale_connectivity_state(db_session):
+    subscriber = _subscriber(db_session)
+    conversation = _conversation(db_session, subscriber_id=subscriber.id)
+    version = _version(db_session)
+    session = _session(db_session, conversation, version)
+    first = engine.run_conversational_turn(
+        db_session,
+        conversation=conversation,
+        session=session,
+        version=version,
+        latest_body="My internet is down.",
+        classification=_classification(),
+    )
+    engine.persist_state(session, first.state)
+
+    corrected = engine.run_conversational_turn(
+        db_session,
+        conversation=conversation,
+        session=session,
+        version=version,
+        latest_body="Actually it works, it is just very slow.",
+        classification=_classification(
+            category="slow_internet",
+            message_facts=AiIntakeExtractedFacts(connectivity_state="slow"),
+        ),
+    )
+
+    assert corrected.state.collected_facts["connectivity_state"] == "slow"
+    assert corrected.state.collected_facts["connectivity_problem"] is False
+    assert corrected.state.collected_facts["slow_internet"] is True
+
+
+def test_unclear_answer_is_clarified_once_then_planner_can_move_on(db_session):
+    subscriber = _subscriber(db_session)
+    conversation = _conversation(db_session, subscriber_id=subscriber.id)
+    version = _version(
+        db_session,
+        metadata={
+            "tools": {
+                "customer_lookup": {"enabled": True},
+                "subscriber_monitoring": {"enabled": False},
+            }
+        },
+    )
+    session = _session(db_session, conversation, version)
+    first = engine.run_conversational_turn(
+        db_session,
+        conversation=conversation,
+        session=session,
+        version=version,
+        latest_body="My internet is slow.",
+        classification=_classification(category="slow_internet"),
+    )
+    engine.persist_state(session, first.state)
+    retry = engine.run_conversational_turn(
+        db_session,
+        conversation=conversation,
+        session=session,
+        version=version,
+        latest_body="I am not sure.",
+        classification=_classification(category="slow_internet"),
+    )
+    engine.persist_state(session, retry.state)
+    next_question = engine.run_conversational_turn(
+        db_session,
+        conversation=conversation,
+        session=session,
+        version=version,
+        latest_body="I still do not know.",
+        classification=_classification(category="slow_internet"),
+    )
+
+    assert first.metadata["question_key"] == "device_scope"
+    assert retry.metadata["question_key"] == "device_scope"
+    assert next_question.metadata["question_key"] == "issue_started_when"
+    assert retry.state.question_history[0].attempts == 2
+
+
+def test_monitoring_rules_keep_tool_radius_and_ont_statuses_separate():
+    state = engine.ConversationalState(
+        conversation_id=str(uuid4()),
+        session_id=str(uuid4()),
+        policy_version_id=None,
+        channel="whatsapp",
+        monitoring_results=[
+            {
+                "status": "available",
+                "radius_observation": {"state": "offline"},
+                "ont_observations": [{"effective_state": "online"}],
+            }
+        ],
+    )
+
+    assert engine._condition_matches(
+        state,
+        {"type": "monitoring_status", "value": "available"},
+    )
+    assert engine._condition_matches(
+        state,
+        {"type": "radius_status", "value": "offline"},
+    )
+    assert engine._condition_matches(state, {"type": "ont_status", "value": "online"})
+    assert not engine._condition_matches(
+        state, {"type": "ont_status", "value": "offline"}
+    )
+    summary = engine.render_handoff_summary(
+        state,
+        version=None,
+        channel="whatsapp",
+    )
+    assert "radius_state=offline" in summary
+    assert "ont_states=online" in summary
+    assert "service_state" not in summary
+
+
+def test_mark_resolved_is_a_terminal_engine_action(db_session):
+    subscriber = _subscriber(db_session)
+    conversation = _conversation(db_session, subscriber_id=subscriber.id)
+    version = _version(
+        db_session,
+        metadata={
+            "tools": {
+                "customer_lookup": {"enabled": True},
+                "subscriber_monitoring": {"enabled": False},
+            },
+            "conversation_policy": {
+                "max_turns": 6,
+                "require_identity_before_tools": True,
+                "playbooks": [
+                    {
+                        "key": "confirmed_working",
+                        "intent": "technical_support",
+                        "steps": [
+                            {
+                                "condition": {
+                                    "type": "field_value",
+                                    "field": "connectivity_state",
+                                    "value": "working",
+                                },
+                                "action": "mark_resolved",
+                                "response": "Glad to hear the connection is working now.",
+                            }
+                        ],
+                    }
+                ],
+            },
+        },
+    )
+    session = _session(db_session, conversation, version)
+
+    decision = engine.run_conversational_turn(
+        db_session,
+        conversation=conversation,
+        session=session,
+        version=version,
+        latest_body="It is working now.",
+        classification=_classification(
+            message_facts=AiIntakeExtractedFacts(connectivity_state="working")
+        ),
+    )
+
+    assert decision.action == "resolved"
+    assert decision.state.resolution_status == "resolved"
+
+
+def test_policy_partial_save_preserves_existing_playbooks(db_session):
+    version = _version(
+        db_session,
+        metadata={
+            "conversation_policy": {
+                "max_turns": 6,
+                "playbooks": [{"key": "keep-me", "steps": []}],
+            }
+        },
+    )
+
+    payload = ai_conversation_intake._copy_version_payload(
+        version,
+        ai_conversation_intake.AiPolicyVersionDraftCommand(
+            context=CommandContext.system(
+                actor="test",
+                scope="ai:intake-policy",
+                reason="test partial editor save",
+            ),
+            policy_id=version.policy_id,
+            conversation_policy={"max_turns": 8},
+        ),
+    )
+
+    metadata = payload["metadata_"]
+    assert isinstance(metadata, dict)
+    conversation_policy = metadata["conversation_policy"]
+    assert isinstance(conversation_policy, dict)
+    assert conversation_policy["max_turns"] == 8
+    assert conversation_policy["playbooks"] == [{"key": "keep-me", "steps": []}]
 
 
 def test_disabled_and_unauthorized_tools_do_not_execute(db_session):
@@ -982,6 +1265,53 @@ def test_langgraph_topology_contains_expected_nodes_and_edges():
     assert "execute_tool" in topology["select_tool"]
     assert "handoff" in topology["decide_next_action"]
     assert "resolved" in topology["decide_next_action"]
+
+
+def test_langgraph_tool_failure_handoff_requires_explicit_policy(db_session):
+    conversation = _conversation(db_session)
+    version = _version(db_session)
+    session = _session(db_session, conversation, version)
+    runtime = ai_intake_graph._GraphRuntime(
+        db=db_session,
+        conversation=conversation,
+        session=session,
+        version=version,
+        latest_body="No internet.",
+        classification=_classification(),
+        recent_messages=(),
+        now=datetime.now(UTC),
+        tool_mode="simulation",
+    )
+    state = engine.ConversationalState.load(
+        conversation=conversation,
+        session=session,
+    )
+    node = ai_intake_graph._interpret_tool_result(runtime)
+    result = node(
+        {
+            "dotmac_state": state,
+            "policy": engine._policy(version),
+            "tool_result": {"status": "unavailable"},
+            "node_trace": [],
+        }
+    )
+
+    assert result["graph_route"] == "troubleshoot"
+    assert result.get("graph_action") != "handoff"
+
+    policy = engine._policy(version)
+    policy["tool_failure_handoff_statuses"] = {"subscriber_monitoring": ["unavailable"]}
+    required = node(
+        {
+            "dotmac_state": state,
+            "policy": policy,
+            "tool_result": {"status": "unavailable"},
+            "node_trace": [],
+        }
+    )
+
+    assert required["graph_action"] == "handoff"
+    assert required["graph_reason"] == "monitoring_unavailable"
 
 
 def test_langgraph_state_hydration_uses_dotmac_session_state(db_session):

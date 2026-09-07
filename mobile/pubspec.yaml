@@ -69,6 +69,9 @@ dependencies:
   # Formatting (dates, currency)
   intl: ^0.19.0
 
+  # Native save/share sheet for authenticated invoice and receipt PDFs.
+  share_plus: ^10.1.4
+
   # Coverage / fiber-plant map (OSM tiles — no API key needed)
   flutter_map: ^8.3.0
   latlong2: ^0.9.1

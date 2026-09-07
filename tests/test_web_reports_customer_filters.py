@@ -38,6 +38,57 @@ def test_customer_report_is_visible_from_reports_hub():
     assert 'action="/admin/reports/customers/export"' in page_template
 
 
+def test_customer_report_breakdowns_scroll_only_beyond_fifteen_records():
+    page_template = Path("templates/admin/reports/subscribers.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "grid grid-cols-1 items-start gap-6 lg:grid-cols-2" in page_template
+    assert "plan_distribution|length > 15" in page_template
+    assert "regional_breakdown|length > 15" in page_template
+    assert (
+        page_template.count(
+            'style="max-height: 29.25rem; overflow-x: hidden; overflow-y: auto;"'
+        )
+        == 2
+    )
+
+
+def test_customer_growth_chart_height_is_reduced_by_forty_percent():
+    page_template = Path("templates/admin/reports/subscribers.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="subscriber-growth-chart"' in page_template
+    assert 'style="min-height: 58.8px;"' in page_template
+    assert 'style="min-height: 98px;"' not in page_template
+
+
+def test_matching_customers_scrolls_beyond_fifteen_and_has_page_search():
+    page_template = Path("templates/admin/reports/subscribers.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "customers|length > 15" in page_template
+    assert "max-height: 48rem; overflow-y: auto;" in page_template
+    assert 'id="matching-customers-search"' in page_template
+    assert "Search displayed customers..." in page_template
+    assert "data-matching-customer-row" in page_template
+    assert 'id="matching-customers-no-results"' in page_template
+    assert 'class="h-[43.75rem] overflow-auto"' not in page_template
+
+
+def test_by_status_card_height_is_reduced_by_thirty_percent():
+    page_template = Path("templates/admin/reports/subscribers.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'style="height: 21.7rem;"' in page_template
+    assert 'style="min-height: 126px;"' in page_template
+    assert 'style="min-height: 180px;"' not in page_template
+    assert page_template.count('class="h-[31rem] [&>div]:h-full"') == 1
+
+
 def test_customer_report_includes_usage_for_filtered_period(
     db_session, subscriber, subscription
 ):

@@ -7,6 +7,7 @@ import '../../widgets/async_value_view.dart';
 import '../../widgets/skeleton.dart';
 import '../../widgets/status_chip.dart';
 import 'invoice_pay_button.dart';
+import 'pdf_download_button.dart';
 
 class InvoiceDetailScreen extends ConsumerWidget {
   const InvoiceDetailScreen({super.key, required this.invoiceId});
@@ -83,6 +84,13 @@ class InvoiceDetailScreen extends ConsumerWidget {
               const SizedBox(height: 24),
               InvoicePayButton(invoice: inv),
             ],
+            const SizedBox(height: 12),
+            PdfDownloadButton(
+              key: const ValueKey('download-invoice-pdf'),
+              label: 'Download invoice PDF',
+              download: () =>
+                  ref.read(billingRepositoryProvider).invoicePdf(inv.id),
+            ),
           ],
         ),
       ),

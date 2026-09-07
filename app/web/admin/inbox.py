@@ -2950,6 +2950,7 @@ def team_inbox_ai_intake_policy_draft_update(
     max_clarification_turns: int = Form(default=1),
     escalate_after_minutes: int = Form(default=5),
     customer_response_timeout_minutes: int | None = Form(default=None),
+    customer_wait_expiry_hours: int = Form(default=72),
     exclude_campaign_attribution: bool = Form(default=True),
     conversational_engine_enabled: bool = Form(default=False),
     conversation_engine_mode: str = Form(default="custom_v1"),
@@ -3139,6 +3140,9 @@ def team_inbox_ai_intake_policy_draft_update(
             "max_clarification_turns": max(0, min(int(max_clarification_turns), 5)),
             "escalate_after_minutes": clean_escalate_after_minutes,
             "customer_response_timeout_minutes": clean_customer_response_timeout_minutes,
+            "customer_wait_expiry_hours": max(
+                24, min(int(customer_wait_expiry_hours), 720)
+            ),
             "exclude_campaign_attribution": bool(exclude_campaign_attribution),
         }
         data_cleanup_policy = {
@@ -3202,6 +3206,8 @@ def team_inbox_ai_intake_policy_draft_update(
                 condition["turn_count"] = int(condition_value or "0")
             elif clean_type == "monitoring_status":
                 condition["monitoring_status"] = condition_value
+            elif clean_type in {"radius_status", "ont_status"}:
+                condition["value"] = condition_value
             elif clean_type.startswith("field:"):
                 condition["type"] = "field_value"
                 condition["field"] = clean_type.removeprefix("field:")

@@ -980,6 +980,14 @@ def billing_risk_rows(
     db: Session, *, page: int, per_page: int
 ) -> tuple[list[dict[str, Any]], int]:
     subscribers, total = list_subscribers(db, page=page, per_page=per_page)
+    return billing_risk_rows_for_subscribers(db, subscribers), total
+
+
+def billing_risk_rows_for_subscribers(
+    db: Session, subscribers: list[Subscriber]
+) -> list[dict[str, Any]]:
+    """Enrich an already bounded subscriber cohort with billing-risk facts."""
+
     subscriber_ids = [item.id for item in subscribers]
     services = services_by_subscriber(db, subscriber_ids)
     billing = billing_by_subscriber(db, subscribers)
@@ -1031,7 +1039,7 @@ def billing_risk_rows(
                 "last_payment_amount": payment.get("last_payment_amount", 0.0),
             }
         )
-    return rows, total
+    return rows
 
 
 def online_subscribers(

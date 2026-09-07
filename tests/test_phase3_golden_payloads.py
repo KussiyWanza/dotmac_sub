@@ -218,13 +218,15 @@ def test_me_quotes_native_matches_mirror_golden_payload(db_session):
     mirror_sub = _subscriber(db_session)
     _mirror_quote(db_session, mirror_sub)
     _synced_quotes(db_session, mirror_sub)
-    mirror_out = quotes_mirror.read_for_subscriber(db_session, str(mirror_sub.id))
+    mirror_out = quotes_mirror.read_for_subscriber(
+        db_session, str(mirror_sub.id)
+    ).model_dump(mode="json")
 
     native_sub = _subscriber(db_session)
     _native_quote(db_session, native_sub)
     native_out = selfserve_service.selfserve_quotes.read_for_subscriber(
         db_session, str(native_sub.id)
-    )
+    ).model_dump(mode="json")
 
     # Shell + item shapes are identical (§2.5).
     _assert_same_shape(native_out, mirror_out)
@@ -261,11 +263,31 @@ def test_me_quotes_native_open_count_matches_mirror_semantics(db_session):
     accepted = _native_quote(db_session, sub)  # accepted → closed
     out = selfserve_service.selfserve_quotes.read_for_subscriber(
         db_session, str(sub.id)
-    )
+    ).model_dump(mode="json")
     assert out["total"] == 2
     assert out["open"] == 1
     statuses = {q["id"]: q["status"] for q in out["quotes"]}
     assert statuses[str(accepted.id)] == "accepted"
+
+
+def test_native_quote_actions_follow_the_write_cutover_control(db_session, monkeypatch):
+    sub = _subscriber(db_session)
+    monkeypatch.setattr(selfserve_service, "native_write_enabled", lambda db: False)
+    unavailable = selfserve_service.selfserve_quotes.read_for_subscriber(
+        db_session, str(sub.id)
+    ).model_dump(mode="json")
+    assert unavailable["actions_available"] is False
+    assert (
+        unavailable["actions_unavailable_message"]
+        == selfserve_service.NATIVE_QUOTE_ACTIONS_UNAVAILABLE_MESSAGE
+    )
+
+    monkeypatch.setattr(selfserve_service, "native_write_enabled", lambda db: True)
+    available = selfserve_service.selfserve_quotes.read_for_subscriber(
+        db_session, str(sub.id)
+    ).model_dump(mode="json")
+    assert available["actions_available"] is True
+    assert available["actions_unavailable_message"] is None
 
 
 # ── referrals: GET /me/referrals ──────────────────────────────────────────────

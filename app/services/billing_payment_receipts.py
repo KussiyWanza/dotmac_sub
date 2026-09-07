@@ -6,6 +6,7 @@ import html
 import io
 import logging
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -29,6 +30,15 @@ from app.services.common import coerce_uuid
 from app.services.customer_portal_context import get_allowed_account_ids
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PaymentReceiptPdfDownload:
+    """Typed payment-receipt document boundary for HTTP and other adapters."""
+
+    filename: str
+    content: bytes
+    content_type: str = "application/pdf"
 
 
 def _money(value: Any) -> Decimal:
@@ -713,6 +723,25 @@ def build_receipt_pdf(context: dict[str, Any]) -> bytes:
 
 def download_filename(payment: Payment) -> str:
     return f"receipt-{_safe_receipt_number(payment)}.pdf"
+
+
+def build_customer_receipt_pdf_download(
+    db: Session,
+    *,
+    subscriber_id: str,
+    payment_id: str,
+) -> PaymentReceiptPdfDownload:
+    """Build the canonical receipt after enforcing the customer's account scope."""
+
+    context = get_payment_receipt_context(
+        db,
+        payment_id,
+        allowed_account_ids={subscriber_id},
+    )
+    return PaymentReceiptPdfDownload(
+        filename=download_filename(context["payment"]),
+        content=build_receipt_pdf(context),
+    )
 
 
 def send_receipt_email(

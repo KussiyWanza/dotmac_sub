@@ -153,7 +153,7 @@
         </div>
 
         <div class="flex items-center justify-end gap-3">
-            <a href="/admin/system/settings-hub" class="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Back to Settings Hub</a>
+            <a href="/admin/system/settings-hub" class="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Back to Settings Hub</a>
             <button type="submit" class="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700">Save Changes</button>
         </div>
     </form>
@@ -289,7 +289,7 @@
                     <div class="sm:col-span-2">
                         <div class="flex items-center justify-end gap-3">
                             {% if smtp_sender_form.is_editing %}
-                            <a href="/admin/system/email#smtp-senders" class="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Cancel Edit</a>
+                            <a href="/admin/system/email#smtp-senders" class="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Cancel Edit</a>
                             {% endif %}
                             <button type="submit" class="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700">{% if smtp_sender_form.is_editing %}Update Sender{% else %}Save Sender{% endif %}</button>
                         </div>

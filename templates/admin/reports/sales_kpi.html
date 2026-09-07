@@ -37,6 +37,19 @@
     {% call card(title, color="teal", padding=False) %}
     {% include "admin/reports/_sales_kpi_table.html" %}
     {% endcall %}
+
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <p class="text-sm text-slate-500 dark:text-slate-400">
+            {% if total_count %}Showing {{ ((page - 1) * per_page) + 1 }}–{{ [page * per_page, total_count] | min }} of {{ total_count }} agents{% else %}No agents to display{% endif %}
+        </p>
+        {% if total_pages > 1 %}
+        <nav class="flex items-center justify-end gap-2" aria-label="{{ title }} pages">
+            {% if has_previous %}<a href="?date_from={{ date_from }}&date_to={{ date_to }}&page={{ page - 1 }}" class="inline-flex h-10 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">Previous</a>{% endif %}
+            <span class="px-2 text-sm text-slate-500 dark:text-slate-400">Page {{ page }} of {{ total_pages }}</span>
+            {% if has_next %}<a href="?date_from={{ date_from }}&date_to={{ date_to }}&page={{ page + 1 }}" class="inline-flex h-10 items-center justify-center rounded-xl bg-teal-600 px-4 text-sm font-semibold text-white hover:bg-teal-700">Next</a>{% endif %}
+        </nav>
+        {% endif %}
+    </div>
 </div>
 {{ animation_styles() }}
 {% endblock %}

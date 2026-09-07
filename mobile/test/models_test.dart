@@ -124,6 +124,12 @@ void main() {
         'amount': '2500.00',
         'currency': 'NGN',
         'status': 'partially_refunded',
+        'created_at': '2026-09-01T10:00:00Z',
+        'refunded_amount': '500.00',
+        'provider_fee': '25.00',
+        'allocations': [
+          {'id': 'a1', 'invoice_id': 'i1', 'amount': '2000.00'},
+        ],
         'status_presentation': {
           'value': 'partially_refunded',
           'label': 'Partially refunded',
@@ -136,6 +142,12 @@ void main() {
       expect(payment.statusPresentation.label, 'Partially refunded');
       expect(payment.statusPresentation.tone.name, 'warning');
       expect(payment.statusPresentation.icon, 'clock');
+      expect(payment.createdAt, isNotNull);
+      expect(payment.refundedAmount, 500);
+      expect(payment.netAmount, 2000);
+      expect(payment.providerFee, 25);
+      expect(payment.allocations.single.invoiceId, 'i1');
+      expect(payment.hasReceipt, isFalse);
     });
 
     test('uses a neutral compatibility fallback for older servers', () {
@@ -147,6 +159,7 @@ void main() {
 
       expect(payment.statusPresentation.label, 'Succeeded');
       expect(payment.statusPresentation.tone.name, 'neutral');
+      expect(payment.hasReceipt, isTrue);
     });
   });
 
@@ -536,10 +549,16 @@ void main() {
         'currency': 'NGN',
         'memo': 'Zenith 461 Bank',
         'created_at': '2026-03-15T10:00:00Z',
+        'effective_date': '2026-03-14T09:00:00Z',
+        'payment_id': 'p1',
+        'invoice_id': 'i1',
       });
       expect(t.isCredit, isTrue);
       expect(t.amount, 52000.0);
       expect(t.title, 'Zenith 461 Bank');
+      expect(t.occurredAt, t.effectiveAt);
+      expect(t.paymentId, 'p1');
+      expect(t.invoiceId, 'i1');
     });
 
     test('debit falls back to source label when memo is empty', () {

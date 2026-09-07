@@ -19,7 +19,12 @@ from app.models.team_inbox import (
     InboxMessage,
     InboxMessageDirection,
 )
-from app.services import team_inbox_operations, team_inbox_outbound, team_inbox_widget
+from app.services import (
+    team_inbox_channel_receive,
+    team_inbox_operations,
+    team_inbox_outbound,
+    team_inbox_widget,
+)
 
 
 @contextmanager
@@ -92,6 +97,35 @@ def test_widget_token_lists_and_sends_messages(db_session):
     assert sent["direction"] == InboxMessageDirection.inbound.value
     assert messages["messages"][0]["body"] == "My router is down"
     assert messages["messages"][0]["sender_type"] == "visitor"
+
+
+def test_widget_delivers_and_labels_ai_intake_messages(db_session):
+    sub = _subscriber(db_session)
+    with _chat_enabled():
+        session = team_inbox_widget.broker_customer_session(db_session, str(sub.id))
+        principal = team_inbox_widget.decode_widget_token(
+            db_session,
+            str(session["visitor_token"]),
+        )
+        conversation = db_session.get(InboxConversation, principal.conversation_id)
+        result = team_inbox_outbound.send_ai_intake_message(
+            db_session,
+            conversation=conversation,
+            body_text="Hello, I am the Dotmac Virtual Assistant.",
+            metadata={
+                "sender_type": "ai",
+                "author_name": "Dotmac Virtual Assistant",
+            },
+            dedupe_key=f"widget-ai-test:{conversation.id}",
+        )
+        messages = team_inbox_widget.list_session_messages(
+            db_session,
+            principal=principal,
+        )
+
+    assert result.kind == "queued"
+    assert messages["messages"][0]["sender_type"] == "ai"
+    assert messages["messages"][0]["author_name"] == "Dotmac Virtual Assistant"
 
 
 def test_widget_satisfaction_requires_resolved_conversation(db_session):
@@ -279,6 +313,79 @@ def test_fiber_widget_unmatched_visitor_creates_party_lead_and_chat(db_session):
     assert db_session.query(Party).count() == 1
     assert db_session.query(Lead).count() == 1
     assert db_session.query(InboxConversationLeadLink).count() == 1
+
+
+def test_fiber_widget_first_message_enters_ai_intake_admission(db_session, monkeypatch):
+    observed: list[tuple[str, str, bool]] = []
+
+    def capture_admission(
+        db,
+        *,
+        command: team_inbox_channel_receive.PersistedWidgetAiIntakeCommand,
+    ) -> None:
+        observed.append(
+            (
+                str(command.conversation_id),
+                str(command.message_id),
+                command.created_conversation,
+            )
+        )
+
+    monkeypatch.setattr(
+        team_inbox_channel_receive,
+        "start_ai_intake_for_persisted_widget_message",
+        capture_admission,
+    )
+    with _chat_enabled():
+        outcome = team_inbox_widget.broker_fiber_visitor_session_committed(
+            db_session,
+            command=_fiber_chat_command(),
+        )
+
+    assert observed == [(outcome.conversation_id, outcome.message_id, True)]
+
+
+def test_customer_widget_first_message_enters_ai_intake_admission(
+    db_session, monkeypatch
+):
+    sub = _subscriber(db_session)
+    observed: list[tuple[str, str, bool]] = []
+
+    def capture_admission(
+        db,
+        *,
+        command: team_inbox_channel_receive.PersistedWidgetAiIntakeCommand,
+    ) -> None:
+        observed.append(
+            (
+                str(command.conversation_id),
+                str(command.message_id),
+                command.created_conversation,
+            )
+        )
+
+    monkeypatch.setattr(
+        team_inbox_channel_receive,
+        "start_ai_intake_for_persisted_widget_message",
+        capture_admission,
+    )
+    with _chat_enabled():
+        session = team_inbox_widget.broker_customer_session(db_session, str(sub.id))
+        principal = team_inbox_widget.decode_widget_token(
+            db_session,
+            str(session["visitor_token"]),
+        )
+        team_inbox_widget.add_visitor_message(
+            db_session,
+            principal=principal,
+            body="My internet is not browsing.",
+        )
+
+    assert len(observed) == 1
+    conversation_id, message_id, created_conversation = observed[0]
+    assert conversation_id == str(principal.conversation_id)
+    assert message_id
+    assert created_conversation is True
 
 
 def test_fiber_widget_exact_subscriber_match_creates_no_prospect(db_session):

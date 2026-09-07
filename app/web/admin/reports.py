@@ -2,6 +2,7 @@
 
 import csv
 import logging
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from html import escape
 from io import StringIO
@@ -129,6 +130,39 @@ class SalesReportContext(TypedDict):
     date_from: str
     date_to: str
     note: str
+
+
+@dataclass(frozen=True, slots=True)
+class SalesReportPage:
+    rows: tuple[SalesReportRow, ...]
+    page: int
+    per_page: int
+    total_count: int
+    total_pages: int
+
+    @property
+    def has_previous(self) -> bool:
+        return self.page > 1
+
+    @property
+    def has_next(self) -> bool:
+        return self.page < self.total_pages
+
+
+def _paginate_sales_report_rows(
+    rows: list[SalesReportRow], *, page: int, per_page: int = 20
+) -> SalesReportPage:
+    total_count = len(rows)
+    total_pages = max(1, (total_count + per_page - 1) // per_page)
+    effective_page = min(max(page, 1), total_pages)
+    offset = (effective_page - 1) * per_page
+    return SalesReportPage(
+        rows=tuple(rows[offset : offset + per_page]),
+        page=effective_page,
+        per_page=per_page,
+        total_count=total_count,
+        total_pages=total_pages,
+    )
 
 
 REPORT_HUB_SECTIONS: list[ReportHubSection] = [
@@ -683,10 +717,21 @@ def sales_lead_performance_report(
     request: Request,
     date_from: str | None = None,
     date_to: str | None = None,
+    page: int = Query(default=1, ge=1),
     db: Session = Depends(get_db),
 ):
     context = _sales_lead_report_context(db, date_from=date_from, date_to=date_to)
-    template_context: dict[str, object] = {**context}
+    report_page = _paginate_sales_report_rows(context["rows"], page=page)
+    template_context: dict[str, object] = {
+        **context,
+        "rows": report_page.rows,
+        "page": report_page.page,
+        "per_page": report_page.per_page,
+        "total_count": report_page.total_count,
+        "total_pages": report_page.total_pages,
+        "has_previous": report_page.has_previous,
+        "has_next": report_page.has_next,
+    }
     template_context.update(
         _base_context(
             request,
@@ -725,10 +770,21 @@ def sales_order_performance_report(
     request: Request,
     date_from: str | None = None,
     date_to: str | None = None,
+    page: int = Query(default=1, ge=1),
     db: Session = Depends(get_db),
 ):
     context = _sales_order_report_context(db, date_from=date_from, date_to=date_to)
-    template_context: dict[str, object] = {**context}
+    report_page = _paginate_sales_report_rows(context["rows"], page=page)
+    template_context: dict[str, object] = {
+        **context,
+        "rows": report_page.rows,
+        "page": report_page.page,
+        "per_page": report_page.per_page,
+        "total_count": report_page.total_count,
+        "total_pages": report_page.total_pages,
+        "has_previous": report_page.has_previous,
+        "has_next": report_page.has_next,
+    }
     template_context.update(
         _base_context(
             request,
@@ -1057,12 +1113,23 @@ def reports_ticket_sla(
     date_from: str | None = None,
     date_to: str | None = None,
     open_only: bool = False,
+    page: int = Query(default=1, ge=1),
     db: Session = Depends(get_db),
 ):
     from app.web.admin import get_current_user, get_sidebar_stats
 
     start_at = _parse_date_start(date_from)
     end_at = _parse_date_end(date_to)
+    violation_page = ticket_sla_reports_service.violation_page(
+        db,
+        query=ticket_sla_reports_service.TicketSlaViolationPageQuery(
+            start_at=start_at,
+            end_at=end_at,
+            open_only=open_only,
+            page=page,
+            per_page=15,
+        ),
+    )
     context = {
         "request": request,
         "active_page": "reports-ticket-sla",
@@ -1074,13 +1141,8 @@ def reports_ticket_sla(
         "open_only": open_only,
         "summary": ticket_sla_reports_service.summary(db, start_at, end_at),
         "trend": ticket_sla_reports_service.trend_daily(db, start_at, end_at),
-        "violations": ticket_sla_reports_service.violation_records(
-            db,
-            start_at=start_at,
-            end_at=end_at,
-            open_only=open_only,
-            limit=100,
-        ),
+        "violations": violation_page.rows,
+        "violation_page": violation_page,
         "recent_activities": recent_activity_for_paths(db, ["/admin/reports"]),
     }
     return templates.TemplateResponse("admin/reports/ticket_sla.html", context)

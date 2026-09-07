@@ -70,8 +70,12 @@ class Payment {
     required this.currency,
     required this.status,
     this.paidAt,
+    this.createdAt,
     this.memo,
     this.externalId,
+    this.refundedAmount = 0,
+    this.providerFee = 0,
+    this.allocations = const [],
     StatusPresentation? statusPresentation,
   }) : statusPresentation =
             statusPresentation ?? StatusPresentation.neutralFallback(status);
@@ -82,8 +86,15 @@ class Payment {
   final String status;
   final StatusPresentation statusPresentation;
   final DateTime? paidAt;
+  final DateTime? createdAt;
   final String? memo;
   final String? externalId;
+  final double refundedAmount;
+  final double providerFee;
+  final List<PaymentAllocation> allocations;
+
+  bool get hasReceipt => status == 'succeeded';
+  double get netAmount => amount - refundedAmount;
 
   factory Payment.fromJson(Map<String, dynamic> json) => Payment(
         id: json['id'].toString(),
@@ -96,8 +107,36 @@ class Payment {
               )
             : null,
         paidAt: _toDate(json['paid_at']),
+        createdAt: _toDate(json['created_at']),
         memo: json['memo'] as String?,
         externalId: json['external_id'] as String?,
+        refundedAmount: asDouble(json['refunded_amount']),
+        providerFee: asDouble(json['provider_fee']),
+        allocations: ((json['allocations'] as List?) ?? const [])
+            .whereType<Map>()
+            .map((item) => PaymentAllocation.fromJson(
+                  item.cast<String, dynamic>(),
+                ))
+            .toList(growable: false),
+      );
+}
+
+class PaymentAllocation {
+  PaymentAllocation({
+    required this.id,
+    required this.invoiceId,
+    required this.amount,
+  });
+
+  final String id;
+  final String invoiceId;
+  final double amount;
+
+  factory PaymentAllocation.fromJson(Map<String, dynamic> json) =>
+      PaymentAllocation(
+        id: json['id'].toString(),
+        invoiceId: json['invoice_id'].toString(),
+        amount: asDouble(json['amount']),
       );
 }
 

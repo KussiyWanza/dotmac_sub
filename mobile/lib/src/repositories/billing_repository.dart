@@ -1,6 +1,10 @@
+import 'dart:typed_data';
+
 import 'package:dio/dio.dart';
 
+import '../core/api_exception.dart';
 import '../core/http.dart';
+import '../models/billing_document.dart';
 import '../models/invoice.dart';
 import '../models/ledger.dart';
 import '../models/page.dart';
@@ -65,6 +69,12 @@ class BillingRepository {
     return Invoice.fromJson(data as Map<String, dynamic>);
   }
 
+  /// GET /me/invoices/{id}/pdf — canonical, authenticated invoice document.
+  Future<BillingDocument> invoicePdf(String id) => _downloadPdf(
+        '/me/invoices/$id/pdf',
+        fallbackFilename: 'invoice-$id.pdf',
+      );
+
   /// GET /me/payments — the subscriber's own payment history (self-scoped).
   Future<Page<Payment>> payments({int limit = 50, int offset = 0}) async {
     final data = await guard(() => dio.get('/me/payments', queryParameters: {
@@ -73,6 +83,18 @@ class BillingRepository {
         }));
     return Page.fromJson(data as Map<String, dynamic>, Payment.fromJson);
   }
+
+  /// GET /me/payments/{id} — one self-scoped payment for a detail screen.
+  Future<Payment> payment(String id) async {
+    final data = await guard(() => dio.get('/me/payments/$id'));
+    return Payment.fromJson(data as Map<String, dynamic>);
+  }
+
+  /// GET /me/payments/{id}/receipt/pdf — successful-payment receipt.
+  Future<BillingDocument> paymentReceiptPdf(String id) => _downloadPdf(
+        '/me/payments/$id/receipt/pdf',
+        fallbackFilename: 'payment-receipt-$id.pdf',
+      );
 
   /// GET /me/payment-methods — the subscriber's saved cards.
   Future<List<SavedCard>> paymentMethods() async {
@@ -126,6 +148,12 @@ class BillingRepository {
           'offset': offset,
         }));
     return Page.fromJson(data as Map<String, dynamic>, LedgerTxn.fromJson);
+  }
+
+  /// GET /me/ledger/{id} — one immutable, self-scoped activity entry.
+  Future<LedgerTxn> ledgerEntry(String id) async {
+    final data = await guard(() => dio.get('/me/ledger/$id'));
+    return LedgerTxn.fromJson(data as Map<String, dynamic>);
   }
 
   /// GET /dashboard — free-form stats map for the current consumer.
@@ -217,5 +245,69 @@ class BillingRepository {
           if (saveCard) 'save_card': true,
         }));
     return TopupResult.fromJson(data as Map<String, dynamic>);
+  }
+
+  Future<BillingDocument> _downloadPdf(
+    String path, {
+    required String fallbackFilename,
+  }) async {
+    late final Response<List<int>> response;
+    try {
+      response = await dio.get<List<int>>(
+        path,
+        options: Options(responseType: ResponseType.bytes),
+      );
+    } on DioException catch (error) {
+      throw ApiException.fromDio(error);
+    }
+
+    final status = response.statusCode ?? 0;
+    if (status >= 400) {
+      throw ApiException('The PDF could not be downloaded.',
+          statusCode: status);
+    }
+    final contentType = response.headers.value(Headers.contentTypeHeader) ?? '';
+    final data = response.data;
+    if (!contentType.toLowerCase().startsWith(BillingDocument.contentType) ||
+        data == null ||
+        !_hasPdfSignature(data)) {
+      throw ApiException('The server returned an invalid PDF document.');
+    }
+
+    return BillingDocument(
+      bytes: Uint8List.fromList(data),
+      filename: _downloadFilename(response.headers, fallbackFilename),
+    );
+  }
+
+  bool _hasPdfSignature(List<int> bytes) =>
+      bytes.length >= 5 &&
+      bytes[0] == 0x25 &&
+      bytes[1] == 0x50 &&
+      bytes[2] == 0x44 &&
+      bytes[3] == 0x46 &&
+      bytes[4] == 0x2d;
+
+  String _downloadFilename(Headers headers, String fallback) {
+    final disposition = headers.value('content-disposition') ?? '';
+    final extended = RegExp(
+      r"filename\*=UTF-8''([^;]+)",
+      caseSensitive: false,
+    ).firstMatch(disposition)?.group(1);
+    final regular = RegExp(
+      r'filename="?([^";]+)"?',
+      caseSensitive: false,
+    ).firstMatch(disposition)?.group(1);
+    var candidate = extended ?? regular ?? fallback;
+    try {
+      candidate = Uri.decodeComponent(candidate);
+    } on FormatException {
+      candidate = fallback;
+    }
+    candidate = candidate.split(RegExp(r'[/\\]')).last.trim();
+    if (candidate.isEmpty) candidate = fallback;
+    return candidate.toLowerCase().endsWith('.pdf')
+        ? candidate
+        : '$candidate.pdf';
   }
 }
