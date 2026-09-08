@@ -96,7 +96,15 @@
             <td class="px-5 py-4 text-right"><a href="/admin/dispatch/work-orders/{{ wo.public_id }}" class="rounded-lg border border-cyan-300 px-3 py-2 text-sm font-semibold text-cyan-700">View</a></td>
         {% endcall %}{% else %}{{ empty_state(title="No work orders found", message="Create a work order or adjust the filters", icon=work_icon, color="cyan", colspan=6) }}{% endfor %}</tbody></table>
     </div>
-    {% if total_pages > 1 %}<div class="border-t border-slate-200 px-5 py-3 text-sm text-slate-500">Page {{ page }} of {{ total_pages }} · {{ total }} total</div>{% endif %}</div>
+    {% if total_pages > 1 %}
+    <nav class="flex flex-wrap items-center justify-end gap-3 border-t border-slate-200 px-5 py-3 dark:border-slate-700" aria-label="Work order pages">
+        <span class="text-sm text-slate-500 dark:text-slate-400">Page {{ page }} of {{ total_pages }} · {{ total }} total</span>
+        <div class="flex gap-2">
+            {% if previous_page_url %}<a href="{{ previous_page_url }}" class="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">Previous</a>{% endif %}
+            {% if next_page_url %}<a href="{{ next_page_url }}" class="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">Next</a>{% endif %}
+        </div>
+    </nav>
+    {% endif %}</div>
 </div>
 {{ animation_styles() }}
 {% endblock %}

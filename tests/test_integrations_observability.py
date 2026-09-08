@@ -7,6 +7,7 @@ without collapsing installation state and runtime evidence into a health word.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi.templating import Jinja2Templates
@@ -105,6 +106,20 @@ def test_connectors_index_and_erp_config_templates_compile() -> None:
 
     env.get_template("admin/integrations/connectors/index.html")
     env.get_template("admin/integrations/erp/config.html")
+
+
+def test_connectors_section_does_not_scroll_horizontally() -> None:
+    source = Path("templates/admin/integrations/connectors/index.html").read_text(
+        encoding="utf-8"
+    )
+    connectors_section = source.split("{# Connectors Table #}", 1)[1].split(
+        'card("Managed connector installations"', 1
+    )[0]
+
+    assert '<div class="overflow-hidden">' in connectors_section
+    assert '<table class="w-full table-fixed' in connectors_section
+    assert "overflow-x-auto" not in connectors_section
+    assert "whitespace-nowrap" not in connectors_section
 
 
 def test_connector_evidence_says_when_no_signals(db_session):

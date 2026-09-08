@@ -1,6 +1,32 @@
 {% extends "layouts/admin.html" %}
 {% import "components/ui/macros.html" as ui %}
 {% block title %}Surveys - Admin{% endblock %}
+{% block head %}
+{{ super() }}
+<style>
+  /* Keep the longer admin navigation discoverable on this short page. */
+  [data-admin-shell] > aside > nav {
+    scrollbar-color: rgb(100 116 139) rgb(15 23 42 / 0.24);
+    scrollbar-gutter: stable;
+    scrollbar-width: auto;
+  }
+
+  [data-admin-shell] > aside > nav::-webkit-scrollbar {
+    width: 12px;
+  }
+
+  [data-admin-shell] > aside > nav::-webkit-scrollbar-track {
+    background: rgb(15 23 42 / 0.24);
+  }
+
+  [data-admin-shell] > aside > nav::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 9999px;
+    background: rgb(100 116 139);
+    background-clip: padding-box;
+  }
+</style>
+{% endblock %}
 {% block content %}
 <div class="space-y-6">
   <div class="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">

@@ -140,6 +140,29 @@ def test_template_consumes_the_kpi_and_action_contracts():
     assert "Open form" not in source
     assert 'href="/admin/dispatch/work-orders/{{ wo.public_id }}"' in source
     assert 'name="assigned_technician_id"' not in source
+    assert 'aria-label="Work order pages"' in source
+    assert "previous_page_url" in source
+    assert "next_page_url" in source
+
+
+def test_work_order_page_url_preserves_the_list_cohort():
+    url = service._work_order_page_url(
+        page=2,
+        per_page=25,
+        status="scheduled",
+        q="fiber install",
+        active=True,
+        project_task_id="task-id",
+    )
+
+    assert parse_qs(urlsplit(url).query) == {
+        "page": ["2"],
+        "per_page": ["25"],
+        "status": ["scheduled"],
+        "q": ["fiber install"],
+        "active": ["1"],
+        "project_task_id": ["task-id"],
+    }
 
 
 def test_work_order_list_composes_with_one_header_form_trigger(db_session):

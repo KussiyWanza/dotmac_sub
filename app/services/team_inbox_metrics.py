@@ -82,6 +82,7 @@ class InboxEscalationQuery:
     response_sla_seconds: int | None = None
     queue_sla_seconds: int | None = None
     include_inactive_teams: bool = False
+    search: str | None = None
     limit: int | None = DEFAULT_REPORT_LIMIT
     offset: int = 0
     observed_at: datetime | None = None
@@ -433,6 +434,7 @@ def _load_teams(
     *,
     include_inactive: bool,
     service_team_id: UUID | None = None,
+    search: str | None = None,
 ) -> list[ServiceTeam]:
     statement = select(ServiceTeam).order_by(
         ServiceTeam.name.asc(), ServiceTeam.id.asc()
@@ -441,6 +443,9 @@ def _load_teams(
         statement = statement.where(ServiceTeam.is_active.is_(True))
     if service_team_id is not None:
         statement = statement.where(ServiceTeam.id == service_team_id)
+    normalized_search = (search or "").strip()
+    if normalized_search:
+        statement = statement.where(ServiceTeam.name.ilike(f"%{normalized_search}%"))
     return list(db.scalars(statement).all())
 
 
@@ -804,6 +809,7 @@ def team_performance_page(
         db,
         include_inactive=query.include_inactive_teams,
         service_team_id=query.service_team_id,
+        search=query.search,
     )
     metrics_by_id = _team_metrics_by_id(
         db,
@@ -1127,7 +1133,7 @@ def escalation_page(
         active_assignment.c.conversation_id.is_(None),
         available_agent_count == 0,
     )
-    candidates = (
+    candidate_statement = (
         select(
             scope.c.conversation_id,
             scope.c.service_team_id,
@@ -1164,8 +1170,24 @@ def escalation_page(
             ),
         )
         .where(or_(response_breach, queue_breach, no_agent))
-        .subquery("inbox_escalation_candidates")
     )
+    normalized_search = (query.search or "").strip()
+    if normalized_search:
+        search_term = f"%{normalized_search}%"
+        matching_team_ids = tuple(
+            team.id
+            for team in teams
+            if normalized_search.casefold() in team.name.casefold()
+        )
+        candidate_statement = candidate_statement.where(
+            or_(
+                scope.c.subject.ilike(search_term),
+                scope.c.contact_address.ilike(search_term),
+                scope.c.status.ilike(search_term),
+                scope.c.service_team_id.in_(matching_team_ids),
+            )
+        )
+    candidates = candidate_statement.subquery("inbox_escalation_candidates")
     summary = db.execute(
         select(
             func.count().label("total_count"),

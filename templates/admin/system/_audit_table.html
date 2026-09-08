@@ -1,34 +1,39 @@
-<div class="overflow-x-auto">
-    <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
+<div class="overflow-hidden">
+    <table class="w-full table-fixed divide-y divide-slate-200 dark:divide-slate-700">
+        <colgroup>
+            <col class="w-[15%]">
+            <col class="w-[20%]">
+            <col class="w-[15%]">
+            <col class="w-[40%]">
+            <col class="w-[10%]">
+        </colgroup>
         <thead class="bg-slate-50 dark:bg-slate-800/50">
             <tr>
-                <th class="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Time</th>
-                <th class="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Actor</th>
-                <th class="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Entity</th>
-                <th class="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Details</th>
-                <th class="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Status</th>
+                {% for label in ["Time", "Actor", "Entity", "Details", "Status"] %}
+                <th class="break-words px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{{ label }}</th>
+                {% endfor %}
             </tr>
         </thead>
         <tbody class="divide-y divide-slate-200 bg-white dark:divide-slate-700 dark:bg-slate-800">
             {% if events %}
             {% for event in events %}
             <tr class="hover:bg-slate-50 dark:hover:bg-slate-700/50">
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500 dark:text-slate-400">{{ event.occurred_at_display | default('N/A') }}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-900 dark:text-white">{{ event.actor_name | default('Former or unknown user', true) }}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-600 dark:text-slate-300">
+                <td class="break-words px-3 py-3 align-top text-xs text-slate-500 dark:text-slate-400">{{ event.occurred_at_display | default('N/A') }}</td>
+                <td class="break-words px-3 py-3 align-top text-sm text-slate-900 dark:text-white">{{ event.actor_name | default('Former or unknown user', true) }}</td>
+                <td class="break-words px-3 py-3 align-top text-sm text-slate-600 dark:text-slate-300">
                     <div class="font-medium text-slate-700 dark:text-slate-200">{{ event.action_label | default(event.action | default('Unknown')) }}</div>
                 </td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-600 dark:text-slate-300">
+                <td class="break-words px-3 py-3 align-top text-sm text-slate-600 dark:text-slate-300">
                     {% if event.action_detail %}
                     <div class="font-medium text-slate-700 dark:text-slate-200">{{ event.action_detail }}</div>
                     {% else %}
                     <div class="text-xs text-slate-500 dark:text-slate-400">{{ event.entity_label | default(event.entity_type | default('N/A')) }}</div>
                     {% endif %}
                     {% if event.entity_id %}
-                    <div class="text-xs text-slate-500 dark:text-slate-400">ID {{ event.entity_id }}</div>
+                    <div class="break-all text-xs text-slate-500 dark:text-slate-400">ID {{ event.entity_id }}</div>
                     {% endif %}
                 </td>
-                <td class="px-6 py-4 whitespace-nowrap">
+                <td class="break-words px-2 py-3 align-top">
                     {% if event.is_success is defined and event.is_success is not none %}
                         {% if event.is_success %}
                         <span class="inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/30 dark:text-green-400">Success</span>

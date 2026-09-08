@@ -415,6 +415,8 @@ def test_survey_templates_cover_creation_contract() -> None:
 
     assert 'ui.action_button("New Survey", "/admin/surveys/new"' in index
     assert "icon=ui.icon_plus()" in index
+    assert "scrollbar-gutter: stable" in index
+    assert "[data-admin-shell] > aside > nav::-webkit-scrollbar" in index
     assert 'aria-hidden="true"' in macros[macros.index("macro icon_plus") :]
     assert "New Survey - Admin" in form
     assert "Create Survey" in form

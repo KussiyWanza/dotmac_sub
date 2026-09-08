@@ -94,7 +94,7 @@
     {% if has_growth_chart %}
     <div class="animate-fade-in-up" style="animation-delay: 100ms;">
     {% call card("Customer Growth Trend", color="teal") %}
-        <div class="chart-container" style="min-height: 58.8px;">
+        <div class="chart-container" style="height: 35.28px; min-height: 35.28px; max-height: 35.28px; overflow: hidden;">
             <canvas id="subscriber-growth-chart"></canvas>
         </div>
         <script>
@@ -201,9 +201,10 @@
     {# Status Breakdown + Recent Sign-ups #}
     <div class="grid items-start gap-6 lg:grid-cols-2 animate-fade-in-up" style="animation-delay: 150ms;">
         {# Status Breakdown #}
-        <div class="[&>div]:h-full" style="height: 21.7rem;">
-        {% call card("By Status", color="teal") %}
-            <div class="chart-container mb-4" style="min-height: 126px;">
+        <div class="[&>div]:h-full" style="height: 13.02rem; overflow: hidden;">
+        {% call card("By Status", color="teal", padding=False) %}
+            <div class="overflow-y-auto px-6 py-3" style="height: calc(13.02rem - 3.5625rem);">
+            <div class="chart-container mb-3" style="height: 63px; min-height: 63px; max-height: 63px; overflow: hidden;">
                 <canvas id="status-breakdown-chart"></canvas>
             </div>
             <div class="space-y-3">
@@ -218,6 +219,7 @@
                 {% else %}
                 <p class="text-sm text-slate-500 dark:text-slate-400">No status data available.</p>
                 {% endfor %}
+            </div>
             </div>
             <script>
             document.addEventListener('DOMContentLoaded', function() {
@@ -236,10 +238,11 @@
         </div>
 
         {# Recent Sign-ups #}
-        <div class="h-[31rem] [&>div]:h-full">
-        {% call card("Recent Sign-ups", color="teal") %}
+        <div class="[&>div]:h-full" style="height: 13.02rem; overflow: hidden;">
+        {% call card("Recent Sign-ups", color="teal", padding=False) %}
+            <div class="overflow-y-auto px-6 py-3" style="height: calc(13.02rem - 3.5625rem);">
             {% if recent_subscribers %}
-            <div class="max-h-[24.5rem] space-y-3 overflow-y-auto pr-2">
+            <div class="space-y-3 pr-2">
                 {% for sub in recent_subscribers %}
                 <div class="flex items-center justify-between py-2 border-b border-slate-100 dark:border-slate-700 last:border-0">
                     <div>
@@ -255,6 +258,7 @@
             {% else %}
             <p class="text-sm text-slate-500 dark:text-slate-400">No recent sign-ups.</p>
             {% endif %}
+            </div>
         {% endcall %}
         </div>
     </div>

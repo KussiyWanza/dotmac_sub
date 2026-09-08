@@ -1532,6 +1532,10 @@ def reports_inbox_performance(
     include_inactive: bool = False,
     date_from: str | None = None,
     date_to: str | None = None,
+    team_search: str | None = Query(default=None, max_length=100),
+    team_page: int = Query(default=1, ge=1),
+    agent_search: str | None = Query(default=None, max_length=100),
+    agent_page: int = Query(default=1, ge=1),
     db: Session = Depends(get_db),
 ):
     from app.web.admin import get_current_user, get_sidebar_stats
@@ -1539,23 +1543,72 @@ def reports_inbox_performance(
     effective_from, effective_to, start_at, end_at = _inbox_performance_period(
         date_from, date_to
     )
-    performance_query = team_inbox_metrics_service.InboxPerformanceQuery(
+    summary_query = team_inbox_metrics_service.InboxPerformanceQuery(
         period_start_at=start_at,
         period_end_at=end_at,
         include_inactive_teams=include_inactive,
         limit=None,
     )
-    team_page = team_inbox_metrics_service.team_performance_page(
+    summary_page = team_inbox_metrics_service.team_performance_page(
         db,
-        query=performance_query,
+        query=summary_query,
         response_sla_seconds=response_sla_seconds,
     )
-    agent_page = team_inbox_metrics_service.agent_performance_page(
+    team_table_page = team_inbox_metrics_service.team_performance_page(
         db,
-        query=performance_query,
+        query=team_inbox_metrics_service.InboxPerformanceQuery(
+            period_start_at=start_at,
+            period_end_at=end_at,
+            include_inactive_teams=include_inactive,
+            search=team_search,
+            limit=10,
+            offset=(team_page - 1) * 10,
+        ),
+        response_sla_seconds=response_sla_seconds,
     )
-    team_rows = _inbox_team_rows(team_page.rows)
-    agent_rows = _inbox_agent_rows(agent_page.rows)
+    team_total_pages = max(1, (team_table_page.total_count + 9) // 10)
+    effective_team_page = min(team_page, team_total_pages)
+    if effective_team_page != team_page:
+        team_table_page = team_inbox_metrics_service.team_performance_page(
+            db,
+            query=team_inbox_metrics_service.InboxPerformanceQuery(
+                period_start_at=start_at,
+                period_end_at=end_at,
+                include_inactive_teams=include_inactive,
+                search=team_search,
+                limit=10,
+                offset=(effective_team_page - 1) * 10,
+            ),
+            response_sla_seconds=response_sla_seconds,
+        )
+    agent_table_page = team_inbox_metrics_service.agent_performance_page(
+        db,
+        query=team_inbox_metrics_service.InboxPerformanceQuery(
+            period_start_at=start_at,
+            period_end_at=end_at,
+            include_inactive_teams=include_inactive,
+            search=agent_search,
+            limit=15,
+            offset=(agent_page - 1) * 15,
+        ),
+    )
+    agent_total_pages = max(1, (agent_table_page.total_count + 14) // 15)
+    effective_agent_page = min(agent_page, agent_total_pages)
+    if effective_agent_page != agent_page:
+        agent_table_page = team_inbox_metrics_service.agent_performance_page(
+            db,
+            query=team_inbox_metrics_service.InboxPerformanceQuery(
+                period_start_at=start_at,
+                period_end_at=end_at,
+                include_inactive_teams=include_inactive,
+                search=agent_search,
+                limit=15,
+                offset=(effective_agent_page - 1) * 15,
+            ),
+        )
+    team_rows = _inbox_team_rows(summary_page.rows)
+    team_table_rows = _inbox_team_rows(team_table_page.rows)
+    agent_rows = _inbox_agent_rows(agent_table_page.rows)
     inbound_total = sum(cast(int, row["inbound_message_count"]) for row in team_rows)
     breached_total = sum(
         cast(int, row["response_sla_breached_count"]) for row in team_rows
@@ -1572,7 +1625,15 @@ def reports_inbox_performance(
         "date_from": effective_from,
         "date_to": effective_to,
         "team_rows": team_rows,
+        "team_table_rows": team_table_rows,
+        "team_search": (team_search or "").strip(),
+        "team_page": effective_team_page,
+        "team_total_pages": team_total_pages,
+        "team_total_count": team_table_page.total_count,
         "agent_rows": agent_rows,
+        "agent_search": (agent_search or "").strip(),
+        "agent_page": effective_agent_page,
+        "agent_total_pages": agent_total_pages,
         "team_count": len(team_rows),
         "open_count": sum(cast(int, row["open_count"]) for row in team_rows),
         "unassigned_open_count": sum(
@@ -1654,18 +1715,20 @@ def reports_inbox_escalations(
     response_sla_seconds: int = Query(default=900, ge=60, le=86400),
     queue_sla_seconds: int = Query(default=600, ge=60, le=86400),
     include_inactive: bool = False,
+    search: str | None = Query(default=None, max_length=100),
     page: int = Query(default=1, ge=1),
-    per_page: int = Query(default=50, ge=10, le=200),
     db: Session = Depends(get_db),
 ):
     from app.web.admin import get_current_user, get_sidebar_stats
 
+    per_page = 10
     escalation_page = team_inbox_metrics_service.escalation_page(
         db,
         query=team_inbox_metrics_service.InboxEscalationQuery(
             response_sla_seconds=response_sla_seconds,
             queue_sla_seconds=queue_sla_seconds,
             include_inactive_teams=include_inactive,
+            search=search,
             limit=per_page,
             offset=(page - 1) * per_page,
         ),
@@ -1680,6 +1743,7 @@ def reports_inbox_escalations(
         "response_sla_seconds": response_sla_seconds,
         "queue_sla_seconds": queue_sla_seconds,
         "include_inactive": include_inactive,
+        "search": (search or "").strip(),
         "rows": rows,
         "service_team_options": _active_service_team_options(db),
         "candidate_count": escalation_page.total_count,

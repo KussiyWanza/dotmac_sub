@@ -34,52 +34,66 @@
     <div class="animate-fade-in-up" style="animation-delay: 100ms;">
     {% call card(table_title or "Connectors", color="indigo") %}
         {% if connectors %}
-        {% call data_table() %}
-            {{ table_head(["Connector", "Type", "Auth", "Base URL", "Status", ""]) }}
+        <div class="overflow-hidden">
+        <table class="w-full table-fixed divide-y divide-slate-200 dark:divide-slate-700">
+            <colgroup>
+                <col class="w-[24%]">
+                <col class="w-[12%]">
+                <col class="w-[14%]">
+                <col class="w-[30%]">
+                <col class="w-[12%]">
+                <col class="w-[8%]">
+            </colgroup>
+            <thead>
+                <tr class="border-b border-slate-100 bg-slate-50/80 dark:border-slate-700/50 dark:bg-slate-900/20">
+                    {% for label in ["Connector", "Type", "Auth", "Base URL", "Status", ""] %}
+                    <th scope="col" class="break-words px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{{ label }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
             <tbody class="divide-y divide-slate-200 bg-white dark:divide-slate-700 dark:bg-slate-800">
                 {% for connector in connectors %}
                 {% set type_val = connector.connector_type.value if connector.connector_type else 'custom' %}
                 {% set auth_val = connector.auth_type.value if connector.auth_type else 'none' %}
-                {% call table_row(connector.id) %}
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        <div class="flex items-center gap-3">
-                            <div class="flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-100 dark:bg-indigo-900/30">
+                {% call table_row(color="indigo") %}
+                    <td class="break-words px-3 py-3 align-top">
+                        <div class="flex min-w-0 items-start gap-2">
+                            <div class="hidden h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-100 dark:bg-indigo-900/30 sm:flex">
                                 <svg class="h-5 w-5 text-indigo-600 dark:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1a2 2 0 10-4 0v1a1 1 0 01-1 1H7a1 1 0 01-1-1v-3a1 1 0 00-1-1H4a2 2 0 110-4h1a1 1 0 001-1V7a1 1 0 011-1h3a1 1 0 001-1V4z"/></svg>
                             </div>
-                            <div>
+                            <div class="min-w-0">
                                 <a href="/admin/integrations/connectors/{{ connector.id }}" class="text-sm font-medium text-indigo-600 hover:text-indigo-700 dark:text-indigo-400">{{ connector.name }}</a>
                                 {% if connector.notes %}
-                                <p class="text-xs text-slate-500 dark:text-slate-400 truncate max-w-xs">{{ connector.notes }}</p>
+                                <p class="mt-1 break-words text-xs text-slate-500 dark:text-slate-400">{{ connector.notes }}</p>
                                 {% endif %}
                             </div>
                         </div>
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
+                    <td class="break-words px-3 py-3 align-top">
                         {% set type_colors = {'webhook': 'info', 'http': 'info', 'smtp': 'warning', 'stripe': 'active', 'twilio': 'active', 'custom': 'neutral'} %}
                         {{ status_badge(type_val|title, type_colors.get(type_val, 'neutral'), size="sm") }}
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-900 dark:text-white">
+                    <td class="break-words px-3 py-3 align-top text-sm text-slate-900 dark:text-white">
                         {{ auth_val|replace('_', ' ')|title }}
                     </td>
-                    <td class="px-6 py-4">
-                        <span class="font-mono text-xs text-slate-500 dark:text-slate-400 truncate max-w-xs block">{{ connector.base_url or '-' }}</span>
+                    <td class="px-3 py-3 align-top">
+                        <span class="block break-all font-mono text-xs text-slate-500 dark:text-slate-400">{{ connector.base_url or '-' }}</span>
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
+                    <td class="break-words px-3 py-3 align-top">
                         {% if connector.is_active %}
                         {{ status_badge("Active", "active", size="sm") }}
                         {% else %}
                         {{ status_badge("Inactive", "neutral", size="sm") }}
                         {% endif %}
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-right">
-                        {% call row_actions() %}
-                            {{ row_action("/admin/integrations/connectors/" ~ connector.id, icon_view(), "View") }}
-                        {% endcall %}
+                    <td class="px-2 py-3 text-right align-top">
+                        {{ row_action("/admin/integrations/connectors/" ~ connector.id, icon_view(), "View") }}
                     </td>
                 {% endcall %}
                 {% endfor %}
             </tbody>
-        {% endcall %}
+        </table>
+        </div>
         {% else %}
         {{ empty_state(
             "No connectors",

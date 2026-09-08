@@ -106,7 +106,18 @@
     </div>
 
     {% call card("Team Performance", color="teal", padding=False) %}
-    {% if team_rows %}
+    <div class="flex justify-end border-b border-slate-200/60 px-6 py-3 dark:border-slate-700/60">
+        <form method="get" action="/admin/reports/inbox-performance" class="flex w-full gap-2 sm:max-w-sm">
+            <input type="hidden" name="response_sla_seconds" value="{{ response_sla_seconds }}">
+            <input type="hidden" name="date_from" value="{{ date_from }}">
+            <input type="hidden" name="date_to" value="{{ date_to }}">
+            {% if include_inactive %}<input type="hidden" name="include_inactive" value="true">{% endif %}
+            <label for="team-performance-search" class="sr-only">Search teams</label>
+            <input id="team-performance-search" type="search" name="team_search" value="{{ team_search }}" placeholder="Search teams..." class="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+            <button type="submit" class="rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700">Search</button>
+        </form>
+    </div>
+    {% if team_table_rows %}
     <div class="overflow-x-auto">
         <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
             {{ table_head([
@@ -120,7 +131,7 @@
                 {"label": "Avg Queue Wait"}
             ]) }}
             <tbody class="divide-y divide-slate-100 bg-white dark:divide-slate-700/50 dark:bg-slate-800">
-                {% for row in team_rows %}
+                {% for row in team_table_rows %}
                 {% call table_row(color="teal") %}
                 <td class="px-6 py-4">
                     <p class="text-sm font-semibold text-slate-900 dark:text-white">{{ row.name }}</p>
@@ -145,11 +156,29 @@
         </table>
     </div>
     {% else %}
-    <div class="px-6 py-8 text-center text-sm text-slate-500 dark:text-slate-400">No inbox team data available.</div>
+    <div class="px-6 py-8 text-center text-sm text-slate-500 dark:text-slate-400">{% if team_search %}No teams match “{{ team_search }}”.{% else %}No inbox team data available.{% endif %}</div>
+    {% endif %}
+    {% if team_total_pages > 1 %}
+    <nav class="flex items-center justify-end gap-2 border-t border-slate-200/60 px-6 py-3 dark:border-slate-700/60" aria-label="Team Performance pages">
+        <span class="mr-2 text-xs text-slate-500 dark:text-slate-400">Page {{ team_page }} of {{ team_total_pages }}</span>
+        {% if team_page > 1 %}<a class="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700" href="?response_sla_seconds={{ response_sla_seconds }}&date_from={{ date_from }}&date_to={{ date_to }}{% if include_inactive %}&include_inactive=true{% endif %}&team_search={{ team_search|urlencode }}&team_page={{ team_page - 1 }}">Previous</a>{% endif %}
+        {% if team_page < team_total_pages %}<a class="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700" href="?response_sla_seconds={{ response_sla_seconds }}&date_from={{ date_from }}&date_to={{ date_to }}{% if include_inactive %}&include_inactive=true{% endif %}&team_search={{ team_search|urlencode }}&team_page={{ team_page + 1 }}">Next</a>{% endif %}
+    </nav>
     {% endif %}
     {% endcall %}
 
     {% call card("Agent Load", color="cyan", padding=False) %}
+    <div class="flex justify-end border-b border-slate-200/60 px-6 py-3 dark:border-slate-700/60">
+        <form method="get" action="/admin/reports/inbox-performance" class="flex w-full gap-2 sm:max-w-sm">
+            <input type="hidden" name="response_sla_seconds" value="{{ response_sla_seconds }}">
+            <input type="hidden" name="date_from" value="{{ date_from }}">
+            <input type="hidden" name="date_to" value="{{ date_to }}">
+            {% if include_inactive %}<input type="hidden" name="include_inactive" value="true">{% endif %}
+            <label for="agent-load-search" class="sr-only">Search agents</label>
+            <input id="agent-load-search" type="search" name="agent_search" value="{{ agent_search }}" placeholder="Search agents..." class="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+            <button type="submit" class="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-700">Search</button>
+        </form>
+    </div>
     {% if agent_rows %}
     <div class="overflow-x-auto">
         <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
@@ -178,7 +207,14 @@
         </table>
     </div>
     {% else %}
-    <div class="px-6 py-8 text-center text-sm text-slate-500 dark:text-slate-400">No active inbox agent assignments yet.</div>
+    <div class="px-6 py-8 text-center text-sm text-slate-500 dark:text-slate-400">{% if agent_search %}No agents match “{{ agent_search }}”.{% else %}No active inbox agent assignments yet.{% endif %}</div>
+    {% endif %}
+    {% if agent_total_pages > 1 %}
+    <nav class="flex items-center justify-end gap-2 border-t border-slate-200/60 px-6 py-3 dark:border-slate-700/60" aria-label="Agent Load pages">
+        <span class="mr-2 text-xs text-slate-500 dark:text-slate-400">Page {{ agent_page }} of {{ agent_total_pages }}</span>
+        {% if agent_page > 1 %}<a class="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700" href="?response_sla_seconds={{ response_sla_seconds }}&date_from={{ date_from }}&date_to={{ date_to }}{% if include_inactive %}&include_inactive=true{% endif %}&agent_search={{ agent_search|urlencode }}&agent_page={{ agent_page - 1 }}">Previous</a>{% endif %}
+        {% if agent_page < agent_total_pages %}<a class="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700" href="?response_sla_seconds={{ response_sla_seconds }}&date_from={{ date_from }}&date_to={{ date_to }}{% if include_inactive %}&include_inactive=true{% endif %}&agent_search={{ agent_search|urlencode }}&agent_page={{ agent_page + 1 }}">Next</a>{% endif %}
+    </nav>
     {% endif %}
     {% endcall %}
 </div>

@@ -167,6 +167,28 @@ def _work_order_cohort_url(*, status: str | None = None, active: bool = False) -
     return WORK_ORDERS_LIST_URL + (f"?{query}" if query else "")
 
 
+def _work_order_page_url(
+    *,
+    page: int,
+    per_page: int,
+    status: str | None,
+    q: str | None,
+    active: bool,
+    project_task_id: str | None,
+) -> str:
+    params = {
+        "page": page,
+        "per_page": per_page,
+        "status": status,
+        "q": q,
+        "active": "1" if active else None,
+        "project_task_id": project_task_id,
+    }
+    return WORK_ORDERS_LIST_URL + "?" + urlencode(
+        {key: value for key, value in params.items() if value not in (None, "")}
+    )
+
+
 def _work_order_kpis(counts: dict[str, int]) -> dict[str, Kpi]:
     return {
         "total": Kpi(
@@ -448,6 +470,14 @@ def list_page(
         except HTTPException as exc:
             create_prefill_error = str(exc.detail)
     create_work_order_action = _create_action(error=create_prefill_error)
+    total_pages = max(1, ceil(total / list_query.per_page)) if total else 1
+    page_url_values = {
+        "per_page": list_query.per_page,
+        "status": list_query.filter_value("status"),
+        "q": list_query.search,
+        "active": bool(active),
+        "project_task_id": str(task_filter_id) if task_filter_id else None,
+    }
     return {
         "items": items,
         "counts": counts,
@@ -459,7 +489,17 @@ def list_page(
         "page": list_query.page,
         "per_page": list_query.per_page,
         "total": total,
-        "total_pages": max(1, ceil(total / list_query.per_page)) if total else 1,
+        "total_pages": total_pages,
+        "previous_page_url": (
+            _work_order_page_url(page=list_query.page - 1, **page_url_values)
+            if list_query.page > 1
+            else None
+        ),
+        "next_page_url": (
+            _work_order_page_url(page=list_query.page + 1, **page_url_values)
+            if list_query.page < total_pages
+            else None
+        ),
         "statuses": STATUS_OPTIONS,
         "priorities": PRIORITY_OPTIONS,
         "work_types": WORK_TYPE_OPTIONS,

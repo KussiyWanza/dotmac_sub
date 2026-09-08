@@ -27,6 +27,14 @@ def test_every_previously_uncovered_report_exposes_an_export_control() -> None:
         assert endpoint in source
 
 
+def test_usage_by_plan_exposes_accessible_client_search() -> None:
+    source = (REPORT_TEMPLATES / "usage_by_plan.html").read_text(encoding="utf-8")
+
+    assert 'id="usage-plan-search"' in source
+    assert 'data-usage-plan-row' in source
+    assert 'aria-live="polite"' in source
+
+
 def test_subscriber_growth_export_uses_the_owned_chart_projection(monkeypatch) -> None:
     monkeypatch.setattr(
         web_reports_extended,

@@ -715,6 +715,38 @@ def test_inbox_performance_agent_load_template_uses_display_name_not_uuid():
     assert "{{ row.person_id }}" not in source
 
 
+def test_inbox_performance_team_table_has_search_and_pagination():
+    source = Path("templates/admin/reports/inbox_performance.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'name="team_search"' in source
+    assert 'aria-label="Team Performance pages"' in source
+    assert "{% for row in team_table_rows %}" in source
+
+
+def test_inbox_performance_agent_table_has_search_and_pagination():
+    source = Path("templates/admin/reports/inbox_performance.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'name="agent_search"' in source
+    assert 'aria-label="Agent Load pages"' in source
+
+
+def test_inbox_escalation_queue_does_not_scroll_horizontally():
+    source = Path("templates/admin/reports/inbox_escalations.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert '<div class="overflow-hidden">' in source
+    assert '<table class="w-full table-fixed' in source
+    assert 'min-w-[18rem]' not in source
+    assert 'min-w-[12rem]' not in source
+    assert 'aria-label="Escalation Queue pages"' in source
+    assert 'name="search"' in source
+
+
 def test_agent_performance_partial_renders_display_name_and_lazy_pagination():
     agent_id = uuid4()
     report = crm_reporting.CrmReportPage(

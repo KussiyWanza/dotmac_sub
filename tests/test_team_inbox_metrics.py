@@ -192,6 +192,27 @@ def test_team_performance_uses_constant_set_based_queries(db_session):
     )
 
 
+def test_team_performance_searches_and_paginates_teams(db_session):
+    observed_at = datetime(2026, 8, 28, 12, 0, tzinfo=UTC)
+    for name in ("Billing Support", "Network Support", "Sales"):
+        _team(db_session, name=name)
+    db_session.commit()
+
+    page = team_inbox_metrics.team_performance_page(
+        db_session,
+        query=team_inbox_metrics.InboxPerformanceQuery(
+            observed_at=observed_at,
+            search="support",
+            limit=1,
+            offset=1,
+        ),
+        response_sla_seconds=900,
+    )
+
+    assert page.total_count == 2
+    assert [row.service_team_name for row in page.rows] == ["Network Support"]
+
+
 def test_escalation_page_paginates_candidates_and_preserves_full_totals(db_session):
     team = _team(db_session)
     observed_at = datetime(2026, 8, 28, 12, 0, tzinfo=UTC)

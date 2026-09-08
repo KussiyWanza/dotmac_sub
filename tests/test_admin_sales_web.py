@@ -1202,8 +1202,18 @@ def test_board_template_wires_kanban_api_endpoints():
     assert 'action="/admin/sales/pipeline-board"' in source
     assert 'data-kanban-endpoint="/api/v1/leads/kanban?pipeline_id=' in source
     assert 'data-update-endpoint="/api/v1/leads/kanban/move"' in source
+    assert "data-kanban-search" in source
+    assert "data-kanban-stage-filter" in source
+    assert "data-kanban-result-count" in source
+    assert "data-can-move=" in source
     assert "/static/js/kanban.js" in source
     assert "/admin/sales/pipelines-settings" in source
+
+    script = Path("static/js/kanban.js").read_text(encoding="utf-8")
+    assert "requestAnimationFrame(autoScroll)" in script
+    assert "data-move-select" in script
+    assert "original stage was restored" in script
+    assert 'field === "estimated_value"' in script
 
 
 def test_pipeline_settings_template_uses_canonical_routes_and_ux():

@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -147,6 +148,17 @@ def test_audit_list_definition_declares_expected_capabilities():
     assert definition.default_sort == "occurred_at"
     assert definition.default_sort_dir == "desc"
     assert definition.default_per_page == 50
+
+
+def test_audit_results_do_not_scroll_horizontally():
+    source = Path("templates/admin/system/_audit_table.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert '<div class="overflow-hidden">' in source
+    assert '<table class="w-full table-fixed' in source
+    assert "overflow-x-auto" not in source
+    assert "whitespace-nowrap" not in source
 
 
 def test_build_audit_list_query_normalizes_and_defaults():

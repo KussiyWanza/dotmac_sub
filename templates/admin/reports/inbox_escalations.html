@@ -62,50 +62,67 @@
     </div>
 
     {% call card("Escalation Queue", color="rose", padding=False) %}
+    <div class="flex justify-end border-b border-slate-200/60 px-6 py-3 dark:border-slate-700/60">
+        <form method="get" action="/admin/reports/inbox-escalations" class="flex w-full gap-2 sm:max-w-sm">
+            <input type="hidden" name="response_sla_seconds" value="{{ response_sla_seconds }}">
+            <input type="hidden" name="queue_sla_seconds" value="{{ queue_sla_seconds }}">
+            {% if include_inactive %}<input type="hidden" name="include_inactive" value="true">{% endif %}
+            <label for="escalation-queue-search" class="sr-only">Search escalation queue</label>
+            <input id="escalation-queue-search" type="search" name="search" value="{{ search }}" placeholder="Search escalations..." class="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+            <button type="submit" class="rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-700">Search</button>
+        </form>
+    </div>
     {% if rows %}
-    <div class="overflow-x-auto">
-        <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
-            {{ table_head([
-                {"label": "Conversation"},
-                {"label": "Team"},
-                {"label": "Reasons"},
-                {"label": "Pending"},
-                {"label": "Queue Wait"},
-                {"label": "Agents"},
-                {"label": "Status"},
-                {"label": "Action"}
-            ]) }}
+    <div class="overflow-hidden">
+        <table class="w-full table-fixed divide-y divide-slate-200 dark:divide-slate-700">
+            <colgroup>
+                <col class="w-[18%]">
+                <col class="w-[12%]">
+                <col class="w-[13%]">
+                <col class="w-[11%]">
+                <col class="w-[11%]">
+                <col class="w-[6%]">
+                <col class="w-[9%]">
+                <col class="w-[20%]">
+            </colgroup>
+            <thead>
+                <tr class="border-b border-slate-100 bg-slate-50/80 dark:border-slate-700/50 dark:bg-slate-900/20">
+                    {% for label in ["Conversation", "Team", "Reasons", "Pending", "Queue Wait", "Agents", "Status", "Action"] %}
+                    <th scope="col" class="break-words px-2 py-2 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{{ label }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
             <tbody class="divide-y divide-slate-100 bg-white dark:divide-slate-700/50 dark:bg-slate-800">
                 {% for row in rows %}
                 {% set current_url = request.url.path ~ ('?' ~ request.url.query if request.url.query else '') %}
                 {% call table_row(color="rose") %}
-                <td class="min-w-[18rem] px-6 py-4">
+                <td class="break-words px-3 py-3 align-top">
                     <p class="text-sm font-semibold text-slate-900 dark:text-white">{{ row.subject }}</p>
-                    <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ row.contact_address }}</p>
-                    <p class="mt-1 font-mono text-[11px] text-slate-400 dark:text-slate-500">{{ row.conversation_id }}</p>
+                    <p class="mt-1 break-all text-xs text-slate-500 dark:text-slate-400">{{ row.contact_address }}</p>
+                    <p class="mt-1 break-all font-mono text-[10px] text-slate-400 dark:text-slate-500">{{ row.conversation_id }}</p>
                 </td>
-                <td class="whitespace-nowrap px-6 py-4">
+                <td class="break-words px-3 py-3 align-top">
                     <p class="text-sm font-medium text-slate-900 dark:text-white">{{ row.service_team_name }}</p>
                     <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ row.service_team_capabilities | replace('_', ' ') | title or 'No capability' }}</p>
                 </td>
-                <td class="px-6 py-4">
-                    <div class="flex min-w-[12rem] flex-wrap gap-1.5">
+                <td class="px-3 py-3 align-top">
+                    <div class="flex flex-wrap gap-1">
                         {% for reason in row.reasons %}
                             {{ status_badge(reason, "overdue", size="sm") }}
                         {% endfor %}
                     </div>
                 </td>
-                <td class="whitespace-nowrap px-6 py-4 text-sm text-slate-700 dark:text-slate-300">
-                    <span class="font-semibold text-rose-700 dark:text-rose-300">{{ row.pending_response }}</span>
-                    <span class="ml-1 text-xs text-slate-500 dark:text-slate-400">/ {{ row.response_sla }}</span>
+                <td class="break-words px-3 py-3 align-top text-xs text-slate-700 dark:text-slate-300">
+                    <span class="block font-semibold text-rose-700 dark:text-rose-300">{{ row.pending_response }}</span>
+                    <span class="block text-[11px] text-slate-500 dark:text-slate-400">of {{ row.response_sla }}</span>
                 </td>
-                <td class="whitespace-nowrap px-6 py-4 text-sm text-slate-700 dark:text-slate-300">
-                    <span class="font-semibold text-amber-700 dark:text-amber-300">{{ row.queue_wait }}</span>
-                    <span class="ml-1 text-xs text-slate-500 dark:text-slate-400">/ {{ row.queue_sla }}</span>
+                <td class="break-words px-3 py-3 align-top text-xs text-slate-700 dark:text-slate-300">
+                    <span class="block font-semibold text-amber-700 dark:text-amber-300">{{ row.queue_wait }}</span>
+                    <span class="block text-[11px] text-slate-500 dark:text-slate-400">of {{ row.queue_sla }}</span>
                 </td>
-                <td class="whitespace-nowrap px-6 py-4 text-sm font-semibold {% if row.available_agent_count == 0 %}text-rose-700 dark:text-rose-300{% else %}text-slate-900 dark:text-white{% endif %}">{{ row.available_agent_count }}</td>
-                <td class="whitespace-nowrap px-6 py-4">{{ status_badge(row.status | replace('_', ' ') | title, "warning", size="sm") }}</td>
-                <td class="min-w-[18rem] px-6 py-4">
+                <td class="px-3 py-3 align-top text-sm font-semibold {% if row.available_agent_count == 0 %}text-rose-700 dark:text-rose-300{% else %}text-slate-900 dark:text-white{% endif %}">{{ row.available_agent_count }}</td>
+                <td class="break-words px-3 py-3 align-top">{{ status_badge(row.status | replace('_', ' ') | title, "warning", size="sm") }}</td>
+                <td class="px-3 py-3 align-top">
                     <form method="post" action="/admin/reports/inbox-escalations/{{ row.conversation_id }}/action" class="flex flex-col gap-2">
                         {% include "components/forms/csrf_input.html" %}
                         <input type="hidden" name="next" value="{{ current_url }}">
@@ -115,9 +132,9 @@
                             <option value="{{ team.id }}" {% if team.id|string == row.service_team_id %}selected{% endif %}>{{ team.name }}</option>
                             {% endfor %}
                         </select>
-                        <div class="flex gap-2">
-                            <button type="submit" name="action" value="auto_assign" class="rounded-lg bg-rose-600 px-3 py-2 text-xs font-semibold text-white hover:bg-rose-700">Auto assign</button>
-                            <button type="submit" name="action" value="queue" class="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">Queue</button>
+                        <div class="flex flex-wrap gap-1.5">
+                            <button type="submit" name="action" value="auto_assign" class="rounded-lg bg-rose-600 px-2 py-1.5 text-xs font-semibold text-white hover:bg-rose-700">Auto assign</button>
+                            <button type="submit" name="action" value="queue" class="rounded-lg border border-slate-300 px-2 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">Queue</button>
                         </div>
                     </form>
                     <details class="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/30">
@@ -136,20 +153,20 @@
         </table>
     </div>
     {% else %}
-    <div class="px-6 py-8 text-center text-sm text-slate-500 dark:text-slate-400">No escalation candidates for the selected rules.</div>
+    <div class="px-6 py-8 text-center text-sm text-slate-500 dark:text-slate-400">{% if search %}No escalation candidates match “{{ search }}”.{% else %}No escalation candidates for the selected rules.{% endif %}</div>
     {% endif %}
     {% if has_previous or has_next %}
-    <div class="flex items-center justify-between gap-3 border-t border-slate-200 px-6 py-4 dark:border-slate-700">
+    <nav class="flex items-center justify-end gap-3 border-t border-slate-200 px-6 py-4 dark:border-slate-700" aria-label="Escalation Queue pages">
         <p class="text-sm text-slate-500 dark:text-slate-400">Page {{ page }} · {{ candidate_count }} total candidates</p>
         <div class="flex gap-2">
             {% if has_previous %}
-            <a href="?page={{ page - 1 }}&per_page={{ per_page }}&response_sla_seconds={{ response_sla_seconds }}&queue_sla_seconds={{ queue_sla_seconds }}{% if include_inactive %}&include_inactive=true{% endif %}" class="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">Previous</a>
+            <a href="?page={{ page - 1 }}&response_sla_seconds={{ response_sla_seconds }}&queue_sla_seconds={{ queue_sla_seconds }}{% if include_inactive %}&include_inactive=true{% endif %}&search={{ search|urlencode }}" class="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">Previous</a>
             {% endif %}
             {% if has_next %}
-            <a href="?page={{ page + 1 }}&per_page={{ per_page }}&response_sla_seconds={{ response_sla_seconds }}&queue_sla_seconds={{ queue_sla_seconds }}{% if include_inactive %}&include_inactive=true{% endif %}" class="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">Next</a>
+            <a href="?page={{ page + 1 }}&response_sla_seconds={{ response_sla_seconds }}&queue_sla_seconds={{ queue_sla_seconds }}{% if include_inactive %}&include_inactive=true{% endif %}&search={{ search|urlencode }}" class="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">Next</a>
             {% endif %}
         </div>
-    </div>
+    </nav>
     {% endif %}
     {% endcall %}
 </div>
