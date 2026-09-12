@@ -17,11 +17,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import and_, case, func, or_, select, union_all
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.billing import (
     AccountAdjustment,
@@ -993,7 +994,9 @@ def customer_financial_balances_by_currency(
         )
     add(invoice_query.group_by(Invoice.account_id, invoice_currency).all())
 
-    prepaid_consumption_amount = Invoice.total
+    prepaid_consumption_amount: ColumnElement[Any] = cast(
+        ColumnElement[Any], Invoice.total
+    )
     if start is not None:
         pre_boundary_payment_amount = (
             select(func.coalesce(func.sum(PaymentAllocation.amount), 0))
