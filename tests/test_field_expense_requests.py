@@ -13,6 +13,11 @@ from fastapi.testclient import TestClient
 from app.api.field import router
 from app.db import get_db
 from app.models.dispatch import TechnicianProfile
+from app.models.field_erp_sync import (
+    FieldErpSyncFlow,
+    SyncFlowOwner,
+    SyncFlowOwnership,
+)
 from app.models.field_expense import FieldExpenseRequest
 from app.models.stored_file import StoredFile
 from app.models.subscriber import Subscriber, UserType
@@ -219,6 +224,16 @@ def _submit_expense(
     notes=None,
     items=None,
 ):
+    flow = FieldErpSyncFlow.expense_claim.value
+    ownership = (
+        db_session.query(SyncFlowOwnership)
+        .filter(SyncFlowOwnership.flow == flow)
+        .one_or_none()
+    )
+    if ownership is None:
+        db_session.add(SyncFlowOwnership(flow=flow, owner=SyncFlowOwner.sub.value))
+    else:
+        ownership.owner = SyncFlowOwner.sub.value
     resolved_id = request_id or uuid4()
     user_id = user.id
     work_order_public_id = work_order.public_id

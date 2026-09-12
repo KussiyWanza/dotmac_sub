@@ -95,9 +95,9 @@ class ExpenseFormContext {
   final ExpenseProfileDestination profileDestination;
   factory ExpenseFormContext.fromJson(Map<String, dynamic> json) =>
       ExpenseFormContext(
-        approvers: _mapList(
-          json['approvers'],
-        ).map(ExpenseApprover.fromJson).toList(),
+        approvers: _mapList(json['approvers'])
+            .map(ExpenseApprover.fromJson)
+            .toList(),
         banks: _mapList(json['banks']).map(ExpenseBank.fromJson).toList(),
         profileDestination: ExpenseProfileDestination.fromJson(
           (json['profile_destination'] as Map).cast<String, dynamic>(),
@@ -422,7 +422,9 @@ class ExpenseRequest {
 
   String get statusLabel {
     final value = status.replaceAll('_', ' ');
-    return value.isEmpty ? value : '${value[0].toUpperCase()}${value.substring(1)}';
+    return value.isEmpty
+        ? value
+        : '${value[0].toUpperCase()}${value.substring(1)}';
   }
 }
 

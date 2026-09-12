@@ -488,27 +488,34 @@ def _requester_identity(
             "requester_required",
             "The authenticated staff requester was not found.",
         )
-    person_ids = tuple(
+    direct_person_ids = tuple(
         dict.fromkeys(
             value
             for value in (system_user.id, system_user.person_party_id)
             if value is not None
         )
     )
-    technician_profile_ids = tuple(
+    technician_profiles = tuple(
         db.execute(
-            select(TechnicianProfile.id).where(
+            select(TechnicianProfile.id, TechnicianProfile.person_id).where(
                 or_(
                     TechnicianProfile.system_user_id == system_user.id,
-                    TechnicianProfile.person_id.in_(person_ids),
+                    TechnicianProfile.person_id.in_(direct_person_ids),
                 )
             )
-        ).scalars()
+        ).all()
+    )
+    person_ids = tuple(
+        dict.fromkeys(
+            (*direct_person_ids, *(person_id for _, person_id in technician_profiles))
+        )
     )
     return _MaterialRequesterIdentity(
         system_user_id=system_user.id,
         person_ids=person_ids,
-        technician_profile_ids=technician_profile_ids,
+        technician_profile_ids=tuple(
+            profile_id for profile_id, _ in technician_profiles
+        ),
     )
 
 
@@ -1301,15 +1308,20 @@ class FieldMaterialRequests:
         principal: dict[str, Any],
         material_request_id: str,
     ) -> dict:
-        return _legacy_material_request_view(
-            get_requester_material_request(
-                db,
-                RequesterMaterialRequestDetailQuery(
-                    system_user_id=_principal_system_user_id(principal),
-                    request_id=coerce_uuid(material_request_id),
-                ),
+        try:
+            return _legacy_material_request_view(
+                get_requester_material_request(
+                    db,
+                    RequesterMaterialRequestDetailQuery(
+                        system_user_id=_principal_system_user_id(principal),
+                        request_id=coerce_uuid(material_request_id),
+                    ),
+                )
             )
-        )
+        except MaterialRequestError as exc:
+            if exc.code.endswith("request_not_found"):
+                raise HTTPException(status_code=404, detail=exc.message) from exc
+            raise
 
     @staticmethod
     def create(

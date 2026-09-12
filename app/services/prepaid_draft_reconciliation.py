@@ -833,6 +833,19 @@ def _historical_partial_allocation_evidence(
     """Prove one exact legacy allocation already absorbed by the opening."""
 
     currency = (invoice.currency or "NGN").upper()
+    subledger_authority_active = (
+        db.scalar(select(CustomerSubledgerAuthorityCutover.id).limit(1)) is not None
+    )
+    opening = (
+        db.scalar(
+            select(CustomerSubledgerOpeningPosition).where(
+                CustomerSubledgerOpeningPosition.account_id == invoice.account_id,
+                CustomerSubledgerOpeningPosition.currency == currency,
+            )
+        )
+        if subledger_authority_active
+        else None
+    )
     baseline = db.scalar(
         select(PrepaidFundingBaseline).where(
             PrepaidFundingBaseline.account_id == invoice.account_id,
@@ -840,9 +853,16 @@ def _historical_partial_allocation_evidence(
             PrepaidFundingBaseline.is_active.is_(True),
         )
     )
-    if baseline is None:
+    boundary_value = (
+        opening.occurred_at
+        if opening is not None
+        else baseline.position_at
+        if baseline is not None
+        else None
+    )
+    if boundary_value is None:
         return None
-    boundary = _utc(baseline.position_at)
+    boundary = _utc(boundary_value)
     allocations = tuple(
         db.scalars(
             select(PaymentAllocation)
@@ -919,7 +939,7 @@ def _historical_partial_allocation_evidence(
                 LedgerEntry.affects_customer_position.is_(True),
                 LedgerEntry.reversal_of_entry_id.is_(None),
                 LedgerEntry.created_at >= invoice_entry.created_at,
-                LedgerEntry.created_at <= baseline.position_at,
+                LedgerEntry.created_at <= boundary,
             )
             .order_by(LedgerEntry.id)
         ).all()

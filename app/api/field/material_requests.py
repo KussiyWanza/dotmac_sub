@@ -9,6 +9,7 @@ from app.schemas.common import ListResponse
 from app.schemas.field import (
     FieldMaterialRequestCancel,
     FieldMaterialRequestCreate,
+    FieldMaterialRequestItemRead,
     FieldMaterialRequestRead,
     FieldMaterialRequestSubmit,
 )
@@ -75,16 +76,16 @@ def _material_outcome(outcome: MaterialRequestView) -> FieldMaterialRequestRead:
         updated_at=outcome.updated_at,
         rejection_reason=outcome.rejection_reason,
         items=[
-            {
-                "id": item.id,
-                "item_id": item.item_id,
-                "sku": item.sku,
-                "name": item.name,
-                "unit": item.unit,
-                "quantity": item.quantity,
-                "notes": item.notes,
-                "serial_numbers": list(item.serial_numbers),
-            }
+            FieldMaterialRequestItemRead(
+                id=item.id,
+                item_id=item.item_id,
+                sku=item.sku,
+                name=item.name,
+                unit=item.unit,
+                quantity=item.quantity,
+                notes=item.notes,
+                serial_numbers=list(item.serial_numbers),
+            )
             for item in outcome.items
         ],
     )

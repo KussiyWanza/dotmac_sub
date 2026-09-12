@@ -631,13 +631,13 @@ _EXPENSE_SUBMIT_COMMAND = OwnerCommandDefinition(
 
 _EXPENSE_APPROVAL_COMMAND = OwnerCommandDefinition(
     owner="operations.expense_requests",
-    concern="field expense approval and ERP delivery staging",
+    concern="field expense lifecycle ERP delivery staging",
     name="approve_field_expense_request",
 )
 
 _EXPENSE_REJECTION_COMMAND = OwnerCommandDefinition(
     owner="operations.expense_requests",
-    concern="field expense approval and ERP delivery staging",
+    concern="field expense lifecycle ERP delivery staging",
     name="reject_field_expense_request",
 )
 
@@ -749,17 +749,7 @@ def submit_field_expense_request_command(
             .one_or_none()
         )
         if existing is not None:
-            from app.services.dotmac_erp.expense_sync import (
-                require_expense_delivery_identity,
-            )
-
-            try:
-                require_expense_delivery_identity(existing)
-            except ValueError as exc:
-                raise FieldExpenseRequestError(
-                    code="operations.expense_requests.identity_mismatch",
-                    message="Expense payment identity does not match this request.",
-                ) from exc
+            _require_token_bound_request_identity(existing)
             requester_ids = {system_user.id}
             if system_user.person_party_id is not None:
                 requester_ids.add(system_user.person_party_id)
@@ -1011,7 +1001,6 @@ def approve_field_expense_request_command(
 
     def operation() -> ExpenseRequestApprovalOutcome:
         request = _locked_expense_request(db, command.expense_request_id)
-        _require_token_bound_request_identity(request)
         if request.status == "approved":
             return _approval_outcome(db, request)
         if request.status != "submitted":
@@ -1089,7 +1078,7 @@ def approve_field_expense_request_command(
 
 def _require_consistent_claim_identity(request: FieldExpenseRequest) -> None:
     """Fail closed when a claim-bound destination uses a different local ID."""
-    if (
+    if request.client_ref is None or (
         request.payment_destination_token is not None
         and request.client_ref != request.id
     ):
@@ -1109,7 +1098,7 @@ def reject_field_expense_request_command(
 
     def operation() -> ExpenseRequestRejectionOutcome:
         request = _locked_expense_request(db, command.expense_request_id)
-        _require_token_bound_request_identity(request)
+        _require_consistent_claim_identity(request)
         if request.status == "rejected":
             if request.rejected_at is None:
                 raise FieldExpenseRequestError(
@@ -1669,20 +1658,24 @@ def _expense_requester_system_user_ids(
         for request in unresolved
         if request.requested_by_technician_id is not None
     }
-    technician_users = (
-        dict(
-            db.execute(
-                select(TechnicianProfile.id, TechnicianProfile.system_user_id).where(
-                    TechnicianProfile.id.in_(technician_ids),
-                    TechnicianProfile.system_user_id.is_not(None),
-                )
-            ).all()
-        )
-        if technician_ids
-        else {}
-    )
+    technician_users: dict[UUID, UUID] = {}
+    if technician_ids:
+        technician_rows = db.execute(
+            select(TechnicianProfile.id, TechnicianProfile.system_user_id).where(
+                TechnicianProfile.id.in_(technician_ids),
+                TechnicianProfile.system_user_id.is_not(None),
+            )
+        ).all()
+        technician_users = {
+            technician_id: system_user_id
+            for technician_id, system_user_id in technician_rows
+            if system_user_id is not None
+        }
     for request in unresolved:
-        system_user_id = technician_users.get(request.requested_by_technician_id)
+        technician_id = request.requested_by_technician_id
+        system_user_id = (
+            technician_users.get(technician_id) if technician_id is not None else None
+        )
         if system_user_id is not None:
             resolved[request.id] = system_user_id
 
@@ -2357,15 +2350,13 @@ def _enqueue_submission_backoffice(
 
 
 def _require_token_bound_request_identity(request: FieldExpenseRequest) -> None:
-    from app.services.dotmac_erp.expense_sync import require_expense_delivery_identity
-
-    try:
-        require_expense_delivery_identity(request)
-    except ValueError as exc:
+    if request.client_ref is None or (
+        request.payment_destination_token and request.client_ref != request.id
+    ):
         raise FieldExpenseRequestError(
             code="operations.expense_requests.identity_mismatch",
             message="Expense payment identity does not match this request.",
-        ) from exc
+        )
 
 
 def _note_approval_command(

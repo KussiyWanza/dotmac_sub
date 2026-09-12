@@ -249,8 +249,14 @@ def _make_submitted_request(
     items: list[dict] | None = None,
 ) -> FieldExpenseRequest:
     """Create and submit a request through the real domain service."""
-    if db.query(SyncFlowOwnership).count() == 0:
-        _seed_ownership(db, sub_flows={FieldErpSyncFlow.expense_claim.value})
+    flow = FieldErpSyncFlow.expense_claim.value
+    ownership = (
+        db.query(SyncFlowOwnership).filter(SyncFlowOwnership.flow == flow).one_or_none()
+    )
+    if ownership is None:
+        db.add(SyncFlowOwnership(flow=flow, owner=SyncFlowOwner.sub.value))
+    else:
+        ownership.owner = SyncFlowOwner.sub.value
     crm_person_id = f"crm-tech-{uuid4().hex[:8]}"
     user = _user(db)
     _profile(db, user, crm_person_id=crm_person_id)
@@ -644,6 +650,8 @@ def _submit_with_claim_bound_destination(
             destination_token=verified.destination_token,
         ),
     )
+    requester_id = requester.id
+    work_order_public_id = work_order.public_id
     db.commit()
     outcome = submit_field_expense_request_command(
         db,
@@ -651,13 +659,13 @@ def _submit_with_claim_bound_destination(
             context=CommandContext(
                 command_id=source_claim_id,
                 correlation_id=source_claim_id,
-                actor=f"user:{requester.id}",
+                actor=f"user:{requester_id}",
                 scope="field:expense_requests:write",
                 reason="test claim-bound expense submission",
                 idempotency_key=str(source_claim_id),
             ),
-            requester_person_id=requester.id,
-            work_order=ExpenseWorkOrderIdentity(public_id=work_order.public_id),
+            requester_person_id=requester_id,
+            work_order=ExpenseWorkOrderIdentity(public_id=work_order_public_id),
             request_id=source_claim_id,
             purpose="Claim-bound transport",
             expense_date=date.today(),
@@ -724,13 +732,16 @@ def test_claim_bound_destination_accepts_complete_canonical_identity_path(
     assert client.inspect_claim_ids == [source_claim_id]
 
     _approve(db_session, request)
-    delivery = _outbox_rows(db_session, request)[0]
+    rows = _outbox_rows(db_session, request)
+    assert len(rows) == 2
+    delivery = rows[-1]
     assert delivery.payload["source_claim_id"] == str(source_claim_id)
-    assert delivery.idempotency_key == (f"exp-{source_claim_id}-approved-release-v2")
+    assert delivery.idempotency_key.startswith(f"exp-{source_claim_id}-approved-")
+    assert delivery.idempotency_key.endswith("-v3")
 
     delivered = outbox.deliver_pending(db_session, client=client)
 
-    assert delivered.accepted == 1
+    assert delivered.accepted == 2
     assert client.draft_claim_ids == [source_claim_id]
     approval = next(post for post in client.posts if post["path"].endswith("/approve"))
     assert approval["payload"]["source_claim_id"] == str(source_claim_id)
@@ -802,7 +813,9 @@ def test_approval_rejects_legacy_token_bearing_claim_identity_mismatch(
     assert persisted.status == "submitted"
     assert persisted.approved_at is None
     assert persisted.payment_destination_locked_at is None
-    assert _outbox_rows(db_session, persisted) == []
+    rows = _outbox_rows(db_session, persisted)
+    assert len(rows) == 1
+    assert rows[0].payload["_expense_action"] == "expense_submit_v3"
 
 
 def test_payment_does_not_enqueue_for_legacy_claim_identity_mismatch(db_session):
@@ -813,6 +826,8 @@ def test_payment_does_not_enqueue_for_legacy_claim_identity_mismatch(db_session)
     request.status = "approved"
     request.approved_at = datetime.now(UTC)
     command_id = uuid4()
+    manager_id = manager.id
+    request_id = request.id
     db_session.commit()
 
     with pytest.raises(FieldExpenseRequestError) as raised:
@@ -822,20 +837,22 @@ def test_payment_does_not_enqueue_for_legacy_claim_identity_mismatch(db_session)
                 context=CommandContext(
                     command_id=command_id,
                     correlation_id=command_id,
-                    actor=f"user:{manager.id}",
+                    actor=f"user:{manager_id}",
                     scope="operations:expense_request:pay",
-                    reason=f"pay_expense_request:{request.id}",
+                    reason=f"pay_expense_request:{request_id}",
                     idempotency_key=str(command_id),
                 ),
-                expense_request_id=request.id,
-                manager_system_user_id=manager.id,
+                expense_request_id=request_id,
+                manager_system_user_id=manager_id,
             ),
         )
 
     assert raised.value.code == (
         "operations.expense_requests.claim_identity_inconsistent"
     )
-    assert _outbox_rows(db_session, request) == []
+    rows = _outbox_rows(db_session, request)
+    assert len(rows) == 1
+    assert rows[0].payload["_expense_action"] == "expense_submit_v3"
 
 
 def test_approval_release_idempotency_key_is_stable(db_session):
@@ -902,7 +919,11 @@ def test_submit_atomically_enqueues_v3_event(db_session):
 
 def test_approval_fails_closed_before_ownership_cutover(db_session):
     request = _make_submitted_request(db_session)
-    ownership = db_session.get(SyncFlowOwnership, FieldErpSyncFlow.expense_claim.value)
+    ownership = (
+        db_session.query(SyncFlowOwnership)
+        .filter(SyncFlowOwnership.flow == FieldErpSyncFlow.expense_claim.value)
+        .one()
+    )
     ownership.owner = SyncFlowOwner.crm.value
     db_session.commit()
 
@@ -984,7 +1005,9 @@ def test_token_bound_to_different_request_is_refused_before_approval(db_session)
     with pytest.raises(FieldExpenseRequestError) as raised:
         _approve(db_session, request)
 
-    assert raised.value.code == "operations.expense_requests.identity_mismatch"
+    assert raised.value.code == (
+        "operations.expense_requests.claim_identity_inconsistent"
+    )
 
 
 def test_approval_stages_before_delivery_capability_is_enabled(db_session):

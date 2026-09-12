@@ -175,6 +175,7 @@ def _presence(db_session, profile: TechnicianProfile, **overrides) -> FieldTechP
 
 def _expense(db_session, tech_user, profile, work_order, status="submitted") -> dict:
     assert status == "submitted"
+    _enable_expense_flow(db_session)
     request_id = uuid4()
     tech_user_id = tech_user.id
     requester_person_id = profile.person_id
