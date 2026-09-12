@@ -459,6 +459,7 @@ def test_local_issue_is_blocked_after_material_flow_cutover(db_session):
 
 
 def test_refresh_updates_status_for_in_flight_request(db_session):
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.material_request.value})
     request = _make_approved_request(db_session)
     request.support_system = "dotmac_erp"
     request.support_reference = "ERP-MR-9"
@@ -472,11 +473,114 @@ def test_refresh_updates_status_for_in_flight_request(db_session):
     result = material_sync.refresh_material_request_statuses(db_session, client=client)
 
     db_session.refresh(request)
-    assert result["processed"] == 1
-    assert result["updated"] == 1
+    assert result.processed == 1
+    assert result.updated == 1
     assert client.status_calls == [str(request.id)]
     assert request.support_status == "fulfilled"
     assert request.status == "issued"
+
+
+def test_refresh_advances_freshness_when_erp_status_is_unchanged(db_session):
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.material_request.value})
+    request = _make_approved_request(db_session)
+    request.support_system = "dotmac_erp"
+    request.support_reference = "ERP-MR-STILL-PENDING"
+    request.support_status = "pending_stock"
+    request.status = "pending_stock"
+    request.last_reconciled_at = None
+    db_session.commit()
+
+    client = _FakeERPClient(
+        status_outcomes=[
+            {"request_id": request.support_reference, "status": "PENDING_STOCK"}
+        ]
+    )
+    result = material_sync.refresh_material_request_statuses(db_session, client=client)
+
+    db_session.refresh(request)
+    assert result.processed == 1
+    assert result.observed == 1
+    assert result.updated == 0
+    assert request.last_reconciled_at is not None
+
+
+def test_refresh_rotates_through_more_than_one_bounded_page(db_session):
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.material_request.value})
+    first = _make_approved_request(db_session)
+    first.status = "pending_stock"
+    first.support_system = "dotmac_erp"
+    first.support_status = "pending_stock"
+    requests = [first]
+    for _ in range(143):
+        request = FieldMaterialRequest(
+            work_order_mirror_id=first.work_order_mirror_id,
+            requested_by_person_id=first.requested_by_person_id,
+            requested_by_system_user_id=first.requested_by_system_user_id,
+            status="pending_stock",
+            priority="high",
+            fulfillment_channel="erp",
+            support_system="dotmac_erp",
+            support_status="pending_stock",
+            source_warehouse_code="WH-LAGOS",
+        )
+        db_session.add(request)
+        requests.append(request)
+    db_session.flush()
+    for request in requests:
+        request.support_reference = f"ERP-{request.id}"
+    db_session.commit()
+
+    class _EchoPendingClient:
+        def __init__(self):
+            self.status_calls: list[str] = []
+
+        def get_material_request_status(self, source_request_id):
+            self.status_calls.append(source_request_id)
+            return {
+                "request_id": f"ERP-{source_request_id}",
+                "status": "PENDING_STOCK",
+            }
+
+        def close(self):
+            return None
+
+    client = _EchoPendingClient()
+    first_cycle = material_sync.refresh_material_request_statuses(
+        db_session, client=client, limit=100
+    )
+    second_cycle = material_sync.refresh_material_request_statuses(
+        db_session, client=client, limit=100
+    )
+
+    assert first_cycle.processed == 100
+    assert second_cycle.processed == 100
+    assert len(set(client.status_calls)) == 144
+    assert {str(request.id) for request in requests} <= set(client.status_calls)
+
+
+@pytest.mark.parametrize("erp_status", ("CANCELLED", "CANCELED"))
+def test_refresh_projects_erp_cancellation_through_material_owner(
+    db_session, erp_status
+):
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.material_request.value})
+    request = _make_approved_request(db_session)
+    request.support_system = "dotmac_erp"
+    request.support_reference = "ERP-MR-CANCELLED"
+    request.support_status = "pending_stock"
+    request.status = "pending_stock"
+    db_session.commit()
+
+    client = _FakeERPClient(
+        status_outcomes=[
+            {"request_id": request.support_reference, "status": erp_status}
+        ]
+    )
+    result = material_sync.refresh_material_request_statuses(db_session, client=client)
+
+    db_session.refresh(request)
+    assert result.updated == 1
+    assert request.support_status == erp_status.lower()
+    assert request.status == "canceled"
 
 
 def test_refresh_drains_a_sent_row_that_the_linked_query_could_never_select(
@@ -504,8 +608,8 @@ def test_refresh_drains_a_sent_row_that_the_linked_query_could_never_select(
     row = _outbox_rows(db_session, request)[0]
     assert row.status == FieldErpSyncStatus.accepted.value
     assert request.support_reference == "ERP-MR-LATE"
-    assert result["processed"] == 1
-    assert result["updated"] == 1
+    assert result.processed == 1
+    assert result.updated == 1
     assert client.status_calls == [str(request.id)]
 
 
@@ -542,7 +646,7 @@ def test_unlinked_status_poll_makes_no_erp_call_for_a_crm_owned_flow(db_session)
     result = material_sync.refresh_material_request_statuses(db_session, client=client)
 
     assert client.status_calls == []
-    assert result["skipped_not_owned"] == 1
+    assert result.skipped_not_owned == 1
     db_session.refresh(request)
     assert request.support_reference is None
     row = _outbox_rows(db_session, request)[0]
@@ -550,6 +654,7 @@ def test_unlinked_status_poll_makes_no_erp_call_for_a_crm_owned_flow(db_session)
 
 
 def test_refresh_skips_unsynced_and_terminal_requests(db_session):
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.material_request.value})
     # Not synced yet (no erp id) → excluded.
     unsynced = _make_approved_request(db_session, crm_work_order_id="wo-a")
     # Synced but already fulfilled (terminal) → excluded from the in-flight poll.
@@ -562,7 +667,7 @@ def test_refresh_skips_unsynced_and_terminal_requests(db_session):
     client = _FakeERPClient(status_outcomes=[])
     result = material_sync.refresh_material_request_statuses(db_session, client=client)
 
-    assert result["processed"] == 0
+    assert result.processed == 0
     assert client.status_calls == []
     assert unsynced.support_reference is None
 

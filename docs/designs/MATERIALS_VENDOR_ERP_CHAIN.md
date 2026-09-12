@@ -64,6 +64,13 @@ best-effort enqueue whose only trace was a metadata breadcrumb.
   observations (`refresh_material_request_statuses`,
   `refresh_purchase_invoice_statuses`) — legitimate observation of
   ERP-owned reality, not drift repair.
+- Material-status reconciliation orders active ERP requests by
+  `last_reconciled_at NULLS FIRST, id`, processes a bounded page, and advances
+  freshness through the typed ERP observation command even when status is
+  unchanged. The per-request observation timestamp is therefore the durable
+  rotation cursor: successfully observed rows cannot permanently hide newer
+  in-flight requests, and every consequence still belongs to
+  `operations.material_dependencies`.
 - Vendor project completion is the automatic payables determinant for PO-backed
   vendor work. The consumer creates one system-approved vendor purchase invoice
   from the approved quote when no active vendor invoice already exists, then

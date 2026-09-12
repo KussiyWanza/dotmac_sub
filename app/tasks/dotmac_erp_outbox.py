@@ -115,11 +115,12 @@ def refresh_expense_claim_statuses() -> dict:
 def refresh_material_request_statuses() -> dict:
     """Poll ERP for in-flight material-request statuses and refresh mirror fields.
 
-    Read-only reconcile: for each synced FieldMaterialRequest still awaiting ERP
-    fulfillment, GET the request status and write it back (flipping the sub row to
-    fulfilled when ERP reports it). Gated at the scheduler by
-    ``dotmac_erp_sync_enabled`` (default off), so it is inert until cutover; a
-    no-op when nothing is in flight. Idempotent — safe to re-run.
+    Read-only against ERP: for each synced FieldMaterialRequest still awaiting
+    fulfillment, GET the request status and pass the typed observation to the
+    material owner. The validated ERP capability schedule and explicit
+    ``material_request`` flow ownership gate execution. Successful unchanged
+    observations advance freshness so bounded pages rotate. Idempotent and safe
+    to re-run.
     """
     from app.metrics import observe_job
 

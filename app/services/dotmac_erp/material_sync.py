@@ -35,8 +35,12 @@ selected warehouse and exact serialized units for an auditable handoff.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.models.field_erp_sync import (
     FieldErpSyncEvent,
@@ -44,12 +48,17 @@ from app.models.field_erp_sync import (
     flow_owned_by_sub,
 )
 from app.models.field_material import FieldMaterialRequest, FieldMaterialRequestItem
+from app.services.db_session_adapter import db_session_adapter
+from app.services.domain_errors import DomainError
 from app.services.dotmac_erp import outbox
 from app.services.dotmac_erp.client import DotMacERPClient
+from app.services.field import material_requests
+from app.services.integrations.backoffice_contracts import ERP_STATUS_CAPABILITY
 from app.services.integrations.erp_capability import (
     ErpCapabilityClient,
     capability_client,
 )
+from app.services.owner_commands import CommandContext
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +72,43 @@ _ERP_SUBMISSION_STATUS = "submitted"
 # The sub-side statuses a request can still change while ERP owns fulfillment;
 # only these get polled for a status refresh.
 _IN_FLIGHT_STATUSES = ("submitted", "approved", "accepted_by_erp", "pending_stock")
+
+
+@dataclass(frozen=True, slots=True)
+class MaterialStatusRefreshCandidate:
+    """One bounded ERP reconciliation target with its comparison state."""
+
+    request_id: UUID
+    status: str
+    support_reference: str
+    support_status: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class MaterialStatusRefreshOutcome:
+    """Typed result for one bounded material-status reconciliation cycle."""
+
+    processed: int
+    observed: int
+    updated: int
+    skipped_not_owned: int
+    failed: int
+    errors: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "processed": self.processed,
+            "observed": self.observed,
+            "updated": self.updated,
+            "skipped_not_owned": self.skipped_not_owned,
+            "failed": self.failed,
+            "errors": list(self.errors),
+        }
+
+
+class MaterialStatusResponseError(DomainError):
+    """ERP returned a response that cannot enter the material owner."""
+
 
 # ---------------------------------------------------------------------------
 # Mapping + idempotency key (port of CRM's _map_material_request)
@@ -250,6 +296,99 @@ def _extract_material_status(response: dict | None) -> str | None:
     return status[:40] if status else None
 
 
+def _serial_numbers_by_sequence(
+    response: dict[str, object],
+) -> tuple[tuple[int, tuple[str, ...]], ...]:
+    raw_items = response.get("items")
+    if not isinstance(raw_items, list):
+        return ()
+    observed: list[tuple[int, tuple[str, ...]]] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            continue
+        try:
+            sequence = int(raw_item.get("sequence", 0))
+        except (TypeError, ValueError):
+            continue
+        raw_serials = raw_item.get("serial_numbers")
+        if sequence < 1 or not isinstance(raw_serials, list):
+            continue
+        serials = tuple(
+            cleaned for value in raw_serials if (cleaned := str(value).strip())
+        )
+        observed.append((sequence, serials))
+    return tuple(observed)
+
+
+def _observation_command(
+    candidate: MaterialStatusRefreshCandidate,
+    response: dict[str, object],
+    *,
+    observed_at: datetime,
+) -> material_requests.ObserveErpMaterialStatus:
+    provider_request_id = _extract_request_id(response)
+    provider_status = _extract_material_status(response)
+    if provider_request_id is None or provider_status is None:
+        raise MaterialStatusResponseError(
+            code=("integration.dotmac_erp_material_support_adapter.invalid_outcome"),
+            message="ERP material status response is missing identity or status.",
+            details={"request_id": str(candidate.request_id)},
+        )
+    command_id = uuid5(
+        NAMESPACE_URL,
+        f"erp-material-poll:{candidate.request_id}:{observed_at.isoformat()}",
+    )
+    return material_requests.ObserveErpMaterialStatus(
+        context=CommandContext(
+            command_id=command_id,
+            correlation_id=command_id,
+            actor="integration:dotmac-erp-material-status-poller",
+            scope=ERP_STATUS_CAPABILITY,
+            reason="Observe polled ERP material request status",
+            idempotency_key=str(command_id),
+        ),
+        request_id=candidate.request_id,
+        provider_request_id=provider_request_id,
+        provider_status=provider_status,
+        observed_at=observed_at,
+        serial_numbers_by_sequence=_serial_numbers_by_sequence(response),
+    )
+
+
+def _linked_refresh_candidates(
+    db: Session, *, limit: int
+) -> tuple[MaterialStatusRefreshCandidate, ...]:
+    """Return never or least recently observed linked requests first."""
+    rows = db.execute(
+        select(
+            FieldMaterialRequest.id,
+            FieldMaterialRequest.status,
+            FieldMaterialRequest.support_reference,
+            FieldMaterialRequest.support_status,
+        )
+        .where(
+            FieldMaterialRequest.is_active.is_(True),
+            FieldMaterialRequest.support_system == PROVIDER,
+            FieldMaterialRequest.support_reference.isnot(None),
+            FieldMaterialRequest.status.in_(_IN_FLIGHT_STATUSES),
+        )
+        .order_by(
+            FieldMaterialRequest.last_reconciled_at.asc().nullsfirst(),
+            FieldMaterialRequest.id.asc(),
+        )
+        .limit(limit)
+    ).all()
+    return tuple(
+        MaterialStatusRefreshCandidate(
+            request_id=row.id,
+            status=str(row.status),
+            support_reference=str(row.support_reference),
+            support_status=str(row.support_status) if row.support_status else None,
+        )
+        for row in rows
+    )
+
+
 def apply_material_response(
     db: Session, request: FieldMaterialRequest, response: dict | None
 ) -> bool:
@@ -365,7 +504,7 @@ def refresh_material_request_statuses(
     *,
     client: DotMacERPClient | ErpCapabilityClient | None = None,
     limit: int = 100,
-) -> dict:
+) -> MaterialStatusRefreshOutcome:
     """Poll ERP for in-flight material requests and refresh their mirror fields.
 
     Two candidate sets, both keyed by Sub's own request id (never the ERP id):
@@ -383,24 +522,7 @@ def refresh_material_request_statuses(
     Read-only against ERP; idempotent; safe to re-run.
     """
     limit = max(1, min(int(limit or 100), 200))
-    pending = (
-        db.query(FieldMaterialRequest)
-        .options(
-            selectinload(FieldMaterialRequest.items).selectinload(
-                FieldMaterialRequestItem.item
-            )
-        )
-        .filter(FieldMaterialRequest.is_active.is_(True))
-        .filter(FieldMaterialRequest.support_system == PROVIDER)
-        .filter(FieldMaterialRequest.support_reference.isnot(None))
-        .filter(FieldMaterialRequest.status.in_(_IN_FLIGHT_STATUSES))
-        .order_by(FieldMaterialRequest.updated_at.asc())
-        .limit(limit)
-        .all()
-    )
-
     errors: list[str] = []
-    result: dict[str, object] = {"processed": 0, "updated": 0, "errors": errors}
 
     owned_client = client
     created_client = False
@@ -409,6 +531,7 @@ def refresh_material_request_statuses(
         created_client = True
 
     processed = 0
+    observed = 0
     updated = 0
     skipped_not_owned = 0
     try:
@@ -423,18 +546,34 @@ def refresh_material_request_statuses(
         skipped_not_owned += unlinked_skipped_not_owned
         errors.extend(unlinked_errors)
 
-        for request in pending:
+        pending = _linked_refresh_candidates(db, limit=limit)
+        linked_owned = flow_owned_by_sub(db, FieldErpSyncFlow.material_request)
+        if not linked_owned:
+            skipped_not_owned += len(pending)
+            pending = ()
+        db_session_adapter.release_read_transaction(db)
+        for candidate in pending:
             processed += 1
-            request_id = str(request.id)
+            request_id = str(candidate.request_id)
             try:
                 response = owned_client.get_material_request_status(request_id)
-                if not response:
+                if not isinstance(response, dict):
                     continue
-                if apply_material_response(db, request, response):
+                command = _observation_command(
+                    candidate,
+                    response,
+                    observed_at=datetime.now(UTC),
+                )
+                outcome = material_requests.observe_erp_material_status(db, command)
+                observed += 1
+                if (
+                    outcome.status.value != candidate.status
+                    or outcome.support_reference != candidate.support_reference
+                    or outcome.support_status != candidate.support_status
+                ):
                     updated += 1
-                db.commit()
             except Exception as exc:  # noqa: BLE001 — one bad row can't stall the batch
-                db.rollback()
+                db_session_adapter.discard_failed_transaction(db)
                 errors.append(f"{request_id}: {exc}")
                 logger.warning(
                     "material_sync: status refresh failed for %s: %s", request_id, exc
@@ -444,10 +583,14 @@ def refresh_material_request_statuses(
         if created_client:
             owned_client.close()
 
-    result["processed"] = processed
-    result["updated"] = updated
-    result["skipped_not_owned"] = skipped_not_owned
-    return result
+    return MaterialStatusRefreshOutcome(
+        processed=processed,
+        observed=observed,
+        updated=updated,
+        skipped_not_owned=skipped_not_owned,
+        failed=len(errors),
+        errors=tuple(errors),
+    )
 
 
 def run_refresh_material_request_statuses() -> dict[str, object]:
@@ -455,4 +598,4 @@ def run_refresh_material_request_statuses() -> dict[str, object]:
     from app.db import task_session
 
     with task_session() as db:
-        return refresh_material_request_statuses(db)
+        return refresh_material_request_statuses(db).as_dict()

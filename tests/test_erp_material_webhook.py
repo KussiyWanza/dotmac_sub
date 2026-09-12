@@ -19,6 +19,9 @@ from app.services.integrations.backoffice_contracts import (
     ERP_MATERIAL_STATUS_WEBHOOK_CAPABILITY,
 )
 from app.services.owner_commands import _validate_manifest
+from scripts.one_off.bootstrap_erp_material_integration import (
+    erp_material_callback_url,
+)
 
 
 class _Request:
@@ -50,6 +53,19 @@ def _payload(request_id: UUID) -> bytes:
 
 def test_material_status_observation_command_matches_typed_manifest() -> None:
     _validate_manifest(_MATERIAL_OBSERVATION_COMMAND)
+
+
+def test_bootstrap_material_callback_matches_mounted_fastapi_route() -> None:
+    from app.main import app
+
+    binding_id = UUID("00000000-0000-0000-0000-000000000123")
+    expected_path = "/api/v1/webhooks/erp-material/{capability_binding_id}"
+    mounted_paths = {getattr(route, "path", "") for route in app.routes}
+
+    assert expected_path in mounted_paths
+    assert erp_material_callback_url(binding_id) == (
+        f"https://selfcare.dotmac.io/api/v1/webhooks/erp-material/{binding_id}"
+    )
 
 
 def test_material_status_contract_refuses_the_retired_omni_alias() -> None:
