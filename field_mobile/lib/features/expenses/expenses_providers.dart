@@ -10,7 +10,7 @@ class ExpensesRepository {
 
   final Ref _ref;
 
-  Future<List<ExpenseRequest>> fetchRequests({String? status}) async {
+  Future<ExpenseRequestHistory> fetchRequests({String? status}) async {
     final local = await _offlineExpenseRequests(_ref);
     try {
       final response = await _ref
@@ -24,9 +24,18 @@ class ExpensesRepository {
               'limit': 100,
             },
           );
-      return [...local, ..._items(response.data).map(ExpenseRequest.fromJson)];
+      final serverItems = _items(
+        response.data,
+      ).map(ExpenseRequest.fromJson).toList();
+      return ExpenseRequestHistory(
+        items: [...local, ...serverItems],
+        totalCount:
+            local.length + _totalCount(response.data, serverItems.length),
+      );
     } on DioException {
-      if (local.isNotEmpty) return local;
+      if (local.isNotEmpty) {
+        return ExpenseRequestHistory(items: local, totalCount: local.length);
+      }
       rethrow;
     }
   }
@@ -259,6 +268,17 @@ List<Map<String, dynamic>> _items(Object? data) {
   return const [];
 }
 
+int _totalCount(Object? data, int fallback) {
+  if (data is Map) {
+    final raw = data['count'] ?? data['total_count'] ?? data['total'];
+    if (raw is num) return raw.toInt();
+    if (raw is String) return int.tryParse(raw) ?? fallback;
+    final nested = data['data'];
+    if (nested is Map) return _totalCount(nested, fallback);
+  }
+  return fallback;
+}
+
 List<Map<String, dynamic>> _mapItems(Object? raw) {
   if (raw is! List) return const [];
   return [
@@ -271,7 +291,7 @@ final expensesRepositoryProvider = Provider<ExpensesRepository>(
   ExpensesRepository.new,
 );
 
-final expenseRequestsProvider = FutureProvider<List<ExpenseRequest>>(
+final expenseRequestsProvider = FutureProvider<ExpenseRequestHistory>(
   (ref) => ref.watch(expensesRepositoryProvider).fetchRequests(),
 );
 

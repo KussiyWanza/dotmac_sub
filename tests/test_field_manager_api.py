@@ -17,6 +17,7 @@ from app.models.field_erp_sync import (
     SyncFlowOwner,
     SyncFlowOwnership,
 )
+from app.models.field_expense import FieldExpenseRequest
 from app.models.field_location import FieldTechPresence
 from app.models.subscriber import Subscriber, UserType
 from app.models.system_user import SystemUser
@@ -386,6 +387,16 @@ def test_manager_expense_approve_and_reject(db_session):
     )
     first = _expense(db_session, tech_user, profile, work_order)
     second = _expense(db_session, tech_user, profile, work_order)
+    legacy_first = db_session.get(FieldExpenseRequest, first["id"])
+    assert legacy_first is not None
+    legacy_first.requested_by_system_user_id = None
+    legacy_second = db_session.get(FieldExpenseRequest, second["id"])
+    assert legacy_second is not None
+    legacy_person_id = uuid4()
+    profile.person_id = legacy_person_id
+    legacy_second.requested_by_person_id = legacy_person_id
+    legacy_second.requested_by_system_user_id = None
+    legacy_second.requested_by_technician_id = None
     _enable_expense_flow(db_session)
     db_session.commit()
 
@@ -394,6 +405,11 @@ def test_manager_expense_approve_and_reject(db_session):
         str(first["id"]),
         str(second["id"]),
     }
+    assert {
+        item["requested_by_name"]
+        for item in pending
+        if item["id"] in {first["id"], second["id"]}
+    } == {"Tech Staff"}
 
     approved = _approve_expense(
         db_session, request_id=first["id"], reviewer_id=tech_user.id
@@ -557,7 +573,10 @@ def test_manager_api(db_session):
 
     expenses = client.get("/api/v1/field/manager/expenses")
     assert expenses.status_code == 200
-    assert str(expense["id"]) in [entry["id"] for entry in expenses.json()["items"]]
+    manager_expense = next(
+        entry for entry in expenses.json()["items"] if entry["id"] == str(expense["id"])
+    )
+    assert manager_expense["requested_by_name"] == "Tech Staff"
 
     approved = client.post(f"/api/v1/field/manager/expenses/{expense['id']}/approve")
     assert approved.status_code == 200

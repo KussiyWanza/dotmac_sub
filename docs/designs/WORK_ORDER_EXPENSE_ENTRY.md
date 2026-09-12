@@ -116,7 +116,24 @@ The field app's expense list follows the same requester-owned rule. Ownership
 is resolved from any exact technician-profile, canonical Person Party, or
 authenticated SystemUser link on the claim. Work-order completion or
 reassignment does not remove the claim from the requester's history, and a
-claim created by another staff identity is not exposed.
+claim created by another staff identity is not exposed. Reading history does
+not require a current active technician profile: the resolver starts from the
+authenticated SystemUser and includes its canonical Person Party plus every
+exact historically linked technician profile. Submission retains its separate
+active-profile and assigned-work-order checks. List responses report the full
+filtered count before pagination.
+
+For a manager who is also a technician, the Field Expenses destination exposes
+both `My requests` and `Approvals`. Approvals remain the default operational
+view, while the requester-owned tab uses the same history resolver as every
+other field technician; manager capability never hides personal history.
+The manager approval list uses a typed owner query and labels every card
+`Raised by` with the requester display identity resolved by
+`auth.staff_provisioning`. A historical row without exact SystemUser identity
+is resolved only when its persisted technician or Person link yields one exact
+SystemUser; otherwise it is labelled unavailable. The client never infers a
+requester from the current work-order assignment. The manager navigation does
+not expose the Materials destination.
 
 ## Schema change
 

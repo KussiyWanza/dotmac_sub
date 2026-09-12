@@ -523,7 +523,9 @@ class ManagerDispatchScreen extends ConsumerWidget {
 }
 
 class ManagerExpenseReviewScreen extends ConsumerStatefulWidget {
-  const ManagerExpenseReviewScreen({super.key});
+  const ManagerExpenseReviewScreen({super.key, this.embedded = false});
+
+  final bool embedded;
 
   @override
   ConsumerState<ManagerExpenseReviewScreen> createState() =>
@@ -577,94 +579,92 @@ class _ManagerExpenseReviewScreenState
     final canPayExpenses =
         ref.watch(managerProfileProvider).valueOrNull?.canPayExpenses == true;
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Expenses')),
-      body: RefreshIndicator(
-        onRefresh: () async => ref.invalidate(managerExpensesProvider),
-        child: switch (visibleItems) {
-          final items? => ListView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.all(16),
-            children: [
-              if (expenses.hasError) ...[
-                _ApprovalRefreshError(
-                  onRetry: () => ref.invalidate(managerExpensesProvider),
-                ),
-                const SizedBox(height: 12),
-              ],
-              if (items.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 48),
-                  child: Center(child: Text('No team expenses')),
-                )
-              else ...[
-                _ExpenseSectionTitle(
-                  title: 'Pending approval',
-                  count: items
-                      .where((item) => item.status == 'submitted')
-                      .length,
-                ),
-                for (final request in items.where(
-                  (item) => item.status == 'submitted',
-                ))
-                  _ExpenseApprovalCard(
-                    request: request,
-                    canPay: canPayExpenses,
-                    onResolved: _markResolved,
-                  ),
-                const SizedBox(height: 12),
-                _ExpenseSectionTitle(
-                  title: 'Approved for payment',
-                  count: items
-                      .where((item) => item.status == 'approved')
-                      .length,
-                ),
-                for (final request in items.where(
-                  (item) => item.status == 'approved',
-                ))
-                  _ExpenseApprovalCard(
-                    request: request,
-                    canPay: canPayExpenses,
-                    onResolved: _markResolved,
-                  ),
-                const SizedBox(height: 12),
-                _ExpenseSectionTitle(
-                  title: 'History',
-                  count: items
-                      .where(
-                        (item) =>
-                            item.status != 'submitted' &&
-                            item.status != 'approved',
-                      )
-                      .length,
-                ),
-                for (final request in items.where(
-                  (item) =>
-                      item.status != 'submitted' && item.status != 'approved',
-                ))
-                  _ExpenseApprovalCard(
-                    request: request,
-                    canPay: canPayExpenses,
-                    onResolved: _markResolved,
-                  ),
-              ],
-            ],
-          ),
-          null when expenses.isLoading => const Center(
-            child: CircularProgressIndicator(),
-          ),
-          null => ListView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.all(16),
-            children: [
+    final body = RefreshIndicator(
+      onRefresh: () async => ref.invalidate(managerExpensesProvider),
+      child: switch (visibleItems) {
+        final items? => ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.all(16),
+          children: [
+            if (expenses.hasError) ...[
               _ApprovalRefreshError(
-                initialLoad: true,
                 onRetry: () => ref.invalidate(managerExpensesProvider),
               ),
+              const SizedBox(height: 12),
             ],
-          ),
-        },
-      ),
+            if (items.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 48),
+                child: Center(child: Text('No team expenses')),
+              )
+            else ...[
+              _ExpenseSectionTitle(
+                title: 'Pending approval',
+                count: items.where((item) => item.status == 'submitted').length,
+              ),
+              for (final request in items.where(
+                (item) => item.status == 'submitted',
+              ))
+                _ExpenseApprovalCard(
+                  request: request,
+                  canPay: canPayExpenses,
+                  onResolved: _markResolved,
+                ),
+              const SizedBox(height: 12),
+              _ExpenseSectionTitle(
+                title: 'Approved for payment',
+                count: items.where((item) => item.status == 'approved').length,
+              ),
+              for (final request in items.where(
+                (item) => item.status == 'approved',
+              ))
+                _ExpenseApprovalCard(
+                  request: request,
+                  canPay: canPayExpenses,
+                  onResolved: _markResolved,
+                ),
+              const SizedBox(height: 12),
+              _ExpenseSectionTitle(
+                title: 'History',
+                count: items
+                    .where(
+                      (item) =>
+                          item.status != 'submitted' &&
+                          item.status != 'approved',
+                    )
+                    .length,
+              ),
+              for (final request in items.where(
+                (item) =>
+                    item.status != 'submitted' && item.status != 'approved',
+              ))
+                _ExpenseApprovalCard(
+                  request: request,
+                  canPay: canPayExpenses,
+                  onResolved: _markResolved,
+                ),
+            ],
+          ],
+        ),
+        null when expenses.isLoading => const Center(
+          child: CircularProgressIndicator(),
+        ),
+        null => ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.all(16),
+          children: [
+            _ApprovalRefreshError(
+              initialLoad: true,
+              onRetry: () => ref.invalidate(managerExpensesProvider),
+            ),
+          ],
+        ),
+      },
+    );
+    if (widget.embedded) return body;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Expenses')),
+      body: body,
     );
   }
 }
@@ -1560,6 +1560,17 @@ class _ExpenseApprovalCardState extends ConsumerState<_ExpenseApprovalCard> {
               ].whereType<String>().join(' · '),
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color: AppColors.subdued(context),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              request.requestedByName == null
+                  ? 'Raised by unavailable'
+                  : 'Raised by ${request.requestedByName}',
+              key: Key('expense-requester-${request.id}'),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: AppColors.subdued(context),
+                fontWeight: FontWeight.w600,
               ),
             ),
             const SizedBox(height: 12),

@@ -122,7 +122,7 @@ void main() {
               'total_amount': '150.00',
             },
           ],
-          'count': 1,
+          'count': 12,
           'limit': 100,
           'offset': 0,
         },
@@ -132,9 +132,10 @@ void main() {
         .read(expensesRepositoryProvider)
         .fetchRequests();
 
-    expect(requests.single.number, 'EXP-0001');
-    expect(requests.single.status, 'submitted');
-    expect(requests.single.totalAmount, 150.0);
+    expect(requests.totalCount, 12);
+    expect(requests.items.single.number, 'EXP-0001');
+    expect(requests.items.single.status, 'submitted');
+    expect(requests.items.single.totalAmount, 150.0);
   });
 
   test('fetchRequests can filter by status', () async {
@@ -147,7 +148,8 @@ void main() {
         .read(expensesRepositoryProvider)
         .fetchRequests(status: 'submitted');
 
-    expect(requests, isEmpty);
+    expect(requests.items, isEmpty);
+    expect(requests.totalCount, 0);
   });
 
   test('fetchRequests accepts nested response envelopes', () async {
@@ -168,7 +170,7 @@ void main() {
         .read(expensesRepositoryProvider)
         .fetchRequests();
 
-    expect(requests.single.number, 'EXP-0002');
+    expect(requests.items.single.number, 'EXP-0002');
   });
 
   test('fetchRequests skips malformed rows instead of crashing', () async {
@@ -189,9 +191,9 @@ void main() {
         .read(expensesRepositoryProvider)
         .fetchRequests();
 
-    expect(requests, hasLength(1));
-    expect(requests.single.id, 'exp-3');
-    expect(requests.single.number, '3003');
+    expect(requests.items, hasLength(1));
+    expect(requests.items.single.id, 'exp-3');
+    expect(requests.items.single.number, '3003');
   });
 
   test('fetchRequest reads a single expense request', () async {
@@ -600,6 +602,7 @@ void main() {
       'number': 'EXP-0001',
       'status': 'rejected',
       'purpose': 'Taxi to site',
+      'requested_by_name': 'Ada Technician',
       'expense_date': '2026-07-01',
       'currency': 'NGN',
       'total_amount': '80.00',
@@ -630,6 +633,7 @@ void main() {
     expect(request.displayNumber, 'EXP-0001');
     expect(request.statusLabel, 'rejected');
     expect(request.totalAmount, 80.0);
+    expect(request.requestedByName, 'Ada Technician');
     expect(request.rejectionReason, 'Missing receipt');
     expect(request.erpClaimNumber, 'EC-12');
     expect(request.erpSyncStatus, 'failed');
@@ -665,25 +669,28 @@ void main() {
       ProviderScope(
         overrides: [
           expenseRequestsProvider.overrideWith(
-            (ref) async => [
-              ExpenseRequest.fromJson({
-                'id': 'exp-1',
-                'number': 'EXP-0001',
-                'status': 'submitted',
-                'purpose': 'Fuel for generator',
-                'currency': 'NGN',
-                'total_amount': '150.00',
-              }),
-              ExpenseRequest.fromJson({
-                'id': 'exp-2',
-                'number': 'EXP-0002',
-                'status': 'rejected',
-                'purpose': 'Taxi to site',
-                'currency': 'NGN',
-                'total_amount': '80.00',
-                'rejection_reason': 'Missing receipt',
-              }),
-            ],
+            (ref) async => ExpenseRequestHistory(
+              totalCount: 2,
+              items: [
+                ExpenseRequest.fromJson({
+                  'id': 'exp-1',
+                  'number': 'EXP-0001',
+                  'status': 'submitted',
+                  'purpose': 'Fuel for generator',
+                  'currency': 'NGN',
+                  'total_amount': '150.00',
+                }),
+                ExpenseRequest.fromJson({
+                  'id': 'exp-2',
+                  'number': 'EXP-0002',
+                  'status': 'rejected',
+                  'purpose': 'Taxi to site',
+                  'currency': 'NGN',
+                  'total_amount': '80.00',
+                  'rejection_reason': 'Missing receipt',
+                }),
+              ],
+            ),
           ),
         ],
         child: MaterialApp(
@@ -699,7 +706,7 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('Expense requests'), findsOneWidget);
+    expect(find.text('My expense requests (2)'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, 'Request'), findsNothing);
     expect(find.text('Fuel for generator'), findsOneWidget);
     expect(find.text('Taxi to site'), findsOneWidget);
@@ -713,7 +720,10 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
-          expenseRequestsProvider.overrideWith((ref) async => const []),
+          expenseRequestsProvider.overrideWith(
+            (ref) async =>
+                const ExpenseRequestHistory(items: [], totalCount: 0),
+          ),
         ],
         child: const MaterialApp(home: ExpensesScreen()),
       ),
@@ -731,14 +741,17 @@ void main() {
       ProviderScope(
         overrides: [
           expenseRequestsProvider.overrideWith(
-            (ref) async => [
-              ExpenseRequest.fromJson({
-                'id': clientRef,
-                'number': 'Queued expense',
-                'status': 'queued',
-                'purpose': 'Fuel for site visit',
-              }),
-            ],
+            (ref) async => ExpenseRequestHistory(
+              totalCount: 1,
+              items: [
+                ExpenseRequest.fromJson({
+                  'id': clientRef,
+                  'number': 'Queued expense',
+                  'status': 'queued',
+                  'purpose': 'Fuel for site visit',
+                }),
+              ],
+            ),
           ),
         ],
         child: const MaterialApp(home: ExpensesScreen()),

@@ -55,13 +55,15 @@ from app.services.field.expense_recovery import (
 )
 from app.services.field.expense_requests import (
     ApproveFieldExpenseRequest,
+    ExpenseRequestStatus,
     FieldExpenseRequestError,
     InitiateFieldExpensePayment,
+    ManagerExpenseReviewQuery,
     RecoverExpenseDelivery,
     RejectFieldExpenseRequest,
     approve_field_expense_request_command,
-    field_expense_requests,
     initiate_field_expense_payment_command,
+    list_manager_expense_requests,
     recover_expense_delivery,
     reject_field_expense_request_command,
 )
@@ -398,20 +400,29 @@ def field_manager_unassign_job(
 
 @router.get("/expenses", response_model=ListResponse[FieldExpenseRequestRead])
 def field_manager_expenses(
-    status_filter: str | None = Query(default=None, alias="status"),
+    status_filter: ExpenseRequestStatus | None = Query(default=None, alias="status"),
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     auth: dict = Depends(_expense_read),
     db: Session = Depends(get_db),
 ):
-    items = field_expense_requests.list_all(
+    page = list_manager_expense_requests(
         db,
-        status=status_filter,
-        approver_system_user_id=UUID(str(auth["principal_id"])),
-        limit=limit,
-        offset=offset,
+        ManagerExpenseReviewQuery(
+            status=status_filter,
+            approver_system_user_id=UUID(str(auth["principal_id"])),
+            limit=limit,
+            offset=offset,
+        ),
     )
-    return {"items": items, "count": len(items), "limit": limit, "offset": offset}
+    return ListResponse[FieldExpenseRequestRead](
+        items=[
+            FieldExpenseRequestRead.model_validate(asdict(item)) for item in page.items
+        ],
+        count=page.total,
+        limit=page.limit,
+        offset=page.offset,
+    )
 
 
 @router.post(

@@ -17,7 +17,7 @@ SERVICES = {
     ),
     ROOT / "app/services/field/expense_requests.py": (
         "_expense_request_ownership",
-        "_expense_request_ownership",
+        "list_requester_expense_requests",
         "requested_by_technician_id",
         "requested_by_person_id",
         "requested_by_system_user_id",
@@ -61,6 +61,15 @@ def test_request_history_lists_delegate_to_the_identity_scope() -> None:
 
 def test_material_history_query_does_not_require_active_profile() -> None:
     path = ROOT / "app/services/field/material_requests.py"
+
+    requester_identity = _function(path, "_requester_identity")
+    source = ast.unparse(requester_identity)
+    assert "SystemUser" in source
+    assert "TechnicianProfile.is_active" not in source
+
+
+def test_expense_history_query_does_not_require_active_profile() -> None:
+    path = ROOT / "app/services/field/expense_requests.py"
     requester_identity = _function(path, "_requester_identity")
     source = ast.unparse(requester_identity)
     assert "SystemUser" in source

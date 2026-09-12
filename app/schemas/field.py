@@ -572,6 +572,7 @@ class FieldExpenseRequestRead(BaseModel):
     crm_expense_request_id: str | None = None
     requested_by_person_id: UUID
     requested_by_system_user_id: UUID | None = None
+    requested_by_name: str | None = None
     selected_approver_erp_id: UUID | None = None
     selected_approver_name: str | None = None
     selected_approver_email: str | None = None

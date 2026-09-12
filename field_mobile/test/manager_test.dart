@@ -42,6 +42,7 @@ void main() {
               'number': 'EXP-0001',
               'status': 'submitted',
               'purpose': 'Site transport',
+              'requested_by_name': 'Ada Technician',
               'total_amount': '2500.00',
             },
           ],
@@ -61,6 +62,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    expect(find.text('Raised by Ada Technician'), findsOneWidget);
     await tester.tap(find.widgetWithText(FilledButton, 'Approve'));
     await tester.pumpAndSettle();
 
@@ -131,6 +133,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    expect(find.text('Raised by unavailable'), findsOneWidget);
     await tester.tap(find.widgetWithText(OutlinedButton, 'Reject'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), 'Missing receipt');

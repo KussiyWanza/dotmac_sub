@@ -27,16 +27,21 @@ from app.services.field.expense_requests import (
     CancelFieldExpenseRequest,
     ExpenseCategoryRule,
     ExpenseRequestLineInput,
+    ExpenseRequestStatus,
     ExpenseWorkOrderIdentity,
     FieldExpenseRequestError,
     ListFieldExpenseVendors,
+    RequesterExpenseDetailQuery,
+    RequesterExpenseHistoryQuery,
     ResolvedFieldExpenseSubmissionContext,
     SelectedExpenseApprover,
     SubmitFieldExpenseRequest,
     VerifiedExpenseDestinationInput,
     cancel_field_expense_request_command,
     field_expense_requests,
+    get_requester_expense_request,
     list_expense_vendors,
+    list_requester_expense_requests,
     submit_field_expense_request_command,
 )
 from app.services.field.jobs import field_jobs
@@ -390,6 +395,102 @@ def test_expense_history_supports_person_and_legacy_user_ownership(db_session):
     assert field_expense_requests.list_mine(db_session, _auth(other)) == []
 
 
+def test_requester_expense_history_survives_inactive_profile_and_counts_total(
+    db_session,
+):
+    user = _user(db_session, "InactiveHistory")
+    profile = _profile(db_session, user, crm_person_id="inactive-expense-history-tech")
+    other = _user(db_session, "OtherHistory")
+    _profile(db_session, other, crm_person_id="other-inactive-expense-history-tech")
+    subscriber = _subscriber(db_session)
+    work_order = _work_order(
+        db_session,
+        subscriber,
+        crm_work_order_id="wo-inactive-expense-history",
+        assigned_to_crm_person_id="inactive-expense-history-tech",
+    )
+    db_session.commit()
+
+    first = _submit_expense(db_session, user, work_order, purpose="First history")
+    second = _submit_expense(db_session, user, work_order, purpose="Second history")
+    for request_id in (first["id"], second["id"]):
+        row = db_session.get(FieldExpenseRequest, request_id)
+        assert row is not None
+        row.requested_by_person_id = uuid4()
+        row.requested_by_system_user_id = None
+    profile.is_active = False
+    db_session.commit()
+
+    page = list_requester_expense_requests(
+        db_session,
+        RequesterExpenseHistoryQuery(
+            system_user_id=user.id,
+            status=ExpenseRequestStatus.SUBMITTED,
+            limit=1,
+        ),
+    )
+
+    assert page.total == 2
+    assert len(page.items) == 1
+    assert page.items[0].id == second["id"]
+    assert (
+        get_requester_expense_request(
+            db_session,
+            RequesterExpenseDetailQuery(
+                system_user_id=user.id,
+                request_id=first["id"],
+            ),
+        ).id
+        == first["id"]
+    )
+    assert (
+        list_requester_expense_requests(
+            db_session,
+            RequesterExpenseHistoryQuery(system_user_id=other.id),
+        ).items
+        == ()
+    )
+
+
+def test_requester_expense_history_uses_system_user_without_profile(db_session):
+    user = _user(db_session, "ProfilelessHistory")
+    profile = _profile(
+        db_session, user, crm_person_id="profileless-expense-history-tech"
+    )
+    subscriber = _subscriber(db_session)
+    work_order = _work_order(
+        db_session,
+        subscriber,
+        crm_work_order_id="wo-profileless-expense-history",
+        assigned_to_crm_person_id="profileless-expense-history-tech",
+    )
+    db_session.commit()
+
+    created = _submit_expense(
+        db_session, user, work_order, purpose="Profileless history"
+    )
+    row = db_session.get(FieldExpenseRequest, created["id"])
+    assert row is not None
+    row.requested_by_technician_id = None
+    db_session.delete(profile)
+    db_session.commit()
+
+    page = list_requester_expense_requests(
+        db_session,
+        RequesterExpenseHistoryQuery(system_user_id=user.id),
+    )
+
+    assert page.total == 1
+    assert [item.id for item in page.items] == [created["id"]]
+
+    with pytest.raises(FieldExpenseRequestError) as invalid_page:
+        list_requester_expense_requests(
+            db_session,
+            RequesterExpenseHistoryQuery(system_user_id=user.id, limit=0),
+        )
+    assert invalid_page.value.code == "operations.expense_requests.invalid_request"
+
+
 def test_expense_request_scope_and_receipt_attachment_validation(
     db_session, fake_uploads
 ):
@@ -453,7 +554,7 @@ def test_expense_request_api(db_session, fake_uploads, monkeypatch):
     approver = _user(db_session, "Approver")
     _profile(db_session, user)
     subscriber = _subscriber(db_session)
-    _work_order(db_session, subscriber, crm_work_order_id="wo-expense-api")
+    work_order = _work_order(db_session, subscriber, crm_work_order_id="wo-expense-api")
     alpha = _vendor(db_session, "Alpha Logistics")
     zed = _vendor(db_session, "Zed Supplies")
     _vendor(db_session, "Inactive Vendor", is_active=False)
@@ -566,13 +667,22 @@ def test_expense_request_api(db_session, fake_uploads, monkeypatch):
     assert created.json()["work_order_id"] == "wo-expense-api"
     request_id = created.json()["id"]
 
-    listed = client.get("/api/v1/field/expense-requests?status=submitted")
+    second = _submit_expense(
+        db_session, user, work_order, purpose="Second paginated expense"
+    )
+    listed = client.get("/api/v1/field/expense-requests?status=submitted&limit=1")
     assert listed.status_code == 200
-    assert listed.json()["items"][0]["id"] == request_id
+    assert listed.json()["count"] == 2
+    assert len(listed.json()["items"]) == 1
+    assert listed.json()["items"][0]["id"] == str(second["id"])
+
+    detail = client.get(f"/api/v1/field/expense-requests/{request_id}")
+    assert detail.status_code == 200
+    assert detail.json()["id"] == request_id
 
     legacy_submit = client.post(f"/api/v1/field/expense-requests/{request_id}/submit")
     assert legacy_submit.status_code == 410
-    assert db_session.query(FieldExpenseRequest).count() == 1
+    assert db_session.query(FieldExpenseRequest).count() == 2
 
 
 def test_atomic_expense_submission_replays_and_rejects_changed_payload(

@@ -896,10 +896,12 @@ SERVICES: tuple[SOTService, ...] = (
             "field expense payment initiation and ERP delivery staging",
             "field expense vendor picker",
             "requester-owned field expense history",
+            "manager field expense review projection",
             "field expense requester-identity repair",
         ),
         depends_on=(
             "auth.permission_gate",
+            "auth.staff_provisioning",
             "integration.backoffice_adapter",
             "operations.expense_categories",
             "operations.work_orders",
@@ -924,6 +926,10 @@ SERVICES: tuple[SOTService, ...] = (
             "it owns the selected local approver link and masked expense snapshot. "
             "ERP delivery failures retain only typed allowlisted diagnostic codes, "
             "HTTP status, and request identifiers alongside partial-delivery progress."
+            " Requester history resolves exact SystemUser, Person Party, and every "
+            "historically linked technician-profile identity without treating "
+            "profile lifecycle as history authorization. Manager review resolves "
+            "requester labels through the staff display-identity owner."
         ),
         contract=ServiceContract(
             concerns=(
@@ -1010,7 +1016,16 @@ SERVICES: tuple[SOTService, ...] = (
                     role=OwnerRole.RESOLVER,
                     input_names=(
                         "canonical field expense request state",
-                        "authenticated requester and work-order access evidence",
+                        "authenticated requester identity evidence",
+                    ),
+                ),
+                ConcernContract(
+                    name="manager field expense review projection",
+                    role=OwnerRole.RESOLVER,
+                    input_names=(
+                        "canonical field expense request state",
+                        "authorized manager expense review scope",
+                        "canonical staff display identity",
                     ),
                 ),
                 ConcernContract(
@@ -1042,6 +1057,34 @@ SERVICES: tuple[SOTService, ...] = (
                         "Authenticated system-user identity and global, reseller, or "
                         "region operations:dispatch:read access resolved for the exact "
                         "work order"
+                    ),
+                ),
+                AuthorityInput(
+                    name="authenticated requester identity evidence",
+                    owner="auth.permission_gate",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "Active authenticated SystemUser identity normalized at the "
+                        "field API boundary; no current technician-profile or "
+                        "work-order assignment is required to read owned history"
+                    ),
+                ),
+                AuthorityInput(
+                    name="authorized manager expense review scope",
+                    owner="auth.permission_gate",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "Authenticated SystemUser identity with exact "
+                        "operations:expense_request:read authorization"
+                    ),
+                ),
+                AuthorityInput(
+                    name="canonical staff display identity",
+                    owner="auth.staff_provisioning",
+                    kind=AuthorityKind.DERIVED_PROJECTION,
+                    source=(
+                        "Persisted SystemUser display name, personal name, or email "
+                        "fallback resolved for exact requester SystemUser identifiers"
                     ),
                 ),
                 AuthorityInput(
@@ -1149,9 +1192,10 @@ SERVICES: tuple[SOTService, ...] = (
                     "revalidates before appending linked replacement evidence. "
                     "The vendor picker performs a "
                     "read-only session-scoped query. Requester-history reads are "
-                    "side-effect free; ERP form-context and destination-verification "
-                    "queries are also side-effect free. "
-                    "Revision 584 performs the bounded, idempotent "
+                    "side-effect free; manager-review reads resolve staff display "
+                    "identity without mutation; ERP form-context and destination-"
+                    "verification queries are also side-effect free. "
+                    "Revision 587 performs the bounded, idempotent "
                     "identity repair during schema migration."
                 ),
                 locking=(
@@ -1270,7 +1314,7 @@ SERVICES: tuple[SOTService, ...] = (
                     name="field expense requester identity bridge",
                     input_names=(
                         "canonical field expense request state",
-                        "authenticated requester and work-order access evidence",
+                        "authenticated requester identity evidence",
                     ),
                     writer="operations.expense_requests",
                     freshness=(
@@ -1323,6 +1367,7 @@ SERVICES: tuple[SOTService, ...] = (
             ),
             test_refs=(
                 "tests/test_field_expense_requests.py",
+                "tests/test_field_manager_api.py",
                 "tests/test_work_order_expense_web.py",
                 "tests/test_dotmac_erp_expense_sync.py",
                 "tests/playwright/e2e/test_work_order_expense_disclosure.py",

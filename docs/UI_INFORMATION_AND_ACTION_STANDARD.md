@@ -687,6 +687,34 @@ implementation.
   retain labels and text errors, totals name their currency, and add/remove and
   submit actions remain accessible without relying on colour.
 
+## Field Expense Request History Contract
+
+- Audience and task: field technicians review every expense claim they made and
+  its current approval, ERP-delivery, and payment state. Manager-technicians
+  also work the separate approval queue without losing personal history.
+- Authority: `operations.expense_requests` owns requester identity, filtered
+  total, claim state, and detail projection. The mobile client renders those
+  facts and does not infer ownership from the current technician profile.
+- First viewport: `My expense requests` shows the authoritative total before
+  pagination, newest requests first, purpose, amount and currency, status, and
+  relevant time. Detail retains rejection and delivery explanations.
+- Identity and authorization: an exact SystemUser, canonical Person Party, or
+  historically linked technician profile proves ownership. Profile inactivity,
+  replacement, work-order completion, or reassignment cannot hide history;
+  another requester's claim remains unavailable. New submission continues to
+  require the owner-resolved active technician and assigned work order.
+- States: loading, empty, read failure, locally queued drafts, submitted,
+  approved, rejected, canceled, paid, and ERP/payment delivery problems remain
+  distinct. Manager mode defaults to Approvals and provides a separate `My
+  requests` tab sourced from the same requester query.
+- Manager approval list: every expense card labels `Raised by` from the
+  owner-supplied staff display identity. Missing historical identity is rendered
+  as unavailable and is never inferred from current assignment. The manager
+  bottom navigation omits the Materials destination. While manager capability
+  is unresolved or unavailable, navigation also omits Materials, and a manager
+  restored onto that branch receives manager content rather than the material
+  list.
+
 ## Field Work-Order Note Contract
 
 - Audience and task: an assigned technician records an internal staff note or

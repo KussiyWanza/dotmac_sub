@@ -157,7 +157,7 @@ GoRouter buildRouter(Ref ref) {
             routes: [
               GoRoute(
                 path: '/materials',
-                builder: (_, _) => const MaterialsScreen(),
+                builder: (_, _) => const _MaterialsSwitch(),
               ),
             ],
           ),
@@ -289,15 +289,89 @@ class _ScheduleSwitch extends ConsumerWidget {
   }
 }
 
+class _MaterialsSwitch extends ConsumerWidget {
+  const _MaterialsSwitch();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return ref
+        .watch(managerProfileProvider)
+        .when(
+          data: (profile) => profile?.isManager == true
+              ? const ManagerDashboardScreen()
+              : const MaterialsScreen(),
+          loading: () =>
+              const Scaffold(body: Center(child: CircularProgressIndicator())),
+          error: (_, _) => Scaffold(
+            body: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Could not verify materials access.',
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 12),
+                    OutlinedButton(
+                      onPressed: () => ref.invalidate(managerProfileProvider),
+                      child: const Text('Retry'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+  }
+}
+
 class _ExpensesSwitch extends ConsumerWidget {
   const _ExpensesSwitch();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     if (isManagerProfile(ref.watch(managerProfileProvider))) {
-      return const ManagerExpenseReviewScreen();
+      return const _ManagerExpensesHub();
     }
     return const ExpensesScreen();
+  }
+}
+
+class _ManagerExpensesHub extends StatelessWidget {
+  const _ManagerExpensesHub();
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      initialIndex: 1,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Expenses'),
+          actions: [
+            IconButton(
+              tooltip: 'New expense request',
+              onPressed: () => context.push('/expenses/new'),
+              icon: const Icon(Icons.add),
+            ),
+          ],
+          bottom: const TabBar(
+            tabs: [
+              Tab(text: 'My requests'),
+              Tab(text: 'Approvals'),
+            ],
+          ),
+        ),
+        body: const TabBarView(
+          children: [
+            ExpensesScreen(embedded: true),
+            ManagerExpenseReviewScreen(embedded: true),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -323,6 +397,16 @@ const _staffNav = [
   _NavItem(5, Icons.person_outline, 'Profile'),
 ];
 
+// Until staff-vs-manager capability is authoritative, omit the manager-hidden
+// Materials destination. A confirmed technician receives the full staff set.
+const _provisionalStaffNav = [
+  _NavItem(0, Icons.assignment_outlined, 'Today'),
+  _NavItem(1, Icons.map_outlined, 'Map'),
+  _NavItem(2, Icons.calendar_today_outlined, 'Schedule'),
+  _NavItem(4, Icons.receipt_long_outlined, 'Expenses'),
+  _NavItem(5, Icons.person_outline, 'Profile'),
+];
+
 // Vendors process sub-native work orders through the same execution tabs. The
 // Map branch remains vendor-scoped via _MapSwitch.
 const _vendorNav = [
@@ -336,13 +420,13 @@ const _vendorNav = [
 
 // Managers keep the same branch set but re-skinned: the Today branch hosts
 // the dashboard, Map becomes the team map, Schedule becomes dispatch, and
-// Expenses becomes the approvals queue.
+// Expenses hosts both requester history and the manager approvals queue.
 const _managerNav = [
   _NavItem(0, Icons.dashboard_outlined, 'Dashboard'),
   _NavItem(1, Icons.map_outlined, 'Team'),
   _NavItem(2, Icons.assignment_ind_outlined, 'Dispatch'),
   _NavItem(3, Icons.inventory_2_outlined, 'Materials'),
-  _NavItem(4, Icons.fact_check_outlined, 'Approvals'),
+  _NavItem(4, Icons.receipt_long_outlined, 'Expenses'),
   _NavItem(5, Icons.person_outline, 'Profile'),
 ];
 
@@ -355,7 +439,8 @@ class _AppShell extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final auth = ref.watch(authControllerProvider);
     final isVendor = auth is Authenticated && auth.mode == LoginMode.vendor;
-    final managerProfile = ref.watch(managerProfileProvider).valueOrNull;
+    final managerProfileState = ref.watch(managerProfileProvider);
+    final managerProfile = managerProfileState.valueOrNull;
     final isManager = !isVendor && managerProfile?.isManager == true;
     final items = isVendor
         ? _vendorNav
@@ -364,7 +449,9 @@ class _AppShell extends ConsumerWidget {
             for (final item in _managerNav)
               if (item.branchIndex != 1 || managerProfile!.canViewTeamMap) item,
           ]
-        : _staffNav;
+        : managerProfileState.hasValue
+        ? _staffNav
+        : _provisionalStaffNav;
     // Map the active branch to its position in the visible set (0 if the
     // current branch is hidden for this mode).
     final selected = items.indexWhere(

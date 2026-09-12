@@ -22,13 +22,82 @@ import 'expenses_providers.dart';
 const _statusOrder = ['submitted', 'approved', 'paid'];
 
 class ExpensesScreen extends ConsumerWidget {
-  const ExpensesScreen({super.key});
+  const ExpensesScreen({super.key, this.embedded = false});
+
+  final bool embedded;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final requests = ref.watch(expenseRequestsProvider);
     final drafts = ref.watch(expenseRequestDraftsProvider);
+    final requestCount = requests.asData?.value.totalCount;
 
+    final body = RefreshIndicator(
+      onRefresh: () async => ref.invalidate(expenseRequestsProvider),
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(16),
+        children: [
+          Text(
+            requestCount == null
+                ? 'My expense requests'
+                : 'My expense requests ($requestCount)',
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 8),
+          drafts.when(
+            data: (items) => Column(
+              children: [
+                for (final draft in items)
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.edit_note_outlined),
+                      title: Text(
+                        draft.payload['purpose']?.toString().isNotEmpty == true
+                            ? draft.payload['purpose'].toString()
+                            : 'Saved expense draft',
+                      ),
+                      subtitle: const Text('Tap to continue editing'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => context.push('/expenses/new'),
+                    ),
+                  ),
+              ],
+            ),
+            loading: () => const SizedBox.shrink(),
+            error: (_, _) => const SizedBox.shrink(),
+          ),
+          requests.when(
+            data: (history) {
+              final items = history.items;
+              if (items.isEmpty) {
+                return const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 48),
+                  child: Center(child: Text('No expense requests yet')),
+                );
+              }
+              return Column(
+                children: [
+                  for (final request in items)
+                    _ExpenseRequestTile(request: request),
+                ],
+              );
+            },
+            loading: () => const Padding(
+              padding: EdgeInsets.only(top: 48),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+            error: (_, _) => const Padding(
+              padding: EdgeInsets.only(top: 48),
+              child: Center(child: Text('Could not load expense requests')),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (embedded) return body;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Expenses'),
@@ -40,69 +109,7 @@ class ExpensesScreen extends ConsumerWidget {
           ),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: () async => ref.invalidate(expenseRequestsProvider),
-        child: ListView(
-          physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.all(16),
-          children: [
-            Text(
-              'Expense requests',
-              style: Theme.of(
-                context,
-              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 8),
-            drafts.when(
-              data: (items) => Column(
-                children: [
-                  for (final draft in items)
-                    Card(
-                      child: ListTile(
-                        leading: const Icon(Icons.edit_note_outlined),
-                        title: Text(
-                          draft.payload['purpose']?.toString().isNotEmpty ==
-                                  true
-                              ? draft.payload['purpose'].toString()
-                              : 'Saved expense draft',
-                        ),
-                        subtitle: const Text('Tap to continue editing'),
-                        trailing: const Icon(Icons.chevron_right),
-                        onTap: () => context.push('/expenses/new'),
-                      ),
-                    ),
-                ],
-              ),
-              loading: () => const SizedBox.shrink(),
-              error: (_, _) => const SizedBox.shrink(),
-            ),
-            requests.when(
-              data: (items) {
-                if (items.isEmpty) {
-                  return const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 48),
-                    child: Center(child: Text('No expense requests yet')),
-                  );
-                }
-                return Column(
-                  children: [
-                    for (final request in items)
-                      _ExpenseRequestTile(request: request),
-                  ],
-                );
-              },
-              loading: () => const Padding(
-                padding: EdgeInsets.only(top: 48),
-                child: Center(child: CircularProgressIndicator()),
-              ),
-              error: (_, _) => const Padding(
-                padding: EdgeInsets.only(top: 48),
-                child: Center(child: Text('Could not load expense requests')),
-              ),
-            ),
-          ],
-        ),
-      ),
+      body: body,
     );
   }
 }
