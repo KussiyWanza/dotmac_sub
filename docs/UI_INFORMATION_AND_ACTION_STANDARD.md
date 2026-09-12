@@ -158,6 +158,12 @@ A detail page establishes the decision context before exposing exhaustive data.
   detail pages project requests from their linked native work orders and scope
   the create action to an actively assigned work order; they do not maintain
   duplicate material-request relationships.
+- The field Materials destination is requester-owned history. It remains
+  available when the requester also has manager capabilities, shows the
+  authoritative total before pagination, and exposes every owner-observed
+  lifecycle state and rejection reason. List and detail refresh from the API;
+  neither technician-profile lifecycle nor work-order reassignment may hide an
+  exactly owned historical request.
 
 ### Editor Or Form
 

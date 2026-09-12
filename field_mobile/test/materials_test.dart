@@ -230,8 +230,9 @@ void main() {
         .read(materialsRepositoryProvider)
         .fetchRequests();
 
-    expect(requests.single.number, 'MR-0001');
-    expect(requests.single.status, 'submitted');
+    expect(requests.totalCount, 1);
+    expect(requests.items.single.number, 'MR-0001');
+    expect(requests.items.single.status, 'submitted');
   });
 
   test('fetchRequests accepts nested response envelopes', () async {
@@ -252,7 +253,7 @@ void main() {
         .read(materialsRepositoryProvider)
         .fetchRequests();
 
-    expect(requests.single.number, 'MR-0002');
+    expect(requests.items.single.number, 'MR-0002');
   });
 
   test('fetchRequests skips malformed rows instead of crashing', () async {
@@ -273,9 +274,9 @@ void main() {
         .read(materialsRepositoryProvider)
         .fetchRequests();
 
-    expect(requests, hasLength(1));
-    expect(requests.single.id, 'mr-3');
-    expect(requests.single.number, '3003');
+    expect(requests.items, hasLength(1));
+    expect(requests.items.single.id, 'mr-3');
+    expect(requests.items.single.number, '3003');
   });
 
   testWidgets('materials screen shows request list before inventory', (
@@ -288,14 +289,17 @@ void main() {
       ProviderScope(
         overrides: [
           materialRequestsProvider.overrideWith(
-            (ref) async => [
-              MaterialRequest.fromJson({
-                'id': 'mr-1',
-                'number': 'MR-0001',
-                'status': 'submitted',
-                'priority': 'high',
-              }),
-            ],
+            (ref) async => MaterialRequestHistory(
+              totalCount: 1,
+              items: [
+                MaterialRequest.fromJson({
+                  'id': 'mr-1',
+                  'number': 'MR-0001',
+                  'status': 'submitted',
+                  'priority': 'high',
+                }),
+              ],
+            ),
           ),
           inventorySearchProvider.overrideWith((ref) async => const []),
         ],
@@ -312,7 +316,7 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('Requests'), findsOneWidget);
+    expect(find.text('My requests (1)'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, 'Request'), findsNothing);
     expect(find.text('MR-0001'), findsOneWidget);
     expect(find.text('Inventory'), findsOneWidget);
@@ -326,14 +330,17 @@ void main() {
       ProviderScope(
         overrides: [
           materialRequestsProvider.overrideWith(
-            (ref) async => [
-              MaterialRequest.fromJson({
-                'id': clientRef,
-                'number': 'Queued materials',
-                'status': 'queued',
-                'priority': 'high',
-              }),
-            ],
+            (ref) async => MaterialRequestHistory(
+              totalCount: 1,
+              items: [
+                MaterialRequest.fromJson({
+                  'id': clientRef,
+                  'number': 'Queued materials',
+                  'status': 'queued',
+                  'priority': 'high',
+                }),
+              ],
+            ),
           ),
           inventorySearchProvider.overrideWith((ref) async => const []),
         ],
@@ -441,7 +448,10 @@ void main() {
             jobDetailProvider(
               'wo-1',
             ).overrideWith((ref) async => _testJobDetail()),
-            materialRequestsProvider.overrideWith((ref) async => const []),
+            materialRequestsProvider.overrideWith(
+              (ref) async =>
+                  const MaterialRequestHistory(items: [], totalCount: 0),
+            ),
           ],
           child: MaterialApp.router(routerConfig: router),
         ),

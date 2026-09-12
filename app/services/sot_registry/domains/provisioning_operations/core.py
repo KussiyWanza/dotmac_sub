@@ -1275,7 +1275,7 @@ SERVICES: tuple[SOTService, ...] = (
                     writer="operations.expense_requests",
                     freshness=(
                         "Written with each native submission and repaired once by "
-                        "revision 584 for exact legacy identity matches."
+                        "revision 587 for exact legacy identity matches."
                     ),
                     stale_behavior=(
                         "Ambiguous legacy rows remain hidden from requester history "
@@ -1288,7 +1288,7 @@ SERVICES: tuple[SOTService, ...] = (
                     ),
                     rebuild_operation=(
                         "Apply the idempotent requester-identity repair from Alembic "
-                        "revision 584 to the bounded drift cohort."
+                        "revision 587 to the bounded drift cohort."
                     ),
                     repair_owner="operations.expense_requests",
                 ),
@@ -1498,7 +1498,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "Each material command owns the request, workflow, allocation, "
                     "event evidence, and ERP outbox transaction; reconciled ERP "
                     "outcomes commit one locked request at a time. Requester-history "
-                    "reads are side-effect free; revision 584 performs the bounded, "
+                    "reads are side-effect free; revision 587 performs the bounded, "
                     "idempotent identity repair during schema migration."
                 ),
                 locking=(
@@ -1595,7 +1595,7 @@ SERVICES: tuple[SOTService, ...] = (
                     writer="operations.material_dependencies",
                     freshness=(
                         "Written with each native submission and repaired once by "
-                        "revision 584 for exact legacy identity matches."
+                        "revision 587 for exact legacy identity matches."
                     ),
                     stale_behavior=(
                         "Ambiguous legacy rows remain hidden from requester history "
@@ -1608,7 +1608,7 @@ SERVICES: tuple[SOTService, ...] = (
                     ),
                     rebuild_operation=(
                         "Apply the idempotent requester-identity repair from Alembic "
-                        "revision 584 to the bounded drift cohort."
+                        "revision 587 to the bounded drift cohort."
                     ),
                     repair_owner="operations.material_dependencies",
                 ),

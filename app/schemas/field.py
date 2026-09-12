@@ -419,6 +419,10 @@ class FieldMaterialRequestRead(BaseModel):
     # Material needs can originate from a ticket, project, project task, or
     # work order. Only the last of those has a work-order public identifier.
     work_order_id: str | None = None
+    project_id: UUID | None = None
+    project_task_id: UUID | None = None
+    ticket_id: UUID | None = None
+    context_label: str
     crm_material_request_id: str | None = None
     requested_by_person_id: UUID
     requested_by_system_user_id: UUID | None = None
@@ -426,13 +430,16 @@ class FieldMaterialRequestRead(BaseModel):
     priority: str
     notes: str | None = None
     source_warehouse_code: str | None = None
+    fulfillment_channel: Literal["manual", "erp"]
     support_system: str | None = None
     support_reference: str | None = None
     support_status: str | None = None
     submitted_at: datetime | None = None
     approved_at: datetime | None = None
     rejected_at: datetime | None = None
+    issued_at: datetime | None = None
     fulfilled_at: datetime | None = None
+    rejection_reason: str | None = None
     created_at: datetime
     updated_at: datetime
     items: list[FieldMaterialRequestItemRead] = Field(default_factory=list)

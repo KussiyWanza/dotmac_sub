@@ -288,7 +288,7 @@ void main() {
     expect(find.text('Team'), findsWidgets);
     expect(find.text('Dispatch'), findsOneWidget);
     expect(find.text('Approvals'), findsWidgets);
-    expect(find.text('Materials'), findsNothing);
+    expect(find.text('Materials'), findsOneWidget);
     expect(find.text('Sales'), findsNothing);
 
     await tester.tap(find.text('Dispatch'));

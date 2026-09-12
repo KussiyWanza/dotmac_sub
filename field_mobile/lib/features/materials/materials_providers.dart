@@ -40,7 +40,7 @@ class MaterialsRepository {
     return _items(response.data).map(InventoryLocation.fromJson).toList();
   }
 
-  Future<List<MaterialRequest>> fetchRequests() async {
+  Future<MaterialRequestHistory> fetchRequests() async {
     final local = await _offlineMaterialRequests(_ref);
     try {
       final response = await _ref
@@ -50,9 +50,18 @@ class MaterialsRepository {
             '/api/v1/field/material-requests',
             queryParameters: {'limit': 100},
           );
-      return [...local, ..._items(response.data).map(MaterialRequest.fromJson)];
+      final serverItems = _items(
+        response.data,
+      ).map(MaterialRequest.fromJson).toList();
+      return MaterialRequestHistory(
+        items: [...local, ...serverItems],
+        totalCount:
+            local.length + _totalCount(response.data, serverItems.length),
+      );
     } on DioException {
-      if (local.isNotEmpty) return local;
+      if (local.isNotEmpty) {
+        return MaterialRequestHistory(items: local, totalCount: local.length);
+      }
       rethrow;
     }
   }
@@ -184,6 +193,17 @@ List<Map<String, dynamic>> _items(Object? data) {
   return const [];
 }
 
+int _totalCount(Object? data, int fallback) {
+  if (data is Map) {
+    final raw = data['count'] ?? data['total_count'] ?? data['total'];
+    if (raw is num) return raw.toInt();
+    if (raw is String) return int.tryParse(raw) ?? fallback;
+    final nested = data['data'];
+    if (nested is Map) return _totalCount(nested, fallback);
+  }
+  return fallback;
+}
+
 List<Map<String, dynamic>> _mapItems(Object? raw) {
   if (raw is! List) return const [];
   return [
@@ -196,7 +216,7 @@ final materialsRepositoryProvider = Provider<MaterialsRepository>(
   MaterialsRepository.new,
 );
 
-final materialRequestsProvider = FutureProvider<List<MaterialRequest>>(
+final materialRequestsProvider = FutureProvider<MaterialRequestHistory>(
   (ref) => ref.watch(materialsRepositoryProvider).fetchRequests(),
 );
 

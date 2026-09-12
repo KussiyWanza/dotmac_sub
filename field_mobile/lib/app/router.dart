@@ -341,6 +341,7 @@ const _managerNav = [
   _NavItem(0, Icons.dashboard_outlined, 'Dashboard'),
   _NavItem(1, Icons.map_outlined, 'Team'),
   _NavItem(2, Icons.assignment_ind_outlined, 'Dispatch'),
+  _NavItem(3, Icons.inventory_2_outlined, 'Materials'),
   _NavItem(4, Icons.fact_check_outlined, 'Approvals'),
   _NavItem(5, Icons.person_outline, 'Profile'),
 ];

@@ -31,6 +31,7 @@ from app.models.field_material import (
 )
 from app.models.project import Project, ProjectTask
 from app.models.support import Ticket
+from app.models.system_user import SystemUser
 from app.models.work_order import WorkOrder
 from app.services.common import apply_pagination, coerce_uuid
 from app.services.domain_errors import DomainError
@@ -156,6 +157,7 @@ class MaterialRequestView:
     submitted_at: datetime | None
     approved_at: datetime | None
     rejected_at: datetime | None
+    issued_at: datetime | None
     fulfilled_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -169,6 +171,38 @@ class MaterialRequestPage:
     total: int
     page: int
     per_page: int
+
+
+@dataclass(frozen=True, slots=True)
+class RequesterMaterialRequestHistoryQuery:
+    """Requester-scoped field history normalized at the API boundary."""
+
+    system_user_id: UUID
+    work_order_public_id: str | None = None
+    status: MaterialRequestStatus | None = None
+    limit: int = 50
+    offset: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class RequesterMaterialRequestDetailQuery:
+    system_user_id: UUID
+    request_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class RequesterMaterialRequestHistoryPage:
+    items: tuple[MaterialRequestView, ...]
+    total: int
+    limit: int
+    offset: int
+
+
+@dataclass(frozen=True, slots=True)
+class _MaterialRequesterIdentity:
+    system_user_id: UUID
+    person_ids: tuple[UUID, ...]
+    technician_profile_ids: tuple[UUID, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +326,7 @@ def _request_view(request: FieldMaterialRequest) -> MaterialRequestView:
         submitted_at=request.submitted_at,
         approved_at=request.approved_at,
         rejected_at=request.rejected_at,
+        issued_at=request.issued_at,
         fulfilled_at=request.fulfilled_at,
         created_at=request.created_at,
         updated_at=request.updated_at,
@@ -410,6 +445,98 @@ def get_staff_material_request(db: Session, request_id: UUID) -> MaterialRequest
     row = (
         _staff_request_query(db)
         .filter(FieldMaterialRequest.id == request_id)
+        .one_or_none()
+    )
+    if row is None:
+        raise _material_error("request_not_found", "Material request was not found.")
+    return _request_view(row)
+
+
+def _requester_identity(
+    db: Session, system_user_id: UUID
+) -> _MaterialRequesterIdentity:
+    """Resolve every exact identity link for one authenticated staff user.
+
+    History remains visible when a technician profile is absent, inactive, or
+    replaced. SystemUser and unique Person Party links are sufficient exact
+    ownership evidence; linked technician profiles cover older rows that hold
+    only the profile foreign key.
+    """
+
+    system_user = db.execute(
+        select(SystemUser).where(
+            SystemUser.id == system_user_id,
+            SystemUser.is_active.is_(True),
+        )
+    ).scalar_one_or_none()
+    if system_user is None:
+        raise _material_error(
+            "requester_required",
+            "The authenticated staff requester was not found.",
+        )
+    person_ids = tuple(
+        dict.fromkeys(
+            value
+            for value in (system_user.id, system_user.person_party_id)
+            if value is not None
+        )
+    )
+    technician_profile_ids = tuple(
+        db.execute(
+            select(TechnicianProfile.id).where(
+                or_(
+                    TechnicianProfile.system_user_id == system_user.id,
+                    TechnicianProfile.person_id.in_(person_ids),
+                )
+            )
+        ).scalars()
+    )
+    return _MaterialRequesterIdentity(
+        system_user_id=system_user.id,
+        person_ids=person_ids,
+        technician_profile_ids=technician_profile_ids,
+    )
+
+
+def _requester_history_query(db: Session, identity: _MaterialRequesterIdentity):
+    return _staff_request_query(db).filter(_material_request_ownership(identity))
+
+
+def list_requester_material_requests(
+    db: Session, query: RequesterMaterialRequestHistoryQuery
+) -> RequesterMaterialRequestHistoryPage:
+    identity = _requester_identity(db, query.system_user_id)
+    history = _requester_history_query(db, identity)
+    if query.work_order_public_id:
+        history = history.join(FieldMaterialRequest.work_order_mirror).filter(
+            WorkOrder.public_id == query.work_order_public_id.strip()
+        )
+    if query.status is not None:
+        history = history.filter(FieldMaterialRequest.status == query.status.value)
+    total = int(
+        history.with_entities(func.count(FieldMaterialRequest.id)).scalar() or 0
+    )
+    rows = (
+        history.order_by(FieldMaterialRequest.created_at.desc())
+        .offset(query.offset)
+        .limit(query.limit)
+        .all()
+    )
+    return RequesterMaterialRequestHistoryPage(
+        items=tuple(_request_view(row) for row in rows),
+        total=total,
+        limit=query.limit,
+        offset=query.offset,
+    )
+
+
+def get_requester_material_request(
+    db: Session, query: RequesterMaterialRequestDetailQuery
+) -> MaterialRequestView:
+    identity = _requester_identity(db, query.system_user_id)
+    row = (
+        _requester_history_query(db, identity)
+        .filter(FieldMaterialRequest.id == query.request_id)
         .one_or_none()
     )
     if row is None:
@@ -1035,18 +1162,24 @@ def observe_erp_material_status(
 
 
 def serialize_material_request(request: FieldMaterialRequest) -> dict:
+    metadata = request.metadata_ if isinstance(request.metadata_, dict) else {}
     return {
         "id": request.id,
         "work_order_id": (
             request.work_order_mirror.public_id if request.work_order_mirror else None
         ),
         "crm_material_request_id": request.crm_material_request_id,
+        "project_id": request.project_id,
+        "project_task_id": request.project_task_id,
+        "ticket_id": request.ticket_id,
+        "context_label": _context_label(request),
         "requested_by_person_id": request.requested_by_person_id,
         "requested_by_system_user_id": request.requested_by_system_user_id,
         "status": request.status,
         "priority": request.priority,
         "notes": request.notes,
         "source_warehouse_code": request.source_warehouse_code,
+        "fulfillment_channel": request.fulfillment_channel,
         "support_system": request.support_system,
         "support_reference": request.support_reference,
         "support_status": request.support_status,
@@ -1054,7 +1187,9 @@ def serialize_material_request(request: FieldMaterialRequest) -> dict:
         "submitted_at": request.submitted_at,
         "approved_at": request.approved_at,
         "rejected_at": request.rejected_at,
+        "issued_at": request.issued_at,
         "fulfilled_at": request.fulfilled_at,
+        "rejection_reason": metadata.get("rejection_reason"),
         "created_at": request.created_at,
         "updated_at": request.updated_at,
         "items": [
@@ -1084,29 +1219,17 @@ class FieldMaterialRequests:
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict]:
-        profile = _profile_from_principal(db, principal)
-        ownership = _material_request_ownership(profile)
-        query = (
-            db.query(FieldMaterialRequest)
-            .options(
-                selectinload(FieldMaterialRequest.items).selectinload(
-                    FieldMaterialRequestItem.item
-                )
-            )
-            .filter(ownership)
-            .filter(FieldMaterialRequest.is_active.is_(True))
-            .order_by(FieldMaterialRequest.created_at.desc())
+        page = list_requester_material_requests(
+            db,
+            RequesterMaterialRequestHistoryQuery(
+                system_user_id=_principal_system_user_id(principal),
+                work_order_public_id=crm_work_order_id,
+                status=MaterialRequestStatus(_status(status)) if status else None,
+                limit=limit,
+                offset=offset,
+            ),
         )
-        if crm_work_order_id:
-            query = query.join(FieldMaterialRequest.work_order_mirror).filter(
-                WorkOrder.public_id == crm_work_order_id
-            )
-        if status:
-            query = query.filter(FieldMaterialRequest.status == _status(status))
-        return [
-            serialize_material_request(request)
-            for request in apply_pagination(query, limit, offset).all()
-        ]
+        return [_legacy_material_request_view(item) for item in page.items]
 
     @staticmethod
     def get(
@@ -1114,8 +1237,15 @@ class FieldMaterialRequests:
         principal: dict[str, Any],
         material_request_id: str,
     ) -> dict:
-        request = _get_scoped_request(db, principal, material_request_id)
-        return serialize_material_request(request)
+        return _legacy_material_request_view(
+            get_requester_material_request(
+                db,
+                RequesterMaterialRequestDetailQuery(
+                    system_user_id=_principal_system_user_id(principal),
+                    request_id=coerce_uuid(material_request_id),
+                ),
+            )
+        )
 
     @staticmethod
     def create(
@@ -1417,7 +1547,7 @@ def _get_scoped_request(
     principal: dict[str, Any],
     material_request_id: str,
 ) -> FieldMaterialRequest:
-    profile = _profile_from_principal(db, principal)
+    identity = _requester_identity(db, _principal_system_user_id(principal))
     request = (
         db.query(FieldMaterialRequest)
         .options(
@@ -1426,7 +1556,7 @@ def _get_scoped_request(
             )
         )
         .filter(FieldMaterialRequest.id == coerce_uuid(material_request_id))
-        .filter(_material_request_ownership(profile))
+        .filter(_material_request_ownership(identity))
         .filter(FieldMaterialRequest.is_active.is_(True))
         .one_or_none()
     )
@@ -1435,17 +1565,69 @@ def _get_scoped_request(
     return request
 
 
-def _material_request_ownership(profile: TechnicianProfile):
-    ownership = or_(
-        FieldMaterialRequest.requested_by_person_id == profile.person_id,
-        FieldMaterialRequest.requested_by_technician_id == profile.id,
+def _material_request_ownership(identity: _MaterialRequesterIdentity):
+    return or_(
+        FieldMaterialRequest.requested_by_system_user_id == identity.system_user_id,
+        FieldMaterialRequest.requested_by_person_id.in_(identity.person_ids),
+        FieldMaterialRequest.requested_by_technician_id.in_(
+            identity.technician_profile_ids
+        ),
     )
-    if profile.system_user_id is not None:
-        ownership = or_(
-            ownership,
-            FieldMaterialRequest.requested_by_system_user_id == profile.system_user_id,
-        )
-    return ownership
+
+
+def _principal_system_user_id(principal: dict[str, Any]) -> UUID:
+    value = principal.get("principal_id")
+    try:
+        return coerce_uuid(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=401, detail="Authenticated user is required"
+        ) from exc
+
+
+def _legacy_material_request_view(view: MaterialRequestView) -> dict[str, object]:
+    """Compatibility projection for internal callers pending typed cutover."""
+
+    return {
+        "id": view.id,
+        "work_order_id": view.work_order_public_id,
+        "crm_material_request_id": None,
+        "project_id": view.project_id,
+        "project_task_id": view.project_task_id,
+        "ticket_id": view.ticket_id,
+        "context_label": view.context_label,
+        "requested_by_person_id": view.requested_by_person_id,
+        "requested_by_system_user_id": view.requested_by_system_user_id,
+        "status": view.status.value,
+        "priority": view.priority.value,
+        "notes": view.notes,
+        "source_warehouse_code": view.source_warehouse_code,
+        "fulfillment_channel": view.fulfillment_channel.value,
+        "support_system": view.support_system,
+        "support_reference": view.support_reference,
+        "support_status": view.support_status,
+        "submitted_at": view.submitted_at,
+        "approved_at": view.approved_at,
+        "rejected_at": view.rejected_at,
+        "issued_at": view.issued_at,
+        "fulfilled_at": view.fulfilled_at,
+        "created_at": view.created_at,
+        "updated_at": view.updated_at,
+        "rejection_reason": view.rejection_reason,
+        "items": [
+            {
+                "id": item.id,
+                "item_id": item.item_id,
+                "sku": item.sku,
+                "name": item.name,
+                "unit": item.unit,
+                "quantity": item.quantity,
+                "notes": item.notes,
+                "serial_numbers": list(item.serial_numbers),
+            }
+            for item in view.items
+        ],
+    }
 
 
 def _get_request(db: Session, material_request_id: str) -> FieldMaterialRequest:

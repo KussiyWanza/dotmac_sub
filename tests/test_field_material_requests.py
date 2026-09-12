@@ -401,6 +401,55 @@ def test_material_request_api_lists_ticket_request_without_work_order(db_session
     assert items[0]["work_order_id"] is None
 
 
+def test_requester_history_uses_system_user_without_technician_profile(db_session):
+    user = _user(db_session, "ProfilelessMaterialRequester")
+    other = _user(db_session, "OtherProfilelessRequester")
+    ticket = Ticket(title="Profileless requester history")
+    db_session.add(ticket)
+    db_session.flush()
+    requests = [
+        FieldMaterialRequest(
+            ticket_id=ticket.id,
+            requested_by_person_id=user.id,
+            requested_by_system_user_id=user.id,
+            requested_by_technician_id=None,
+            status="submitted" if index == 0 else "rejected",
+            priority="medium",
+            fulfillment_channel="erp",
+            submitted_at=datetime.now(UTC),
+            rejected_at=datetime.now(UTC) if index else None,
+            metadata_={"rejection_reason": "Not available"} if index else {},
+        )
+        for index in range(2)
+    ]
+    db_session.add_all(requests)
+    db_session.commit()
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[require_user_auth] = lambda: _auth(user)
+    client = TestClient(app)
+
+    listed = client.get("/api/v1/field/material-requests?limit=1")
+    detail = client.get(f"/api/v1/field/material-requests/{requests[1].id}")
+
+    assert listed.status_code == 200
+    assert listed.json()["count"] == 2
+    assert len(listed.json()["items"]) == 1
+    assert listed.json()["items"][0]["context_label"].startswith("Ticket ")
+    assert detail.status_code == 200
+    assert detail.json()["rejection_reason"] == "Not available"
+    assert detail.json()["status"] == "rejected"
+
+    app.dependency_overrides[require_user_auth] = lambda: _auth(other)
+    hidden_list = client.get("/api/v1/field/material-requests")
+    hidden_detail = client.get(f"/api/v1/field/material-requests/{requests[1].id}")
+    assert hidden_list.status_code == 200
+    assert hidden_list.json()["count"] == 0
+    assert hidden_detail.status_code == 404
+
+
 def test_atomic_material_submission_prevents_duplicate_retries(db_session):
     user = _user(db_session)
     _profile(db_session, user)

@@ -127,6 +127,19 @@ global operations queue. `operations.material_dependencies` resolves ownership
 from any exact requester link recorded on the request: technician profile,
 canonical Person Party, or authenticated SystemUser. Reassignment or completion
 of the related work order never removes the request from its requester's list.
+The live query starts from the authenticated SystemUser and includes every exact
+linked identity without requiring an active technician profile. It returns an
+authoritative total before pagination. The field app labels the list **My
+requests (N)**, preserves that personal-history destination for users who also
+have manager capabilities, and refreshes list/detail state from the API. Request
+cards use the owner-provided contextual label; they do not invent an operational
+request number from a UUID.
+
+The requester read model exposes the complete local lifecycle vocabulary and
+the facts Sub actually owns: contextual identifiers and label, request and ERP
+support status, rejection reason, and recorded submission, approval, rejection,
+issue, and fulfilment timestamps. It does not infer stock, approval quantities,
+or issue quantities that remain owned by the back-office system.
 
 Alembic revision `587_field_request_requester_history` is the bounded repair
 for older requests created before the durable SystemUser link was consistently
