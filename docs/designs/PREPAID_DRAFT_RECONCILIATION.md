@@ -201,6 +201,17 @@ renewal invoice:
 - multiple drafts, mixed lines, partial activity, or ambiguous coverage:
   require manual review.
 
+One narrow partial-activity shape is eligible only for fingerprint-bound
+operator confirmation. A sole active allocation from an imported Splynx
+payment may be preserved when it predates the reviewed funding boundary, has
+no native settlement or allocation-ledger links, and is matched by the exact
+legacy invoice credit and account-level cutover debit. The remaining invoice
+balance must be fully covered by post-boundary native payment funding plus the
+unused reviewed opening. A later paid invoice entitlement must prove that the
+draft is historical. Confirmation preserves the original service period and
+never moves the newer billing anchor backwards. Automatic funding events only
+raise the existing reconciliation exception; they never apply this repair.
+
 When a current funding-change transaction finds the exact duplicate case, the
 same owner stages the void first and reports it separately from a funded draft.
 The caller may then spend the current funding on the now-due invoice-backed

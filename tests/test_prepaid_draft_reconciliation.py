@@ -45,6 +45,7 @@ from app.services.prepaid_draft_reconciliation import (
     AdoptFundedPrepaidProformaCommand,
     AutoRepairPaidPrepaidInvoiceAfterSettlementCommand,
     CreateReviewedPaidPrepaidInvoiceCommand,
+    FundingChangeDraftCommand,
     MissingPaidPrepaidInvoiceRepairDisposition,
     MissingPaidPrepaidInvoiceRepairQuery,
     PaidPrepaidInvoiceAutoRepairDisposition,
@@ -69,6 +70,7 @@ from app.services.prepaid_draft_reconciliation import (
     reconcile_prepaid_draft_invoice,
     repair_exact_paid_prepaid_invoice_after_settlement_for_owner,
     repair_historical_paid_prepaid_invoice,
+    stage_prepaid_draft_after_funding_change,
 )
 from app.services.prepaid_funding_reconstruction import (
     PrepaidFundingBaselineMissingError,
@@ -174,6 +176,142 @@ def _payment(
     )
     db.commit()
     return payment
+
+
+def _historical_partially_allocated_draft(
+    db,
+    account,
+    subscription,
+) -> tuple[Invoice, PaymentAllocation, ServiceEntitlement]:
+    invoice = _draft(
+        db,
+        account,
+        subscription,
+        total=Decimal("37625.00"),
+    )
+    invoice.billing_period_start = datetime(2026, 7, 3, tzinfo=UTC)
+    invoice.billing_period_end = datetime(2026, 8, 3, tzinfo=UTC)
+    invoice.issued_at = datetime(2026, 7, 3, 23, 55, tzinfo=UTC)
+    invoice.due_at = datetime(2026, 8, 3, tzinfo=UTC)
+    invoice.balance_due = Decimal("37261.00")
+
+    legacy_payment = Payment(
+        account_id=account.id,
+        splynx_payment_id=59964,
+        amount=Decimal("160000.00"),
+        refunded_amount=Decimal("0.00"),
+        currency="NGN",
+        status=PaymentStatus.succeeded,
+        paid_at=datetime(2024, 3, 8, tzinfo=UTC),
+        created_at=datetime(2024, 3, 8, tzinfo=UTC),
+        is_active=True,
+    )
+    db.add(legacy_payment)
+    db.flush()
+    allocation_at = datetime(2026, 7, 4, 0, 16, 7, tzinfo=UTC)
+    existing_allocation = PaymentAllocation(
+        payment_id=legacy_payment.id,
+        invoice_id=invoice.id,
+        amount=Decimal("364.00"),
+        memo="Historical cutover allocation",
+        created_at=allocation_at,
+        is_active=True,
+    )
+    invoice_credit = LedgerEntry(
+        account_id=account.id,
+        invoice_id=invoice.id,
+        payment_id=legacy_payment.id,
+        entry_type=LedgerEntryType.credit,
+        source=LedgerSource.payment,
+        amount=Decimal("364.00"),
+        currency="NGN",
+        memo="Historical payment applied to draft",
+        created_at=allocation_at,
+        is_active=True,
+        affects_customer_position=True,
+    )
+    balance_debit = LedgerEntry(
+        account_id=account.id,
+        entry_type=LedgerEntryType.debit,
+        source=LedgerSource.payment,
+        amount=Decimal("364.00"),
+        currency="NGN",
+        memo="Historical cutover balance application",
+        created_at=allocation_at + timedelta(seconds=1),
+        is_active=True,
+        affects_customer_position=True,
+    )
+    db.add_all((existing_allocation, invoice_credit, balance_debit))
+    db.commit()
+
+    opening_at = datetime(2026, 7, 20, 7, 58, 22, tzinfo=UTC)
+    materialize_test_prepaid_opening_balance(
+        db,
+        account.id,
+        Decimal("37261.00"),
+        position_at=opening_at,
+    )
+    successor_payment = _payment(
+        db,
+        account,
+        amount=Decimal("38000.00"),
+        paid_at=datetime(2026, 8, 12, tzinfo=UTC),
+    )
+    successor_invoice = Invoice(
+        account_id=account.id,
+        invoice_number=f"INV-SUCCESSOR-{uuid4().hex[:8]}",
+        status=InvoiceStatus.paid,
+        currency="NGN",
+        subtotal=Decimal("37625.00"),
+        tax_total=Decimal("0.00"),
+        total=Decimal("37625.00"),
+        balance_due=Decimal("0.00"),
+        billing_period_start=datetime(2026, 8, 12, tzinfo=UTC),
+        billing_period_end=datetime(2026, 9, 12, tzinfo=UTC),
+        issued_at=datetime(2026, 8, 12, tzinfo=UTC),
+        due_at=datetime(2026, 9, 12, tzinfo=UTC),
+        paid_at=datetime(2026, 8, 12, tzinfo=UTC),
+        is_proforma=False,
+        is_active=True,
+    )
+    db.add(successor_invoice)
+    db.flush()
+    successor_line = InvoiceLine(
+        invoice_id=successor_invoice.id,
+        subscription_id=subscription.id,
+        description="Successor prepaid service",
+        quantity=Decimal("1.000"),
+        unit_price=Decimal("37625.00"),
+        amount=Decimal("37625.00"),
+        is_active=True,
+    )
+    db.add(successor_line)
+    db.flush()
+    db.add(
+        PaymentAllocation(
+            payment_id=successor_payment.id,
+            invoice_id=successor_invoice.id,
+            amount=Decimal("37625.00"),
+            memo="Reviewed successor settlement",
+            is_active=True,
+        )
+    )
+    successor_payment.settlement.unallocated_amount = Decimal("375.00")
+    successor_entitlement = ServiceEntitlement(
+        account_id=account.id,
+        subscription_id=subscription.id,
+        source_invoice_id=successor_invoice.id,
+        source_invoice_line_id=successor_line.id,
+        starts_at=successor_invoice.billing_period_start,
+        ends_at=successor_invoice.billing_period_end,
+        amount_funded=Decimal("37625.00"),
+        currency="NGN",
+        status=ServiceEntitlementStatus.active,
+    )
+    db.add(successor_entitlement)
+    subscription.next_billing_at = successor_invoice.billing_period_end
+    db.commit()
+    return invoice, existing_allocation, successor_entitlement
 
 
 def _ledger_backed_entitlement(
@@ -1550,6 +1688,145 @@ def test_reviewed_opening_funding_settles_exact_remainder_atomically(
     assert Decimal(str(groups[0].effects[0].amount)) == Decimal("2000.00")
     assert subscription.next_billing_at == entitlement.ends_at
     assert prepaid_available_balance(db_session, subscriber.id) == Decimal("0.00")
+
+
+def test_reviewed_historical_partial_allocation_settles_without_moving_anchor(
+    db_session,
+    subscriber,
+    subscription,
+):
+    invoice, existing_allocation, successor_entitlement = (
+        _historical_partially_allocated_draft(
+            db_session,
+            subscriber,
+            subscription,
+        )
+    )
+    original_period = (invoice.billing_period_start, invoice.billing_period_end)
+    original_issued_at = invoice.issued_at
+    original_due_at = invoice.due_at
+    current_anchor = subscription.next_billing_at
+
+    preview = preview_prepaid_draft_reconciliation(db_session, invoice.id)
+
+    assert preview.disposition is (
+        PrepaidDraftDisposition.reviewed_historical_partial_fundable
+    )
+    assert preview.recommended_action is PrepaidDraftAction.settle_paid
+    assert preview.balance_due == Decimal("37261.00")
+    assert preview.payment_backed_credit == Decimal("375.00")
+    assert preview.opening_funding_required == Decimal("36886.00")
+    assert preview.existing_payment_allocation_ids == (existing_allocation.id,)
+    assert preview.existing_payment_allocated_amount == Decimal("364.00")
+    assert preview.successor_entitlement_ids == (successor_entitlement.id,)
+    automatic = stage_prepaid_draft_after_funding_change(
+        db_session,
+        FundingChangeDraftCommand(
+            account_id=subscriber.id,
+            currency="NGN",
+            effective_at=datetime(2026, 9, 12, tzinfo=UTC),
+            evidence_ref="pytest:historical-partial-funding-observation",
+        ),
+    )
+    assert automatic.drafts_settled == 0
+    assert automatic.drafts_blocked == 1
+    assert automatic.review_exceptions == 1
+    assert invoice.status is InvoiceStatus.draft
+    invoice_id = invoice.id
+    db_session.commit()
+
+    command = _command(
+        invoice_id,
+        preview.fingerprint,
+        key=f"pytest-historical-partial-{invoice_id}",
+    )
+    result = reconcile_prepaid_draft_invoice(db_session, command)
+    replay = reconcile_prepaid_draft_invoice(db_session, command)
+
+    db_session.refresh(invoice)
+    db_session.refresh(subscription)
+    allocations = (
+        db_session.query(PaymentAllocation)
+        .filter(PaymentAllocation.invoice_id == invoice.id)
+        .order_by(PaymentAllocation.amount)
+        .all()
+    )
+    historical_entitlement = (
+        db_session.query(ServiceEntitlement)
+        .filter(ServiceEntitlement.source_invoice_id == invoice.id)
+        .one()
+    )
+    consumption = db_session.query(PrepaidOpeningFundingConsumption).one()
+    assert invoice.status is InvoiceStatus.paid
+    assert invoice.balance_due == Decimal("0.00")
+    assert (invoice.billing_period_start, invoice.billing_period_end) == original_period
+    assert invoice.issued_at == original_issued_at
+    assert invoice.due_at == original_due_at
+    assert subscription.next_billing_at == current_anchor
+    assert historical_entitlement.starts_at == original_period[0]
+    assert historical_entitlement.ends_at == original_period[1]
+    assert [item.amount for item in allocations] == [
+        Decimal("364.00"),
+        Decimal("375.00"),
+    ]
+    assert existing_allocation.is_active is True
+    assert consumption.amount == Decimal("36886.00")
+    assert result.applied_amount == Decimal("37625.00")
+    assert result.payment_applied_amount == Decimal("739.00")
+    assert result.opening_funding_applied_amount == Decimal("36886.00")
+    assert replay.replayed is True
+    assert replay.applied_amount == result.applied_amount
+    assert replay.payment_applied_amount == result.payment_applied_amount
+    assert prepaid_available_balance(db_session, subscriber.id) == Decimal("375.00")
+
+
+def test_historical_partial_allocation_without_successor_coverage_stays_manual(
+    db_session,
+    subscriber,
+    subscription,
+):
+    invoice = _draft(
+        db_session,
+        subscriber,
+        subscription,
+        total=Decimal("100.00"),
+    )
+    legacy_payment = Payment(
+        account_id=subscriber.id,
+        splynx_payment_id=59964,
+        amount=Decimal("20.00"),
+        refunded_amount=Decimal("0.00"),
+        currency="NGN",
+        status=PaymentStatus.succeeded,
+        paid_at=START - timedelta(days=10),
+        created_at=START - timedelta(days=10),
+        is_active=True,
+    )
+    db_session.add(legacy_payment)
+    db_session.flush()
+    invoice.balance_due = Decimal("80.00")
+    db_session.add(
+        PaymentAllocation(
+            payment_id=legacy_payment.id,
+            invoice_id=invoice.id,
+            amount=Decimal("20.00"),
+            created_at=START,
+            is_active=True,
+        )
+    )
+    db_session.commit()
+    materialize_test_prepaid_opening_balance(
+        db_session,
+        subscriber.id,
+        Decimal("80.00"),
+        position_at=START + timedelta(days=1),
+    )
+
+    preview = preview_prepaid_draft_reconciliation(db_session, invoice.id)
+
+    assert preview.disposition is PrepaidDraftDisposition.manual_review
+    assert preview.recommended_action is PrepaidDraftAction.none
+    assert preview.reason == "draft already has financial activity"
 
 
 def test_prebaseline_credit_is_absorbed_by_reviewed_opening_boundary(

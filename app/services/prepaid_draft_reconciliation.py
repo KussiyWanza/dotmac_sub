@@ -7,6 +7,9 @@ repair:
 * exact native payment-backed funding issues and fully settles the draft; or
 * settlement-backed payments plus reviewed opening funding settle the exact
   remainder without representing that opening source as a Payment; or
+* one reviewed historical draft preserves an exact pre-opening legacy partial
+  allocation and settles only its remaining balance without moving newer
+  coverage or the billing anchor backwards; or
 * one entity-scoped reviewed correction creates and settles a missing prepaid
   invoice from exact contract, payment, date, and residual-credit evidence; or
 * one exact paid prepaid invoice with a missing service line/period is repaired
@@ -201,6 +204,7 @@ _RENEWAL_ORIGIN = AccountAdjustmentOrigin.prepaid_service_renewal
 class PrepaidDraftDisposition(StrEnum):
     exact_payment_fundable = "exact_payment_fundable"
     reviewed_opening_fundable = "reviewed_opening_fundable"
+    reviewed_historical_partial_fundable = "reviewed_historical_partial_fundable"
     already_renewed = "already_renewed"
     insufficient_funding = "insufficient_funding"
     legacy_unbacked_funding = "legacy_unbacked_funding"
@@ -273,6 +277,10 @@ class PrepaidDraftReconciliationPreview:
     fingerprint: str
     renewal_ledger_entry_ids: tuple[UUID, ...] = ()
     opening_funding_opening_position_id: UUID | None = None
+    existing_payment_allocation_ids: tuple[UUID, ...] = ()
+    existing_payment_allocated_amount: Decimal = Decimal("0.00")
+    historical_ledger_entry_ids: tuple[UUID, ...] = ()
+    successor_entitlement_ids: tuple[UUID, ...] = ()
 
     @property
     def actionable(self) -> bool:
@@ -785,6 +793,183 @@ def _reviewed_opening_source(
         approval_actor=(
             latest.applied_by if latest is not None else opening.captured_by
         ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _HistoricalPartialAllocationEvidence:
+    allocation_ids: tuple[UUID, ...]
+    allocated_amount: Decimal
+    ledger_entry_ids: tuple[UUID, ...]
+    successor_entitlement_ids: tuple[UUID, ...]
+
+
+def _historical_partial_allocation_evidence(
+    db: Session,
+    *,
+    invoice: Invoice,
+    subscription: Subscription,
+) -> _HistoricalPartialAllocationEvidence | None:
+    """Prove one exact legacy allocation already absorbed by the opening."""
+
+    currency = (invoice.currency or "NGN").upper()
+    baseline = db.scalar(
+        select(PrepaidFundingBaseline).where(
+            PrepaidFundingBaseline.account_id == invoice.account_id,
+            PrepaidFundingBaseline.currency == currency,
+            PrepaidFundingBaseline.is_active.is_(True),
+        )
+    )
+    if baseline is None:
+        return None
+    boundary = _utc(baseline.position_at)
+    allocations = tuple(
+        db.scalars(
+            select(PaymentAllocation)
+            .where(PaymentAllocation.invoice_id == invoice.id)
+            .order_by(PaymentAllocation.id)
+        ).all()
+    )
+    if len(allocations) != 1:
+        return None
+    allocation = allocations[0]
+    payment = allocation.payment
+    allocated = round_money(to_decimal(allocation.amount))
+    invoice_total = round_money(to_decimal(invoice.total))
+    balance_due = round_money(to_decimal(invoice.balance_due))
+    allocation_at = _utc(allocation.created_at)
+    payment_at = _utc(payment.paid_at or payment.created_at) if payment else None
+    if (
+        not allocation.is_active
+        or allocated <= Decimal("0.00")
+        or balance_due <= Decimal("0.00")
+        or round_money(allocated + balance_due) != invoice_total
+        or allocation.ledger_entry_id is not None
+        or allocation.consumption_ledger_entry_id is not None
+        or payment is None
+        or payment.account_id != invoice.account_id
+        or not payment.is_active
+        or payment.status is not PaymentStatus.succeeded
+        or payment.splynx_payment_id is None
+        or payment.settlement is not None
+        or payment.refunds
+        or payment.reversal is not None
+        or (payment.currency or "NGN").upper() != currency
+        or payment_at is None
+        or payment_at > boundary
+        or allocation_at > boundary
+    ):
+        return None
+
+    invoice_entries = tuple(
+        db.scalars(
+            select(LedgerEntry)
+            .where(LedgerEntry.invoice_id == invoice.id)
+            .order_by(LedgerEntry.id)
+        ).all()
+    )
+    if len(invoice_entries) != 1:
+        return None
+    invoice_entry = invoice_entries[0]
+    if (
+        invoice_entry.payment_id != payment.id
+        or invoice_entry.entry_type is not LedgerEntryType.credit
+        or invoice_entry.source is not LedgerSource.payment
+        or round_money(to_decimal(invoice_entry.amount)) != allocated
+        or (invoice_entry.currency or "NGN").upper() != currency
+        or not invoice_entry.is_active
+        or not invoice_entry.affects_customer_position
+        or invoice_entry.reversal_of_entry_id is not None
+        or _utc(invoice_entry.created_at) > boundary
+    ):
+        return None
+
+    balancing_entries = tuple(
+        db.scalars(
+            select(LedgerEntry)
+            .where(
+                LedgerEntry.account_id == invoice.account_id,
+                LedgerEntry.invoice_id.is_(None),
+                LedgerEntry.payment_id.is_(None),
+                LedgerEntry.entry_type == LedgerEntryType.debit,
+                LedgerEntry.source == LedgerSource.payment,
+                LedgerEntry.amount == allocated,
+                LedgerEntry.currency == currency,
+                LedgerEntry.is_active.is_(True),
+                LedgerEntry.affects_customer_position.is_(True),
+                LedgerEntry.reversal_of_entry_id.is_(None),
+                LedgerEntry.created_at >= invoice_entry.created_at,
+                LedgerEntry.created_at <= baseline.position_at,
+            )
+            .order_by(LedgerEntry.id)
+        ).all()
+    )
+    if len(balancing_entries) != 1:
+        return None
+    balancing_entry = balancing_entries[0]
+    if (
+        db.scalar(
+            select(LedgerEntry.id)
+            .where(
+                LedgerEntry.reversal_of_entry_id.in_(
+                    (invoice_entry.id, balancing_entry.id)
+                )
+            )
+            .limit(1)
+        )
+        is not None
+    ):
+        return None
+
+    if (
+        db.scalar(
+            select(CreditNoteApplication.id)
+            .where(CreditNoteApplication.invoice_id == invoice.id)
+            .limit(1)
+        )
+        is not None
+        or invoice.billing_period_end is None
+    ):
+        return None
+    successor_entitlements = tuple(
+        db.scalars(
+            select(ServiceEntitlement)
+            .where(
+                ServiceEntitlement.account_id == invoice.account_id,
+                ServiceEntitlement.subscription_id == subscription.id,
+                ServiceEntitlement.status == ServiceEntitlementStatus.active,
+                ServiceEntitlement.source_invoice_id.is_not(None),
+                ServiceEntitlement.source_invoice_id != invoice.id,
+                ServiceEntitlement.starts_at >= invoice.billing_period_end,
+            )
+            .order_by(ServiceEntitlement.starts_at, ServiceEntitlement.id)
+        ).all()
+    )
+    if not successor_entitlements or subscription.next_billing_at is None:
+        return None
+    successor_end = max(_utc(item.ends_at) for item in successor_entitlements)
+    if _utc(subscription.next_billing_at) < successor_end:
+        return None
+    successor_invoice_ids = tuple(
+        item.source_invoice_id
+        for item in successor_entitlements
+        if item.source_invoice_id is not None
+    )
+    paid_successor_count = db.scalar(
+        select(func.count(Invoice.id)).where(
+            Invoice.id.in_(successor_invoice_ids),
+            Invoice.account_id == invoice.account_id,
+            Invoice.status == InvoiceStatus.paid,
+            Invoice.is_active.is_(True),
+        )
+    )
+    if int(paid_successor_count or 0) != len(successor_entitlements):
+        return None
+    return _HistoricalPartialAllocationEvidence(
+        allocation_ids=(allocation.id,),
+        allocated_amount=allocated,
+        ledger_entry_ids=(invoice_entry.id, balancing_entry.id),
+        successor_entitlement_ids=tuple(item.id for item in successor_entitlements),
     )
 
 
@@ -2741,6 +2926,7 @@ def _build_preview(
     adjustment_ids: tuple[UUID, ...] = (),
     ledger_entry_ids: tuple[UUID, ...] = (),
     opening: ReviewedOpeningFundingPreview | None = None,
+    historical_partial: _HistoricalPartialAllocationEvidence | None = None,
     reason: str,
 ) -> PrepaidDraftReconciliationPreview:
     opening_available = (
@@ -2780,6 +2966,20 @@ def _build_preview(
         "entitlement_ids": entitlement_ids,
         "adjustment_ids": adjustment_ids,
         "ledger_entry_ids": ledger_entry_ids,
+        "existing_payment_allocation_ids": (
+            historical_partial.allocation_ids if historical_partial else ()
+        ),
+        "existing_payment_allocated_amount": (
+            historical_partial.allocated_amount
+            if historical_partial
+            else Decimal("0.00")
+        ),
+        "historical_ledger_entry_ids": (
+            historical_partial.ledger_entry_ids if historical_partial else ()
+        ),
+        "successor_entitlement_ids": (
+            historical_partial.successor_entitlement_ids if historical_partial else ()
+        ),
         "reason": reason,
     }
     return PrepaidDraftReconciliationPreview(
@@ -2809,6 +3009,20 @@ def _build_preview(
         reason=reason,
         fingerprint=_hash(payload),
         renewal_ledger_entry_ids=ledger_entry_ids,
+        existing_payment_allocation_ids=(
+            historical_partial.allocation_ids if historical_partial else ()
+        ),
+        existing_payment_allocated_amount=(
+            historical_partial.allocated_amount
+            if historical_partial
+            else Decimal("0.00")
+        ),
+        historical_ledger_entry_ids=(
+            historical_partial.ledger_entry_ids if historical_partial else ()
+        ),
+        successor_entitlement_ids=(
+            historical_partial.successor_entitlement_ids if historical_partial else ()
+        ),
     )
 
 
@@ -2933,10 +3147,7 @@ def preview_prepaid_draft_reconciliation(
     has_activity = (
         db.scalar(
             select(PaymentAllocation.id)
-            .where(
-                PaymentAllocation.invoice_id == invoice.id,
-                PaymentAllocation.is_active.is_(True),
-            )
+            .where(PaymentAllocation.invoice_id == invoice.id)
             .limit(1)
         )
         is not None
@@ -2951,7 +3162,16 @@ def preview_prepaid_draft_reconciliation(
         )
         is not None
     )
-    if has_activity:
+    historical_partial = (
+        _historical_partial_allocation_evidence(
+            db,
+            invoice=invoice,
+            subscription=subscription,
+        )
+        if has_activity
+        else None
+    )
+    if has_activity and historical_partial is None:
         return _build_preview(
             invoice=invoice,
             opening=opening,
@@ -3032,6 +3252,45 @@ def preview_prepaid_draft_reconciliation(
             subscription_ids=(subscription.id,),
             entitlement_ids=overlapping_entitlement_ids,
             reason="overlapping coverage is not exact direct-renewal evidence",
+        )
+    if historical_partial is not None:
+        if (
+            funding.shortfall > Decimal("0.00")
+            and (
+                opening.baseline_id is not None
+                or opening.opening_position_id is not None
+            )
+            and opening.available_amount >= funding.shortfall
+            and opening.authoritative_funding >= funding.invoice_remaining
+            and funding.unbacked_credit == Decimal("0.00")
+        ):
+            return _build_preview(
+                invoice=invoice,
+                opening=opening,
+                disposition=(
+                    PrepaidDraftDisposition.reviewed_historical_partial_fundable
+                ),
+                action=PrepaidDraftAction.settle_paid,
+                funding=funding,
+                subscription_ids=(subscription.id,),
+                historical_partial=historical_partial,
+                reason=(
+                    "one exact pre-opening legacy allocation plus current payment "
+                    "and reviewed opening funding fully cover the historical draft"
+                ),
+            )
+        return _build_preview(
+            invoice=invoice,
+            opening=opening,
+            disposition=PrepaidDraftDisposition.manual_review,
+            action=PrepaidDraftAction.none,
+            funding=funding,
+            subscription_ids=(subscription.id,),
+            historical_partial=historical_partial,
+            reason=(
+                "the exact historical partial allocation is not fully covered by "
+                "current payment and reviewed opening funding"
+            ),
         )
     if funding.fully_funded:
         return _build_preview(
@@ -3140,6 +3399,18 @@ def _record_metadata(
         ],
         "renewal_ledger_entry_ids": [
             str(value) for value in preview.renewal_ledger_entry_ids
+        ],
+        "existing_payment_allocation_ids": [
+            str(value) for value in preview.existing_payment_allocation_ids
+        ],
+        "existing_payment_allocated_amount": str(
+            preview.existing_payment_allocated_amount
+        ),
+        "historical_ledger_entry_ids": [
+            str(value) for value in preview.historical_ledger_entry_ids
+        ],
+        "successor_entitlement_ids": [
+            str(value) for value in preview.successor_entitlement_ids
         ],
     }
     invoice.metadata_ = metadata
@@ -3679,12 +3950,31 @@ def _stage_action(
     reviewed_opening_correction = False
     if preview.recommended_action is PrepaidDraftAction.settle_paid:
         try:
+            historical_partial = (
+                preview.disposition
+                is PrepaidDraftDisposition.reviewed_historical_partial_fundable
+            )
+            issuance_at = (
+                _utc(invoice.issued_at or invoice.created_at)
+                if historical_partial
+                else _utc(effective_at)
+            )
+            issuance_due_at = (
+                _utc(
+                    invoice.due_at
+                    or invoice.billing_period_end
+                    or invoice.issued_at
+                    or invoice.created_at
+                )
+                if historical_partial
+                else _utc(due_at or effective_at)
+            )
             Invoices.issue_draft_for_owner(
                 db,
                 str(invoice.id),
                 issuance=InvoiceIssuanceInput(
-                    issued_at=_utc(effective_at),
-                    due_at=_utc(due_at or effective_at),
+                    issued_at=issuance_at,
+                    due_at=issuance_due_at,
                     due_date_basis=InvoiceDueDateBasis.prepaid_service_period,
                     due_date_basis_ref=(f"prepaid-draft-review:{preview.fingerprint}"),
                     due_date_policy_version="prepaid-draft-reconciliation-v1",
@@ -3709,11 +3999,10 @@ def _stage_action(
                 opening_consumption = None
             else:
                 funding = _funding_preview(db, invoice)
-            if (
-                selected_payment_id is None
-                and preview.disposition
-                is PrepaidDraftDisposition.reviewed_opening_fundable
-            ):
+            if selected_payment_id is None and preview.disposition in {
+                PrepaidDraftDisposition.reviewed_opening_fundable,
+                PrepaidDraftDisposition.reviewed_historical_partial_fundable,
+            }:
                 result = AccountCreditApplications.apply_invoice_available(
                     db,
                     invoice,
@@ -3734,12 +4023,15 @@ def _stage_action(
                     effective_at=effective_at,
                     context=context,
                 )
-                finalize_invoice_application_for_owner(
-                    db,
-                    invoice,
-                    effective_at=_utc(effective_at),
-                )
-                reviewed_opening_correction = True
+                if historical_partial:
+                    finalize_reviewed_document_settlement_for_owner(db, invoice)
+                else:
+                    finalize_invoice_application_for_owner(
+                        db,
+                        invoice,
+                        effective_at=_utc(effective_at),
+                    )
+                    reviewed_opening_correction = True
             elif selected_payment_id is None:
                 result = AccountCreditApplications.apply_invoice_fully(
                     db,
@@ -3754,10 +4046,13 @@ def _stage_action(
                 "Invoice or account-credit owner rejected the reviewed settlement.",
                 participant_error=getattr(exc, "code", type(exc).__name__),
             )
-        applied = result.applied
+        newly_applied = result.applied
+        payment_applied = round_money(
+            newly_applied + preview.existing_payment_allocated_amount
+        )
+        applied = payment_applied
         if opening_consumption is not None:
             applied = round_money(applied + opening_consumption.amount)
-        payment_applied = result.applied
     elif preview.recommended_action is PrepaidDraftAction.void_duplicate:
         try:
             Invoices.void_pristine_draft_for_owner(
@@ -3831,6 +4126,18 @@ def _stage_action(
                 "preview_fingerprint": preview.fingerprint,
                 "applied_amount": str(applied),
                 "payment_applied_amount": str(payment_applied),
+                "existing_payment_allocated_amount": str(
+                    preview.existing_payment_allocated_amount
+                ),
+                "existing_payment_allocation_ids": [
+                    str(value) for value in preview.existing_payment_allocation_ids
+                ],
+                "historical_ledger_entry_ids": [
+                    str(value) for value in preview.historical_ledger_entry_ids
+                ],
+                "successor_entitlement_ids": [
+                    str(value) for value in preview.successor_entitlement_ids
+                ],
                 "opening_funding_applied_amount": str(
                     opening_consumption.amount
                     if opening_consumption is not None
@@ -3857,7 +4164,9 @@ def _stage_action(
                     else None
                 ),
                 "economic_delta": (
-                    str(applied)
+                    str(
+                        round_money(applied - preview.existing_payment_allocated_amount)
+                    )
                     if preview.recommended_action is PrepaidDraftAction.settle_paid
                     else "0.00"
                 ),
@@ -3882,6 +4191,9 @@ def _stage_action(
             "final_status": invoice.status.value,
             "applied_amount": str(applied),
             "payment_applied_amount": str(payment_applied),
+            "existing_payment_allocated_amount": str(
+                preview.existing_payment_allocated_amount
+            ),
             "opening_funding_applied_amount": str(
                 opening_consumption.amount
                 if opening_consumption is not None
@@ -6024,6 +6336,19 @@ def stage_prepaid_draft_after_funding_change(
         )
 
     preview = preview_prepaid_draft_reconciliation(db, invoice_ids[0])
+    if (
+        preview.disposition
+        is PrepaidDraftDisposition.reviewed_historical_partial_fundable
+    ):
+        _stage_review_exception(db, preview=preview)
+        return FundingChangeDraftResult(
+            drafts_found=1,
+            drafts_settled=0,
+            drafts_voided=0,
+            drafts_blocked=1,
+            review_exceptions=1,
+            invoice_ids=invoice_ids,
+        )
     if preview.recommended_action not in {
         PrepaidDraftAction.settle_paid,
         PrepaidDraftAction.void_duplicate,

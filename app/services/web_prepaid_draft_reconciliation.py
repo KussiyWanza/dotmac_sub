@@ -151,6 +151,7 @@ def _form_contract_state(
     eligible_dispositions = {
         PrepaidDraftDisposition.exact_payment_fundable,
         PrepaidDraftDisposition.reviewed_opening_fundable,
+        PrepaidDraftDisposition.reviewed_historical_partial_fundable,
         PrepaidDraftDisposition.already_renewed,
     }
     prerequisites = [
