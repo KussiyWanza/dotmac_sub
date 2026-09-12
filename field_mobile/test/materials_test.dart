@@ -256,6 +256,42 @@ void main() {
     expect(requests.items.single.number, 'MR-0002');
   });
 
+  test('cancelRequest posts reason and idempotency identity', () async {
+    adapter.on('POST', '/api/v1/field/material-requests/mr-2/cancel', (
+      options,
+    ) {
+      expect(options.data, {
+        'client_ref': 'cancel-client-ref',
+        'reason': 'Job scope changed',
+      });
+      return (
+        200,
+        {'id': 'mr-2', 'status': 'cancellation_pending', 'can_cancel': false},
+      );
+    });
+
+    final request = await container
+        .read(materialsRepositoryProvider)
+        .cancelRequest(
+          id: 'mr-2',
+          clientRef: 'cancel-client-ref',
+          reason: ' Job scope changed ',
+        );
+
+    expect(request.status, 'cancellation_pending');
+    expect(request.canCancel, isFalse);
+  });
+
+  test('material request reads owner-provided cancellation eligibility', () {
+    final request = MaterialRequest.fromJson({
+      'id': 'mr-pending',
+      'status': 'pending_stock',
+      'can_cancel': true,
+    });
+
+    expect(request.canCancel, isTrue);
+  });
+
   test('fetchRequests skips malformed rows instead of crashing', () async {
     adapter.on('GET', '/api/v1/field/material-requests', (_) {
       return (

@@ -36,9 +36,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from enum import StrEnum
+from typing import Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -65,13 +68,44 @@ logger = logging.getLogger(__name__)
 ENTITY_TYPE = "field_material_request"
 PROVIDER = "dotmac_erp"
 
-# ERP status pushed for an ISSUE material request (verbatim CRM parity: CRM sends
-# ``MaterialRequestStatus.issued.value``).
-_ERP_SUBMISSION_STATUS = "submitted"
-
 # The sub-side statuses a request can still change while ERP owns fulfillment;
 # only these get polled for a status refresh.
-_IN_FLIGHT_STATUSES = ("submitted", "approved", "accepted_by_erp", "pending_stock")
+_IN_FLIGHT_STATUSES = (
+    "submitted",
+    "approved",
+    "accepted_by_erp",
+    "pending_stock",
+    "cancellation_pending",
+)
+
+
+class ErpMaterialRequestCommandStatus(StrEnum):
+    SUBMITTED = "submitted"
+    CANCELLED = "cancelled"
+
+
+class ErpMaterialRequestItemPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    item_code: str = Field(min_length=1, max_length=50)
+    quantity: int = Field(gt=0)
+    uom: str = Field(min_length=1, max_length=20)
+    from_warehouse_code: str = Field(min_length=1, max_length=100)
+    serial_numbers: tuple[str, ...] | None = None
+
+
+class ErpMaterialRequestPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_request_id: UUID
+    request_type: Literal["ISSUE"] = "ISSUE"
+    status: ErpMaterialRequestCommandStatus
+    schedule_date: date
+    requested_by_email: str = Field(min_length=1, max_length=255)
+    ticket_source_reference: str | None = Field(default=None, max_length=36)
+    remarks: str = ""
+    items: tuple[ErpMaterialRequestItemPayload, ...] = Field(min_length=1)
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +158,13 @@ def material_request_idempotency_key(request: FieldMaterialRequest) -> str:
     return f"mr-{request.id}-approve-v1"
 
 
+def material_request_cancellation_idempotency_key(
+    request: FieldMaterialRequest,
+) -> str:
+    """Stable cancellation key, distinct from the original submission."""
+    return f"mr-{request.id}-cancel-v1"
+
+
 def _requester_email(request: FieldMaterialRequest) -> str | None:
     """Resolve the requesting employee's email (ERP matches employees by email)."""
     user = request.requested_by_system_user
@@ -150,7 +191,11 @@ def _from_warehouse_code(request: FieldMaterialRequest) -> str | None:
     return cleaned or None
 
 
-def build_material_request_payload(request: FieldMaterialRequest) -> dict:
+def build_material_request_payload(
+    request: FieldMaterialRequest,
+    *,
+    status: ErpMaterialRequestCommandStatus = ErpMaterialRequestCommandStatus.SUBMITTED,
+) -> ErpMaterialRequestPayload:
     """Map a ``FieldMaterialRequest`` to ERP's ``SubMaterialRequestPayload`` shape.
 
     Ports the historical mapper into a neutral contract: ``source_request_id``
@@ -164,42 +209,39 @@ def build_material_request_payload(request: FieldMaterialRequest) -> dict:
     """
     warehouse_code = _from_warehouse_code(request)
 
-    item_rows: list[dict[str, object]] = []
+    item_rows: list[ErpMaterialRequestItemPayload] = []
     for item in request.items:
         inv_item = item.item
-        row: dict[str, object] = {
-            "item_code": (
-                getattr(inv_item, "sku", None)
-                or getattr(inv_item, "name", None)
-                or str(item.item_id)
-            ),
-            "quantity": item.quantity,
-            "uom": getattr(inv_item, "unit", None) or "PCS",
-            "from_warehouse_code": warehouse_code,
-        }
         serial_numbers = _item_serial_numbers(item)
-        if serial_numbers:
-            row["serial_numbers"] = serial_numbers
-        item_rows.append(row)
+        item_rows.append(
+            ErpMaterialRequestItemPayload(
+                item_code=(
+                    getattr(inv_item, "sku", None)
+                    or getattr(inv_item, "name", None)
+                    or str(item.item_id)
+                ),
+                quantity=item.quantity,
+                uom=getattr(inv_item, "unit", None) or "PCS",
+                from_warehouse_code=warehouse_code or "",
+                serial_numbers=tuple(serial_numbers) if serial_numbers else None,
+            )
+        )
 
-    schedule_date = (
-        (request.approved_at or request.submitted_at or request.created_at)
-        .date()
-        .isoformat()
-    )
+    scheduled_for = (
+        request.approved_at or request.submitted_at or request.created_at
+    ).date()
 
     mirror = request.work_order_mirror
 
-    return {
-        "source_request_id": str(request.id),
-        "request_type": "ISSUE",
-        "status": _ERP_SUBMISSION_STATUS,
-        "schedule_date": schedule_date,
-        "requested_by_email": _requester_email(request),
-        "ticket_source_reference": getattr(mirror, "crm_ticket_id", None),
-        "remarks": request.notes or "",
-        "items": item_rows,
-    }
+    return ErpMaterialRequestPayload(
+        source_request_id=request.id,
+        status=status,
+        schedule_date=scheduled_for,
+        requested_by_email=_requester_email(request) or "",
+        ticket_source_reference=getattr(mirror, "crm_ticket_id", None),
+        remarks=request.notes or "",
+        items=tuple(item_rows),
+    )
 
 
 def material_request_eligibility_error(request: FieldMaterialRequest) -> str | None:
@@ -260,9 +302,54 @@ def enqueue_material_request(
         entity_type=ENTITY_TYPE,
         entity_id=request.id,
         idempotency_key=material_request_idempotency_key(request),
-        payload=payload,
+        payload=payload.model_dump(mode="json", exclude_none=True),
         isolate=isolate,
     )
+
+
+def enqueue_material_request_cancellation(
+    db: Session,
+    request: FieldMaterialRequest,
+    *,
+    isolate: bool = True,
+) -> FieldErpSyncEvent | None:
+    """Stage an idempotent ERP cancellation for a cancellation-pending request."""
+    if request.status != "cancellation_pending":
+        return None
+    reason = material_request_eligibility_error_for_cancellation(request)
+    if reason:
+        logger.info(
+            "material_sync: not enqueuing cancellation for %s — %s",
+            request.id,
+            reason,
+        )
+        return None
+    payload = build_material_request_payload(
+        request,
+        status=ErpMaterialRequestCommandStatus.CANCELLED,
+    )
+    return outbox.enqueue(
+        db,
+        flow=FieldErpSyncFlow.material_request,
+        entity_type=ENTITY_TYPE,
+        entity_id=request.id,
+        idempotency_key=material_request_cancellation_idempotency_key(request),
+        payload=payload.model_dump(mode="json", exclude_none=True),
+        isolate=isolate,
+    )
+
+
+def material_request_eligibility_error_for_cancellation(
+    request: FieldMaterialRequest,
+) -> str | None:
+    """Validate the immutable ERP body needed by a cancellation resend."""
+    if not request.items:
+        return f"Material request {request.id} has no items — cannot cancel in ERP"
+    if not _requester_email(request):
+        return "Requester has no email address; ERP needs it to match the employee"
+    if not _from_warehouse_code(request):
+        return "A source warehouse is required before ERP material cancellation"
+    return None
 
 
 # ---------------------------------------------------------------------------

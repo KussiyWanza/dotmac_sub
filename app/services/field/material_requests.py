@@ -60,6 +60,7 @@ class MaterialRequestStatus(StrEnum):
     SUBMITTED = "submitted"
     ACCEPTED_BY_ERP = "accepted_by_erp"
     PENDING_STOCK = "pending_stock"
+    CANCELLATION_PENDING = "cancellation_pending"
     SYNC_FAILED = "sync_failed"
     APPROVED = "approved"
     REJECTED = "rejected"
@@ -110,6 +111,8 @@ class ReviewMaterialRequest:
     context: CommandContext
     request_id: UUID
     reason: str | None = None
+    requester_person_id: UUID | None = None
+    requester_system_user_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +165,7 @@ class MaterialRequestView:
     created_at: datetime
     updated_at: datetime
     rejection_reason: str | None
+    can_cancel: bool
     items: tuple[MaterialRequestItemView, ...]
 
 
@@ -296,6 +300,15 @@ def _context_label(request: FieldMaterialRequest) -> str:
     return "Material request"
 
 
+def _can_cancel_request(request: FieldMaterialRequest) -> bool:
+    return request.status in {
+        MaterialRequestStatus.DRAFT.value,
+        MaterialRequestStatus.SUBMITTED.value,
+        MaterialRequestStatus.ACCEPTED_BY_ERP.value,
+        MaterialRequestStatus.PENDING_STOCK.value,
+    }
+
+
 def _request_view(request: FieldMaterialRequest) -> MaterialRequestView:
     metadata = request.metadata_ if isinstance(request.metadata_, dict) else {}
     return MaterialRequestView(
@@ -335,6 +348,7 @@ def _request_view(request: FieldMaterialRequest) -> MaterialRequestView:
             if metadata.get("rejection_reason")
             else None
         ),
+        can_cancel=_can_cancel_request(request),
         items=tuple(
             MaterialRequestItemView(
                 id=line.id,
@@ -1087,36 +1101,85 @@ def cancel_material_request(
     def operation() -> MaterialRequestView:
         request = _locked_request(db, command.request_id)
         if (
-            request.status == MaterialRequestStatus.CANCELED.value
-            and _is_command_replay(
+            command.requester_person_id is not None
+            or command.requester_system_user_id is not None
+        ):
+            requester_matches = (
+                command.requester_person_id is not None
+                and request.requested_by_person_id == command.requester_person_id
+            ) or (
+                command.requester_system_user_id is not None
+                and request.requested_by_system_user_id
+                == command.requester_system_user_id
+            )
+            if not requester_matches:
+                raise _material_error(
+                    "request_not_found", "Material request was not found."
+                )
+        if request.status in {
+            MaterialRequestStatus.CANCELLATION_PENDING.value,
+            MaterialRequestStatus.CANCELED.value,
+        } and (
+            _is_command_replay(
+                request,
+                event="cancellation_requested",
+                command_id=command.context.command_id,
+            )
+            or _is_command_replay(
                 request,
                 event="canceled",
                 command_id=command.context.command_id,
             )
         ):
             return _request_view(request)
-        if request.status not in {
-            MaterialRequestStatus.DRAFT.value,
-            MaterialRequestStatus.SUBMITTED.value,
-        }:
+        if not _can_cancel_request(request):
             raise _material_error(
                 "invalid_transition",
-                "Only draft or submitted requests can be canceled.",
+                "Only draft, submitted, accepted, or pending-stock requests can be canceled.",
             )
         reason = str(command.reason or "").strip()
         if not reason:
             raise _material_error(
                 "invalid_request", "A cancellation reason is required."
             )
-        request.status = MaterialRequestStatus.CANCELED.value
+        requires_erp_confirmation = (
+            request.fulfillment_channel == MaterialRequestFulfillmentChannel.ERP.value
+            and request.status != MaterialRequestStatus.DRAFT.value
+        )
+        request.status = (
+            MaterialRequestStatus.CANCELLATION_PENDING.value
+            if requires_erp_confirmation
+            else MaterialRequestStatus.CANCELED.value
+        )
+        event_name = (
+            "cancellation_requested" if requires_erp_confirmation else "canceled"
+        )
         _note_request_event(
             request,
-            "canceled",
+            event_name,
             reason=reason[:500],
             actor=command.context.actor,
             command_id=command.context.command_id,
         )
         _mark_sub_authoritative(request.work_order_mirror)
+        if requires_erp_confirmation:
+            from app.services.events import EventType, emit_event
+
+            emit_event(
+                db,
+                EventType.field_material_request_cancellation_requested,
+                {
+                    "material_request_id": str(request.id),
+                    "work_order_mirror_id": (
+                        str(request.work_order_mirror_id)
+                        if request.work_order_mirror_id
+                        else None
+                    ),
+                    "reason": reason[:500],
+                    "requested_at": datetime.now(UTC).isoformat(),
+                },
+                actor=command.context.actor,
+            )
         db.flush()
         return _request_view(request)
 
@@ -1183,6 +1246,7 @@ def serialize_material_request(request: FieldMaterialRequest) -> dict:
         "support_system": request.support_system,
         "support_reference": request.support_reference,
         "support_status": request.support_status,
+        "can_cancel": _can_cancel_request(request),
         "client_ref": request.client_ref,
         "submitted_at": request.submitted_at,
         "approved_at": request.approved_at,
@@ -1499,6 +1563,7 @@ class FieldMaterialRequests:
                 "approved",
                 "accepted_by_erp",
                 "pending_stock",
+                "cancellation_pending",
             }:
                 request.status = "issued"
                 request.issued_at = request.issued_at or datetime.now(UTC)
@@ -1526,6 +1591,7 @@ class FieldMaterialRequests:
                 "approved",
                 "accepted_by_erp",
                 "pending_stock",
+                "cancellation_pending",
             }:
                 request.status = "canceled"
                 _note_request_event(
@@ -1856,6 +1922,62 @@ def consume_material_request_approved(
             consumer="operations.material_dependencies",
             event_id=event_id,
             event_type="field_material_request.approved",
+            producer_owner="operations.material_dependencies",
+            context=context,
+            operation=_effect,
+        )[0],
+    )
+
+
+def consume_material_request_cancellation_requested(
+    db: Session,
+    *,
+    material_request_id: str,
+    event_id,
+    context,
+) -> str | None:
+    """Receipt one committed cancellation request into the ERP outbox."""
+    from app.services.events.owner_outputs import consume_owner_output
+    from app.services.owner_commands import (
+        OwnerCommandDefinition,
+        execute_owner_command,
+    )
+
+    definition = OwnerCommandDefinition(
+        owner="operations.material_dependencies",
+        concern="committed material output consumption",
+        name="consume_material_request_cancellation_requested",
+    )
+
+    def _effect() -> str:
+        from app.services.backoffice import (
+            enqueue_material_request_cancellation_outbox,
+        )
+
+        request = db.get(FieldMaterialRequest, coerce_uuid(material_request_id))
+        if request is None:
+            return "skipped_missing"
+        if request.status != MaterialRequestStatus.CANCELLATION_PENDING.value:
+            return "skipped_state"
+        if request.fulfillment_channel != MaterialRequestFulfillmentChannel.ERP.value:
+            return "skipped_manual"
+        event = enqueue_material_request_cancellation_outbox(db, request)
+        if event is None:
+            raise _material_error(
+                "sync_unavailable",
+                "ERP cancellation delivery is not currently available.",
+            )
+        return "enqueued"
+
+    return execute_owner_command(
+        db,
+        definition=definition,
+        context=context,
+        operation=lambda: consume_owner_output(
+            db,
+            consumer="operations.material_dependencies",
+            event_id=event_id,
+            event_type="field_material_request.cancellation_requested",
             producer_owner="operations.material_dependencies",
             context=context,
             operation=_effect,

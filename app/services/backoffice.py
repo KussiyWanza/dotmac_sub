@@ -30,6 +30,7 @@ from app.services.integrations.diagnostics import (
 if TYPE_CHECKING:
     from app.models.field_erp_sync import FieldErpSyncEvent
     from app.models.field_expense import FieldExpenseRequest
+    from app.models.field_material import FieldMaterialRequest
 
 logger = logging.getLogger(__name__)
 
@@ -573,7 +574,9 @@ def stage_expense_delivery_recovery(
     )
 
 
-def enqueue_material_request_outbox(db: Session, request: Any):
+def enqueue_material_request_outbox(
+    db: Session, request: FieldMaterialRequest
+) -> FieldErpSyncEvent | None:
     """Stage the material-request ERP intent for a receipted consumer.
 
     Ownership-checked and savepoint-free: inside an owner command the
@@ -587,6 +590,19 @@ def enqueue_material_request_outbox(db: Session, request: Any):
     from app.services.dotmac_erp.material_sync import enqueue_material_request
 
     return enqueue_material_request(db, request, isolate=False)
+
+
+def enqueue_material_request_cancellation_outbox(
+    db: Session, request: FieldMaterialRequest
+) -> FieldErpSyncEvent | None:
+    """Stage an ERP cancellation from the receipted cancellation consumer."""
+    if not _flow_owned_by_sub(db, "material_request"):
+        return None
+    from app.services.dotmac_erp.material_sync import (
+        enqueue_material_request_cancellation,
+    )
+
+    return enqueue_material_request_cancellation(db, request, isolate=False)
 
 
 def enqueue_purchase_invoice_outbox(db: Session, invoice: Any):

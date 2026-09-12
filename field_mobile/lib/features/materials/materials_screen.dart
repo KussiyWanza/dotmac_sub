@@ -207,21 +207,90 @@ class _MaterialRequestTile extends StatelessWidget {
   }
 }
 
-class MaterialRequestDetailScreen extends ConsumerWidget {
+class MaterialRequestDetailScreen extends ConsumerStatefulWidget {
   const MaterialRequestDetailScreen({super.key, required this.id});
 
   final String id;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final request = ref.watch(materialRequestProvider(id));
+  ConsumerState<MaterialRequestDetailScreen> createState() =>
+      _MaterialRequestDetailScreenState();
+}
+
+class _MaterialRequestDetailScreenState
+    extends ConsumerState<MaterialRequestDetailScreen> {
+  bool _canceling = false;
+
+  Future<void> _cancelRequest() async {
+    final controller = TextEditingController();
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Cancel material request?'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 500,
+          decoration: const InputDecoration(labelText: 'Cancellation reason'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Keep request'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final value = controller.text.trim();
+              if (value.isNotEmpty) Navigator.pop(context, value);
+            },
+            child: const Text('Cancel request'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (reason == null || !mounted) return;
+    setState(() => _canceling = true);
+    try {
+      final updated = await ref
+          .read(materialsRepositoryProvider)
+          .cancelRequest(
+            id: widget.id,
+            clientRef: const Uuid().v4(),
+            reason: reason,
+          );
+      ref.invalidate(materialRequestProvider(widget.id));
+      ref.invalidate(materialRequestsProvider);
+      if (!mounted) return;
+      final message = updated.status == 'cancellation_pending'
+          ? 'Cancellation sent to ERP'
+          : 'Material request canceled';
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    } on DioException catch (error) {
+      if (!mounted) return;
+      final detail = error.response?.data;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not cancel request: ${detail ?? error.message}'),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _canceling = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final request = ref.watch(materialRequestProvider(widget.id));
     return Scaffold(
       appBar: AppBar(title: const Text('Material request')),
       body: request.when(
         data: (data) => RefreshIndicator(
           onRefresh: () async {
-            ref.invalidate(materialRequestProvider(id));
-            await ref.read(materialRequestProvider(id).future);
+            ref.invalidate(materialRequestProvider(widget.id));
+            await ref.read(materialRequestProvider(widget.id).future);
           },
           child: ListView(
             physics: const AlwaysScrollableScrollPhysics(),
@@ -272,6 +341,25 @@ class MaterialRequestDetailScreen extends ConsumerWidget {
               else
                 for (final item in data.items)
                   _MaterialRequestItemTile(item: item),
+              if (data.canCancel) ...[
+                const SizedBox(height: 24),
+                OutlinedButton.icon(
+                  onPressed: _canceling ? null : _cancelRequest,
+                  icon: _canceling
+                      ? const SizedBox.square(
+                          dimension: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.cancel_outlined),
+                  label: const Text('Cancel request'),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'ERP-backed cancellations are confirmed by ERP before they are final.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                  textAlign: TextAlign.center,
+                ),
+              ],
             ],
           ),
         ),

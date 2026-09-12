@@ -656,17 +656,22 @@ def _apply_response(
     row.last_error = None
 
     status_signal = _extract_status(response)
-    expected_rejection = (
-        row.flow == FieldErpSyncFlow.expense_claim.value
-        and str((row.payload or {}).get("_expense_action")) == "reject"
-        and status_signal in _REJECTED_STATUSES
-    )
-    if status_signal in _REJECTED_STATUSES and not expected_rejection:
+    expected_terminal_refusal = (
+        (
+            row.flow == FieldErpSyncFlow.expense_claim.value
+            and str((row.payload or {}).get("_expense_action")) == "reject"
+        )
+        or (
+            row.flow == FieldErpSyncFlow.material_request.value
+            and str((row.payload or {}).get("status")) in {"cancelled", "canceled"}
+        )
+    ) and status_signal in _REJECTED_STATUSES
+    if status_signal in _REJECTED_STATUSES and not expected_terminal_refusal:
         row.status = FieldErpSyncStatus.rejected.value
         result.rejected += 1
         return
     if (
-        expected_rejection
+        expected_terminal_refusal
         or status_signal in _ACCEPTED_STATUSES
         or _has_erp_id(response)
     ):

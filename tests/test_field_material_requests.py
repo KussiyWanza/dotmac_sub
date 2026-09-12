@@ -366,6 +366,21 @@ def test_material_request_api(db_session):
     submitted = client.post(f"/api/v1/field/material-requests/{request_id}/submit")
     assert submitted.status_code == 200
     assert submitted.json()["status"] == "submitted"
+    stored = db_session.get(FieldMaterialRequest, request_id)
+    stored.status = "pending_stock"
+    stored.fulfillment_channel = "erp"
+    db_session.commit()
+
+    canceled = client.post(
+        f"/api/v1/field/material-requests/{request_id}/cancel",
+        json={
+            "client_ref": str(uuid4()),
+            "reason": "Installation scope changed",
+        },
+    )
+    assert canceled.status_code == 200
+    assert canceled.json()["status"] == "cancellation_pending"
+    assert canceled.json()["can_cancel"] is False
     assert db_session.query(FieldMaterialRequest).count() == 1
 
 

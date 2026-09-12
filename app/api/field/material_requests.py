@@ -7,6 +7,7 @@ from app.api.deps import get_db
 from app.api.field.work_order_compat import resolve_work_order_id
 from app.schemas.common import ListResponse
 from app.schemas.field import (
+    FieldMaterialRequestCancel,
     FieldMaterialRequestCreate,
     FieldMaterialRequestRead,
     FieldMaterialRequestSubmit,
@@ -22,6 +23,8 @@ from app.services.field.material_requests import (
     MaterialRequestView,
     RequesterMaterialRequestDetailQuery,
     RequesterMaterialRequestHistoryQuery,
+    ReviewMaterialRequest,
+    cancel_material_request,
     create_staff_material_request,
     field_material_requests,
     get_requester_material_request,
@@ -62,6 +65,7 @@ def _material_outcome(outcome: MaterialRequestView) -> FieldMaterialRequestRead:
         support_system=outcome.support_system,
         support_reference=outcome.support_reference,
         support_status=outcome.support_status,
+        can_cancel=outcome.can_cancel,
         submitted_at=outcome.submitted_at,
         approved_at=outcome.approved_at,
         rejected_at=outcome.rejected_at,
@@ -227,3 +231,42 @@ def submit_field_material_request(
     db: Session = Depends(get_db),
 ):
     return field_material_requests.submit(db, auth, material_request_id)
+
+
+@router.post("/{material_request_id}/cancel", response_model=FieldMaterialRequestRead)
+def cancel_field_material_request(
+    material_request_id: UUID,
+    payload: FieldMaterialRequestCancel,
+    auth: dict = Depends(require_user_auth),
+    db: Session = Depends(get_db),
+):
+    try:
+        db_session_adapter.release_read_transaction(db)
+        outcome = cancel_material_request(
+            db,
+            ReviewMaterialRequest(
+                context=CommandContext(
+                    command_id=payload.client_ref,
+                    correlation_id=payload.client_ref,
+                    actor=f"user:{auth['principal_id']}",
+                    scope="field:material_requests:write",
+                    reason="field_material_request_cancellation",
+                    idempotency_key=str(payload.client_ref),
+                ),
+                request_id=material_request_id,
+                reason=payload.reason,
+                requester_person_id=UUID(
+                    str(auth.get("person_id") or auth["principal_id"])
+                ),
+                requester_system_user_id=UUID(str(auth["principal_id"])),
+            ),
+        )
+    except MaterialRequestError as exc:
+        status_code = 404 if exc.code.endswith("not_found") else 409
+        if exc.code.endswith("invalid_request"):
+            status_code = 422
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": exc.message, "details": exc.details},
+        ) from exc
+    return _material_outcome(outcome)

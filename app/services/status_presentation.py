@@ -1163,6 +1163,14 @@ def field_expense_status_presentation(status: str | None) -> StatusPresentation:
 _FIELD_MATERIAL_REQUEST_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
     "draft": ("Draft", StatusTone.neutral, StatusIcon.archive),
     "submitted": ("Submitted", StatusTone.info, StatusIcon.clock),
+    "accepted_by_erp": ("Accepted by ERP", StatusTone.info, StatusIcon.clock),
+    "pending_stock": ("Pending stock", StatusTone.warning, StatusIcon.clock),
+    "cancellation_pending": (
+        "Cancellation pending",
+        StatusTone.warning,
+        StatusIcon.clock,
+    ),
+    "sync_failed": ("Sync failed", StatusTone.negative, StatusIcon.alert),
     "approved": ("Approved", StatusTone.positive, StatusIcon.check),
     "rejected": ("Rejected", StatusTone.negative, StatusIcon.x),
     "issued": ("Issued", StatusTone.info, StatusIcon.info),

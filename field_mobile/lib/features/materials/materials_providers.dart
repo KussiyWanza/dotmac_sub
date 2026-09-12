@@ -125,6 +125,23 @@ class MaterialsRepository {
       (response.data as Map).cast<String, dynamic>(),
     );
   }
+
+  Future<MaterialRequest> cancelRequest({
+    required String id,
+    required String clientRef,
+    required String reason,
+  }) async {
+    final response = await _ref
+        .read(apiClientProvider)
+        .dio
+        .post(
+          '/api/v1/field/material-requests/$id/cancel',
+          data: {'client_ref': clientRef, 'reason': reason.trim()},
+        );
+    return MaterialRequest.fromJson(
+      (response.data as Map).cast<String, dynamic>(),
+    );
+  }
 }
 
 Future<List<MaterialRequest>> _offlineMaterialRequests(Ref ref) async {

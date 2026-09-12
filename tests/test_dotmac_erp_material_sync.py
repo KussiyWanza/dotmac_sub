@@ -204,7 +204,9 @@ class _FakeERPClient:
 
 def test_payload_mapping_matches_neutral_erp_contract(db_session):
     request = _make_approved_request(db_session)
-    payload = material_sync.build_material_request_payload(request)
+    payload = material_sync.build_material_request_payload(request).model_dump(
+        mode="json", exclude_none=True
+    )
 
     assert payload["source_request_id"] == str(request.id)
     assert payload["request_type"] == "ISSUE"
@@ -232,7 +234,9 @@ def test_payload_supports_legacy_serials_and_warehouse_metadata(db_session):
     request.items[0].metadata_ = {"serial_numbers": ["SN-1", " SN-2 ", ""]}
     db_session.flush()
 
-    line = material_sync.build_material_request_payload(request)["items"][0]
+    line = material_sync.build_material_request_payload(request).model_dump(
+        mode="json", exclude_none=True
+    )["items"][0]
     assert line["from_warehouse_code"] == "WH-LAGOS"
     assert line["serial_numbers"] == ["SN-1", "SN-2"]
 
@@ -412,6 +416,73 @@ def test_delivery_rejected_records_erp_status(db_session):
     assert row.status == FieldErpSyncStatus.rejected.value
     assert request.support_status == "rejected"
     assert request.status == "canceled"
+
+
+def test_pending_stock_cancellation_is_sent_and_confirmed_by_erp(db_session):
+    request = _make_approved_request(db_session)
+    request.status = "pending_stock"
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.material_request.value})
+    enable_erp_capability(db_session, ERP_OUTBOX_CAPABILITY)
+    db_session.commit()
+    command_id = uuid4()
+    command = material_requests.ReviewMaterialRequest(
+        context=CommandContext(
+            command_id=command_id,
+            correlation_id=command_id,
+            actor=f"user:{request.requested_by_system_user_id}",
+            scope="field:material_requests:write",
+            reason="field_material_request_cancellation",
+            idempotency_key=str(command_id),
+        ),
+        request_id=request.id,
+        reason="Job no longer requires the stock",
+        requester_person_id=request.requested_by_person_id,
+        requester_system_user_id=request.requested_by_system_user_id,
+    )
+    db_session.rollback()
+
+    outcome = material_requests.cancel_material_request(
+        db_session,
+        command,
+    )
+
+    assert (
+        outcome.status is material_requests.MaterialRequestStatus.CANCELLATION_PENDING
+    )
+    assert outcome.can_cancel is False
+    replayed = material_requests.cancel_material_request(db_session, command)
+    assert (
+        replayed.status is material_requests.MaterialRequestStatus.CANCELLATION_PENDING
+    )
+    rows = _outbox_rows(db_session, request)
+    assert len(rows) == 1
+    assert rows[0].idempotency_key == f"mr-{request.id}-cancel-v1"
+    assert rows[0].payload["status"] == "cancelled"
+
+    delivery = outbox.deliver_pending(
+        db_session,
+        client=_FakeERPClient(
+            post_outcomes=[{"request_id": "ERP-MR-CANCEL", "status": "cancelled"}]
+        ),
+    )
+    db_session.refresh(request)
+    db_session.refresh(rows[0])
+    assert delivery.accepted == 1
+    assert rows[0].status == FieldErpSyncStatus.accepted.value
+    assert request.status == "canceled"
+
+
+def test_erp_issue_wins_a_cancellation_race(db_session):
+    request = _make_approved_request(db_session)
+    request.status = "cancellation_pending"
+
+    material_sync.apply_material_response(
+        db_session,
+        request,
+        {"request_id": "ERP-MR-ISSUED", "status": "issued"},
+    )
+
+    assert request.status == "issued"
 
 
 # ---------------------------------------------------------------------------

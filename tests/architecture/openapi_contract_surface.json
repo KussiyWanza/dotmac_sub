@@ -15073,6 +15073,18 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/field/material-requests/{material_request_id}/cancel": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:material_request_id!"
+   ],
+   "request": "ae81e61e5427",
+   "responses": {
+    "200": "2ce612d842fb",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/field/material-requests/{material_request_id}/submit": {
    "params": [
     "header:authorization",
@@ -19635,10 +19647,11 @@
   "FieldMaterialConsumeItem": "911c9370f480",
   "FieldMaterialConsumeRequest": "83119748b137",
   "FieldMaterialRead": "b3ca3b51848b",
+  "FieldMaterialRequestCancel": "00daeee69caa",
   "FieldMaterialRequestCreate": "beb591240e6a",
   "FieldMaterialRequestItemCreate": "04759e76cb22",
   "FieldMaterialRequestItemRead": "1e218709f934",
-  "FieldMaterialRequestRead": "e962f5239169",
+  "FieldMaterialRequestRead": "2c94bf64ad55",
   "FieldMaterialRequestSubmit": "0bac3c573aa7",
   "FieldMeResponse": "92ccd05b3f23",
   "FieldMovementRead": "e6afbc3e60fc",

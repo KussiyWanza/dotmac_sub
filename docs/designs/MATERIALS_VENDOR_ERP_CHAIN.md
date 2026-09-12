@@ -13,6 +13,8 @@ ticket / project / project task requires material
   -> assigned native work order selected   [context projection; one owner]
   -> material request submitted            [operations.material_dependencies]
   -> ERP issue requested                  [receipted consumer -> durable outbox]
+  -> cancellation requested               [Sub cancellation_pending -> durable outbox]
+  -> cancellation confirmed               [ERP cancelled observation -> Sub canceled]
   -> ERP issue observed                   [polling write-back, fail-atomic]
   -> material allocated                   [allocation rows + fulfilled output]
   -> field consumption verified           [operations.material_consumption]
@@ -28,7 +30,7 @@ vendor project completed                  [operations.vendor_project_lifecycle]
 ```
 
 Typed outputs stage atomically with each owning transition:
-`field_material_request.approved` / `.fulfilled`,
+`field_material_request.approved` / `.cancellation_requested` / `.fulfilled`,
 `field_material.consumption_recorded`, `vendor_project.completed`,
 `vendor_purchase_invoice.approved` / `.payment_observed`. The
 `MaterialsLifecycleProjectionHandler` delivers the completion and approval
@@ -71,6 +73,14 @@ best-effort enqueue whose only trace was a metadata breadcrumb.
   rotation cursor: successfully observed rows cannot permanently hide newer
   in-flight requests, and every consequence still belongs to
   `operations.material_dependencies`.
+- A technician or authorized staff member may cancel a draft, submitted,
+  ERP-accepted, or pending-stock request. Manual drafts cancel immediately.
+  ERP-backed requests move to `cancellation_pending` and emit a receipted,
+  idempotent cancellation outbox intent. Only ERP's `CANCELLED` observation
+  makes the request `canceled`; if ERP reports `ISSUED` concurrently, issuance
+  wins and Sub creates the normal allocation evidence. This prevents Selfcare
+  or the field app from claiming that ERP-owned stock was canceled before ERP
+  confirms it.
 - Vendor project completion is the automatic payables determinant for PO-backed
   vendor work. The consumer creates one system-approved vendor purchase invoice
   from the approved quote when no active vendor invoice already exists, then
