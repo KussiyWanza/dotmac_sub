@@ -22,7 +22,7 @@ manager history, approver, and payment projections remain available.
 The batch also includes the first-subscription-invoice VAT correction, reviewed
 historical prepaid-draft settlement and opening-boundary consumption, Team Inbox
 team-sender selection and the audited legacy completion override, EG8145V5
-dual-band WiFi paths, and the rolling 8.45.7 version metadata update.
+dual-band WiFi paths, and the rolling 8.45.8 version metadata update.
 
 ## Migration chain
 
