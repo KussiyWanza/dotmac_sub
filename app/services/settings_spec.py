@@ -4194,6 +4194,16 @@ SETTINGS_SPECS: list[SettingSpec] = [
         max_value=3600,
         label="Team Inbox queue-notification due-work scan interval",
     ),
+    SettingSpec(
+        domain=SettingDomain.comms,
+        key="inbox_completion_override_grant_window_hours",
+        env_var="INBOX_COMPLETION_OVERRIDE_GRANT_WINDOW_HOURS",
+        value_type=SettingValueType.integer,
+        default=24,
+        min_value=1,
+        max_value=168,
+        label="Team Inbox legacy completion-override grant validity window",
+    ),
     # ============== Notification Domain: Email Settings ==============
     SettingSpec(
         domain=SettingDomain.notification,

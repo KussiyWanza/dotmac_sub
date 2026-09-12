@@ -3086,6 +3086,96 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="communications.team_inbox_completion_override",
+            module="app.services.team_inbox_completion_override",
+            owns=("single-use legacy customer-completion resolution override",),
+            depends_on=(
+                "communications.team_inbox_threads",
+                "communications.team_inbox_customer_completion",
+                "communications.team_inbox_status",
+                "auth.permission_gate",
+            ),
+            contract=_team_inbox_contract(
+                service_name="communications.team_inbox_completion_override",
+                concerns=(
+                    (
+                        "single-use legacy customer-completion resolution override",
+                        OwnerRole.COMMAND_WRITER,
+                    ),
+                ),
+                inputs=(
+                    AuthorityInput(
+                        name="pre-cutover eligibility marker",
+                        owner="communications.team_inbox_threads",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Locked conversation and its immutable "
+                            "completion_gate_precutover_at marker, written "
+                            "exactly once by the legacy-override migration."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="live Customer resolution readiness",
+                        owner="communications.team_inbox_customer_completion",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "Transaction-current missing-fields and "
+                            "canonical-values verdict reviewed at grant time "
+                            "and re-verified at consumption time."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="typed override grant/consumption command",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "Actor holding support:inbox:completion_override, "
+                            "typed reviewed reason, and command provenance."
+                        ),
+                    ),
+                ),
+                transaction_mode=TransactionMode.OWNER_MANAGED,
+                # No dedicated event is emitted for issuance/consumption today
+                # (deliberately not declaring `completion_override_granted.v1`
+                # / `completion_override_consumed.v1` here, since neither is
+                # actually wired to `emit_event` -- the grant row itself, plus
+                # its FK to the resolved `InboxStatusTransitionEvent`, is the
+                # durable evidence). Omitting `event_types` takes the shared
+                # placeholder default like other non-event-emitting owners in
+                # this domain (e.g. `team_inbox_audit_projection` above).
+                projections=(
+                    "single-use legacy customer-completion resolution override",
+                ),
+                domain_error_codes=(
+                    "communications.team_inbox_completion_override.override_post_cutover_conversation",
+                    "communications.team_inbox_completion_override.override_conversation_already_resolved",
+                    "communications.team_inbox_completion_override.override_conversation_not_blocked",
+                    "communications.team_inbox_completion_override.override_requires_customer_identity",
+                    "communications.team_inbox_completion_override.override_stale_evidence",
+                    "communications.team_inbox_completion_override.override_grant_already_pending",
+                    "communications.team_inbox_completion_override.override_idempotency_key_required",
+                    "communications.team_inbox_completion_override.override_idempotency_key_conflict",
+                    "communications.team_inbox_completion_override.invalid_reason_code",
+                    "communications.team_inbox_completion_override.permission_denied",
+                    "communications.team_inbox_completion_override.override_absent",
+                    "communications.team_inbox_completion_override.override_already_consumed",
+                    "communications.team_inbox_completion_override.override_conversation_mismatch",
+                    "communications.team_inbox_completion_override.override_superseded",
+                    "communications.team_inbox_completion_override.override_expired",
+                    "communications.team_inbox_completion_override.override_not_required",
+                ),
+                design_refs=(
+                    "docs/designs/INBOX_CUSTOMER_COMPLETION_GATE.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                ),
+                test_refs=(
+                    "tests/test_team_inbox_completion_override.py",
+                    "tests/architecture/test_inbox_completion_override_boundary.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="communications.team_inbox_audit_reconstruction",
             module="app.services.team_inbox_audit_reconstruction",
             owns=("reviewed Team Inbox historical audit reconstruction",),

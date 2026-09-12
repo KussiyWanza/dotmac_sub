@@ -296,6 +296,10 @@ DEFAULT_PERMISSIONS = [
         "region, or assignment",
     ),
     ("support:inbox:self_assign", "Assign inbox conversations to yourself"),
+    (
+        "support:inbox:completion_override",
+        "Grant a one-transition legacy customer-completion resolution override",
+    ),
     ("support:automation:read", "View ticket automation rules"),
     ("support:automation:write", "Manage ticket automation rules"),
     ("support:inbox_ai:read", "Use manager AI for Team Inbox insight"),

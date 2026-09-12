@@ -2911,6 +2911,7 @@ def update_status(
     conversation_id: str | UUID,
     status_value: str,
     actor_person_id: str | UUID | None = None,
+    completion_override_grant_id: str | UUID | None = None,
 ) -> StatusOutcome:
     clean_status = str(status_value or "").strip().lower()
     allowed_statuses = {item.value for item in InboxConversationStatus}
@@ -2939,6 +2940,7 @@ def update_status(
             reason=team_inbox_status.InboxStatusReason.operator_change,
             source_id=f"operator-status:{uuid4()}",
             compatibility_source="admin_inbox_status_action",
+            completion_override_grant_id=coerce_uuid(completion_override_grant_id),
         )
         inbox_sla.update_status(db, conversation, clean_status)
         return StatusOutcome(

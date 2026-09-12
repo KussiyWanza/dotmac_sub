@@ -115,7 +115,7 @@ def test_repository_heads_match_alembics_effective_dependency_heads() -> None:
     # effective branch heads in its version table.
     assert repository_heads() == frozenset(
         {
-            "601_prepaid_draft_exception_no_invoice_identity",
+            "602_inbox_completion_legacy_override",
             "bi_0001_billing",
             "cl_0001_collections",
             "ib_0001_conversations",
