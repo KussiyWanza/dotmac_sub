@@ -30,6 +30,7 @@ from app.models.team_inbox import (
     InboxConversationStatus,
     InboxCustomerCompletionPolicyVersion,
 )
+from app.services.team_inbox_completion_override import OWNER
 from scripts.support import issue_inbox_completion_override as cli
 
 
@@ -221,7 +222,15 @@ def test_run_apply_refuses_without_real_permission_grant(db_session):
         idempotency_key=str(uuid4()),
     )
 
-    assert result["error"] == f"{cli.OVERRIDE_GRANT_SCOPE}.permission_denied"
+    # `_run_apply` delegates to `issue_override_grant`, whose `DomainError`
+    # codes are owner-prefixed (`f"{OWNER}.{suffix}"`, matching this
+    # codebase's convention -- see `prepaid_draft_reconciliation`'s
+    # `REPAIR_SCOPE`/`_error` pair) rather than prefixed with the RBAC
+    # permission-scope string itself. `_run_resolve`'s own out-of-band
+    # permission check (not exercised by this test) is the one place that
+    # legitimately returns an `OVERRIDE_GRANT_SCOPE`-prefixed error, because
+    # it never enters `issue_override_grant`.
+    assert result["error"] == f"{OWNER}.permission_denied"
 
 
 # --- _run_resolve: closes the loop from grant to an actual resolution ------

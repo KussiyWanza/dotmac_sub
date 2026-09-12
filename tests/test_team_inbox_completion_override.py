@@ -520,7 +520,12 @@ def test_consume_override_refuses_expired(db_session):
     conversation, _subscriber = _blocked_conversation(db_session)
     grant = _issue(db_session, conversation)
     row = db_session.get(InboxCompletionOverrideGrant, grant.grant_id)
-    row.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+    # A grant is valid at creation (expires_at > granted_at) but has since
+    # expired relative to "now" -- not "issued already-invalid", which the
+    # ck_inbox_completion_override_grants_expiry_after_grant CHECK constraint
+    # now correctly refuses at flush time.
+    row.granted_at = datetime.now(UTC) - timedelta(hours=2)
+    row.expires_at = datetime.now(UTC) - timedelta(hours=1)
     db_session.flush()
 
     with pytest.raises(DomainError) as excinfo:

@@ -22,7 +22,6 @@ of ``inbox_conversations.status``; that stays
 from __future__ import annotations
 
 import hashlib
-import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -32,6 +31,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.models.domain_settings import SettingDomain
 from app.models.team_inbox import (
     InboxCompletionOverrideGrant,
     InboxCompletionOverrideGrantState,
@@ -40,7 +40,7 @@ from app.models.team_inbox import (
     InboxMessage,
     InboxStatusTransitionEvent,
 )
-from app.services import team_inbox_customer_completion
+from app.services import settings_spec, team_inbox_customer_completion
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import (
     CommandContext,
@@ -53,7 +53,13 @@ OWNER = "communications.team_inbox_completion_override"
 CONCERN = "single-use legacy customer-completion resolution override"
 OVERRIDE_GRANT_SCOPE = "support:inbox:completion_override"
 
-_DEFAULT_GRANT_WINDOW_HOURS = 24.0
+# Registered in `app/services/settings_spec.py`
+# (`SettingDomain.comms`/`inbox_completion_override_grant_window_hours`) --
+# database-authoritative, resolved via `settings_spec.resolve_integer`.
+# `_grant_window_hours` below no longer reads the environment directly (see
+# `tests/architecture/test_decision_input_ownership.py`); this constant is
+# only the resolver's documented fallback if the spec is ever missing.
+_DEFAULT_GRANT_WINDOW_HOURS = 24
 _MAX_REASON_TEXT_LENGTH = 2000
 
 # ADR-0008 style open registry: a product/deployment names its own override
@@ -94,15 +100,33 @@ def _error(
     )
 
 
-def _grant_window_hours() -> float:
-    raw = os.getenv(
-        "INBOX_COMPLETION_OVERRIDE_GRANT_WINDOW_HOURS",
-        str(_DEFAULT_GRANT_WINDOW_HOURS),
+def _as_utc(value: datetime) -> datetime:
+    """Treat a naive timestamp as UTC.
+
+    SQLite drops timezone offsets on round-trip regardless of what was
+    inserted, so a ``DateTime(timezone=True)`` column can come back naive
+    after a commit/refresh even though PostgreSQL preserves it correctly.
+    Comparing a freshly-fetched grant's ``expires_at`` against
+    ``datetime.now(UTC)`` must not depend on the driver behaving; matching
+    the ``_as_utc`` pattern already used across this codebase (e.g.
+    ``app/services/auth_flow.py``, ``app/services/auth_session_refresh.py``).
+    """
+
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _grant_window_hours(db: Session) -> int:
+    """Resolve the grant validity window from the registered setting.
+
+    Database-authoritative via ``settings_spec.resolve_integer`` -- never the
+    environment directly (``INBOX_COMPLETION_OVERRIDE_GRANT_WINDOW_HOURS`` is
+    only the spec's declared bootstrap ``env_var``, materialised into a row by
+    the settings seed, exactly like every other Sub runtime setting).
+    """
+
+    value = settings_spec.resolve_integer(
+        db, SettingDomain.comms, "inbox_completion_override_grant_window_hours"
     )
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return _DEFAULT_GRANT_WINDOW_HOURS
     return value if value > 0 else _DEFAULT_GRANT_WINDOW_HOURS
 
 
@@ -376,7 +400,7 @@ def issue_override_grant(
             grant_fingerprint=fingerprint,
             command_id=command.context.command_id,
             correlation_id=command.context.correlation_id,
-            expires_at=granted_at + timedelta(hours=_grant_window_hours()),
+            expires_at=granted_at + timedelta(hours=_grant_window_hours(db)),
             state=InboxCompletionOverrideGrantState.pending.value,
         )
         db.add(grant)
@@ -476,7 +500,7 @@ def consume_override_for_resolution(
         if reopened is not None or new_activity:
             grant.state = InboxCompletionOverrideGrantState.superseded.value
             db.flush()
-        elif datetime.now(UTC) > grant.expires_at:
+        elif datetime.now(UTC) > _as_utc(grant.expires_at):
             grant.state = InboxCompletionOverrideGrantState.expired.value
             db.flush()
 
