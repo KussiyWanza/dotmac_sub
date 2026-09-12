@@ -17,6 +17,7 @@ from app.models.network import (
     OLTDevice,
     OntUnit,
     OntWanServiceInstance,
+    Tr069ParameterMap,
     VendorModelCapability,
     WanConnectionType,
     WanServiceType,
@@ -195,6 +196,43 @@ def test_desired_wifi_credentials_round_trip(db_session, ont):
     assert desired.wifi_security_mode == "WPA2-Personal"
     assert desired.wifi_paths is not None
     assert desired.wifi_paths.ssid.endswith("WLANConfiguration.1.SSID")
+
+
+def test_eg8145v5_capability_resolves_primary_and_secondary_psk_paths(db_session, ont):
+    capability = VendorModelCapability(
+        vendor="Huawei",
+        model="EG8145V5",
+        tr069_root="InternetGatewayDevice",
+        is_active=True,
+    )
+    db_session.add(capability)
+    db_session.flush()
+    db_session.add(
+        Tr069ParameterMap(
+            capability_id=capability.id,
+            canonical_name="wifi.psk.additional.1",
+            tr069_path=("LANDevice.1.WLANConfiguration.5.PreSharedKey.1.PreSharedKey"),
+            writable=True,
+            value_type="string",
+        )
+    )
+    ont.vendor = "Huawei"
+    ont.model = "EG8145V5"
+    ont.tr069_data_model = None
+    db_session.commit()
+
+    desired = desired_from_ont_unit(db_session, ont)
+
+    assert desired.tr069_data_model_root == "InternetGatewayDevice"
+    assert desired.wifi_paths is not None
+    assert desired.wifi_paths.psk_path == (
+        "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1."
+        "PreSharedKey.1.PreSharedKey"
+    )
+    assert desired.wifi_paths.additional_psk_paths == (
+        "InternetGatewayDevice.LANDevice.1.WLANConfiguration.5."
+        "PreSharedKey.1.PreSharedKey",
+    )
 
 
 def test_desired_remote_access_expires_closed_and_resolves_paths(db_session, ont):

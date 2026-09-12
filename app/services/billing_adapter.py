@@ -10,7 +10,12 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.models.billing import InvoiceDueDateBasis, InvoiceStatus, PaymentStatus
+from app.models.billing import (
+    InvoiceDueDateBasis,
+    InvoiceStatus,
+    PaymentStatus,
+    TaxApplication,
+)
 from app.schemas.billing import (
     InvoiceCreate,
     InvoiceLineCreate,
@@ -42,6 +47,7 @@ class InvoiceLineIntent:
     quantity: Decimal = Decimal("1")
     unit_price: Decimal = Decimal("0.00")
     tax_rate_id: UUID | None = None
+    tax_application: TaxApplication = TaxApplication.exclusive
 
 
 @dataclass(frozen=True)
@@ -132,6 +138,7 @@ class BillingAdapter:
                 quantity=line.quantity,
                 unit_price=line.unit_price,
                 tax_rate_id=line.tax_rate_id,
+                tax_application=line.tax_application,
             )
             for line in lines
         )

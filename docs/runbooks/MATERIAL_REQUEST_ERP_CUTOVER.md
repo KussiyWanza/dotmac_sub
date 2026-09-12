@@ -16,8 +16,13 @@
 2. Install DotMac ERP connector 1.2.0 and enable inventory read, outbox delivery, status read, and material-status webhook capabilities.
 3. Create a non-human ERP identity limited to inventory read, material-request submit, and material-request status read. These are service scopes, not human roles.
 4. Store its credential and a separate webhook signing secret in the connector bindings.
-5. Configure ERP to POST to `/webhooks/erp-material/{capability_binding_id}` with a stable `X-Dotmac-Delivery` ID and `X-Dotmac-Signature: sha256=<HMAC-SHA256 exact body>`.
+5. Configure ERP to POST to `/api/v1/webhooks/erp-material/{capability_binding_id}` with a stable `X-Dotmac-Delivery` ID and `X-Dotmac-Signature: sha256=<HMAC-SHA256 exact body>`.
 6. ERP must send the Sub UUID as `source_request_id`, its ERP-owned request identity, status, update time, and issued serials by line sequence.
+
+The unprefixed `/webhooks/erp-material/...` path is not mounted and must fail
+with 404. The bootstrap output is the canonical callback URL; do not construct
+or shorten it manually. Payloads using the retired `omni_id` field fail closed
+with 422 and must be corrected at ERP rather than aliased in Sub.
 
 ## Controlled activation
 
@@ -30,6 +35,9 @@
 4. Submit and issue one ERP canary, then prove both webhook and scheduled reconciliation converge.
 5. Prove a manual canary creates no ERP delivery and rejects an ERP callback.
 6. Confirm the retired CRM sender is absent before assigning material-request flow ownership to Sub.
+7. After deployment, allow bounded reconciliation cycles to observe every
+   existing ERP-managed in-flight request. Verify the oldest
+   `last_reconciled_at` advances; never repair request status directly in SQL.
 
 ## Safety and external work
 

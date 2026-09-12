@@ -28,6 +28,8 @@ def test_material_approval_emits_output_instead_of_swallowed_enqueue():
     assert "_maybe_enqueue_backoffice_support" not in src
     assert "backoffice_delivery_pending" not in src
     assert "def consume_material_request_approved" in src
+    assert "def consume_material_request_cancellation_requested" in src
+    assert "EventType.field_material_request_cancellation_requested" in src
     assert "consume_owner_output" in src
 
 
@@ -65,6 +67,7 @@ def test_payables_settlement_is_observed_never_decided():
 def test_projection_handler_routes_the_chain():
     src = _source("app/services/events/handlers/materials_lifecycle_projection.py")
     assert "EventType.field_material_request_approved" in src
+    assert "EventType.field_material_request_cancellation_requested" in src
     assert "EventType.vendor_project_completed" in src
     assert "EventType.vendor_purchase_invoice_approved" in src
     assert "consume_project_completed" in src

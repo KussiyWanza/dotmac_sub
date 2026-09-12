@@ -119,7 +119,7 @@ def test_render_body_strips_legacy_not_filable_line(monkeypatch):
 
     assert "Rows included: 170." in body_text
     assert "not yet fil" not in body_text.lower()
-    assert "148" not in body_text
+    assert "Rows not yet filable: 148." not in body_text
     assert "not yet fil" not in body_html.lower()
 
 

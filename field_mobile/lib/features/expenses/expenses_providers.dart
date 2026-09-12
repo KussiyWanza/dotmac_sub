@@ -10,7 +10,7 @@ class ExpensesRepository {
 
   final Ref _ref;
 
-  Future<List<ExpenseRequest>> fetchRequests({String? status}) async {
+  Future<ExpenseRequestHistory> fetchRequests({String? status}) async {
     final local = await _offlineExpenseRequests(_ref);
     try {
       final response = await _ref
@@ -24,9 +24,18 @@ class ExpensesRepository {
               'limit': 100,
             },
           );
-      return [...local, ..._items(response.data).map(ExpenseRequest.fromJson)];
+      final serverItems = _items(
+        response.data,
+      ).map(ExpenseRequest.fromJson).toList();
+      return ExpenseRequestHistory(
+        items: [...local, ...serverItems],
+        totalCount:
+            local.length + _totalCount(response.data, serverItems.length),
+      );
     } on DioException {
-      if (local.isNotEmpty) return local;
+      if (local.isNotEmpty) {
+        return ExpenseRequestHistory(items: local, totalCount: local.length);
+      }
       rethrow;
     }
   }
@@ -41,32 +50,34 @@ class ExpensesRepository {
     );
   }
 
-  Future<ExpenseRequest> createRequest({
+  Future<ExpenseRequest> submitRequest({
     required String purpose,
     required List<ExpenseItemDraft> items,
-    String? clientRef,
+    required String clientRef,
+    required String workOrderId,
+    required ExpenseApprover selectedApprover,
+    required VerifiedExpenseDestination paymentDestination,
     String? expenseDate,
     String? currency,
     String? notes,
-    String? workOrderId,
     String? projectId,
     String? ticketId,
-    bool submit = true,
-    ExpenseApprover? selectedApprover,
-    VerifiedExpenseDestination? paymentDestination,
   }) async {
-    if (submit && (clientRef == null || clientRef.trim().isEmpty)) {
+    if (clientRef.trim().isEmpty) {
       throw ArgumentError(
         'clientRef is required when submitting an expense request',
+      );
+    }
+    if (workOrderId.trim().isEmpty) {
+      throw ArgumentError(
+        'workOrderId is required when submitting an expense request',
       );
     }
     final response = await _ref
         .read(apiClientProvider)
         .dio
         .post(
-          submit
-              ? '/api/v1/field/expense-requests/submit'
-              : '/api/v1/field/expense-requests',
+          '/api/v1/field/expense-requests/submit',
           data: buildExpenseRequestPayload(
             purpose: purpose,
             items: items,
@@ -116,7 +127,7 @@ class ExpensesRepository {
 
   Future<VerifiedExpenseDestination> verifyDestination({
     required String sourceClaimId,
-    required String mode,
+    required ExpensePaymentMode mode,
     String? bankCode,
     String? accountNumber,
     String? beneficiaryName,
@@ -128,13 +139,16 @@ class ExpensesRepository {
           '/api/v1/field/expense-requests/payment-destination/verify',
           data: {
             'source_claim_id': sourceClaimId,
-            'mode': mode,
-            if (mode == 'expense_override') 'bank_code': bankCode,
-            if (mode == 'expense_override') 'account_number': accountNumber,
-            if (mode == 'expense_override') 'beneficiary_name': beneficiaryName,
+            'mode': mode.apiValue,
+            if (mode == ExpensePaymentMode.expenseOverride)
+              'bank_code': bankCode,
+            if (mode == ExpensePaymentMode.expenseOverride)
+              'account_number': accountNumber,
+            if (mode == ExpensePaymentMode.expenseOverride)
+              'beneficiary_name': beneficiaryName,
           },
         );
-    return VerifiedExpenseDestination(
+    return VerifiedExpenseDestination.fromJson(
       (response.data as Map).cast<String, dynamic>(),
     );
   }
@@ -205,33 +219,30 @@ Future<List<ExpenseRequest>> _offlineExpenseRequests(Ref ref) async {
 Map<String, dynamic> buildExpenseRequestPayload({
   required String purpose,
   required List<ExpenseItemDraft> items,
-  String? clientRef,
+  required String clientRef,
+  required String workOrderId,
+  required ExpenseApprover selectedApprover,
+  required VerifiedExpenseDestination paymentDestination,
   String? expenseDate,
   String? currency,
   String? notes,
-  String? workOrderId,
   String? projectId,
   String? ticketId,
-  ExpenseApprover? selectedApprover,
-  VerifiedExpenseDestination? paymentDestination,
 }) => {
   'purpose': purpose.trim(),
-  if (clientRef != null && clientRef.trim().isNotEmpty)
-    'client_ref': clientRef.trim(),
+  'client_ref': clientRef.trim(),
   if (expenseDate != null && expenseDate.trim().isNotEmpty)
     'expense_date': expenseDate.trim(),
   if (currency != null && currency.trim().isNotEmpty)
     'currency': currency.trim(),
   if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
-  if (workOrderId != null && workOrderId.trim().isNotEmpty)
-    'work_order_id': workOrderId.trim(),
+  'work_order_id': workOrderId.trim(),
   if (projectId != null && projectId.trim().isNotEmpty)
     'project_id': projectId.trim(),
   if (ticketId != null && ticketId.trim().isNotEmpty)
     'ticket_id': ticketId.trim(),
-  if (selectedApprover != null) 'selected_approver': selectedApprover.toJson(),
-  if (paymentDestination != null)
-    'payment_destination': paymentDestination.data,
+  'selected_approver': selectedApprover.toJson(),
+  'payment_destination': paymentDestination.toJson(),
   'items': items.map((item) => item.toJson()).toList(),
 };
 
@@ -257,6 +268,17 @@ List<Map<String, dynamic>> _items(Object? data) {
   return const [];
 }
 
+int _totalCount(Object? data, int fallback) {
+  if (data is Map) {
+    final raw = data['count'] ?? data['total_count'] ?? data['total'];
+    if (raw is num) return raw.toInt();
+    if (raw is String) return int.tryParse(raw) ?? fallback;
+    final nested = data['data'];
+    if (nested is Map) return _totalCount(nested, fallback);
+  }
+  return fallback;
+}
+
 List<Map<String, dynamic>> _mapItems(Object? raw) {
   if (raw is! List) return const [];
   return [
@@ -269,7 +291,7 @@ final expensesRepositoryProvider = Provider<ExpensesRepository>(
   ExpensesRepository.new,
 );
 
-final expenseRequestsProvider = FutureProvider<List<ExpenseRequest>>(
+final expenseRequestsProvider = FutureProvider<ExpenseRequestHistory>(
   (ref) => ref.watch(expensesRepositoryProvider).fetchRequests(),
 );
 

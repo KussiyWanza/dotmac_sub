@@ -18,6 +18,8 @@ from app.models.field_erp_sync import (
     FieldErpSyncEvent,
     FieldErpSyncFlow,
     FieldErpSyncStatus,
+    SyncFlowOwner,
+    SyncFlowOwnership,
 )
 from app.models.field_expense import FieldExpenseRequest, FieldExpenseRequestItem
 from app.models.stored_file import StoredFile
@@ -156,6 +158,19 @@ def _command(user: SystemUser, work_order: WorkOrder, **overrides):
     return SubmitFieldExpenseRequest(**values)
 
 
+def _enable_expense_flow(db_session) -> None:
+    flow = FieldErpSyncFlow.expense_claim.value
+    ownership = (
+        db_session.query(SyncFlowOwnership)
+        .filter(SyncFlowOwnership.flow == flow)
+        .one_or_none()
+    )
+    if ownership is None:
+        db_session.add(SyncFlowOwnership(flow=flow, owner=SyncFlowOwner.sub.value))
+    else:
+        ownership.owner = SyncFlowOwner.sub.value
+
+
 @pytest.fixture(autouse=True)
 def _authoritative_expense_rules(monkeypatch):
     monkeypatch.setattr(
@@ -170,6 +185,11 @@ def _authoritative_expense_rules(monkeypatch):
             ),
         ),
     )
+
+
+@pytest.fixture(autouse=True)
+def _expense_delivery_owner(db_session):
+    _enable_expense_flow(db_session)
 
 
 def _valid_form(*, amount: str = "2500.00") -> expense_web.WorkOrderExpenseFormInput:

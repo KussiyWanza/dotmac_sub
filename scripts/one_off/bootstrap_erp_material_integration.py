@@ -12,10 +12,13 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from uuid import UUID
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 CONNECTOR_KEY = "dotmac.erp"
+SELFCARE_ORIGIN = "https://selfcare.dotmac.io"
+ERP_MATERIAL_WEBHOOK_PATH = "/api/v1/webhooks/erp-material"
 CAPABILITIES = (
     "erp.inventory.read.v1",
     "erp.outbox.deliver.v1",
@@ -44,6 +47,11 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--webhook-secret-ref", default="env://ERP_SUB_WEBHOOK_SECRET")
     parser.add_argument("--skip-initial-import", action="store_true")
     return parser.parse_args()
+
+
+def erp_material_callback_url(capability_binding_id: UUID) -> str:
+    """Return the mounted Sub callback for one material webhook binding."""
+    return f"{SELFCARE_ORIGIN}{ERP_MATERIAL_WEBHOOK_PATH}/{capability_binding_id}"
 
 
 def main() -> int:
@@ -155,10 +163,7 @@ def main() -> int:
             for row in bindings
             if row.capability_id == "erp.material_status.webhook.v1"
         )
-        print(
-            "ERP callback: "
-            f"https://selfcare.dotmac.io/webhooks/erp-material/{webhook_binding.id}"
-        )
+        print(f"ERP callback: {erp_material_callback_url(webhook_binding.id)}")
     if args.apply and not args.skip_initial_import:
         print(f"Initial import: {run_erp_material_catalog_sync()}")
     return 0

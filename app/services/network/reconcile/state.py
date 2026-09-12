@@ -143,13 +143,19 @@ class Tr181WanParameterPaths:
 
 @dataclass(frozen=True)
 class Tr069WifiParameterPaths:
-    """Resolved model-specific CWMP paths for the managed WiFi instance."""
+    """Resolved model-specific CWMP paths for the managed WiFi instance.
+
+    When ``additional_psk_paths`` is non-empty, ``psk_path`` and every
+    additional entry are fixed capability-pack targets and are not retargeted
+    to whichever readable WLAN instance the ACS reader selected.
+    """
 
     enabled: str
     ssid: str
     psk_path: str
     channel: str
     security_mode: str
+    additional_psk_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

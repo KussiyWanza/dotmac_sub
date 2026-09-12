@@ -24,6 +24,7 @@ from app.services.events.types import Event, EventType
 HANDLED_EVENT_TYPES = frozenset(
     {
         EventType.field_material_request_approved,
+        EventType.field_material_request_cancellation_requested,
         EventType.vendor_project_completed,
         EventType.vendor_purchase_invoice_approved,
     }
@@ -36,6 +37,10 @@ class MaterialsLifecycleProjectionHandler:
     def handle(self, db: Session, event: Event) -> None:
         if event.event_type == EventType.field_material_request_approved:
             self._request_erp_issue(db, event)
+        elif (
+            event.event_type == EventType.field_material_request_cancellation_requested
+        ):
+            self._request_erp_cancellation(db, event)
         elif event.event_type == EventType.vendor_project_completed:
             self._request_project_completion_invoice(db, event)
         elif event.event_type == EventType.vendor_purchase_invoice_approved:
@@ -67,6 +72,24 @@ class MaterialsLifecycleProjectionHandler:
 
         with _owner_session(db) as owner_db:
             material_requests.consume_material_request_approved(
+                owner_db,
+                material_request_id=str(material_request_id),
+                event_id=event.event_id,
+                context=self._context(event, str(material_request_id)),
+            )
+
+    def _request_erp_cancellation(self, db: Session, event: Event) -> None:
+        material_request_id = require_output_text(
+            event.payload,
+            "material_request_id",
+            consumer="operations.field_material_requests",
+            event_id=event.event_id,
+            event_type=event.event_type.value,
+        )
+        from app.services.field import material_requests
+
+        with _owner_session(db) as owner_db:
+            material_requests.consume_material_request_cancellation_requested(
                 owner_db,
                 material_request_id=str(material_request_id),
                 event_id=event.event_id,

@@ -65,7 +65,10 @@ BASELINE = Path("tests/architecture/session_construction_baseline.txt")
 #: +1 from tests/integration/test_prepaid_renewal_nightly_isolation.py: the
 #: teardown session that relinquishes the test-created global authority-cutover
 #: marker after independently committed nightly-owner transactions.
-TEST_FIXTURE_BASELINE_TOTAL = 125
+#: +2 from tests/test_eg8145v5_wifi_capability_migration.py: isolated in-memory
+#: migration rehearsals for repairing and seeding the model capability each own
+#: the disposable engine that Alembic Operations executes against.
+TEST_FIXTURE_BASELINE_TOTAL = 127
 
 
 def _baseline() -> dict[str, int]:

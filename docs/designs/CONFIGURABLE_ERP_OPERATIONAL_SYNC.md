@@ -39,12 +39,14 @@ the Finance expense form. ERP owns the resulting accounting claim and payment
 record; it does not become the owner of the source request, approval, project,
 or ticket lifecycle.
 
-Self-Care owns technician expense-request submission and manager approval. Only
-the committed manager approval stages the ERP expense-claim delivery intent;
-submission alone never sends financial data to ERP. The outbox exposes pending,
-sent, accepted, rejected, and dead-letter states independently from the local
-approval so the field app does not describe a saved approval as an ERP sync.
-This approval cutover does not bulk-backfill older approved test requests.
+Self-Care owns technician expense-request submission and the manager decision.
+Submission stages an `expense_submit_v3` intent that creates a hidden ERP draft,
+uploads receipts, and explicitly transitions the claim to `SUBMITTED`. Approval
+or rejection stages a separate ordered consequence only after submission is
+accepted, projecting `APPROVED` or `REJECTED` in ERP. The outbox exposes pending,
+sent, accepted, rejected, and dead-letter states independently from local state,
+and the technician UI presents the local request simply as `Submitted`. This
+cutover does not bulk-backfill historical requests.
 
 ## Verification
 

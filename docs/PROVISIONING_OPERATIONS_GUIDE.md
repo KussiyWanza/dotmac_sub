@@ -705,6 +705,12 @@ uses the same assigned-command gate.
 3. The device may use a different data model (TR-098 vs TR-181). Check `tr069_data_model` field on the ONT.
 4. Try **"Refresh Status"** first, then retry the operation
 
+For Huawei EG8145V5, the capability pack selects the TR-098 tree and writes the
+same admitted password to the primary 2.4 GHz and 5 GHz WLAN instances (1 and
+5) through `PreSharedKey.1.PreSharedKey`. A `9007 Invalid parameter value` on a
+`KeyPassphrase` leaf indicates an obsolete mapping; do not treat a drained ACS
+task as success unless the tracked operation also completed without a fault.
+
 ### Service-Port Creation Fails
 
 1. Check that the VLAN exists on the OLT (SSH: `display vlan all`)

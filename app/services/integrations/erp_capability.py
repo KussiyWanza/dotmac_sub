@@ -43,8 +43,11 @@ from app.services.integrations.backoffice_contracts import (
     ErpExpenseApprovalCommand,
     ErpExpenseClaimDraftCommand,
     ErpExpenseClaimDraftOutcome,
+    ErpExpenseClaimTransitionOutcome,
     ErpExpenseReceiptUploadCommand,
     ErpExpenseReceiptUploadOutcome,
+    ErpExpenseRejectionCommand,
+    ErpExpenseSubmissionCommand,
 )
 from app.services.integrations.runtime import OperationStatus, OperationTrigger
 from app.services.integrations.runtime_execution import (
@@ -228,13 +231,32 @@ class ErpCapabilityClient:
         )
         return ErpExpenseReceiptUploadOutcome.model_validate(response)
 
+    def submit_expense_claim(
+        self,
+        command: ErpExpenseSubmissionCommand,
+        *,
+        idempotency_key: str,
+    ) -> ErpExpenseClaimTransitionOutcome:
+        response = self._execute(
+            ERP_OUTBOX_CAPABILITY,
+            "submit_expense_claim",
+            {
+                "source_claim_id": str(command.source_claim_id),
+                "payload": {},
+                "idempotency_key": idempotency_key,
+            },
+            trigger=OperationTrigger.scheduled,
+            correlation_id=f"erp-expense-submit:{idempotency_key}",
+        )
+        return ErpExpenseClaimTransitionOutcome.model_validate(response)
+
     def approve_expense_claim(
         self,
         command: ErpExpenseApprovalCommand,
         *,
         idempotency_key: str,
-    ) -> dict[str, Any]:
-        return self._execute(
+    ) -> ErpExpenseClaimTransitionOutcome:
+        response = self._execute(
             ERP_OUTBOX_CAPABILITY,
             "approve_expense_claim",
             {
@@ -247,6 +269,28 @@ class ErpCapabilityClient:
             trigger=OperationTrigger.scheduled,
             correlation_id=f"erp-expense-approve:{idempotency_key}",
         )
+        return ErpExpenseClaimTransitionOutcome.model_validate(response)
+
+    def reject_expense_claim(
+        self,
+        command: ErpExpenseRejectionCommand,
+        *,
+        idempotency_key: str,
+    ) -> ErpExpenseClaimTransitionOutcome:
+        response = self._execute(
+            ERP_OUTBOX_CAPABILITY,
+            "reject_expense_claim",
+            {
+                "source_claim_id": str(command.source_claim_id),
+                "payload": command.model_dump(
+                    mode="json", exclude={"source_claim_id"}, exclude_none=True
+                ),
+                "idempotency_key": idempotency_key,
+            },
+            trigger=OperationTrigger.scheduled,
+            correlation_id=f"erp-expense-reject:{idempotency_key}",
+        )
+        return ErpExpenseClaimTransitionOutcome.model_validate(response)
 
     def list_inventory(self, **params) -> dict:
         return self._execute(

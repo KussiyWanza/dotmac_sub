@@ -41,6 +41,19 @@ const _testFormContext = ExpenseFormContext(
   ),
 );
 
+VerifiedExpenseDestination _testVerifiedDestination({
+  ExpensePaymentMode mode = ExpensePaymentMode.erpProfile,
+}) => VerifiedExpenseDestination(
+  destinationToken: 'enc:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+  mode: mode,
+  bankCode: '058',
+  bankName: 'Test Bank',
+  maskedAccountNumber: '******6789',
+  verifiedBeneficiaryName: 'Field Technician',
+  verifiedAt: DateTime.parse('2099-09-10T10:00:00Z'),
+  expiresAt: DateTime.parse('2099-09-10T10:30:00Z'),
+);
+
 JobList _testAssignedJobs() => JobList([
   JobSummary(
     id: 'wo-1',
@@ -109,7 +122,7 @@ void main() {
               'total_amount': '150.00',
             },
           ],
-          'count': 1,
+          'count': 12,
           'limit': 100,
           'offset': 0,
         },
@@ -119,9 +132,10 @@ void main() {
         .read(expensesRepositoryProvider)
         .fetchRequests();
 
-    expect(requests.single.number, 'EXP-0001');
-    expect(requests.single.status, 'submitted');
-    expect(requests.single.totalAmount, 150.0);
+    expect(requests.totalCount, 12);
+    expect(requests.items.single.number, 'EXP-0001');
+    expect(requests.items.single.status, 'submitted');
+    expect(requests.items.single.totalAmount, 150.0);
   });
 
   test('fetchRequests can filter by status', () async {
@@ -134,7 +148,8 @@ void main() {
         .read(expensesRepositoryProvider)
         .fetchRequests(status: 'submitted');
 
-    expect(requests, isEmpty);
+    expect(requests.items, isEmpty);
+    expect(requests.totalCount, 0);
   });
 
   test('fetchRequests accepts nested response envelopes', () async {
@@ -155,7 +170,7 @@ void main() {
         .read(expensesRepositoryProvider)
         .fetchRequests();
 
-    expect(requests.single.number, 'EXP-0002');
+    expect(requests.items.single.number, 'EXP-0002');
   });
 
   test('fetchRequests skips malformed rows instead of crashing', () async {
@@ -176,9 +191,9 @@ void main() {
         .read(expensesRepositoryProvider)
         .fetchRequests();
 
-    expect(requests, hasLength(1));
-    expect(requests.single.id, 'exp-3');
-    expect(requests.single.number, '3003');
+    expect(requests.items, hasLength(1));
+    expect(requests.items.single.id, 'exp-3');
+    expect(requests.items.single.number, '3003');
   });
 
   test('fetchRequest reads a single expense request', () async {
@@ -203,13 +218,18 @@ void main() {
     expect(request.erpClaimNumber, 'EC-77');
   });
 
-  test('createRequest posts payload with items and work order', () async {
+  test('submitRequest posts the complete live API payload', () async {
     adapter.on('POST', '/api/v1/field/expense-requests/submit', (options) {
       final data = (options.data as Map).cast<String, dynamic>();
       expect(data['purpose'], 'Site logistics');
       expect(data['work_order_id'], 'wo-1');
       expect(data['expense_date'], '2026-07-06');
-      expect(data['client_ref'], 'expense-client-ref-1');
+      expect(data['client_ref'], '00000000-0000-0000-0000-000000000011');
+      expect(
+        data['selected_approver'],
+        _testFormContext.approvers.single.toJson(),
+      );
+      expect(data['payment_destination'], _testVerifiedDestination().toJson());
       expect(data.containsKey('project_id'), isFalse);
       expect(data['items'], [
         {
@@ -243,11 +263,13 @@ void main() {
     });
     final request = await container
         .read(expensesRepositoryProvider)
-        .createRequest(
+        .submitRequest(
           purpose: 'Site logistics',
-          clientRef: 'expense-client-ref-1',
+          clientRef: '00000000-0000-0000-0000-000000000011',
           workOrderId: 'wo-1',
           expenseDate: '2026-07-06',
+          selectedApprover: _testFormContext.approvers.single,
+          paymentDestination: _testVerifiedDestination(),
           items: [
             const ExpenseItemDraft(
               categoryCode: 'TRANSPORT',
@@ -268,7 +290,10 @@ void main() {
   test('buildExpenseRequestPayload includes client ref and receipt urls', () {
     final payload = buildExpenseRequestPayload(
       purpose: 'Fuel',
-      clientRef: 'expense-client-ref-2',
+      clientRef: '00000000-0000-0000-0000-000000000012',
+      workOrderId: 'wo-2',
+      selectedApprover: _testFormContext.approvers.single,
+      paymentDestination: _testVerifiedDestination(),
       items: const [
         ExpenseItemDraft(
           categoryCode: 'FUEL',
@@ -279,7 +304,13 @@ void main() {
       ],
     );
 
-    expect(payload['client_ref'], 'expense-client-ref-2');
+    expect(payload['client_ref'], '00000000-0000-0000-0000-000000000012');
+    expect(payload['work_order_id'], 'wo-2');
+    expect(
+      payload['selected_approver'],
+      _testFormContext.approvers.single.toJson(),
+    );
+    expect(payload['payment_destination'], _testVerifiedDestination().toJson());
     expect(payload['items'], [
       {
         'category_code': 'FUEL',
@@ -333,6 +364,91 @@ void main() {
     expect(categories.first.maxAmountPerClaim, 50000.0);
     expect(categories.last.maxAmountPerClaim, isNull);
   });
+
+  test(
+    'fetchFormContext reads approvers, banks, and the ERP profile',
+    () async {
+      adapter.on('GET', '/api/v1/field/expense-requests/form-context', (_) {
+        return (
+          200,
+          {
+            'approvers': [
+              {
+                'erp_employee_id': '00000000-0000-0000-0000-000000000001',
+                'system_user_id': '00000000-0000-0000-0000-000000000002',
+                'display_name': 'Expense Approver',
+                'email': 'approver@example.com',
+              },
+            ],
+            'banks': [
+              {'bank_code': '058', 'bank_name': 'Test Bank'},
+            ],
+            'profile_destination': {
+              'available': true,
+              'bank_code': '058',
+              'bank_name': 'Test Bank',
+              'masked_account_number': '******6789',
+              'beneficiary_name': 'Field Technician',
+            },
+          },
+        );
+      });
+
+      final context = await container
+          .read(expensesRepositoryProvider)
+          .fetchFormContext();
+
+      expect(context.approvers.single.displayName, 'Expense Approver');
+      expect(context.banks.single.bankCode, '058');
+      expect(context.profileDestination.maskedAccountNumber, '******6789');
+    },
+  );
+
+  test(
+    'verifyDestination posts custom details and returns a typed token',
+    () async {
+      adapter.on(
+        'POST',
+        '/api/v1/field/expense-requests/payment-destination/verify',
+        (options) {
+          expect(options.data, {
+            'source_claim_id': '00000000-0000-0000-0000-000000000013',
+            'mode': 'expense_override',
+            'bank_code': '058',
+            'account_number': '0123456789',
+            'beneficiary_name': 'Field Technician',
+          });
+          return (
+            200,
+            {
+              'destination_token': 'enc:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+              'mode': 'expense_override',
+              'bank_code': '058',
+              'bank_name': 'Test Bank',
+              'masked_account_number': '******6789',
+              'verified_beneficiary_name': 'Field Technician',
+              'verified_at': '2099-09-10T10:00:00Z',
+              'expires_at': '2099-09-10T10:30:00Z',
+            },
+          );
+        },
+      );
+
+      final destination = await container
+          .read(expensesRepositoryProvider)
+          .verifyDestination(
+            sourceClaimId: '00000000-0000-0000-0000-000000000013',
+            mode: ExpensePaymentMode.expenseOverride,
+            bankCode: '058',
+            accountNumber: '0123456789',
+            beneficiaryName: 'Field Technician',
+          );
+
+      expect(destination.mode, ExpensePaymentMode.expenseOverride);
+      expect(destination.destinationToken, startsWith('enc:'));
+      expect(destination.maskedAccountNumber, '******6789');
+    },
+  );
 
   test('fetchVendors reads vendor pick list labels', () async {
     adapter.on('GET', '/api/v1/field/expense-requests/vendors', (options) {
@@ -445,10 +561,12 @@ void main() {
         );
     final request = await container
         .read(expensesRepositoryProvider)
-        .createRequest(
+        .submitRequest(
           purpose: 'Generator fuel',
-          clientRef: 'expense-client-ref-9',
+          clientRef: '00000000-0000-0000-0000-000000000019',
           workOrderId: 'wo-9',
+          selectedApprover: _testFormContext.approvers.single,
+          paymentDestination: _testVerifiedDestination(),
           items: [
             ExpenseItemDraft(
               categoryCode: 'FUEL',
@@ -484,6 +602,7 @@ void main() {
       'number': 'EXP-0001',
       'status': 'rejected',
       'purpose': 'Taxi to site',
+      'requested_by_name': 'Ada Technician',
       'expense_date': '2026-07-01',
       'currency': 'NGN',
       'total_amount': '80.00',
@@ -512,8 +631,9 @@ void main() {
     });
 
     expect(request.displayNumber, 'EXP-0001');
-    expect(request.statusLabel, 'rejected');
+    expect(request.statusLabel, 'Rejected');
     expect(request.totalAmount, 80.0);
+    expect(request.requestedByName, 'Ada Technician');
     expect(request.rejectionReason, 'Missing receipt');
     expect(request.erpClaimNumber, 'EC-12');
     expect(request.erpSyncStatus, 'failed');
@@ -549,25 +669,28 @@ void main() {
       ProviderScope(
         overrides: [
           expenseRequestsProvider.overrideWith(
-            (ref) async => [
-              ExpenseRequest.fromJson({
-                'id': 'exp-1',
-                'number': 'EXP-0001',
-                'status': 'submitted',
-                'purpose': 'Fuel for generator',
-                'currency': 'NGN',
-                'total_amount': '150.00',
-              }),
-              ExpenseRequest.fromJson({
-                'id': 'exp-2',
-                'number': 'EXP-0002',
-                'status': 'rejected',
-                'purpose': 'Taxi to site',
-                'currency': 'NGN',
-                'total_amount': '80.00',
-                'rejection_reason': 'Missing receipt',
-              }),
-            ],
+            (ref) async => ExpenseRequestHistory(
+              totalCount: 2,
+              items: [
+                ExpenseRequest.fromJson({
+                  'id': 'exp-1',
+                  'number': 'EXP-0001',
+                  'status': 'submitted',
+                  'purpose': 'Fuel for generator',
+                  'currency': 'NGN',
+                  'total_amount': '150.00',
+                }),
+                ExpenseRequest.fromJson({
+                  'id': 'exp-2',
+                  'number': 'EXP-0002',
+                  'status': 'rejected',
+                  'purpose': 'Taxi to site',
+                  'currency': 'NGN',
+                  'total_amount': '80.00',
+                  'rejection_reason': 'Missing receipt',
+                }),
+              ],
+            ),
           ),
         ],
         child: MaterialApp(
@@ -583,12 +706,12 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('Expense requests'), findsOneWidget);
+    expect(find.text('My expense requests (2)'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, 'Request'), findsNothing);
     expect(find.text('Fuel for generator'), findsOneWidget);
     expect(find.text('Taxi to site'), findsOneWidget);
-    expect(find.text('submitted'), findsOneWidget);
-    expect(find.text('rejected'), findsOneWidget);
+    expect(find.text('Submitted'), findsOneWidget);
+    expect(find.text('Rejected'), findsOneWidget);
     expect(find.text('NGN 150.00'), findsOneWidget);
     expect(find.text('NGN 80.00'), findsOneWidget);
   });
@@ -597,7 +720,10 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
-          expenseRequestsProvider.overrideWith((ref) async => const []),
+          expenseRequestsProvider.overrideWith(
+            (ref) async =>
+                const ExpenseRequestHistory(items: [], totalCount: 0),
+          ),
         ],
         child: const MaterialApp(home: ExpensesScreen()),
       ),
@@ -615,14 +741,17 @@ void main() {
       ProviderScope(
         overrides: [
           expenseRequestsProvider.overrideWith(
-            (ref) async => [
-              ExpenseRequest.fromJson({
-                'id': clientRef,
-                'number': 'Queued expense',
-                'status': 'queued',
-                'purpose': 'Fuel for site visit',
-              }),
-            ],
+            (ref) async => ExpenseRequestHistory(
+              totalCount: 1,
+              items: [
+                ExpenseRequest.fromJson({
+                  'id': clientRef,
+                  'number': 'Queued expense',
+                  'status': 'queued',
+                  'purpose': 'Fuel for site visit',
+                }),
+              ],
+            ),
           ),
         ],
         child: const MaterialApp(home: ExpensesScreen()),
@@ -632,7 +761,7 @@ void main() {
 
     expect(find.text('Fuel for site visit'), findsOneWidget);
     expect(find.text('Queued expense'), findsOneWidget);
-    expect(find.text('queued'), findsOneWidget);
+    expect(find.text('Queued'), findsOneWidget);
     expect(find.text(clientRef), findsNothing);
     expect(find.text('12345678'), findsNothing);
   });
@@ -648,19 +777,26 @@ void main() {
     adapter.on(
       'POST',
       '/api/v1/field/expense-requests/payment-destination/verify',
-      (_) => (
-        200,
-        {
-          'destination_token': 'enc:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-          'mode': 'erp_profile',
-          'bank_code': '058',
-          'bank_name': 'Test Bank',
-          'masked_account_number': '******6789',
-          'verified_beneficiary_name': 'Field Technician',
-          'verified_at': '2099-09-10T10:00:00Z',
-          'expires_at': '2099-09-10T10:30:00Z',
-        },
-      ),
+      (options) {
+        final data = (options.data as Map).cast<String, dynamic>();
+        expect(data['source_claim_id'], isA<String>());
+        expect((data['source_claim_id'] as String), isNotEmpty);
+        expect(data['mode'], 'erp_profile');
+        expect(data.containsKey('account_number'), isFalse);
+        return (
+          200,
+          {
+            'destination_token': 'enc:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+            'mode': 'erp_profile',
+            'bank_code': '058',
+            'bank_name': 'Test Bank',
+            'masked_account_number': '******6789',
+            'verified_beneficiary_name': 'Field Technician',
+            'verified_at': '2099-09-10T10:00:00Z',
+            'expires_at': '2099-09-10T10:30:00Z',
+          },
+        );
+      },
     );
     adapter.on('POST', '/api/v1/field/expense-requests/submit', (options) {
       posted = (options.data as Map).cast<String, dynamic>();
@@ -734,6 +870,26 @@ void main() {
     expect(find.text('Submit request'), findsOneWidget);
     expect(find.text('Save draft'), findsOneWidget);
     expect(find.text('Work order ID'), findsNothing);
+    expect(
+      find.byKey(const Key('expense-approver-payment-card')),
+      findsOneWidget,
+    );
+    expect(find.text('Approver & payment'), findsOneWidget);
+    expect(find.text('Use ERP payment details'), findsOneWidget);
+    expect(find.text('Input custom payment details'), findsOneWidget);
+    expect(find.byKey(const Key('expense-bank')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('expense-payment-custom')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('expense-bank')), findsOneWidget);
+    expect(find.byKey(const Key('expense-account-number')), findsOneWidget);
+    expect(find.byKey(const Key('expense-beneficiary-name')), findsOneWidget);
+    expect(find.text('Account name'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('expense-payment-erp')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('expense-bank')), findsNothing);
+
     // Pick a category and describe the line, but leave the amount empty.
     await tester.tap(find.byKey(const Key('expense-category')));
     await tester.pumpAndSettle();
@@ -806,6 +962,11 @@ void main() {
     expect(posted, isNotNull);
     expect(posted!['purpose'], 'Site logistics');
     expect(posted!['work_order_id'], 'wo-1');
+    expect(
+      (posted!['selected_approver'] as Map)['erp_employee_id'],
+      '00000000-0000-0000-0000-000000000001',
+    );
+    expect((posted!['payment_destination'] as Map)['mode'], 'erp_profile');
     expect(posted!['items'], [
       {
         'category_code': 'TRANSPORT',
@@ -1210,6 +1371,8 @@ void main() {
     );
     await tester.enterText(find.byKey(const Key('expense-amount')), '5000');
     await tester.ensureVisible(find.byKey(const Key('add-expense-line')));
+    await tester.drag(find.byType(ListView), const Offset(0, -180));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('add-expense-line')));
     await tester.pump();
 
@@ -1220,6 +1383,8 @@ void main() {
       'https://receipts.test/fuel.jpg',
     );
     await tester.ensureVisible(find.byKey(const Key('add-expense-line')));
+    await tester.drag(find.byType(ListView), const Offset(0, -180));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('add-expense-line')));
     await tester.pump();
 

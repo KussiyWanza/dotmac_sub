@@ -295,9 +295,45 @@ class _ExpensesSwitch extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     if (isManagerProfile(ref.watch(managerProfileProvider))) {
-      return const ManagerExpenseReviewScreen();
+      return const _ManagerExpensesHub();
     }
     return const ExpensesScreen();
+  }
+}
+
+class _ManagerExpensesHub extends StatelessWidget {
+  const _ManagerExpensesHub();
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      initialIndex: 1,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Expenses'),
+          actions: [
+            IconButton(
+              tooltip: 'New expense request',
+              onPressed: () => context.push('/expenses/new'),
+              icon: const Icon(Icons.add),
+            ),
+          ],
+          bottom: const TabBar(
+            tabs: [
+              Tab(text: 'My requests'),
+              Tab(text: 'Approvals'),
+            ],
+          ),
+        ),
+        body: const TabBarView(
+          children: [
+            ExpensesScreen(embedded: true),
+            ManagerExpenseReviewScreen(embedded: true),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -323,6 +359,17 @@ const _staffNav = [
   _NavItem(5, Icons.person_outline, 'Profile'),
 ];
 
+// Until staff-vs-manager capability is authoritative, omit destinations whose
+// labels or content depend on the resolved profile. Confirmed staff receive
+// their full requester-owned destination set.
+const _provisionalStaffNav = [
+  _NavItem(0, Icons.assignment_outlined, 'Today'),
+  _NavItem(1, Icons.map_outlined, 'Map'),
+  _NavItem(2, Icons.calendar_today_outlined, 'Schedule'),
+  _NavItem(4, Icons.receipt_long_outlined, 'Expenses'),
+  _NavItem(5, Icons.person_outline, 'Profile'),
+];
+
 // Vendors process sub-native work orders through the same execution tabs. The
 // Map branch remains vendor-scoped via _MapSwitch.
 const _vendorNav = [
@@ -336,12 +383,13 @@ const _vendorNav = [
 
 // Managers keep the same branch set but re-skinned: the Today branch hosts
 // the dashboard, Map becomes the team map, Schedule becomes dispatch, and
-// Expenses becomes the approvals queue.
+// Expenses hosts both requester history and the manager approvals queue.
 const _managerNav = [
   _NavItem(0, Icons.dashboard_outlined, 'Dashboard'),
   _NavItem(1, Icons.map_outlined, 'Team'),
   _NavItem(2, Icons.assignment_ind_outlined, 'Dispatch'),
-  _NavItem(4, Icons.fact_check_outlined, 'Approvals'),
+  _NavItem(3, Icons.inventory_2_outlined, 'Materials'),
+  _NavItem(4, Icons.receipt_long_outlined, 'Expenses'),
   _NavItem(5, Icons.person_outline, 'Profile'),
 ];
 
@@ -354,7 +402,8 @@ class _AppShell extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final auth = ref.watch(authControllerProvider);
     final isVendor = auth is Authenticated && auth.mode == LoginMode.vendor;
-    final managerProfile = ref.watch(managerProfileProvider).valueOrNull;
+    final managerProfileState = ref.watch(managerProfileProvider);
+    final managerProfile = managerProfileState.valueOrNull;
     final isManager = !isVendor && managerProfile?.isManager == true;
     final items = isVendor
         ? _vendorNav
@@ -363,7 +412,9 @@ class _AppShell extends ConsumerWidget {
             for (final item in _managerNav)
               if (item.branchIndex != 1 || managerProfile!.canViewTeamMap) item,
           ]
-        : _staffNav;
+        : managerProfileState.hasValue
+        ? _staffNav
+        : _provisionalStaffNav;
     // Map the active branch to its position in the visible set (0 if the
     // current branch is hidden for this mode).
     final selected = items.indexWhere(

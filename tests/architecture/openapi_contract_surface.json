@@ -15073,6 +15073,18 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/field/material-requests/{material_request_id}/cancel": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:material_request_id!"
+   ],
+   "request": "ae81e61e5427",
+   "responses": {
+    "200": "2ce612d842fb",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/field/material-requests/{material_request_id}/submit": {
    "params": [
     "header:authorization",
@@ -19509,6 +19521,7 @@
   "EtaUpdateCreate": "3b90f58a7082",
   "EtaUpdateRead": "daaf62739ccf",
   "ExecutionMethod": "44ddf7e0d39d",
+  "ExpenseRequestStatus": "afa9c66cd8ca",
   "ExternalEntityType": "a15467b5560e",
   "ExternalReferenceCreate": "e15ea6e3a712",
   "ExternalReferenceRead": "8b43fcf317fd",
@@ -19585,7 +19598,7 @@
   "FieldExpenseRequestCreate": "4a21a0cb3712",
   "FieldExpenseRequestItemCreate": "3b23aa8d5a6d",
   "FieldExpenseRequestItemRead": "515094e4452b",
-  "FieldExpenseRequestRead": "23f318a271fd",
+  "FieldExpenseRequestRead": "f6681091e1da",
   "FieldExpenseRequestSubmit": "60c02371fc62",
   "FieldExpenseVendorRead": "fd8c5d96e664",
   "FieldFiberCustomerTraceRead": "77b4750e8e06",
@@ -19635,10 +19648,11 @@
   "FieldMaterialConsumeItem": "911c9370f480",
   "FieldMaterialConsumeRequest": "83119748b137",
   "FieldMaterialRead": "b3ca3b51848b",
+  "FieldMaterialRequestCancel": "00daeee69caa",
   "FieldMaterialRequestCreate": "beb591240e6a",
   "FieldMaterialRequestItemCreate": "04759e76cb22",
   "FieldMaterialRequestItemRead": "1e218709f934",
-  "FieldMaterialRequestRead": "e962f5239169",
+  "FieldMaterialRequestRead": "881af457f920",
   "FieldMaterialRequestSubmit": "0bac3c573aa7",
   "FieldMeResponse": "92ccd05b3f23",
   "FieldMovementRead": "e6afbc3e60fc",

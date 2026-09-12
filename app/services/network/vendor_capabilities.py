@@ -362,6 +362,24 @@ class Tr069ParameterMaps:
         )
         return db.scalar(stmt)
 
+    @staticmethod
+    def resolve_paths_by_prefix(
+        db: Session,
+        *,
+        capability_id: str,
+        canonical_prefix: str,
+    ) -> tuple[str, ...]:
+        """Resolve an ordered family of explicit device-specific paths."""
+        stmt = (
+            select(Tr069ParameterMap.tr069_path)
+            .where(
+                Tr069ParameterMap.capability_id == coerce_uuid(capability_id),
+                Tr069ParameterMap.canonical_name.startswith(canonical_prefix),
+            )
+            .order_by(Tr069ParameterMap.canonical_name)
+        )
+        return tuple(db.scalars(stmt).all())
+
 
 vendor_capabilities = VendorCapabilities()
 tr069_parameter_maps = Tr069ParameterMaps()

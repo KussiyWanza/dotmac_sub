@@ -12,6 +12,7 @@ from decimal import Decimal
 from fastapi import HTTPException
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.billing import (
     CollectionAccount,
@@ -41,6 +42,28 @@ from app.services.common import coerce_uuid, get_by_id, round_money, to_decimal
 from app.services.locking import lock_for_update
 
 logger = logging.getLogger(__name__)
+
+
+def payment_crosses_reviewed_position_boundary(
+    after: datetime,
+) -> ColumnElement[bool]:
+    """Match payment evidence that is not already absorbed by an opening."""
+
+    return or_(
+        Payment.created_at > after,
+        func.coalesce(Payment.paid_at, Payment.created_at) > after,
+    )
+
+
+def _ledger_payment_crosses_reviewed_position_boundary(
+    after: datetime,
+) -> ColumnElement[bool]:
+    """Keep payment-linked ledger projections on the payment's boundary side."""
+
+    return or_(
+        LedgerEntry.payment_id.is_(None),
+        LedgerEntry.payment.has(payment_crosses_reviewed_position_boundary(after)),
+    )
 
 
 @dataclass(frozen=True)
@@ -177,7 +200,7 @@ def get_account_credit_balance(
                 func.coalesce(LedgerEntry.effective_date, LedgerEntry.created_at)
                 > after,
             )
-        )
+        ).filter(_ledger_payment_crosses_reviewed_position_boundary(after))
     credit_total = credit_query.scalar() or Decimal("0.00")
 
     # Get debits against unallocated credits (refunds)
@@ -217,7 +240,7 @@ def get_account_credit_balance(
                 func.coalesce(LedgerEntry.effective_date, LedgerEntry.created_at)
                 > after,
             )
-        )
+        ).filter(_ledger_payment_crosses_reviewed_position_boundary(after))
     debit_total = debit_query.scalar() or Decimal("0.00")
 
     return round_money(to_decimal(credit_total) - to_decimal(debit_total))

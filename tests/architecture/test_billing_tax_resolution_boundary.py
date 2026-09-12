@@ -46,15 +46,19 @@ def test_unapproved_historical_tax_credit_surface_is_absent() -> None:
         service_relationship("financial.billing_tax_reconciliation")
 
 
-def test_recurring_and_prepaid_paths_delegate_tax_selection() -> None:
+def test_invoice_generation_paths_delegate_tax_selection() -> None:
     recurring = _source("app/services/billing_automation.py")
     prepaid = _source("app/services/prepaid_service_renewals.py")
+    first_invoice = _source("app/services/web_catalog_subscriptions.py")
 
     assert "resolve_subscription_tax(" in recurring
     assert "resolve_subscription_taxes(" in prepaid
+    assert "resolve_subscription_tax(db, created)" in first_invoice
     assert "CustomerTaxPolicy" not in recurring
     assert "CustomerTaxPolicy" not in prepaid
+    assert "CustomerTaxPolicy" not in first_invoice
     assert "offer.vat_percent" not in prepaid
+    assert "offer.vat_percent" not in first_invoice
     assert "address_tax_ids" not in prepaid
 
 

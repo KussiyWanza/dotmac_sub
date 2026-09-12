@@ -403,6 +403,11 @@ class FieldMaterialRequestSubmit(FieldMaterialRequestCreate):
     client_ref: UUID
 
 
+class FieldMaterialRequestCancel(BaseModel):
+    client_ref: UUID
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class FieldMaterialRequestItemRead(BaseModel):
     id: UUID
     item_id: UUID
@@ -419,20 +424,40 @@ class FieldMaterialRequestRead(BaseModel):
     # Material needs can originate from a ticket, project, project task, or
     # work order. Only the last of those has a work-order public identifier.
     work_order_id: str | None = None
+    project_id: UUID | None = None
+    project_task_id: UUID | None = None
+    ticket_id: UUID | None = None
+    context_label: str
     crm_material_request_id: str | None = None
     requested_by_person_id: UUID
     requested_by_system_user_id: UUID | None = None
-    status: str
+    status: Literal[
+        "draft",
+        "submitted",
+        "approved",
+        "rejected",
+        "issued",
+        "fulfilled",
+        "canceled",
+        "accepted_by_erp",
+        "pending_stock",
+        "cancellation_pending",
+        "sync_failed",
+    ]
     priority: str
     notes: str | None = None
     source_warehouse_code: str | None = None
+    fulfillment_channel: Literal["manual", "erp"]
     support_system: str | None = None
     support_reference: str | None = None
     support_status: str | None = None
+    can_cancel: bool = False
     submitted_at: datetime | None = None
     approved_at: datetime | None = None
     rejected_at: datetime | None = None
+    issued_at: datetime | None = None
     fulfilled_at: datetime | None = None
+    rejection_reason: str | None = None
     created_at: datetime
     updated_at: datetime
     items: list[FieldMaterialRequestItemRead] = Field(default_factory=list)
@@ -565,6 +590,7 @@ class FieldExpenseRequestRead(BaseModel):
     crm_expense_request_id: str | None = None
     requested_by_person_id: UUID
     requested_by_system_user_id: UUID | None = None
+    requested_by_name: str | None = None
     selected_approver_erp_id: UUID | None = None
     selected_approver_name: str | None = None
     selected_approver_email: str | None = None

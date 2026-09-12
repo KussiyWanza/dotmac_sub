@@ -1209,8 +1209,9 @@ SERVICES: tuple[SOTService, ...] = (
             "service_intent.catalog_policy",
         ),
         notes=(
-            "This read-only containment owner gives recurring and prepaid billing "
-            "one deterministic legacy VAT precedence while dotmac-tax adoption is "
+            "This read-only containment owner gives recurring, prepaid, and "
+            "explicit subscription first-invoice billing one deterministic legacy "
+            "VAT precedence while dotmac-tax adoption is "
             "in progress. Customer exemption wins before address, account, catalog, "
             "or configured defaults. Rate identity, percentage, and application "
             "come only from owned records and settings; no VAT code or percentage "
@@ -1328,17 +1329,19 @@ SERVICES: tuple[SOTService, ...] = (
             migration=MigrationContract(
                 state=AuthorityMigrationState.COMPLETE,
                 old_owner=(
-                    "duplicated VAT precedence in billing_automation and "
-                    "prepaid_service_renewals"
+                    "duplicated or omitted VAT precedence in billing_automation, "
+                    "prepaid_service_renewals, and the explicit subscription "
+                    "first-invoice adapter"
                 ),
                 new_owner="financial.billing_tax_resolution",
                 verification=(
                     "customer-exemption precedence, bounded query, recurring, "
-                    "prepaid, and architecture boundary tests"
+                    "prepaid, explicit first-invoice, and architecture boundary tests"
                 ),
                 cutover_gate=(
-                    "Both recurring invoice and prepaid renewal paths consume the "
-                    "typed resolver and no longer derive VAT independently."
+                    "Recurring invoice, prepaid renewal, and explicit subscription "
+                    "first-invoice paths consume the typed resolver and no longer "
+                    "derive or omit VAT independently."
                 ),
                 fallback_retirement=(
                     "Caller-local address, account, catalog, and default VAT "
@@ -1355,6 +1358,7 @@ SERVICES: tuple[SOTService, ...] = (
                 "tests/test_billing_tax_resolution.py",
                 "tests/test_billing_automation_services.py",
                 "tests/test_prepaid_threshold_resolver.py",
+                "tests/test_web_catalog_subscriptions.py",
                 "tests/architecture/test_billing_tax_resolution_boundary.py",
             ),
         ),

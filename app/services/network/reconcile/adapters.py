@@ -414,7 +414,18 @@ def _resolve_wifi_paths(
         }
     except Tr069PathError:
         return None
-    return Tr069WifiParameterPaths(**resolved)
+    additional_psk_paths = tr069_path_resolver.resolve_vendor_paths_by_prefix(
+        root,
+        "wifi.psk.additional.",
+        db=db,
+        vendor=vendor,
+        model=model,
+        firmware=firmware,
+    )
+    return Tr069WifiParameterPaths(
+        **resolved,
+        additional_psk_paths=additional_psk_paths,
+    )
 
 
 def _resolve_remote_access_paths(

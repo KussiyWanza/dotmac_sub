@@ -201,6 +201,17 @@ renewal invoice:
 - multiple drafts, mixed lines, partial activity, or ambiguous coverage:
   require manual review.
 
+One narrow partial-activity shape is eligible only for fingerprint-bound
+operator confirmation. A sole active allocation from an imported Splynx
+payment may be preserved when it predates the reviewed funding boundary, has
+no native settlement or allocation-ledger links, and is matched by the exact
+legacy invoice credit and account-level cutover debit. The remaining invoice
+balance must be fully covered by post-boundary native payment funding plus the
+unused reviewed opening. A later paid invoice entitlement must prove that the
+draft is historical. Confirmation preserves the original service period and
+never moves the newer billing anchor backwards. Automatic funding events only
+raise the existing reconciliation exception; they never apply this repair.
+
 When a current funding-change transaction finds the exact duplicate case, the
 same owner stages the void first and reports it separately from a funded draft.
 The caller may then spend the current funding on the now-due invoice-backed
@@ -213,12 +224,27 @@ funded-coverage explanation instead of a generic request conflict. A
 non-actionable overlap displays the classifier reason and requires Finance
 review; neither the route nor template reclassifies evidence.
 
-When an active reviewed opening baseline exists, account-credit classification
-uses only native payment and ledger facts crossing its timestamp. Pre-boundary
-rows are already absorbed into the signed opening amount: they are neither
-reused as Payments nor quarantined again as current unbacked credit. Without an
-active baseline, the generic all-history payment-backed classification remains
-unchanged.
+Account-credit classification uses the active reviewed funding boundary: the
+customer-subledger opening timestamp after its authority cutover, otherwise the
+reconstruction baseline timestamp. Pre-boundary rows are already absorbed into
+the signed opening amount: they are neither reused as Payments nor quarantined
+again as current unbacked credit. Without a reviewed opening source, the generic
+all-history payment-backed classification remains unchanged.
+
+When a historical prepaid draft is finally settled after that boundary, its
+customer-position consumption debit likewise excludes exact active settlement
+applications recorded through the opening timestamp. The opening already
+contains their effect; only the remainder settled after the boundary is a new
+native debit. Scalar event reads and bounded cohort aggregation apply the same
+rule.
+
+A payment-linked structural ledger projection stays on the same side of that
+boundary as its Payment. A reconciliation or allocation recorded after the
+boundary cannot make the consumption of a pre-boundary Payment reduce newer
+payment-backed credit, because the older Payment and its consumption were both
+already absorbed by the reviewed opening. A Payment created after the boundary
+still crosses it even when its business timestamp is backdated, so late native
+money is never hidden.
 
 No path rounds a shortfall, invents a payment, represents opening funding as a
 Payment, marks an underfunded invoice paid, double-spends an opening baseline,

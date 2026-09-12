@@ -653,7 +653,11 @@ SERVICES: tuple[SOTService, ...] = (
                     name="effective ONT configuration pack",
                     owner="network.ont_provisioning_execution",
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                    source="effective config-pack resolution for the locked ONT and OLT",
+                    source=(
+                        "effective config-pack resolution for the locked ONT and OLT, "
+                        "including model-specific TR-069 data-model and WiFi password "
+                        "target paths"
+                    ),
                 ),
                 AuthorityInput(
                     name="declared ONT WAN service intent",
@@ -883,6 +887,9 @@ SERVICES: tuple[SOTService, ...] = (
             test_refs=(
                 "tests/test_ont_service_configuration.py",
                 "tests/test_cpe_wifi_ownership_cutover.py",
+                "tests/test_eg8145v5_wifi_capability_migration.py",
+                "tests/test_reconcile_adapters.py",
+                "tests/test_reconcile_applier.py",
                 "tests/test_return_to_inventory.py",
                 "tests/architecture/test_ont_service_configuration_boundary.py",
                 "tests/integration/test_cpe_wifi_ownership_postgres.py",

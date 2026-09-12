@@ -216,6 +216,9 @@ class EventType(enum.Enum):
     # each owning transition; the materials lifecycle projection handler
     # applies cross-owner consequences with durable receipts.
     field_material_request_approved = "field_material_request.approved"
+    field_material_request_cancellation_requested = (
+        "field_material_request.cancellation_requested"
+    )
     field_material_request_fulfilled = "field_material_request.fulfilled"
     field_material_consumption_recorded = "field_material.consumption_recorded"
     vendor_purchase_invoice_approved = "vendor_purchase_invoice.approved"

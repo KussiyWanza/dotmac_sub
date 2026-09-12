@@ -158,6 +158,12 @@ A detail page establishes the decision context before exposing exhaustive data.
   detail pages project requests from their linked native work orders and scope
   the create action to an actively assigned work order; they do not maintain
   duplicate material-request relationships.
+- The field Materials destination is requester-owned history. It remains
+  available when the requester also has manager capabilities, shows the
+  authoritative total before pagination, and exposes every owner-observed
+  lifecycle state and rejection reason. List and detail refresh from the API;
+  neither technician-profile lifecycle nor work-order reassignment may hide an
+  exactly owned historical request.
 
 ### Editor Or Form
 
@@ -680,6 +686,34 @@ implementation.
 - Responsive behavior: line items are stacked cards at every width, controls
   retain labels and text errors, totals name their currency, and add/remove and
   submit actions remain accessible without relying on colour.
+
+## Field Expense Request History Contract
+
+- Audience and task: field technicians review every expense claim they made and
+  its current approval, ERP-delivery, and payment state. Manager-technicians
+  also work the separate approval queue without losing personal history.
+- Authority: `operations.expense_requests` owns requester identity, filtered
+  total, claim state, and detail projection. The mobile client renders those
+  facts and does not infer ownership from the current technician profile.
+- First viewport: `My expense requests` shows the authoritative total before
+  pagination, newest requests first, purpose, amount and currency, status, and
+  relevant time. Detail retains rejection and delivery explanations.
+- Identity and authorization: an exact SystemUser, canonical Person Party, or
+  historically linked technician profile proves ownership. Profile inactivity,
+  replacement, work-order completion, or reassignment cannot hide history;
+  another requester's claim remains unavailable. New submission continues to
+  require the owner-resolved active technician and assigned work order.
+- States: loading, empty, read failure, locally queued drafts, submitted,
+  approved, rejected, canceled, paid, and ERP/payment delivery problems remain
+  distinct. Manager mode defaults to Approvals and provides a separate `My
+  requests` tab sourced from the same requester query.
+- Manager approval list: every expense card labels `Raised by` from the
+  owner-supplied staff display identity. Missing historical identity is rendered
+  as unavailable and is never inferred from current assignment. The manager
+  bottom navigation omits the Materials destination. While manager capability
+  is unresolved or unavailable, navigation also omits Materials, and a manager
+  restored onto that branch receives manager content rather than the material
+  list.
 
 ## Field Work-Order Note Contract
 

@@ -129,6 +129,23 @@ def _preview_payload(preview) -> dict[str, object]:
             if preview.opening_funding_baseline_id
             else None
         ),
+        "opening_funding_opening_position_id": (
+            str(preview.opening_funding_opening_position_id)
+            if preview.opening_funding_opening_position_id
+            else None
+        ),
+        "existing_payment_allocation_ids": [
+            str(value) for value in preview.existing_payment_allocation_ids
+        ],
+        "existing_payment_allocated_amount": str(
+            preview.existing_payment_allocated_amount
+        ),
+        "historical_ledger_entry_ids": [
+            str(value) for value in preview.historical_ledger_entry_ids
+        ],
+        "successor_entitlement_ids": [
+            str(value) for value in preview.successor_entitlement_ids
+        ],
         "unbacked_credit": str(preview.unbacked_credit),
         "shortfall": str(preview.shortfall),
         "subscription_ids": [str(value) for value in preview.subscription_ids],

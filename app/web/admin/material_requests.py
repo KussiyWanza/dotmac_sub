@@ -335,7 +335,7 @@ def _review(
 ):
     try:
         db_session_adapter.release_read_transaction(db)
-        material_service.cancel_material_request(
+        outcome = material_service.cancel_material_request(
             db,
             material_service.ReviewMaterialRequest(
                 context=_command_context(
@@ -356,7 +356,12 @@ def _review(
             error=exc.message,
             status_code=_error_status(exc),
         )
-    return _review_redirect(request_id, notice="Request canceled")
+    notice = (
+        "Cancellation sent to ERP"
+        if outcome.status is material_service.MaterialRequestStatus.CANCELLATION_PENDING
+        else "Request canceled"
+    )
+    return _review_redirect(request_id, notice=notice)
 
 
 @router.post("/{request_id}/cancel", response_class=HTMLResponse)

@@ -26,6 +26,7 @@ must move to Sub at cutover before a single claim reaches ERP.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID
@@ -57,6 +58,9 @@ class ExpenseErpAction(StrEnum):
     APPROVE = "approve"
     REJECT = "reject"
     RELEASE_APPROVED = "release_approved_v2"
+    SUBMIT_V3 = "expense_submit_v3"
+    APPROVE_V3 = "expense_approve_v3"
+    REJECT_V3 = "expense_reject_v3"
     INITIATE_PAYMENT = "initiate_payment"
 
 
@@ -74,6 +78,44 @@ _IN_FLIGHT_STATUSES = ("submitted", "approved")
 
 def expense_release_idempotency_key(request: FieldExpenseRequest) -> str:
     return f"exp-{request.id}-approved-release-v2"
+
+
+def expense_submission_idempotency_key(request: FieldExpenseRequest) -> str:
+    return f"exp-{request.id}-submitted-v3"
+
+
+def expense_decision_idempotency_key(
+    request: FieldExpenseRequest, action: ExpenseErpAction, decision_id: UUID
+) -> str:
+    if action not in {ExpenseErpAction.APPROVE_V3, ExpenseErpAction.REJECT_V3}:
+        raise ValueError("A v3 approval or rejection action is required")
+    verb = "approved" if action is ExpenseErpAction.APPROVE_V3 else "rejected"
+    return f"exp-{request.id}-{verb}-{decision_id}-v3"
+
+
+@dataclass(frozen=True, slots=True)
+class ExpenseDeliveryIdentity:
+    request_id: UUID
+    client_ref: UUID
+    source_claim_id: UUID
+
+
+def require_expense_delivery_identity(
+    request: FieldExpenseRequest, *, source_claim_id: UUID | None = None
+) -> ExpenseDeliveryIdentity:
+    """Fail closed when a token-bearing request is not one UUID end to end."""
+    effective_source_id = source_claim_id or request.id
+    if request.client_ref is None:
+        raise ValueError("Expense delivery identity is incomplete")
+    if request.payment_destination_token and (
+        request.client_ref != request.id or effective_source_id != request.id
+    ):
+        raise ValueError("Payment destination token is bound to another expense")
+    return ExpenseDeliveryIdentity(
+        request_id=request.id,
+        client_ref=request.client_ref,
+        source_claim_id=effective_source_id,
+    )
 
 
 def expense_payment_idempotency_key(
@@ -147,6 +189,26 @@ def build_expense_claim_payload(request: FieldExpenseRequest) -> dict:
     }
 
 
+def build_expense_submission_payload(request: FieldExpenseRequest) -> dict:
+    require_expense_delivery_identity(request)
+    payload = build_expense_claim_payload(request)
+    payload.update(
+        {
+            "_expense_action": ExpenseErpAction.SUBMIT_V3.value,
+            "_expense_contract_version": "work-order-expense.v3",
+            "_receipt_attachments": [
+                {
+                    "source_line_id": str(item.id),
+                    "source_attachment_id": str(item.receipt_attachment_id),
+                }
+                for item in request.items
+                if item.receipt_attachment_id is not None
+            ],
+        }
+    )
+    return payload
+
+
 def build_approved_expense_release_payload(
     request: FieldExpenseRequest,
     *,
@@ -210,26 +272,56 @@ def enqueue_expense_decision(
     notes: str | None = None,
     isolate: bool = False,
 ) -> FieldErpSyncEvent:
-    if action is not ExpenseErpAction.APPROVE:
-        raise ValueError("Only manager approval may release an expense to ERP")
-    if request.status != "approved" or request.approved_at is None:
-        raise ValueError("Only an approved expense can be released to ERP")
-    eligibility_error = expense_claim_eligibility_error(request)
-    if eligibility_error:
-        raise ValueError(eligibility_error)
+    if action not in {ExpenseErpAction.APPROVE_V3, ExpenseErpAction.REJECT_V3}:
+        raise ValueError("Only a v3 manager decision may be staged here")
+    require_expense_delivery_identity(request)
+    expected_status = (
+        "approved" if action is ExpenseErpAction.APPROVE_V3 else "rejected"
+    )
+    if request.status != expected_status:
+        raise ValueError(f"Only a {expected_status} expense may stage this decision")
+    decision: dict[str, object] = {
+        "decision_id": str(decision_id),
+        "decided_by_email": decided_by_email,
+        "decided_at": decided_at.isoformat(),
+        **({"notes": notes} if notes else {}),
+    }
+    if action is ExpenseErpAction.REJECT_V3:
+        if not reason:
+            raise ValueError("A rejection reason is required")
+        decision["reason"] = reason
     return outbox.enqueue(
         db,
         flow=FieldErpSyncFlow.expense_claim,
         entity_type=ENTITY_TYPE,
         entity_id=request.id,
-        idempotency_key=expense_release_idempotency_key(request),
-        payload=build_approved_expense_release_payload(
-            request,
-            decision_id=decision_id,
-            decided_by_email=decided_by_email,
-            decided_at=decided_at,
-            notes=notes,
-        ),
+        idempotency_key=expense_decision_idempotency_key(request, action, decision_id),
+        payload={
+            "_expense_action": action.value,
+            "_expense_contract_version": "work-order-expense.v3",
+            "_depends_on_idempotency_key": expense_submission_idempotency_key(request),
+            "source_claim_id": str(request.id),
+            **decision,
+        },
+        isolate=isolate,
+    )
+
+
+def enqueue_expense_submission(
+    db: Session, request: FieldExpenseRequest, *, isolate: bool = False
+) -> FieldErpSyncEvent:
+    require_expense_delivery_identity(request)
+    if request.status != "submitted" or request.submitted_at is None:
+        raise ValueError("Only a submitted expense may be sent to ERP")
+    if not request.items or not _requester_email(request):
+        raise ValueError("Submitted expense delivery evidence is incomplete")
+    return outbox.enqueue(
+        db,
+        flow=FieldErpSyncFlow.expense_claim,
+        entity_type=ENTITY_TYPE,
+        entity_id=request.id,
+        idempotency_key=expense_submission_idempotency_key(request),
+        payload=build_expense_submission_payload(request),
         isolate=isolate,
     )
 
@@ -243,9 +335,27 @@ def enqueue_expense_payment(
     initiated_at: datetime,
     isolate: bool = False,
 ) -> FieldErpSyncEvent:
+    approval_event = (
+        db.query(FieldErpSyncEvent)
+        .filter(
+            FieldErpSyncEvent.flow == FieldErpSyncFlow.expense_claim.value,
+            FieldErpSyncEvent.entity_id == request.id,
+        )
+        .order_by(FieldErpSyncEvent.created_at.desc())
+        .all()
+    )
+    approval_dependency = next(
+        (
+            event.idempotency_key
+            for event in approval_event
+            if str((event.payload or {}).get("_expense_action"))
+            in {"expense_approve_v3", "release_approved_v2"}
+        ),
+        expense_release_idempotency_key(request),
+    )
     payload: dict[str, object] = {
         "_expense_action": ExpenseErpAction.INITIATE_PAYMENT.value,
-        "_depends_on_idempotency_key": expense_release_idempotency_key(request),
+        "_depends_on_idempotency_key": approval_dependency,
         "command_id": str(command_id),
         "initiated_by_email": initiated_by_email,
         "initiated_at": initiated_at.isoformat(),

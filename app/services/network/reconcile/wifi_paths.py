@@ -38,7 +38,9 @@ def wifi_paths_for_instance(
         paths,
         enabled=retarget(paths.enabled),
         ssid=retarget(paths.ssid),
-        psk_path=retarget(paths.psk_path),
+        psk_path=(
+            paths.psk_path if paths.additional_psk_paths else retarget(paths.psk_path)
+        ),
         channel=retarget(paths.channel),
         security_mode=retarget(paths.security_mode),
     )

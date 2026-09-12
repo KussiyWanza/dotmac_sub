@@ -953,6 +953,10 @@ DOMAIN = DomainSOT(
                 "Paid prepaid subscription invoices are non-AR documents but "
                 "become exact customer-position service debits only when fully "
                 "paid and backed by exact active settlement applications. "
+                "When final paid status crosses a reviewed opening boundary, "
+                "settlement applications recorded through that boundary are "
+                "already absorbed by the opening and are excluded from the "
+                "post-opening consumption debit. "
                 "An exact direct-renewal adjustment and entitlement for the same "
                 "account, subscription, period, amount, and currency takes "
                 "precedence so a later documentary invoice cannot debit twice. "
@@ -1053,7 +1057,9 @@ DOMAIN = DomainSOT(
                             "active fully paid positive Invoice with an active exact "
                             "prepaid Subscription line whose total is fully backed by "
                             "active PaymentAllocation and/or CreditNoteApplication "
-                            "evidence, plus paid time, period, total, and currency"
+                            "evidence, application record times relative to any "
+                            "reviewed opening, plus paid time, period, total, and "
+                            "currency"
                         ),
                     ),
                     AuthorityInput(
@@ -1127,7 +1133,8 @@ DOMAIN = DomainSOT(
                         drift_signal=(
                             "scalar and bounded-cohort results differ, or a paid prepaid "
                             "invoice total remains in spendable funding without an exact "
-                            "direct-renewal precedence match"
+                            "direct-renewal precedence match, or a pre-opening settlement "
+                            "application is debited again after the opening"
                         ),
                         rebuild_operation=(
                             "list_customer_financial_events and "

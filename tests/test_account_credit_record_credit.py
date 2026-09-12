@@ -14,7 +14,7 @@ These tests pin both the minting door and the timing.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from app.models.billing import (
@@ -96,6 +96,89 @@ def _unallocated_credit_entries(db_session, subscriber) -> list[LedgerEntry]:
         .filter(LedgerEntry.invoice_id.is_(None))
         .all()
     )
+
+
+def test_reviewed_boundary_scopes_payment_linked_structural_ledger(
+    db_session, subscriber
+):
+    boundary = datetime(2026, 7, 20, tzinfo=UTC)
+    old_payment = Payment(
+        account_id=subscriber.id,
+        amount=Decimal("100.00"),
+        currency="NGN",
+        status=PaymentStatus.succeeded,
+        paid_at=boundary - timedelta(days=10),
+        created_at=boundary - timedelta(days=1),
+    )
+    new_payment = Payment(
+        account_id=subscriber.id,
+        amount=Decimal("50.00"),
+        currency="NGN",
+        status=PaymentStatus.succeeded,
+        paid_at=boundary + timedelta(days=1),
+        created_at=boundary + timedelta(days=1),
+    )
+    db_session.add_all([old_payment, new_payment])
+    db_session.flush()
+    db_session.add_all(
+        [
+            LedgerEntry(
+                account_id=subscriber.id,
+                payment_id=old_payment.id,
+                entry_type=LedgerEntryType.credit,
+                source=LedgerSource.payment,
+                amount=Decimal("100.00"),
+                currency="NGN",
+                memo="Old payment credit",
+                created_at=boundary - timedelta(days=1),
+            ),
+            LedgerEntry(
+                account_id=subscriber.id,
+                payment_id=old_payment.id,
+                entry_type=LedgerEntryType.debit,
+                source=LedgerSource.other,
+                amount=Decimal("80.00"),
+                currency="NGN",
+                memo="Late projection of old payment consumption",
+                affects_customer_position=False,
+                created_at=boundary + timedelta(hours=1),
+            ),
+            LedgerEntry(
+                account_id=subscriber.id,
+                payment_id=new_payment.id,
+                entry_type=LedgerEntryType.credit,
+                source=LedgerSource.payment,
+                amount=Decimal("50.00"),
+                currency="NGN",
+                memo="New payment credit",
+                created_at=boundary + timedelta(days=1),
+            ),
+            LedgerEntry(
+                account_id=subscriber.id,
+                payment_id=new_payment.id,
+                entry_type=LedgerEntryType.debit,
+                source=LedgerSource.other,
+                amount=Decimal("20.00"),
+                currency="NGN",
+                memo="New payment consumption",
+                affects_customer_position=False,
+                created_at=boundary + timedelta(days=2),
+            ),
+        ]
+    )
+    db_session.flush()
+
+    assert get_account_credit_balance(
+        db_session,
+        str(subscriber.id),
+        currency="NGN",
+        after=boundary,
+    ) == Decimal("30.00")
+    assert get_account_credit_balance(
+        db_session,
+        str(subscriber.id),
+        currency="NGN",
+    ) == Decimal("50.00")
 
 
 def test_settled_credit_is_offered_to_an_open_invoice(db_session, subscriber):

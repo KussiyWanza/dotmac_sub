@@ -13,6 +13,8 @@ from app.models.billing import (
     LedgerEntry,
     LedgerEntryType,
     LedgerSource,
+    Payment,
+    PaymentStatus,
     TaxRate,
 )
 from app.models.billing_contract import BillingRecordAuthority
@@ -203,11 +205,12 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
     db_session, subscriber_account, subscription, monkeypatch
 ):
     _candidate(db_session, subscriber_account, subscription)
+    funding_position_at = datetime(2026, 3, 16, tzinfo=UTC)
     materialize_test_prepaid_opening_balance(
         db_session,
         subscriber_account.id,
         Decimal("100.00"),
-        position_at=datetime(2026, 3, 16, tzinfo=UTC),
+        position_at=funding_position_at,
     )
 
     provider = _provider(db_session)
@@ -336,6 +339,32 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
             external_id="opening-post-cutover-deposit",
         ),
     )
+    # A late structural projection for a payment already absorbed by the
+    # reviewed opening must not consume a newer payment's reusable credit.
+    pre_boundary_payment = Payment(
+        account_id=subscriber_account.id,
+        amount=Decimal("54437.50"),
+        currency="NGN",
+        status=PaymentStatus.succeeded,
+        paid_at=funding_position_at - timedelta(days=10),
+        created_at=funding_position_at - timedelta(days=1),
+    )
+    db_session.add(pre_boundary_payment)
+    db_session.flush()
+    db_session.add(
+        LedgerEntry(
+            account_id=subscriber_account.id,
+            payment_id=pre_boundary_payment.id,
+            entry_type=LedgerEntryType.debit,
+            source=LedgerSource.other,
+            amount=Decimal("54437.50"),
+            currency="NGN",
+            memo="Late structural consumption for pre-boundary payment",
+            affects_customer_position=False,
+            created_at=cutoff + timedelta(hours=1),
+        )
+    )
+    db_session.flush()
     authoritative_group = (
         db_session.query(CustomerPostingGroup)
         .filter(
@@ -488,7 +517,7 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
         .filter(PrepaidOpeningFundingConsumption.opening_position_id == opening.id)
         .one()
     )
-    assert corrected_consumption.amount == Decimal("2000.00")
+    assert corrected_consumption.amount == Decimal("3000.00")
     assert (
         corrected_consumption.approval_evidence_ref
         == "finance-review:pytest-opening-correction"

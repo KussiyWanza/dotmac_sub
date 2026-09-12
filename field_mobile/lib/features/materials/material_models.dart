@@ -144,6 +144,7 @@ class MaterialRequestItem {
     quantity: _int(json['quantity']) ?? 0,
     itemName:
         _string(json['item_name']) ??
+        _string(json['name']) ??
         (json['item'] is Map ? _string((json['item'] as Map)['name']) : null),
     notes: _string(json['notes']),
     approvedQuantity: _int(json['approved_quantity']),
@@ -158,10 +159,12 @@ class MaterialRequest {
   const MaterialRequest({
     required this.id,
     required this.status,
+    this.canCancel = false,
     this.number,
     this.priority,
     this.notes,
     this.workOrderId,
+    this.contextLabel,
     this.projectId,
     this.ticketId,
     this.sourceLocationId,
@@ -185,10 +188,12 @@ class MaterialRequest {
 
   final String id;
   final String status;
+  final bool canCancel;
   final String? number;
   final String? priority;
   final String? notes;
   final String? workOrderId;
+  final String? contextLabel;
   final String? projectId;
   final String? ticketId;
   final String? sourceLocationId;
@@ -214,10 +219,12 @@ class MaterialRequest {
   ) => MaterialRequest(
     id: json['id'].toString(),
     status: json['status'] as String? ?? 'draft',
+    canCancel: json['can_cancel'] == true,
     number: _string(json['number']),
     priority: _string(json['priority']),
     notes: _string(json['notes']),
     workOrderId: json['work_order_id']?.toString(),
+    contextLabel: _string(json['context_label']),
     projectId: json['project_id']?.toString(),
     ticketId: json['ticket_id']?.toString(),
     sourceLocationId: _locationId(json, 'source'),
@@ -243,12 +250,22 @@ class MaterialRequest {
     items: _mapList(json['items']).map(MaterialRequestItem.fromJson).toList(),
   );
 
-  String get displayNumber => number ?? id;
+  String get displayNumber =>
+      number ??
+      contextLabel ??
+      (workOrderId == null ? 'Material request' : 'Work order $workOrderId');
 
   String? get sourceLocationLabel => sourceLocationName ?? sourceLocationId;
 
   String? get destinationLocationLabel =>
       destinationLocationName ?? destinationLocationId;
+}
+
+class MaterialRequestHistory {
+  const MaterialRequestHistory({required this.items, required this.totalCount});
+
+  final List<MaterialRequest> items;
+  final int totalCount;
 }
 
 int? _int(Object? value) => switch (value) {
