@@ -56,6 +56,7 @@ from app.services.billing._common import (
     get_account_credit_balance,
     get_spendable_account_credit_balance,
     lock_account,
+    payment_crosses_reviewed_position_boundary,
     resolve_invoice_settlement_amounts,
 )
 from app.services.billing.ledger import LedgerEntries
@@ -428,11 +429,7 @@ def _source_payments(
     )
     if funding_position_at is not None:
         query = query.filter(
-            or_(
-                Payment.created_at > funding_position_at,
-                func.coalesce(Payment.paid_at, Payment.created_at)
-                > funding_position_at,
-            )
+            payment_crosses_reviewed_position_boundary(funding_position_at)
         )
     rows = query.all()
     account_remaining: dict[str, Decimal] = {}

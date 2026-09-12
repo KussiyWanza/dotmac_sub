@@ -1599,9 +1599,16 @@ detailed security and delivery boundary is
    combines payment-backed account credit with reviewed opening funding:
    pre-boundary payment and ledger rows are absorbed by the signed opening and
    cannot be reused or reclassified as current unbacked credit. Unbacked facts
-   crossing the boundary still fail closed. A missing active baseline is a
-   source-cohort defect and blocks complete-history preview/parity; it never
-   selects a second all-history money formula.
+   crossing the boundary still fail closed. After customer-subledger cutover,
+   this is the active customer-subledger opening timestamp rather than the
+   superseded reconstruction baseline timestamp. A missing reviewed opening
+   source is a source-cohort defect and blocks complete-history preview/parity;
+   it never selects a second all-history money formula.
+   Payment-linked structural ledger projections inherit their Payment's side
+   of this boundary. A post-boundary allocation projection for a pre-boundary
+   Payment is therefore absorbed with that Payment and cannot reduce a newer
+   Payment; a Payment created after the boundary still crosses it even when its
+   business timestamp is backdated.
    Portal outstanding-balance views consume its collection-blocking
    value; a capped invoice display list never caps or redefines the amount.
    Billing reporting applies the same collectible/non-proforma boundary and

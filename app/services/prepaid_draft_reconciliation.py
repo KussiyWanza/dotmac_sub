@@ -739,17 +739,37 @@ def _funding_preview(
     db: Session,
     invoice: Invoice,
 ) -> AccountCreditInvoiceFundingPreview:
+    currency = (invoice.currency or "NGN").upper()
+    subledger_authority_active = (
+        db.scalar(select(CustomerSubledgerAuthorityCutover.id).limit(1)) is not None
+    )
+    opening = (
+        db.scalar(
+            select(CustomerSubledgerOpeningPosition).where(
+                CustomerSubledgerOpeningPosition.account_id == invoice.account_id,
+                CustomerSubledgerOpeningPosition.currency == currency,
+            )
+        )
+        if subledger_authority_active
+        else None
+    )
     baseline = db.scalar(
         select(PrepaidFundingBaseline).where(
             PrepaidFundingBaseline.account_id == invoice.account_id,
-            PrepaidFundingBaseline.currency == (invoice.currency or "NGN").upper(),
+            PrepaidFundingBaseline.currency == currency,
             PrepaidFundingBaseline.is_active.is_(True),
         )
     )
     return AccountCreditApplications.preview_invoice_funding(
         db,
         invoice,
-        funding_position_at=baseline.position_at if baseline is not None else None,
+        funding_position_at=(
+            opening.occurred_at
+            if opening is not None
+            else baseline.position_at
+            if baseline is not None
+            else None
+        ),
     )
 
 

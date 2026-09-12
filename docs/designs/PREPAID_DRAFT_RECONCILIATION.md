@@ -224,12 +224,20 @@ funded-coverage explanation instead of a generic request conflict. A
 non-actionable overlap displays the classifier reason and requires Finance
 review; neither the route nor template reclassifies evidence.
 
-When an active reviewed opening baseline exists, account-credit classification
-uses only native payment and ledger facts crossing its timestamp. Pre-boundary
-rows are already absorbed into the signed opening amount: they are neither
-reused as Payments nor quarantined again as current unbacked credit. Without an
-active baseline, the generic all-history payment-backed classification remains
-unchanged.
+Account-credit classification uses the active reviewed funding boundary: the
+customer-subledger opening timestamp after its authority cutover, otherwise the
+reconstruction baseline timestamp. Pre-boundary rows are already absorbed into
+the signed opening amount: they are neither reused as Payments nor quarantined
+again as current unbacked credit. Without a reviewed opening source, the generic
+all-history payment-backed classification remains unchanged.
+
+A payment-linked structural ledger projection stays on the same side of that
+boundary as its Payment. A reconciliation or allocation recorded after the
+boundary cannot make the consumption of a pre-boundary Payment reduce newer
+payment-backed credit, because the older Payment and its consumption were both
+already absorbed by the reviewed opening. A Payment created after the boundary
+still crosses it even when its business timestamp is backdated, so late native
+money is never hidden.
 
 No path rounds a shortfall, invents a payment, represents opening funding as a
 Payment, marks an underfunded invoice paid, double-spends an opening baseline,
