@@ -15,8 +15,10 @@ from pathlib import Path
 
 import pytest
 
+from app.models.service_team import ServiceTeam, ServiceTeamType
 from app.models.subscriber import Subscriber
-from app.models.team_inbox import InboxConversation, InboxMessage
+from app.models.team_inbox import InboxConversation, InboxConversationTeam, InboxMessage
+from app.services import email as email_service
 from app.services import team_inbox_commands
 
 OVERLAYS = Path("templates/admin/inbox/_overlays.html").read_text()
@@ -60,6 +62,65 @@ def test_starting_a_conversation_opens_it_and_sends_the_first_message(db_session
         .all()
     )
     assert [m.direction for m in messages] == ["outbound"]
+
+
+def test_starting_email_uses_selected_teams_primary_mailbox_sender(db_session):
+    team = ServiceTeam(
+        name="Network Operations Center",
+        team_type=ServiceTeamType.operations.value,
+    )
+    db_session.add(team)
+    db_session.flush()
+    email_service.upsert_smtp_sender(
+        db_session,
+        sender_key="noc",
+        host="smtp.example.com",
+        port=587,
+        username="noc@example.com",
+        password=None,
+        from_email="noc@dotmac.ng",
+        from_name="Dotmac NOC",
+        use_tls=True,
+        use_ssl=False,
+        is_active=True,
+    )
+    route_id = team_inbox_commands.create_email_route(
+        db_session,
+        service_team_id=team.id,
+        email_address="noc@dotmac.ng",
+        is_primary=True,
+    )
+    team_inbox_commands.update_email_route(
+        db_session,
+        route_id=route_id,
+        outbound_email_sender_key="noc",
+        update_outbound_email_sender=True,
+    )
+
+    outcome = team_inbox_commands.start_conversation(
+        db_session,
+        channel_type="email",
+        contact_address="customer@example.com",
+        body_text="We are checking your service.",
+        service_team_id=team.id,
+    )
+
+    message = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.conversation_id == outcome.conversation_id)
+        .one()
+    )
+    owner = (
+        db_session.query(InboxConversationTeam)
+        .filter(InboxConversationTeam.conversation_id == outcome.conversation_id)
+        .filter(InboxConversationTeam.role == "owner")
+        .one()
+    )
+    assert outcome.sender == "noc@dotmac.ng"
+    assert message.from_address == "noc@dotmac.ng"
+    assert message.metadata_["sender_key"] == "noc"
+    assert owner.metadata_["outbound_email_sender_key"] == "noc"
+    assert owner.metadata_["route_email_address"] == "noc@dotmac.ng"
 
 
 def test_a_known_address_resolves_to_its_customer(db_session, customer):

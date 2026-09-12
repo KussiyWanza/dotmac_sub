@@ -3427,17 +3427,24 @@ def start_conversation(
         # operator-started conversation used to have no `InboxConversationTeam`
         # row at all, so it was invisible to every team filter and to "My team"
         # the moment it was created â€” including to the operator who started it.
+        owning_team_id = coerce_uuid(service_team_id) or coerce_uuid(
+            team_inbox_routing.default_service_team_id(db)
+        )
         team_inbox_routing.apply_email_routing_plan(
             db,
             conversation=conversation,
-            plan=team_inbox_routing.build_email_team_routing_plan(
-                db,
-                to_addresses=[],
-                cc_addresses=[],
-                fallback_service_team_id=(
-                    coerce_uuid(service_team_id)
-                    or team_inbox_routing.default_service_team_id(db)
-                ),
+            plan=(
+                team_inbox_routing.build_operator_email_team_routing_plan(
+                    db,
+                    service_team_id=owning_team_id,
+                )
+                if clean_channel == InboxChannelType.email.value
+                else team_inbox_routing.build_email_team_routing_plan(
+                    db,
+                    to_addresses=[],
+                    cc_addresses=[],
+                    fallback_service_team_id=owning_team_id,
+                )
             ),
         )
         staged_attachment_ids = list(attachment_ids or ())
