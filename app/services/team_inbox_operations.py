@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -499,12 +499,23 @@ def execute_macro_actions(
     conversation: InboxConversation,
     macro_id: str | UUID,
     actor_person_id: str | UUID | None = None,
+    override_grant_id: str | UUID | None = None,
 ) -> dict[str, object]:
+    """Run one macro's actions against one conversation.
+
+    ``override_grant_id`` is supplied by the operator invoking the macro for
+    THIS execution only. It is never read from the stored macro's ``actions``
+    ``params`` -- a stored macro carrying a grant id would make a single-use
+    override reusable and durable, which destroys the single-use guarantee.
+    See ``tests/architecture/test_inbox_completion_override_boundary.py``.
+    """
+
     macro = record_macro_use(db, macro_id)
     if macro is None:
         raise InboxOperationError("Macro not found.")
 
     actor_uuid = coerce_uuid(actor_person_id)
+    override_grant_uuid = coerce_uuid(override_grant_id)
     executed = 0
     failed = 0
     results: list[dict[str, object]] = []
@@ -529,6 +540,7 @@ def execute_macro_actions(
                     reason=team_inbox_status.InboxStatusReason.macro,
                     source_id=f"macro:{macro.id}:{conversation.id}:{uuid4()}",
                     macro_id=macro.id,
+                    completion_override_grant_id=override_grant_uuid,
                 )
             elif action_type == "add_tag":
                 label_name = str(params.get("tag") or params.get("label") or "").strip()
@@ -676,17 +688,46 @@ def get_template(db: Session, template_id: str | UUID) -> InboxMessageTemplate:
     return template
 
 
+_RESOLUTION_BLOCKED_CODE = (
+    "communications.team_inbox_customer_completion.resolution_blocked"
+)
+# The bulk skip is the one graceful-degradation mechanism for a blocked
+# resolution. A per-conversation override that turns out absent, already
+# consumed, mismatched, superseded, expired, or stale is the SAME kind of
+# "this one conversation could not resolve" outcome -- it reuses the exact
+# skip-and-report shape rather than a second mechanism.
+_OVERRIDE_SKIPPABLE_CODES = frozenset(
+    f"communications.team_inbox_completion_override.{suffix}"
+    for suffix in (
+        "override_absent",
+        "override_already_consumed",
+        "override_conversation_mismatch",
+        "override_superseded",
+        "override_expired",
+        "override_stale_evidence",
+        "override_not_required",
+        "override_requires_customer_identity",
+    )
+)
+
+
 def bulk_update_status(
     db: Session,
     *,
     conversation_ids: Sequence[str | UUID],
     status_value: str,
     actor_person_id: str | UUID | None = None,
+    override_grant_ids: Mapping[str | UUID, str | UUID] | None = None,
 ) -> dict[str, object]:
     clean_status = str(status_value or "").strip().lower()
     if clean_status not in {"open", "pending", "snoozed", "resolved"}:
         raise InboxOperationError("Unsupported conversation status.")
     actor_uuid = coerce_uuid(actor_person_id)
+    # One grant id per conversation -- never a batch-wide override flag.
+    grant_ids_by_conversation = {
+        coerce_uuid(key): coerce_uuid(value)
+        for key, value in (override_grant_ids or {}).items()
+    }
     updated: list[str] = []
     skipped: list[str] = []
     blocked: list[dict[str, object]] = []
@@ -706,10 +747,13 @@ def bulk_update_status(
                 actor_person_id=actor_uuid,
                 reason=team_inbox_status.InboxStatusReason.bulk_change,
                 source_id=f"bulk-status:{conversation.id}:{uuid4()}",
+                completion_override_grant_id=grant_ids_by_conversation.get(
+                    conversation.id
+                ),
             )
         except DomainError as exc:
-            if exc.code != (
-                "communications.team_inbox_customer_completion.resolution_blocked"
+            if exc.code != _RESOLUTION_BLOCKED_CODE and (
+                exc.code not in _OVERRIDE_SKIPPABLE_CODES
             ):
                 raise
             skipped.append(str(conversation.id))

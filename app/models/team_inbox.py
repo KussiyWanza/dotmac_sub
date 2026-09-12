@@ -47,6 +47,13 @@ class InboxConversationStatus(enum.Enum):
     resolved = "resolved"
 
 
+class InboxCompletionOverrideGrantState(enum.Enum):
+    pending = "pending"
+    consumed = "consumed"
+    superseded = "superseded"
+    expired = "expired"
+
+
 class InboxMessageDirection(enum.Enum):
     inbound = "inbound"
     outbound = "outbound"
@@ -371,6 +378,13 @@ class InboxConversation(Base):
         UUID(as_uuid=True),
         ForeignKey("inbox_customer_completion_policy_versions.id", ondelete="RESTRICT"),
     )
+    # Written EXACTLY ONCE, by alembic/versions/602_inbox_completion_legacy_override.py's
+    # upgrade(), stamped with a single captured now() reused for every backfilled row.
+    # No application code may ever assign this column outside that migration --
+    # enforced by tests/architecture/test_inbox_completion_override_boundary.py.
+    completion_gate_precutover_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     primary_service_team_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("service_teams.id")
     )
@@ -422,6 +436,126 @@ class InboxConversation(Base):
         back_populates="conversation",
         cascade="all, delete-orphan",
     )
+
+
+class InboxCustomerCompletionCutover(Base):
+    """One frozen census/cutover record per legacy-marker backfill run.
+
+    Written exactly once, in the same migration transaction that stamps
+    ``InboxConversation.completion_gate_precutover_at`` -- see
+    ``alembic/versions/602_inbox_completion_legacy_override.py``.
+    """
+
+    __tablename__ = "inbox_customer_completion_cutovers"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    policy_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("inbox_customer_completion_policy_versions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    cutover_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    marked_conversation_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    marked_subscriber_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class InboxCompletionOverrideGrant(Base):
+    """A narrowly-scoped, audited, single-use legacy completion-gate override.
+
+    Eligibility (``InboxConversation.completion_gate_precutover_at IS NOT
+    NULL``) is never authorization. A grant row is issued by
+    ``communications.team_inbox_completion_override`` only after an operator
+    reviews the exact live gap on one conversation, and it is burned at most
+    once, atomically, inside the same resolution transaction that consumes
+    it -- see ``app/services/team_inbox_completion_override.py``.
+    """
+
+    __tablename__ = "inbox_completion_override_grants"
+    __table_args__ = (
+        Index(
+            "uq_inbox_completion_override_grants_pending",
+            "conversation_id",
+            unique=True,
+            sqlite_where=text("state = 'pending'"),
+            postgresql_where=text("state = 'pending'"),
+        ),
+        UniqueConstraint(
+            "conversation_id",
+            "grant_idempotency_key",
+            name="uq_inbox_completion_override_grants_idempotency",
+        ),
+        CheckConstraint(
+            "(state = 'consumed') = (consumed_at IS NOT NULL)",
+            name="ck_inbox_completion_override_grants_consumed_at",
+        ),
+        CheckConstraint(
+            "(consumed_at IS NULL) = (consumed_transition_event_id IS NULL)",
+            name="ck_inbox_completion_override_grants_consumed_event",
+        ),
+        CheckConstraint(
+            "expires_at > granted_at",
+            name="ck_inbox_completion_override_grants_expiry_after_grant",
+        ),
+        Index(
+            "ix_inbox_completion_override_grants_conversation",
+            "conversation_id",
+            "granted_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("inbox_conversations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscriber_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    policy_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("inbox_customer_completion_policy_versions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    missing_fields: Mapped[list[str]] = mapped_column(JSON(), nullable=False)
+    canonical_values_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(80), nullable=False)
+    reason_text: Mapped[str] = mapped_column(Text, nullable=False)
+    granted_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    # The real staff principal whose granted `support:inbox:completion_override`
+    # role authorized this issuance. `granted_by` above stays a free-text
+    # audit label; this is the only identifier with actual RBAC meaning.
+    granted_by_system_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True)
+    )
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    grant_idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    grant_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    state: Mapped[str] = mapped_column(
+        String(20),
+        default=InboxCompletionOverrideGrantState.pending.value,
+        nullable=False,
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    consumed_by: Mapped[str | None] = mapped_column(String(255))
+    consumed_transition_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("inbox_status_transition_events.id", ondelete="RESTRICT"),
+    )
+    consumed_resolution_reason: Mapped[str | None] = mapped_column(String(80))
 
 
 class InboxConversationLeadLink(Base):
