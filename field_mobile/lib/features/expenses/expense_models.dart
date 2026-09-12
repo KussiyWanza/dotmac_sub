@@ -105,9 +105,67 @@ class ExpenseFormContext {
       );
 }
 
+enum ExpensePaymentMode {
+  erpProfile('erp_profile'),
+  expenseOverride('expense_override');
+
+  const ExpensePaymentMode(this.apiValue);
+
+  final String apiValue;
+
+  factory ExpensePaymentMode.fromApiValue(Object? value) => switch (value) {
+    'erp_profile' => ExpensePaymentMode.erpProfile,
+    'expense_override' => ExpensePaymentMode.expenseOverride,
+    _ => throw FormatException('Unknown expense payment mode: $value'),
+  };
+}
+
 class VerifiedExpenseDestination {
-  const VerifiedExpenseDestination(this.data);
-  final Map<String, dynamic> data;
+  const VerifiedExpenseDestination({
+    required this.destinationToken,
+    required this.mode,
+    required this.bankCode,
+    required this.bankName,
+    required this.maskedAccountNumber,
+    required this.verifiedBeneficiaryName,
+    required this.verifiedAt,
+    required this.expiresAt,
+  });
+
+  final String destinationToken;
+  final ExpensePaymentMode mode;
+  final String bankCode;
+  final String bankName;
+  final String maskedAccountNumber;
+  final String verifiedBeneficiaryName;
+  final DateTime verifiedAt;
+  final DateTime expiresAt;
+
+  factory VerifiedExpenseDestination.fromJson(Map<String, dynamic> json) =>
+      VerifiedExpenseDestination(
+        destinationToken: _requiredString(json, 'destination_token'),
+        mode: ExpensePaymentMode.fromApiValue(json['mode']),
+        bankCode: _requiredString(json, 'bank_code'),
+        bankName: _requiredString(json, 'bank_name'),
+        maskedAccountNumber: _requiredString(json, 'masked_account_number'),
+        verifiedBeneficiaryName: _requiredString(
+          json,
+          'verified_beneficiary_name',
+        ),
+        verifiedAt: _requiredDate(json, 'verified_at'),
+        expiresAt: _requiredDate(json, 'expires_at'),
+      );
+
+  Map<String, dynamic> toJson() => {
+    'destination_token': destinationToken,
+    'mode': mode.apiValue,
+    'bank_code': bankCode,
+    'bank_name': bankName,
+    'masked_account_number': maskedAccountNumber,
+    'verified_beneficiary_name': verifiedBeneficiaryName,
+    'verified_at': verifiedAt.toUtc().toIso8601String(),
+    'expires_at': expiresAt.toUtc().toIso8601String(),
+  };
 }
 
 class ExpenseReceiptUploadResult {
@@ -363,6 +421,23 @@ class ExpenseRequest {
 }
 
 String? _string(Object? value) => value?.toString();
+
+String _requiredString(Map<String, dynamic> json, String key) {
+  final value = _string(json[key])?.trim() ?? '';
+  if (value.isEmpty) {
+    throw FormatException('Expense payment response is missing $key.');
+  }
+  return value;
+}
+
+DateTime _requiredDate(Map<String, dynamic> json, String key) {
+  final value = _requiredString(json, key);
+  final parsed = DateTime.tryParse(value);
+  if (parsed == null) {
+    throw FormatException('Expense payment response has an invalid $key.');
+  }
+  return parsed;
+}
 
 double? _double(Object? value) => switch (value) {
   num() => value.toDouble(),

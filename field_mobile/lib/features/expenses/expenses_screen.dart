@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
@@ -655,7 +656,7 @@ class _NewExpenseRequestScreenState
   ExpenseCategory? _selectedCategory;
   ExpenseApprover? _selectedApprover;
   ExpenseBank? _selectedBank;
-  String _destinationMode = 'erp_profile';
+  ExpensePaymentMode _destinationMode = ExpensePaymentMode.erpProfile;
   final _items = <ExpenseItemDraft>[];
   bool _saving = false;
   bool _receiptUploading = false;
@@ -813,8 +814,8 @@ class _NewExpenseRequestScreenState
       if (!mounted) return;
       setState(() {
         _destinationMode = data.profileDestination.available
-            ? 'erp_profile'
-            : 'expense_override';
+            ? ExpensePaymentMode.erpProfile
+            : ExpensePaymentMode.expenseOverride;
       });
     } catch (_) {
       // The visible form-context error owns retry guidance.
@@ -1089,7 +1090,7 @@ class _NewExpenseRequestScreenState
       );
       return;
     }
-    if (_destinationMode == 'erp_profile' &&
+    if (_destinationMode == ExpensePaymentMode.erpProfile &&
         !formContext.profileDestination.available) {
       setState(
         () => _submitError =
@@ -1097,19 +1098,32 @@ class _NewExpenseRequestScreenState
       );
       return;
     }
-    if (_destinationMode == 'expense_override' && formContext.banks.isEmpty) {
+    if (_destinationMode == ExpensePaymentMode.expenseOverride &&
+        formContext.banks.isEmpty) {
       setState(
         () => _submitError =
             'No banks are available for different payment details. Retry above.',
       );
       return;
     }
-    if (_destinationMode == 'expense_override' &&
-        (_selectedBank == null ||
-            _accountNumber.text.trim().isEmpty ||
-            _beneficiaryName.text.trim().isEmpty)) {
-      setState(() => _submitError = 'Complete the payment details.');
-      return;
+    if (_destinationMode == ExpensePaymentMode.expenseOverride) {
+      final accountNumber = _accountNumber.text.trim();
+      final accountName = _beneficiaryName.text.trim();
+      if (_selectedBank == null) {
+        setState(() => _submitError = 'Select a bank.');
+        return;
+      }
+      if (accountNumber.length < 6) {
+        setState(
+          () =>
+              _submitError = 'Enter an account number with at least 6 digits.',
+        );
+        return;
+      }
+      if (accountName.length < 2) {
+        setState(() => _submitError = 'Enter the account name.');
+        return;
+      }
     }
     setState(() => _saving = true);
     try {
@@ -1124,7 +1138,7 @@ class _NewExpenseRequestScreenState
           );
       final request = await ref
           .read(expensesRepositoryProvider)
-          .createRequest(
+          .submitRequest(
             purpose: _purpose.text,
             clientRef: _clientRef,
             expenseDate: DateFormat('yyyy-MM-dd').format(_expenseDate),
@@ -1204,7 +1218,7 @@ class _NewExpenseRequestScreenState
         );
     final paymentContextReady =
         formContextData != null &&
-        (_destinationMode == 'erp_profile'
+        (_destinationMode == ExpensePaymentMode.erpProfile
             ? formContextData.profileDestination.available
             : formContextData.banks.isNotEmpty);
     final requiredServerDataReady =
@@ -1268,153 +1282,197 @@ class _NewExpenseRequestScreenState
             maxLines: 3,
           ),
           const SizedBox(height: 24),
-          Text(
-            'Approval and payment destination',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-          const SizedBox(height: 8),
-          formContext.when(
-            loading: () => const _ExpenseDataAvailability(
-              label: 'Approval and payment',
-              message: 'Loading expense approvers and payment details…',
-              loading: true,
-            ),
-            error: (_, _) => _ExpenseDataAvailability(
-              label: 'Approval and payment',
-              message: 'Could not load expense approvers and payment details.',
-              onRetry: _retryFormContext,
-              retryKey: const Key('expense-form-context-retry'),
-            ),
-            data: (data) => Column(
-              children: [
-                if (data.approvers.isEmpty)
-                  _ExpenseDataAvailability(
-                    label: 'Expense approver',
-                    message:
-                        'No eligible expense approvers are available. Ask an administrator to check the ERP approver and active user accounts.',
-                    onRetry: _retryFormContext,
-                    retryKey: const Key('expense-approver-retry'),
-                  )
-                else
-                  Container(
-                    key: _approverFieldKey,
-                    child: DropdownButtonFormField<ExpenseApprover>(
-                      key: const Key('expense-approver'),
-                      initialValue: _selectedApprover,
-                      isExpanded: true,
-                      decoration: InputDecoration(
-                        labelText: 'Expense approver',
-                        helperText: 'Choose who will review this request.',
-                        errorText: _approverError.isEmpty
-                            ? null
-                            : _approverError,
+          Card(
+            key: const Key('expense-approver-payment-card'),
+            margin: EdgeInsets.zero,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.account_balance_wallet_outlined,
+                        color: Theme.of(context).colorScheme.primary,
                       ),
-                      items: [
-                        for (final approver in data.approvers)
-                          DropdownMenuItem(
-                            value: approver,
-                            child: Text(
-                              approver.displayName,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Approver & payment',
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  formContext.when(
+                    loading: () => const _ExpenseDataAvailability(
+                      label: 'Approval and payment',
+                      message: 'Loading expense approvers and payment details…',
+                      loading: true,
+                    ),
+                    error: (_, _) => _ExpenseDataAvailability(
+                      label: 'Approval and payment',
+                      message:
+                          'Could not load expense approvers and payment details.',
+                      onRetry: _retryFormContext,
+                      retryKey: const Key('expense-form-context-retry'),
+                    ),
+                    data: (data) => Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (data.approvers.isEmpty)
+                          _ExpenseDataAvailability(
+                            label: 'Expense approver',
+                            message:
+                                'No eligible expense approvers are available. Ask an administrator to check the ERP approver and active user accounts.',
+                            onRetry: _retryFormContext,
+                            retryKey: const Key('expense-approver-retry'),
+                          )
+                        else
+                          Container(
+                            key: _approverFieldKey,
+                            child: DropdownButtonFormField<ExpenseApprover>(
+                              key: const Key('expense-approver'),
+                              initialValue: _selectedApprover,
+                              isExpanded: true,
+                              decoration: InputDecoration(
+                                labelText: 'Approver',
+                                helperText:
+                                    'Choose who will review this request.',
+                                errorText: _approverError.isEmpty
+                                    ? null
+                                    : _approverError,
+                              ),
+                              items: [
+                                for (final approver in data.approvers)
+                                  DropdownMenuItem(
+                                    value: approver,
+                                    child: Text(
+                                      approver.displayName,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                              ],
+                              onChanged: (value) => setState(() {
+                                _selectedApprover = value;
+                                _approverError = '';
+                                _submitError = '';
+                              }),
                             ),
                           ),
-                      ],
-                      onChanged: (value) => setState(() {
-                        _selectedApprover = value;
-                        _approverError = '';
-                        _submitError = '';
-                      }),
-                    ),
-                  ),
-                if (!data.profileDestination.available && data.banks.isEmpty)
-                  _ExpenseDataAvailability(
-                    label: 'Payment destination',
-                    message:
-                        'No payment destination is available. Ask an administrator to check your ERP bank profile and bank list.',
-                    onRetry: _retryFormContext,
-                    retryKey: const Key('expense-payment-retry'),
-                  )
-                else ...[
-                  RadioListTile<String>(
-                    value: 'erp_profile',
-                    // ignore: deprecated_member_use
-                    groupValue: _destinationMode,
-                    // ignore: deprecated_member_use
-                    onChanged: data.profileDestination.available
-                        ? (value) => setState(() {
-                            _destinationMode = value!;
-                            _submitError = '';
-                          })
-                        : null,
-                    title: const Text('Use ERP profile'),
-                    subtitle: Text(
-                      data.profileDestination.available
-                          ? '${data.profileDestination.beneficiaryName} · ${data.profileDestination.bankName} · ${data.profileDestination.maskedAccountNumber}'
-                          : 'ERP bank profile is incomplete.',
-                    ),
-                  ),
-                  if (data.banks.isNotEmpty)
-                    RadioListTile<String>(
-                      value: 'expense_override',
-                      // ignore: deprecated_member_use
-                      groupValue: _destinationMode,
-                      // ignore: deprecated_member_use
-                      onChanged: (value) => setState(() {
-                        _destinationMode = value!;
-                        _submitError = '';
-                      }),
-                      title: const Text(
-                        'Use different details for this expense',
-                      ),
-                      subtitle: const Text(
-                        'This will not change your ERP profile.',
-                      ),
-                    ),
-                ],
-                if (_destinationMode == 'expense_override' &&
-                    data.banks.isNotEmpty) ...[
-                  DropdownButtonFormField<ExpenseBank>(
-                    key: const Key('expense-bank'),
-                    initialValue: _selectedBank,
-                    isExpanded: true,
-                    decoration: const InputDecoration(labelText: 'Bank'),
-                    items: [
-                      for (final bank in data.banks)
-                        DropdownMenuItem(
-                          value: bank,
-                          child: Text(
-                            bank.bankName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                        if (!data.profileDestination.available &&
+                            data.banks.isEmpty)
+                          _ExpenseDataAvailability(
+                            label: 'Payment destination',
+                            message:
+                                'No payment destination is available. Ask an administrator to check your ERP bank profile and bank list.',
+                            onRetry: _retryFormContext,
+                            retryKey: const Key('expense-payment-retry'),
+                          )
+                        else ...[
+                          RadioListTile<ExpensePaymentMode>(
+                            key: const Key('expense-payment-erp'),
+                            value: ExpensePaymentMode.erpProfile,
+                            contentPadding: EdgeInsets.zero,
+                            // ignore: deprecated_member_use
+                            groupValue: _destinationMode,
+                            // ignore: deprecated_member_use
+                            onChanged: data.profileDestination.available
+                                ? (value) => setState(() {
+                                    _destinationMode = value!;
+                                    _submitError = '';
+                                  })
+                                : null,
+                            title: const Text('Use ERP payment details'),
+                            subtitle: Text(
+                              data.profileDestination.available
+                                  ? '${data.profileDestination.beneficiaryName} · ${data.profileDestination.bankName} · ${data.profileDestination.maskedAccountNumber}'
+                                  : 'ERP bank profile is incomplete.',
+                            ),
                           ),
-                        ),
-                    ],
-                    onChanged: (value) => setState(() {
-                      _selectedBank = value;
-                      _submitError = '';
-                    }),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    key: const Key('expense-account-number'),
-                    controller: _accountNumber,
-                    keyboardType: TextInputType.number,
-                    autofillHints: const [],
-                    decoration: const InputDecoration(
-                      labelText: 'Account number',
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    key: const Key('expense-beneficiary-name'),
-                    controller: _beneficiaryName,
-                    decoration: const InputDecoration(
-                      labelText: 'Beneficiary name',
+                          if (data.banks.isNotEmpty)
+                            RadioListTile<ExpensePaymentMode>(
+                              key: const Key('expense-payment-custom'),
+                              value: ExpensePaymentMode.expenseOverride,
+                              contentPadding: EdgeInsets.zero,
+                              // ignore: deprecated_member_use
+                              groupValue: _destinationMode,
+                              // ignore: deprecated_member_use
+                              onChanged: (value) => setState(() {
+                                _destinationMode = value!;
+                                _submitError = '';
+                              }),
+                              title: const Text('Input custom payment details'),
+                              subtitle: const Text(
+                                'These details apply only to this expense.',
+                              ),
+                            ),
+                        ],
+                        if (_destinationMode ==
+                                ExpensePaymentMode.expenseOverride &&
+                            data.banks.isNotEmpty) ...[
+                          DropdownButtonFormField<ExpenseBank>(
+                            key: const Key('expense-bank'),
+                            initialValue: _selectedBank,
+                            isExpanded: true,
+                            decoration: const InputDecoration(
+                              labelText: 'Bank name',
+                            ),
+                            items: [
+                              for (final bank in data.banks)
+                                DropdownMenuItem(
+                                  value: bank,
+                                  child: Text(
+                                    bank.bankName,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                            ],
+                            onChanged: (value) => setState(() {
+                              _selectedBank = value;
+                              _submitError = '';
+                            }),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            key: const Key('expense-account-number'),
+                            controller: _accountNumber,
+                            keyboardType: TextInputType.number,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                              LengthLimitingTextInputFormatter(30),
+                            ],
+                            autofillHints: const [],
+                            onChanged: (_) => setState(() => _submitError = ''),
+                            decoration: const InputDecoration(
+                              labelText: 'Account number',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            key: const Key('expense-beneficiary-name'),
+                            controller: _beneficiaryName,
+                            inputFormatters: [
+                              LengthLimitingTextInputFormatter(150),
+                            ],
+                            onChanged: (_) => setState(() => _submitError = ''),
+                            decoration: const InputDecoration(
+                              labelText: 'Account name',
+                              helperText:
+                                  'ERP will verify these details when you submit.',
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
                 ],
-              ],
+              ),
             ),
           ),
           const SizedBox(height: 24),
