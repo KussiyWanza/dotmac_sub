@@ -569,8 +569,24 @@ def test_consume_override_refuses_stale_evidence_after_data_change(db_session):
 def test_consume_override_happy_path_burns_grant(db_session):
     conversation, _subscriber = _blocked_conversation(db_session)
     grant = _issue(db_session, conversation)
-    event_id = uuid4()
     occurred_at = datetime.now(UTC)
+    # `consumed_transition_event_id` carries a real FK to
+    # `inbox_status_transition_events`; a fabricated `uuid4()` here would
+    # violate it at the final UPDATE this call performs (a fabricated id is
+    # only safe on the OTHER tests in this file that raise before reaching
+    # that write -- see the module-level note on this pattern).
+    event = InboxStatusTransitionEvent(
+        conversation_id=conversation.id,
+        previous_status="open",
+        status="resolved",
+        reason_code="operator_change",
+        source=InboxAuditSource.status_command,
+        source_id=f"test:{uuid4()}",
+        evidence_grade=InboxAuditEvidenceGrade.native,
+        occurred_at=occurred_at,
+    )
+    db_session.add(event)
+    db_session.flush()
 
     outcome = override_service.consume_override_for_resolution(
         db_session,
@@ -579,14 +595,14 @@ def test_consume_override_happy_path_burns_grant(db_session):
         actor_person_id=None,
         resolution_reason="operator_change",
         override_grant_id=grant.grant_id,
-        transition_event_id=event_id,
+        transition_event_id=event.id,
         occurred_at=occurred_at,
     )
 
     assert outcome.grant_id == grant.grant_id
     row = db_session.get(InboxCompletionOverrideGrant, grant.grant_id)
     assert row.state == InboxCompletionOverrideGrantState.consumed.value
-    assert row.consumed_transition_event_id == event_id
+    assert row.consumed_transition_event_id == event.id
     assert row.consumed_resolution_reason == "operator_change"
 
 
