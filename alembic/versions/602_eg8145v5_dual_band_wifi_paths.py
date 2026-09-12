@@ -1,7 +1,7 @@
 """Correct EG8145V5 TR-098 and dual-band WiFi password targets.
 
-Revision ID: 599_eg8145v5_wifi
-Revises: 598_opening_corrections
+Revision ID: 602_eg8145v5_wifi
+Revises: 601_prepaid_draft_exception_no_invoice_identity
 Create Date: 2026-09-12
 """
 
@@ -15,8 +15,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "599_eg8145v5_wifi"
-down_revision: str | None = "598_opening_corrections"
+revision: str = "602_eg8145v5_wifi"
+down_revision: str | None = "601_prepaid_draft_exception_no_invoice_identity"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

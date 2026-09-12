@@ -107,7 +107,6 @@ class ErpMaterialRequestPayload(BaseModel):
     items: tuple[ErpMaterialRequestItemPayload, ...] = Field(min_length=1)
 
 
-
 @dataclass(frozen=True, slots=True)
 class MaterialStatusRefreshCandidate:
     """One bounded ERP reconciliation target with its comparison state."""

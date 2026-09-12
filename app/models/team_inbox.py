@@ -378,7 +378,7 @@ class InboxConversation(Base):
         UUID(as_uuid=True),
         ForeignKey("inbox_customer_completion_policy_versions.id", ondelete="RESTRICT"),
     )
-    # Written EXACTLY ONCE, by alembic/versions/602_inbox_completion_legacy_override.py's
+    # Written EXACTLY ONCE, by alembic/versions/604_inbox_completion_legacy_override.py's
     # upgrade(), stamped with a single captured now() reused for every backfilled row.
     # No application code may ever assign this column outside that migration --
     # enforced by tests/architecture/test_inbox_completion_override_boundary.py.
@@ -443,7 +443,7 @@ class InboxCustomerCompletionCutover(Base):
 
     Written exactly once, in the same migration transaction that stamps
     ``InboxConversation.completion_gate_precutover_at`` -- see
-    ``alembic/versions/602_inbox_completion_legacy_override.py``.
+    ``alembic/versions/604_inbox_completion_legacy_override.py``.
     """
 
     __tablename__ = "inbox_customer_completion_cutovers"

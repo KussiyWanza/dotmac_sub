@@ -45,8 +45,8 @@ Staging note: staging already ran 596's unconditional backfill with no
 marker. This migration is exactly what staging needs too -- a normal
 ``alembic upgrade head`` picks it up with no special handling.
 
-Revision ID: 602_inbox_completion_legacy_override
-Revises: 601_prepaid_draft_exception_no_invoice_identity
+Revision ID: 604_inbox_completion_legacy_override
+Revises: 603_material_cancel_pending
 Create Date: 2026-09-11
 """
 
@@ -61,8 +61,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision = "602_inbox_completion_legacy_override"
-down_revision = "601_prepaid_draft_exception_no_invoice_identity"
+revision = "604_inbox_completion_legacy_override"
+down_revision = "603_material_cancel_pending"
 branch_labels = None
 depends_on = None
 
