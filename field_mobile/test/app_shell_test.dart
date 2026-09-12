@@ -383,7 +383,10 @@ void main() {
       tester.element(find.byType(NavigationBar)),
     );
     container.invalidate(managerProfileProvider);
-    await tester.pumpAndSettle();
+    // The materials screen can retain active progress indicators while its
+    // repository-backed providers are unresolved, so use bounded pumps here.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
 
     expect(find.widgetWithText(AppBar, 'Materials'), findsOneWidget);
     expect(find.text('Materials'), findsWidgets);
