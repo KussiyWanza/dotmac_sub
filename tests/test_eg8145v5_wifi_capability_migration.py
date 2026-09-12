@@ -15,9 +15,9 @@ from alembic.operations import Operations
 def _load_migration():
     path = (
         Path(__file__).resolve().parents[1]
-        / "alembic/versions/602_eg8145v5_dual_band_wifi_paths.py"
+        / "alembic/versions/603_eg8145v5_dual_band_wifi_paths.py"
     )
-    spec = importlib.util.spec_from_file_location("migration_602", path)
+    spec = importlib.util.spec_from_file_location("migration_603", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

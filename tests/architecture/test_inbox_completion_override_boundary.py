@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 APP = ROOT / "app"
-MIGRATION_MARKER = "604_inbox_completion_legacy_override.py"
+MIGRATION_MARKER = "602_inbox_completion_legacy_override.py"
 
 
 def _assigns_named(tree: ast.AST, name: str) -> list[ast.Assign | ast.AnnAssign]:

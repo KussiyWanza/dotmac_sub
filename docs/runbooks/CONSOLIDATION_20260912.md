@@ -32,15 +32,15 @@ chain:
 1. `599_prepaid_draft_exception_period_evidence`
 2. `600_prepaid_funding_trigger_execution`
 3. `601_prepaid_draft_exception_no_invoice_identity`
-4. `602_eg8145v5_wifi`
-5. `603_material_cancel_pending`
-6. `604_inbox_completion_legacy_override`
+4. `602_inbox_completion_legacy_override`
+5. `603_eg8145v5_wifi`
+6. `604_material_cancel_pending`
 
-The unpublished network, material-cancellation, and inbox-override migrations
-were renumbered and linked before release; their schema operations and downgrade
-contracts are otherwise unchanged. A disposable database that used one of the
-superseded unpublished revision identifiers must be recreated rather than
-stamped forward.
+The unpublished network and material-cancellation migrations were renumbered and
+linked after the inbox-override migration already present on `main`; their schema
+operations and downgrade contracts are otherwise unchanged. A disposable
+database that used one of the superseded unpublished revision identifiers must
+be recreated rather than stamped forward.
 
 Before staging, rehearse both a fresh migrated PostgreSQL/PostGIS database and
 the deployed predecessor through the combined head. Use an explicit disposable

@@ -1,7 +1,7 @@
 """Add cancellation-pending material request state.
 
-Revision ID: 603_material_cancel_pending
-Revises: 602_eg8145v5_wifi
+Revision ID: 604_material_cancel_pending
+Revises: 603_eg8145v5_wifi
 Create Date: 2026-09-12
 """
 
@@ -11,8 +11,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "603_material_cancel_pending"
-down_revision: str | None = "602_eg8145v5_wifi"
+revision: str = "604_material_cancel_pending"
+down_revision: str | None = "603_eg8145v5_wifi"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
