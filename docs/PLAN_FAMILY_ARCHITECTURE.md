@@ -375,10 +375,10 @@ self-service eligibility has scoped the choices to the current plan family.
 Reseller assignments never hide an otherwise eligible same-family plan change
 for an existing customer.
 
-`billing_automation.py` already treats the catalog as the service-level tax
-authority (a positive `vat_percent` means taxable) and `CustomerTaxPolicy` as
-the customer-level authority. A "No VAT" offer would be a **third** authority
-over the same question and must not exist.
+Recurring billing, prepaid renewal, and the explicit subscription first-invoice
+action use `financial.billing_tax_resolution` for the same customer, address,
+account, catalog, and configured-default VAT precedence. A "No VAT" offer would
+be a **third** authority over the same question and must not exist.
 
 Pro bono as a discount rather than a ₦0 offer keeps the foregone revenue
 visible in reporting; a zero-priced offer hides it.

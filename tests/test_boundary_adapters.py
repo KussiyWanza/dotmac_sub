@@ -438,6 +438,45 @@ def test_billing_adapter_uses_default_currency_when_intent_omits_currency(
     assert captured["payment"].currency == "USD"
 
 
+def test_billing_adapter_preserves_typed_invoice_line_tax_application() -> None:
+    from app.models.billing import TaxApplication
+    from app.services.billing_adapter import (
+        BillingAdapter,
+        InvoiceIntent,
+        InvoiceLineIntent,
+    )
+
+    account_id = uuid4()
+    tax_rate_id = uuid4()
+    captured = {}
+
+    class FakeInvoices:
+        @staticmethod
+        def create_with_lines(db, payload, lines, *, commit=True):
+            del db, payload, commit
+            captured["line"] = lines[0]
+            return lines[0]
+
+    fake_billing = SimpleNamespace(invoices=FakeInvoices())
+    adapter = BillingAdapter(billing_service=fake_billing)
+
+    adapter.create_invoice_with_lines(
+        None,
+        InvoiceIntent(account_id=account_id),
+        [
+            InvoiceLineIntent(
+                description="Inclusive service charge",
+                unit_price=Decimal("100.00"),
+                tax_rate_id=tax_rate_id,
+                tax_application=TaxApplication.inclusive,
+            )
+        ],
+    )
+
+    assert captured["line"].tax_rate_id == tax_rate_id
+    assert captured["line"].tax_application is TaxApplication.inclusive
+
+
 def test_external_bss_adapter_builds_reference_payload() -> None:
     from app.models.external import ExternalEntityType
     from app.services.external_bss_adapter import (
