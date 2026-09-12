@@ -309,7 +309,6 @@ def _historical_partially_allocated_draft(
     db.add_all((successor_allocation, successor_consumption))
     db.flush()
     successor_allocation.consumption_ledger_entry_id = successor_consumption.id
-    successor_payment.settlement.unallocated_amount = Decimal("375.00")
     successor_entitlement = ServiceEntitlement(
         account_id=account.id,
         subscription_id=subscription.id,

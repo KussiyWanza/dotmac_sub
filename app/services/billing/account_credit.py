@@ -449,7 +449,11 @@ def _source_payments(
                 ),
             )
         room = min(
-            PaymentAllocations.available_amount(db, str(payment.id)),
+            PaymentAllocations.available_amount_at_reviewed_boundary_for_owner(
+                db,
+                str(payment.id),
+                funding_position_at=funding_position_at,
+            ),
             account_remaining[currency],
         )
         if room > 0:
@@ -781,14 +785,23 @@ class AccountCreditApplications:
                 amount=amount,
             )
             try:
-                allocation_preview = PaymentAllocations.preview(db, request)
-                confirmation = PaymentAllocations.stage_confirm(
-                    db,
-                    PaymentAllocationConfirm(
-                        **request.model_dump(),
-                        preview_fingerprint=allocation_preview.fingerprint,
-                        idempotency_key=_allocation_key(payment, invoice),
-                    ),
+                allocation_preview = (
+                    PaymentAllocations.preview_at_reviewed_boundary_for_owner(
+                        db,
+                        request,
+                        funding_position_at=funding_position_at,
+                    )
+                )
+                confirmation = (
+                    PaymentAllocations.stage_confirm_at_reviewed_boundary_for_owner(
+                        db,
+                        PaymentAllocationConfirm(
+                            **request.model_dump(),
+                            preview_fingerprint=allocation_preview.fingerprint,
+                            idempotency_key=_allocation_key(payment, invoice),
+                        ),
+                        funding_position_at=funding_position_at,
+                    )
                 )
             except HTTPException as exc:
                 raise AccountCreditApplicationError(
