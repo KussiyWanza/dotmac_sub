@@ -157,7 +157,7 @@ GoRouter buildRouter(Ref ref) {
             routes: [
               GoRoute(
                 path: '/materials',
-                builder: (_, _) => const _MaterialsSwitch(),
+                builder: (_, _) => const MaterialsScreen(),
               ),
             ],
           ),
@@ -289,44 +289,6 @@ class _ScheduleSwitch extends ConsumerWidget {
   }
 }
 
-class _MaterialsSwitch extends ConsumerWidget {
-  const _MaterialsSwitch();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return ref
-        .watch(managerProfileProvider)
-        .when(
-          data: (profile) => profile?.isManager == true
-              ? const ManagerDashboardScreen()
-              : const MaterialsScreen(),
-          loading: () =>
-              const Scaffold(body: Center(child: CircularProgressIndicator())),
-          error: (_, _) => Scaffold(
-            body: Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text(
-                      'Could not verify materials access.',
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 12),
-                    OutlinedButton(
-                      onPressed: () => ref.invalidate(managerProfileProvider),
-                      child: const Text('Retry'),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        );
-  }
-}
-
 class _ExpensesSwitch extends ConsumerWidget {
   const _ExpensesSwitch();
 
@@ -397,8 +359,9 @@ const _staffNav = [
   _NavItem(5, Icons.person_outline, 'Profile'),
 ];
 
-// Until staff-vs-manager capability is authoritative, omit the manager-hidden
-// Materials destination. A confirmed technician receives the full staff set.
+// Until staff-vs-manager capability is authoritative, omit destinations whose
+// labels or content depend on the resolved profile. Confirmed staff receive
+// their full requester-owned destination set.
 const _provisionalStaffNav = [
   _NavItem(0, Icons.assignment_outlined, 'Today'),
   _NavItem(1, Icons.map_outlined, 'Map'),

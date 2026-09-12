@@ -29,7 +29,7 @@ from app.models.customer_subledger import (
 from app.models.prepaid_funding import PrepaidOpeningFundingConsumption
 from app.models.subscriber import Subscriber, SubscriberStatus
 from app.models.system_user import SystemUser
-from app.services import customer_financial_ledger, prepaid_draft_reconciliation
+from app.services import customer_financial_ledger
 from app.services.billing.customer_subledger import resolve_position
 from app.services.billing.shadow_verification import (
     BillingShadowVerification,
@@ -498,20 +498,6 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
     assert corrected_renewal_preview.allowed is True
     assert corrected_renewal_preview.funding_before == Decimal("5562.50")
     db_session.commit()
-    original_draft_preview = (
-        prepaid_draft_reconciliation.preview_prepaid_draft_reconciliation
-    )
-
-    def traced_draft_preview(db, invoice_id):  # noqa: ANN001
-        draft_preview = original_draft_preview(db, invoice_id)
-        print(f"TRACED_DRAFT_PREVIEW={draft_preview!r}")
-        return draft_preview
-
-    monkeypatch.setattr(
-        prepaid_draft_reconciliation,
-        "preview_prepaid_draft_reconciliation",
-        traced_draft_preview,
-    )
     corrected_renewal = execute_reviewed_prepaid_service_renewal(
         db_session,
         ExecuteReviewedPrepaidServiceRenewalCommand(

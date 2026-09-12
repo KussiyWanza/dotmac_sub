@@ -2061,10 +2061,12 @@ def _settle_exact_payment_fundable_renewal(
     correct in round 1's review — but this owner never re-enters that
     function's generic write path for a document it constructs itself.
     """
-    from app.models.prepaid_funding import PrepaidFundingBaseline
     from app.services.billing.account_credit import (
         AccountCreditApplicationError,
         AccountCreditApplications,
+    )
+    from app.services.prepaid_draft_reconciliation import (
+        preview_payment_funding_for_owner,
     )
 
     try:
@@ -2086,24 +2088,15 @@ def _settle_exact_payment_fundable_renewal(
         # fingerprint covers — previewing before issuing would bind a
         # fingerprint to a status the invoice no longer has by the time
         # `apply_invoice_fully` re-derives and checks it.
-        funding_baseline = db.scalar(
-            select(PrepaidFundingBaseline).where(
-                PrepaidFundingBaseline.account_id == invoice.account_id,
-                PrepaidFundingBaseline.currency == (invoice.currency or "NGN").upper(),
-                PrepaidFundingBaseline.is_active.is_(True),
-            )
-        )
-        funding_position_at = (
-            funding_baseline.position_at if funding_baseline is not None else None
-        )
-        funding_preview = AccountCreditApplications.preview_invoice_funding(
-            db, invoice, funding_position_at=funding_position_at
+        funding_preview = preview_payment_funding_for_owner(
+            db,
+            invoice=invoice,
         )
         AccountCreditApplications.apply_invoice_fully(
             db,
             invoice,
             preview_fingerprint=funding_preview.fingerprint,
-            funding_position_at=funding_position_at,
+            funding_position_at=funding_preview.funding_position_at,
         )
     except (InvoiceOwnerError, AccountCreditApplicationError) as exc:
         # Money may already have partially moved inside this try block (e.g.
@@ -2168,6 +2161,7 @@ def _settle_reviewed_opening_fundable_renewal(
     )
     from app.services.billing.payments import finalize_invoice_application_for_owner
     from app.services.prepaid_draft_reconciliation import (
+        preview_payment_funding_for_owner,
         preview_reviewed_opening_funding_for_owner,
         stage_reviewed_opening_funding_consumption_for_owner,
     )
@@ -2186,7 +2180,7 @@ def _settle_reviewed_opening_fundable_renewal(
             ),
             apply_available_credit=False,
         )
-        funding = AccountCreditApplications.preview_invoice_funding(db, invoice)
+        funding = preview_payment_funding_for_owner(db, invoice=invoice)
         opening = preview_reviewed_opening_funding_for_owner(
             db, invoice=invoice, payment_funding=funding
         )
@@ -2219,6 +2213,7 @@ def _settle_reviewed_opening_fundable_renewal(
             db,
             invoice,
             preview_fingerprint=funding.fingerprint,
+            funding_position_at=funding.funding_position_at,
         )
         opening_amount = result.invoice_remaining
         consumption_id: UUID | None = None

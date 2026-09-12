@@ -339,7 +339,7 @@ void main() {
     expect(find.text('Manager site transport'), findsOneWidget);
   });
 
-  testWidgets('manager-hidden materials stay absent while capability loads', (
+  testWidgets('manager materials appear after capability loads', (
     tester,
   ) async {
     final profile = Completer<ManagerProfile?>();
@@ -360,12 +360,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Operations dashboard'), findsOneWidget);
-    expect(find.text('Materials'), findsNothing);
+    expect(find.text('Materials'), findsOneWidget);
   });
 
-  testWidgets('manager cannot remain on the technician materials branch', (
-    tester,
-  ) async {
+  testWidgets('manager retains requester materials history', (tester) async {
     ManagerProfile? profile;
     await tester.pumpWidget(_app(managerProfileLoader: () async => profile));
     await tester.pumpAndSettle();
@@ -387,8 +385,8 @@ void main() {
     container.invalidate(managerProfileProvider);
     await tester.pumpAndSettle();
 
-    expect(find.text('Operations dashboard'), findsOneWidget);
-    expect(find.text('Materials'), findsNothing);
+    expect(find.widgetWithText(AppBar, 'Materials'), findsOneWidget);
+    expect(find.text('Materials'), findsWidgets);
   });
 
   testWidgets('manager shell hides team map without dispatch read', (

@@ -287,15 +287,28 @@ def _historical_partially_allocated_draft(
     )
     db.add(successor_line)
     db.flush()
-    db.add(
-        PaymentAllocation(
-            payment_id=successor_payment.id,
-            invoice_id=successor_invoice.id,
-            amount=Decimal("37625.00"),
-            memo="Reviewed successor settlement",
-            is_active=True,
-        )
+    successor_allocation = PaymentAllocation(
+        payment_id=successor_payment.id,
+        invoice_id=successor_invoice.id,
+        amount=Decimal("37625.00"),
+        memo="Reviewed successor settlement",
+        is_active=True,
     )
+    successor_consumption = LedgerEntry(
+        account_id=account.id,
+        payment_id=successor_payment.id,
+        entry_type=LedgerEntryType.debit,
+        source=LedgerSource.other,
+        amount=Decimal("37625.00"),
+        currency="NGN",
+        memo="Canonical successor allocation consumption",
+        created_at=successor_invoice.paid_at,
+        is_active=True,
+        affects_customer_position=False,
+    )
+    db.add_all((successor_allocation, successor_consumption))
+    db.flush()
+    successor_allocation.consumption_ledger_entry_id = successor_consumption.id
     successor_payment.settlement.unallocated_amount = Decimal("375.00")
     successor_entitlement = ServiceEntitlement(
         account_id=account.id,

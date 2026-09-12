@@ -631,7 +631,7 @@ void main() {
     });
 
     expect(request.displayNumber, 'EXP-0001');
-    expect(request.statusLabel, 'rejected');
+    expect(request.statusLabel, 'Rejected');
     expect(request.totalAmount, 80.0);
     expect(request.requestedByName, 'Ada Technician');
     expect(request.rejectionReason, 'Missing receipt');
@@ -710,8 +710,8 @@ void main() {
     expect(find.widgetWithText(FilledButton, 'Request'), findsNothing);
     expect(find.text('Fuel for generator'), findsOneWidget);
     expect(find.text('Taxi to site'), findsOneWidget);
-    expect(find.text('submitted'), findsOneWidget);
-    expect(find.text('rejected'), findsOneWidget);
+    expect(find.text('Submitted'), findsOneWidget);
+    expect(find.text('Rejected'), findsOneWidget);
     expect(find.text('NGN 150.00'), findsOneWidget);
     expect(find.text('NGN 80.00'), findsOneWidget);
   });
@@ -761,7 +761,7 @@ void main() {
 
     expect(find.text('Fuel for site visit'), findsOneWidget);
     expect(find.text('Queued expense'), findsOneWidget);
-    expect(find.text('queued'), findsOneWidget);
+    expect(find.text('Queued'), findsOneWidget);
     expect(find.text(clientRef), findsNothing);
     expect(find.text('12345678'), findsNothing);
   });

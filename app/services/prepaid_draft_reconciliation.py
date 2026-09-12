@@ -756,17 +756,6 @@ def _reviewed_funding_position_at(
         if subledger_authority_active
         else None
     )
-    if opening is not None and opening.baseline_id is not None:
-        linked_baseline = db.get(PrepaidFundingBaseline, opening.baseline_id)
-        if linked_baseline is None:
-            _error(
-                "opening_funding_baseline_missing",
-                "The authoritative opening references missing funding evidence.",
-                account_id=str(account_id),
-                opening_position_id=str(opening.id),
-                baseline_id=str(opening.baseline_id),
-            )
-        return linked_baseline.position_at
     if opening is not None:
         return opening.occurred_at
 
@@ -794,6 +783,16 @@ def _funding_preview(
             currency=currency,
         ),
     )
+
+
+def preview_payment_funding_for_owner(
+    db: Session,
+    *,
+    invoice: Invoice,
+) -> AccountCreditInvoiceFundingPreview:
+    """Preview payment funding against the active reviewed position boundary."""
+
+    return _funding_preview(db, invoice)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1197,7 +1196,7 @@ def classify_prospective_prepaid_funding(
         currency=currency,
         balance_due=amount,
     )
-    funding = AccountCreditApplications.preview_invoice_funding(db, shell)
+    funding = _funding_preview(db, shell)
     opening = _reviewed_opening_funding_preview(
         db, invoice=shell, payment_funding=funding
     )
