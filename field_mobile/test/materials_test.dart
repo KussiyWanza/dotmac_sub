@@ -578,6 +578,7 @@ void main() {
       'number': 'MR-0001',
       'status': 'issued',
       'priority': 'high',
+      'notes': 'Required for the customer installation',
       'source_location': {'id': 'warehouse-1', 'name': 'Main warehouse'},
       'destination_location': {'id': 'van-2', 'name': 'Installer van'},
       'approval_notes': 'Approved for urgent install',
@@ -609,6 +610,10 @@ void main() {
     expect(find.text('Status flow'), findsOneWidget);
     expect(find.text('Main warehouse'), findsOneWidget);
     expect(find.text('Installer van'), findsOneWidget);
+    await tester.drag(find.byType(ListView), const Offset(0, -300));
+    await tester.pumpAndSettle();
+    expect(find.text('Description'), findsOneWidget);
+    expect(find.text('Required for the customer installation'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('2/2 approved · 1/2 issued'),
       200,

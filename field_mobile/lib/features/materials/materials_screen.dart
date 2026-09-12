@@ -251,6 +251,11 @@ class MaterialRequestDetailScreen extends ConsumerWidget {
               ],
               if (data.notes != null && data.notes!.isNotEmpty) ...[
                 const SizedBox(height: 16),
+                Text(
+                  'Description',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
                 Text(data.notes!),
               ],
               if (data.approvalNotes != null ||
