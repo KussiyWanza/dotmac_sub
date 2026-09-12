@@ -214,16 +214,7 @@ def _command_context(user: SystemUser, command_id=None) -> CommandContext:
     )
 
 
-def _submit_expense(
-    db_session,
-    user: SystemUser,
-    work_order: WorkOrder,
-    *,
-    request_id=None,
-    purpose="Transport",
-    notes=None,
-    items=None,
-):
+def _enable_expense_flow(db_session) -> None:
     flow = FieldErpSyncFlow.expense_claim.value
     ownership = (
         db_session.query(SyncFlowOwnership)
@@ -234,6 +225,19 @@ def _submit_expense(
         db_session.add(SyncFlowOwnership(flow=flow, owner=SyncFlowOwner.sub.value))
     else:
         ownership.owner = SyncFlowOwner.sub.value
+
+
+def _submit_expense(
+    db_session,
+    user: SystemUser,
+    work_order: WorkOrder,
+    *,
+    request_id=None,
+    purpose="Transport",
+    notes=None,
+    items=None,
+):
+    _enable_expense_flow(db_session)
     resolved_id = request_id or uuid4()
     user_id = user.id
     work_order_public_id = work_order.public_id
@@ -610,6 +614,7 @@ def test_expense_request_api(db_session, fake_uploads, monkeypatch):
     alpha = _vendor(db_session, "Alpha Logistics")
     zed = _vendor(db_session, "Zed Supplies")
     _vendor(db_session, "Inactive Vendor", is_active=False)
+    _enable_expense_flow(db_session)
     db_session.commit()
 
     app = FastAPI()
@@ -745,6 +750,7 @@ def test_atomic_expense_submission_replays_and_rejects_changed_payload(
     _profile(db_session, user)
     subscriber = _subscriber(db_session)
     _work_order(db_session, subscriber, crm_work_order_id="wo-expense-atomic")
+    _enable_expense_flow(db_session)
     db_session.commit()
 
     app = FastAPI()

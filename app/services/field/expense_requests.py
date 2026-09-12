@@ -1634,7 +1634,11 @@ def _expense_request_views(
     return tuple(
         _expense_request_view(
             request,
-            requested_by_name=requester_names.get(requester_user_ids.get(request.id)),
+            requested_by_name=(
+                requester_names.get(requester_user_ids[request.id])
+                if request.id in requester_user_ids
+                else None
+            ),
             delivery=deliveries.get(request.id),
             payment_delivery=payment_deliveries.get(request.id),
         )

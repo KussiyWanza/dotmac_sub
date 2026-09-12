@@ -95,9 +95,9 @@ class ExpenseFormContext {
   final ExpenseProfileDestination profileDestination;
   factory ExpenseFormContext.fromJson(Map<String, dynamic> json) =>
       ExpenseFormContext(
-        approvers: _mapList(json['approvers'])
-            .map(ExpenseApprover.fromJson)
-            .toList(),
+        approvers: _mapList(
+          json['approvers'],
+        ).map(ExpenseApprover.fromJson).toList(),
         banks: _mapList(json['banks']).map(ExpenseBank.fromJson).toList(),
         profileDestination: ExpenseProfileDestination.fromJson(
           (json['profile_destination'] as Map).cast<String, dynamic>(),

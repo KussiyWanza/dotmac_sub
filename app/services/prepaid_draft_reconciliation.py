@@ -735,40 +735,63 @@ def _active_positive_lines(db: Session, invoice_id: UUID) -> list[InvoiceLine]:
     )
 
 
-def _funding_preview(
+def _reviewed_funding_position_at(
     db: Session,
-    invoice: Invoice,
-) -> AccountCreditInvoiceFundingPreview:
-    currency = (invoice.currency or "NGN").upper()
+    *,
+    account_id: UUID,
+    currency: str,
+) -> datetime | None:
+    """Resolve the immutable boundary represented by reviewed opening evidence."""
+
     subledger_authority_active = (
         db.scalar(select(CustomerSubledgerAuthorityCutover.id).limit(1)) is not None
     )
     opening = (
         db.scalar(
             select(CustomerSubledgerOpeningPosition).where(
-                CustomerSubledgerOpeningPosition.account_id == invoice.account_id,
+                CustomerSubledgerOpeningPosition.account_id == account_id,
                 CustomerSubledgerOpeningPosition.currency == currency,
             )
         )
         if subledger_authority_active
         else None
     )
+    if opening is not None and opening.baseline_id is not None:
+        linked_baseline = db.get(PrepaidFundingBaseline, opening.baseline_id)
+        if linked_baseline is None:
+            _error(
+                "opening_funding_baseline_missing",
+                "The authoritative opening references missing funding evidence.",
+                account_id=str(account_id),
+                opening_position_id=str(opening.id),
+                baseline_id=str(opening.baseline_id),
+            )
+        return linked_baseline.position_at
+    if opening is not None:
+        return opening.occurred_at
+
     baseline = db.scalar(
         select(PrepaidFundingBaseline).where(
-            PrepaidFundingBaseline.account_id == invoice.account_id,
+            PrepaidFundingBaseline.account_id == account_id,
             PrepaidFundingBaseline.currency == currency,
             PrepaidFundingBaseline.is_active.is_(True),
         )
     )
+    return baseline.position_at if baseline is not None else None
+
+
+def _funding_preview(
+    db: Session,
+    invoice: Invoice,
+) -> AccountCreditInvoiceFundingPreview:
+    currency = (invoice.currency or "NGN").upper()
     return AccountCreditApplications.preview_invoice_funding(
         db,
         invoice,
-        funding_position_at=(
-            opening.occurred_at
-            if opening is not None
-            else baseline.position_at
-            if baseline is not None
-            else None
+        funding_position_at=_reviewed_funding_position_at(
+            db,
+            account_id=invoice.account_id,
+            currency=currency,
         ),
     )
 
@@ -833,32 +856,10 @@ def _historical_partial_allocation_evidence(
     """Prove one exact legacy allocation already absorbed by the opening."""
 
     currency = (invoice.currency or "NGN").upper()
-    subledger_authority_active = (
-        db.scalar(select(CustomerSubledgerAuthorityCutover.id).limit(1)) is not None
-    )
-    opening = (
-        db.scalar(
-            select(CustomerSubledgerOpeningPosition).where(
-                CustomerSubledgerOpeningPosition.account_id == invoice.account_id,
-                CustomerSubledgerOpeningPosition.currency == currency,
-            )
-        )
-        if subledger_authority_active
-        else None
-    )
-    baseline = db.scalar(
-        select(PrepaidFundingBaseline).where(
-            PrepaidFundingBaseline.account_id == invoice.account_id,
-            PrepaidFundingBaseline.currency == currency,
-            PrepaidFundingBaseline.is_active.is_(True),
-        )
-    )
-    boundary_value = (
-        opening.occurred_at
-        if opening is not None
-        else baseline.position_at
-        if baseline is not None
-        else None
+    boundary_value = _reviewed_funding_position_at(
+        db,
+        account_id=invoice.account_id,
+        currency=currency,
     )
     if boundary_value is None:
         return None

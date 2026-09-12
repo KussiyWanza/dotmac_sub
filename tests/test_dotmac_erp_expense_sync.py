@@ -54,6 +54,7 @@ from app.services.field.expense_recovery import (
 from app.services.field.expense_requests import (
     ApproveFieldExpenseRequest,
     ExpenseErpSyncStatus,
+    ExpenseReceiptUploadInput,
     ExpenseRequestLineInput,
     ExpenseWorkOrderIdentity,
     FieldExpenseRequestError,
@@ -240,6 +241,43 @@ def _receipt_attachment(
     db.add(attachment)
     db.flush()
     return attachment
+
+
+def _enable_receipt_staging(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _StageUploads:
+        def __init__(self) -> None:
+            self.contents: dict[UUID, bytes] = {}
+
+        def stage_upload(self, **kwargs):
+            content = kwargs["data"]
+            stored = StoredFile(
+                entity_type=kwargs["entity_type"],
+                entity_id=kwargs["entity_id"],
+                original_filename=kwargs["original_filename"],
+                storage_key_or_relative_path=f"attachments/{uuid4().hex}",
+                file_size=len(content),
+                content_type=kwargs["content_type"],
+                checksum=hashlib.sha256(content).hexdigest(),
+                storage_provider="s3",
+                uploaded_by=kwargs["uploaded_by"],
+                owner_subscriber_id=kwargs["owner_subscriber_id"],
+            )
+            kwargs["db"].add(stored)
+            kwargs["db"].flush()
+            self.contents[stored.id] = content
+            return stored
+
+        def stream_file(self, stored):
+            return type(
+                "Stream",
+                (),
+                {
+                    "chunks": (self.contents[stored.id],),
+                    "content_type": stored.content_type,
+                },
+            )()
+
+    monkeypatch.setattr(attachments_module, "file_uploads", _StageUploads())
 
 
 def _make_submitted_request(
@@ -764,7 +802,7 @@ def test_claim_bound_destination_accepts_complete_canonical_identity_path(
     assert client.status_calls == [str(source_claim_id)]
 
 
-def test_claim_bound_fake_rejects_changed_draft_source_claim_id(
+def test_local_delivery_guard_rejects_changed_draft_source_claim_id(
     db_session,
     monkeypatch,
 ):
@@ -787,7 +825,8 @@ def test_claim_bound_fake_rejects_changed_draft_source_claim_id(
     db_session.refresh(delivery)
     db_session.refresh(request)
     assert changed_source_claim_id != source_claim_id
-    assert client.rejected_draft_claim_ids == [changed_source_claim_id]
+    assert client.draft_claim_ids == []
+    assert client.rejected_draft_claim_ids == []
     assert delivered.dead == 1
     assert delivery.status == FieldErpSyncStatus.dead.value
     assert request.expense_claim_reference is None
@@ -1154,22 +1193,34 @@ def test_partial_receipt_failure_reuses_claim_and_uploads_only_missing_receipts(
 ):
     _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.expense_claim.value})
     enable_erp_capability(db_session, ERP_OUTBOX_CAPABILITY)
+    _enable_receipt_staging(monkeypatch)
+    receipt_client_refs = (uuid4(), uuid4())
     request = _make_submitted_request(
         db_session,
         items=[
-            _items(description="Taxi")[0],
-            _items(description="Hotel", amount="5000.00")[0],
+            _items(
+                description="Taxi",
+                receipt_upload=ExpenseReceiptUploadInput(
+                    file_name="taxi.pdf",
+                    mime_type="application/pdf",
+                    content=b"taxi receipt",
+                    client_ref=receipt_client_refs[0],
+                ),
+            )[0],
+            _items(
+                description="Hotel",
+                amount="5000.00",
+                receipt_upload=ExpenseReceiptUploadInput(
+                    file_name="hotel.pdf",
+                    mime_type="application/pdf",
+                    content=b"hotel receipt",
+                    client_ref=receipt_client_refs[1],
+                ),
+            )[0],
         ],
     )
-    attachment_ids = (uuid4(), uuid4())
-    for item, attachment_id in zip(request.items, attachment_ids, strict=True):
-        _receipt_attachment(
-            db_session,
-            request,
-            attachment_id,
-            file_name=f"{attachment_id}.pdf",
-        )
-        item.receipt_attachment_id = attachment_id
+    attachment_ids = tuple(item.receipt_attachment_id for item in request.items)
+    assert all(attachment_id is not None for attachment_id in attachment_ids)
 
     def resolve_receipt(_db, *, work_order_id, attachment_id, allowed_owner_ids):
         assert work_order_id == request.work_order_mirror_id
@@ -1235,15 +1286,20 @@ def test_permanent_receipt_failure_is_dead_with_safe_diagnostics(
 ):
     _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.expense_claim.value})
     enable_erp_capability(db_session, ERP_OUTBOX_CAPABILITY)
-    request = _make_submitted_request(db_session)
-    attachment_id = uuid4()
-    _receipt_attachment(
+    _enable_receipt_staging(monkeypatch)
+    request = _make_submitted_request(
         db_session,
-        request,
-        attachment_id,
-        file_name="private-person-name.pdf",
+        items=_items(
+            receipt_upload=ExpenseReceiptUploadInput(
+                file_name="private-person-name.pdf",
+                mime_type="application/pdf",
+                content=b"private receipt bytes",
+                client_ref=uuid4(),
+            )
+        ),
     )
-    request.items[0].receipt_attachment_id = attachment_id
+    attachment_id = request.items[0].receipt_attachment_id
+    assert attachment_id is not None
     content = b"private receipt bytes"
     monkeypatch.setattr(
         attachments_module,
