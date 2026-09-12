@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, date, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy.orm import Session
 
 import app.models  # noqa: F401 — registers every model on Base.metadata
 from app.models.dispatch import TechnicianProfile
@@ -35,6 +36,13 @@ from app.services.backoffice import BackofficeDeliveryView, ExpenseCategoryView
 from app.services.db_session_adapter import db_session_adapter
 from app.services.dotmac_erp import expense_sync, outbox
 from app.services.dotmac_erp.client import DotMacERPError, DotMacERPTransientError
+from app.services.dotmac_erp.expense_form_contracts import (
+    ExpenseApproverOption,
+    ExpenseDestinationMode,
+    InspectExpenseDestination,
+    VerifiedExpenseDestination,
+    VerifyExpenseDestination,
+)
 from app.services.field import attachments as attachments_module
 from app.services.field import expense_recovery as expense_recovery_module
 from app.services.field import expense_requests as expense_requests_module
@@ -52,16 +60,25 @@ from app.services.field.expense_requests import (
     InitiateFieldExpensePayment,
     RecoverExpenseDelivery,
     RejectFieldExpenseRequest,
+    ResolveFieldExpenseSubmissionContext,
     SelectedExpenseApprover,
     SubmitFieldExpenseRequest,
     VerifiedExpenseDestinationInput,
+    VerifyFieldExpenseDestination,
     approve_field_expense_request_command,
     initiate_field_expense_payment_command,
     recover_expense_delivery,
     reject_field_expense_request_command,
+    resolve_field_expense_submission_context,
     submit_field_expense_request_command,
+    verify_field_expense_destination,
 )
-from app.services.integrations.backoffice_contracts import ERP_OUTBOX_CAPABILITY
+from app.services.integrations.backoffice_contracts import (
+    ERP_OUTBOX_CAPABILITY,
+    ErpExpenseClaimDraftCommand,
+    ErpExpenseClaimDraftOutcome,
+    ErpExpenseDraftLineOutcome,
+)
 from app.services.integrations.diagnostics import safe_diagnostic
 from app.services.owner_commands import CommandContext
 from tests.integration_platform_helpers import enable_erp_capability
@@ -388,7 +405,10 @@ class _FakeERPClient:
         self.posts.append(
             {
                 "path": "receipt",
-                "payload": {"source_attachment_id": str(command.source_attachment_id)},
+                "payload": {
+                    "source_claim_id": str(command.source_claim_id),
+                    "source_attachment_id": str(command.source_attachment_id),
+                },
                 "idempotency_key": command.idempotency_key,
             }
         )
@@ -419,6 +439,172 @@ class _FakeERPClient:
 
     def close(self):
         self.closed = True
+
+
+class _ClaimBoundFakeERPClient(_FakeERPClient):
+    """Fake ERP that enforces the real destination-token claim binding."""
+
+    def __init__(self, *, requester: SystemUser) -> None:
+        super().__init__()
+        self.requester = requester
+        self.approver_erp_id = uuid4()
+        self.destination_claims: dict[str, tuple[UUID, VerifiedExpenseDestination]] = {}
+        self.verify_claim_ids: list[UUID] = []
+        self.inspect_claim_ids: list[UUID] = []
+        self.draft_claim_ids: list[UUID] = []
+        self.rejected_draft_claim_ids: list[UUID] = []
+
+    def get_expense_approvers(
+        self, *, requested_by_email: str
+    ) -> tuple[ExpenseApproverOption, ...]:
+        assert requested_by_email == self.requester.email
+        return (
+            ExpenseApproverOption(
+                employee_id=self.approver_erp_id,
+                display_name=self.requester.display_name,
+                email=self.requester.email,
+            ),
+        )
+
+    def verify_expense_destination(
+        self, command: VerifyExpenseDestination
+    ) -> VerifiedExpenseDestination:
+        assert command.requested_by_email == self.requester.email
+        now = datetime.now(UTC)
+        verified = VerifiedExpenseDestination(
+            destination_token=f"claim-bound-token:{command.source_claim_id}",
+            mode=command.mode,
+            bank_code="058",
+            bank_name="Example Bank",
+            masked_account_number="******6789",
+            verified_beneficiary_name=self.requester.display_name,
+            verified_at=now,
+            expires_at=now + timedelta(minutes=10),
+        )
+        self.verify_claim_ids.append(command.source_claim_id)
+        self.destination_claims[verified.destination_token] = (
+            command.source_claim_id,
+            verified,
+        )
+        return verified
+
+    def inspect_expense_destination(
+        self, command: InspectExpenseDestination
+    ) -> VerifiedExpenseDestination:
+        self.inspect_claim_ids.append(command.source_claim_id)
+        binding = self.destination_claims.get(command.destination_token)
+        if binding is None or binding[0] != command.source_claim_id:
+            raise DotMacERPError(
+                "expense_destination_mismatch",
+                status_code=422,
+                response={"code": "expense_destination_mismatch"},
+            )
+        return binding[1]
+
+    def create_expense_claim_draft(
+        self,
+        command: ErpExpenseClaimDraftCommand,
+        *,
+        idempotency_key: str,
+    ) -> ErpExpenseClaimDraftOutcome:
+        binding = self.destination_claims.get(command.payment_destination_token or "")
+        if binding is None or binding[0] != command.source_claim_id:
+            self.rejected_draft_claim_ids.append(command.source_claim_id)
+            raise DotMacERPError(
+                "expense_destination_mismatch",
+                status_code=422,
+                response={"code": "expense_destination_mismatch"},
+            )
+        self.draft_claim_ids.append(command.source_claim_id)
+        outcome = super().create_expense_claim_draft(
+            command,
+            idempotency_key=idempotency_key,
+        )
+        return ErpExpenseClaimDraftOutcome(
+            claim_id=outcome.claim_id,
+            claim_number=outcome.claim_number,
+            status=outcome.status,
+            source_claim_id=command.source_claim_id,
+            items=tuple(
+                ErpExpenseDraftLineOutcome(
+                    source_line_id=item.source_line_id,
+                    item_id=item.item_id,
+                )
+                for item in outcome.items
+            ),
+        )
+
+
+def _submit_with_claim_bound_destination(
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[FieldExpenseRequest, _ClaimBoundFakeERPClient, UUID]:
+    """Exercise verification and inspection before the real submit owner."""
+    crm_person_id = f"crm-claim-bound-{uuid4().hex[:8]}"
+    requester = _user(db, "ClaimBound")
+    _profile(db, requester, crm_person_id=crm_person_id)
+    subscriber = _subscriber(db)
+    work_order = _work_order(
+        db,
+        subscriber,
+        crm_work_order_id=f"wo-claim-bound-{uuid4().hex[:8]}",
+        assigned_to_crm_person_id=crm_person_id,
+    )
+    source_claim_id = uuid4()
+    client = _ClaimBoundFakeERPClient(requester=requester)
+    monkeypatch.setattr(
+        expense_requests_module,
+        "capability_client",
+        lambda _db: client,
+    )
+
+    verified = verify_field_expense_destination(
+        db,
+        VerifyFieldExpenseDestination(
+            requester_system_user_id=requester.id,
+            source_claim_id=source_claim_id,
+            mode=ExpenseDestinationMode.ERP_PROFILE,
+            bank_code=None,
+            account_number=None,
+            beneficiary_name=None,
+        ),
+    )
+    resolved = resolve_field_expense_submission_context(
+        db,
+        ResolveFieldExpenseSubmissionContext(
+            requester_system_user_id=requester.id,
+            selected_approver_erp_id=client.approver_erp_id,
+            source_claim_id=source_claim_id,
+            destination_token=verified.destination_token,
+        ),
+    )
+    db.commit()
+    outcome = submit_field_expense_request_command(
+        db,
+        SubmitFieldExpenseRequest(
+            context=CommandContext(
+                command_id=source_claim_id,
+                correlation_id=source_claim_id,
+                actor=f"user:{requester.id}",
+                scope="field:expense_requests:write",
+                reason="test claim-bound expense submission",
+                idempotency_key=str(source_claim_id),
+            ),
+            requester_person_id=requester.id,
+            work_order=ExpenseWorkOrderIdentity(public_id=work_order.public_id),
+            request_id=source_claim_id,
+            purpose="Claim-bound transport",
+            expense_date=date.today(),
+            currency="NGN",
+            notes=None,
+            items=tuple(ExpenseRequestLineInput(**item) for item in _items()),
+            selected_approver=resolved.selected_approver,
+            payment_destination=resolved.payment_destination,
+        ),
+    )
+    request = db.get(FieldExpenseRequest, outcome.id)
+    assert request is not None
+    return request, client, source_claim_id
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +640,136 @@ def test_payload_mapping_matches_neutral_erp_contract(db_session):
     assert line["expense_date"] == date.today().isoformat()
     assert line["vendor_name"] == "Rider"
     assert line["notes"] == "Urgent part pickup"
+
+
+def test_claim_bound_destination_accepts_complete_canonical_identity_path(
+    db_session,
+    monkeypatch,
+):
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.expense_claim.value})
+    request, client, source_claim_id = _submit_with_claim_bound_destination(
+        db_session,
+        monkeypatch,
+    )
+
+    assert request.id == source_claim_id
+    assert request.client_ref == source_claim_id
+    assert client.verify_claim_ids == [source_claim_id]
+    assert client.inspect_claim_ids == [source_claim_id]
+
+    _approve(db_session, request)
+    delivery = _outbox_rows(db_session, request)[0]
+    assert delivery.payload["source_claim_id"] == str(source_claim_id)
+    assert delivery.idempotency_key == (f"exp-{source_claim_id}-approved-release-v2")
+
+    delivered = outbox.deliver_pending(db_session, client=client)
+
+    assert delivered.accepted == 1
+    assert client.draft_claim_ids == [source_claim_id]
+    approval = next(post for post in client.posts if post["path"].endswith("/approve"))
+    assert approval["payload"]["source_claim_id"] == str(source_claim_id)
+
+    db_session.refresh(request)
+    client._status.append(
+        {
+            "claim_id": request.expense_claim_reference,
+            "claim_number": request.expense_claim_number,
+            "status": "approved",
+            "source_claim_id": str(source_claim_id),
+        }
+    )
+    refreshed = expense_sync.refresh_expense_claim_statuses(
+        db_session,
+        client=client,
+    )
+
+    assert refreshed["processed"] == 1
+    assert client.status_calls == [str(source_claim_id)]
+
+
+def test_claim_bound_fake_rejects_changed_draft_source_claim_id(
+    db_session,
+    monkeypatch,
+):
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.expense_claim.value})
+    request, client, source_claim_id = _submit_with_claim_bound_destination(
+        db_session,
+        monkeypatch,
+    )
+    _approve(db_session, request)
+    delivery = _outbox_rows(db_session, request)[0]
+    changed_source_claim_id = uuid4()
+    delivery.payload = {
+        **delivery.payload,
+        "source_claim_id": str(changed_source_claim_id),
+    }
+    db_session.commit()
+
+    delivered = outbox.deliver_pending(db_session, client=client)
+
+    db_session.refresh(delivery)
+    db_session.refresh(request)
+    assert changed_source_claim_id != source_claim_id
+    assert client.rejected_draft_claim_ids == [changed_source_claim_id]
+    assert delivered.dead == 1
+    assert delivery.status == FieldErpSyncStatus.dead.value
+    assert request.expense_claim_reference is None
+
+
+def test_approval_rejects_legacy_token_bearing_claim_identity_mismatch(
+    db_session,
+):
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.expense_claim.value})
+    request = _make_submitted_request(db_session)
+    request_id = request.id
+    request.client_ref = uuid4()
+    db_session.commit()
+
+    with pytest.raises(FieldExpenseRequestError) as raised:
+        _approve(db_session, request)
+
+    persisted = db_session.get(FieldExpenseRequest, request_id)
+    assert persisted is not None
+    assert raised.value.code == (
+        "operations.expense_requests.claim_identity_inconsistent"
+    )
+    assert persisted.status == "submitted"
+    assert persisted.approved_at is None
+    assert persisted.payment_destination_locked_at is None
+    assert _outbox_rows(db_session, persisted) == []
+
+
+def test_payment_does_not_enqueue_for_legacy_claim_identity_mismatch(db_session):
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.expense_claim.value})
+    request = _make_submitted_request(db_session)
+    manager = _user(db_session, "MismatchedPaymentManager")
+    request.client_ref = uuid4()
+    request.status = "approved"
+    request.approved_at = datetime.now(UTC)
+    command_id = uuid4()
+    db_session.commit()
+
+    with pytest.raises(FieldExpenseRequestError) as raised:
+        initiate_field_expense_payment_command(
+            db_session,
+            command=InitiateFieldExpensePayment(
+                context=CommandContext(
+                    command_id=command_id,
+                    correlation_id=command_id,
+                    actor=f"user:{manager.id}",
+                    scope="operations:expense_request:pay",
+                    reason=f"pay_expense_request:{request.id}",
+                    idempotency_key=str(command_id),
+                ),
+                expense_request_id=request.id,
+                manager_system_user_id=manager.id,
+            ),
+        )
+
+    assert raised.value.code == (
+        "operations.expense_requests.claim_identity_inconsistent"
+    )
+    assert _outbox_rows(db_session, request) == []
 
 
 def test_approval_release_idempotency_key_is_stable(db_session):
@@ -766,6 +1082,9 @@ def test_partial_receipt_failure_reuses_claim_and_uploads_only_missing_receipts(
         str(attachment_ids[1]),
         str(attachment_ids[1]),
     ]
+    assert {entry["payload"]["source_claim_id"] for entry in receipt_posts} == {
+        str(request.id)
+    }
     assert len(approval_posts) == 1
     assert row.erp_response["uploaded_source_attachment_ids"] == sorted(
         str(value) for value in attachment_ids

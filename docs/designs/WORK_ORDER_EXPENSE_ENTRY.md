@@ -60,6 +60,15 @@ the verified account snapshot on the claim. Approval locks the snapshot, and
 payment rejects any attempt to replace it. The override never updates the
 employee's ERP profile.
 
+The mobile-generated client reference is the canonical claim UUID. New
+submissions persist that same UUID as both `FieldExpenseRequest.id` and
+`client_ref`; destination verification and inspection, approved draft creation,
+receipt delivery, ERP approval, delivery/payment idempotency keys, and status
+polling all use `FieldExpenseRequest.id`. Before changing approval state or
+staging delivery, the expense owner rejects a token-bearing historical request
+whose `client_ref` differs from its primary key. The transaction rolls back and
+leaves it submitted for a separate typed, audited repair decision.
+
 Receipt bytes use the existing private attachment storage owner. Metadata is
 staged flush-only inside the expense command transaction. A deterministic
 per-line receipt client reference makes a repeated claim submission safe. The

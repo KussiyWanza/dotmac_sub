@@ -3175,9 +3175,14 @@ UUIDs. Routes and templates only transport and render the owner-defined scope.
     requester need not be that technician. The projection owns field errors,
     action and
     delivery-state wording, while `operations.expense_requests` locks the exact
-    authorized work order and atomically writes the submitted claim, receipt
-    metadata, and durable ERP outbox consequence. Sent transport evidence is
-    shown as awaiting ERP acceptance, never as accepted.
+    authorized work order and atomically writes the submitted claim and receipt
+    metadata without an ERP delivery event. New claims use the mobile client
+    reference as both `FieldExpenseRequest.id` and `client_ref`, preserving one
+    claim UUID across destination verification, submission, approval delivery,
+    receipts, idempotency, and status polling. Manager approval fails closed on
+    token-bearing identity drift and is the sole transition that atomically
+    stages the durable ERP release event. Sent transport evidence is shown as
+    awaiting ERP acceptance, never as accepted.
 
 15b. Field requester expense history is resolved by
     `operations.expense_requests` from the authenticated SystemUser, its exact

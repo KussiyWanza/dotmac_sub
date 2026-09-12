@@ -30,6 +30,11 @@
 5. Confirm the ERP accepts stable Sub claim and line IDs, the
    `exp-{request_id}-approved-release-v2` draft key, and receipt keys derived
    from contract version, expense, line, and attachment.
+   For every new token-bearing canary, confirm the destination-verification
+   `source_claim_id`, submitted `client_ref`, `FieldExpenseRequest.id`, draft and
+   receipt `source_claim_id`, approval `source_claim_id`, and status-poll key are
+   the same UUID. A mismatch must block manager approval before any ERP event is
+   staged.
 6. Confirm the previous expense sender is disabled before changing ownership.
 7. Verify every technician email and intended approver email has one exact
    active match across Sub and ERP. Verify at least one eligible ERP approver,

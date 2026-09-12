@@ -50,6 +50,89 @@ def test_every_field_expense_request_constructor_is_in_the_registered_owner() ->
     )
 
 
+def test_expense_owner_persists_and_guards_one_canonical_claim_identity() -> None:
+    source = (ROOT / OWNER).read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(OWNER))
+    constructors = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "FieldExpenseRequest"
+    ]
+    assert len(constructors) == 1
+    keywords = {keyword.arg: keyword.value for keyword in constructors[0].keywords}
+    for field_name in ("id", "client_ref"):
+        value = keywords[field_name]
+        assert isinstance(value, ast.Attribute)
+        assert isinstance(value.value, ast.Name)
+        assert (value.value.id, value.attr) == ("command", "request_id")
+
+    approval = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "approve_field_expense_request_command"
+    )
+    guard_lines = [
+        node.lineno
+        for node in ast.walk(approval)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_require_consistent_claim_identity"
+    ]
+    approval_mutation_lines = [
+        node.lineno
+        for node in ast.walk(approval)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "request"
+            and target.attr == "status"
+            for target in node.targets
+        )
+    ]
+    enqueue_lines = [
+        node.lineno
+        for node in ast.walk(approval)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_enqueue_decision_backoffice"
+    ]
+    assert len(guard_lines) == 1
+    assert approval_mutation_lines and enqueue_lines
+    assert guard_lines[0] < min(approval_mutation_lines)
+    assert guard_lines[0] < min(enqueue_lines)
+
+    for function_name, enqueue_name in (
+        ("recover_expense_delivery", "stage_expense_delivery_recovery"),
+        ("initiate_field_expense_payment_command", "enqueue_expense_payment"),
+    ):
+        function = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == function_name
+        )
+        function_guard_lines = [
+            node.lineno
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_require_consistent_claim_identity"
+        ]
+        function_enqueue_lines = [
+            node.lineno
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == enqueue_name
+        ]
+        assert len(function_guard_lines) == 1
+        assert function_enqueue_lines
+        assert function_guard_lines[0] < min(function_enqueue_lines)
+
+
 def test_legacy_generic_expense_writers_remain_closed() -> None:
     source = (ROOT / OWNER).read_text(encoding="utf-8")
     adapter = (ROOT / "app/api/field/expense_requests.py").read_text(encoding="utf-8")

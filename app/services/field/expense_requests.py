@@ -914,6 +914,7 @@ def submit_field_expense_request_command(
             )
             item["receipt_attachment_id"] = receipt.id
         request = FieldExpenseRequest(
+            id=command.request_id,
             work_order_mirror_id=row.id,
             requested_by_technician_id=profile.id if profile else None,
             requested_by_person_id=system_user.person_party_id or system_user.id,
@@ -986,6 +987,7 @@ def approve_field_expense_request_command(
                 code="operations.expense_requests.invalid_transition",
                 message="Only submitted expense requests can be approved.",
             )
+        _require_consistent_claim_identity(request)
         if (
             request.selected_approver_system_user_id is not None
             and request.selected_approver_system_user_id
@@ -1051,6 +1053,21 @@ def approve_field_expense_request_command(
         context=command.context,
         operation=operation,
     )
+
+
+def _require_consistent_claim_identity(request: FieldExpenseRequest) -> None:
+    """Fail closed when a claim-bound destination uses a different local ID."""
+    if (
+        request.payment_destination_token is not None
+        and request.client_ref != request.id
+    ):
+        raise FieldExpenseRequestError(
+            code="operations.expense_requests.claim_identity_inconsistent",
+            message=(
+                "This expense has inconsistent claim identity and cannot continue to ERP."
+            ),
+            details={"expense_request_id": str(request.id)},
+        )
 
 
 def reject_field_expense_request_command(
@@ -1202,6 +1219,7 @@ def recover_expense_delivery(
                 code="operations.expense_requests.recovery_state_invalid",
                 message="The expense recovery evidence is no longer available.",
             )
+        _require_consistent_claim_identity(request)
         staged = stage_expense_delivery_recovery(
             db,
             dead_event_id=command.dead_event_id,
@@ -1255,6 +1273,7 @@ def initiate_field_expense_payment_command(
                 code="operations.expense_requests.invalid_transition",
                 message="Only approved expense requests can be paid.",
             )
+        _require_consistent_claim_identity(request)
         current = expense_payment_projection(request)
         if current.status in {
             "queued",

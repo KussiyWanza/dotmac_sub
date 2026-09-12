@@ -918,8 +918,12 @@ SERVICES: tuple[SOTService, ...] = (
             "Rejection remains local. Explicit previewed recovery appends a linked "
             "replacement without changing the original dead event. A "
             "separately authorized payment command stages reimbursement initiation, "
-            "while ERP remains the payment and settlement authority. The client reference and "
-            "normalized fingerprint make retries safe. The vendor picker remains "
+            "while ERP remains the payment and settlement authority. New claims use one "
+            "canonical UUID for the client reference, local request primary key, "
+            "claim-bound destination verification, ERP delivery, and status polling. "
+            "Approval fails closed before mutation or enqueue when a token-bearing "
+            "legacy request has inconsistent claim identity. The canonical client "
+            "reference and normalized fingerprint make retries safe. The vendor picker remains "
             "read-only and projects active vendor labels for expense entry. ERP "
             "owns eligible approvers, bank identity, account verification, and the "
             "opaque claim-bound destination token. Sub stores no raw account number; "
@@ -1184,9 +1188,11 @@ SERVICES: tuple[SOTService, ...] = (
                 boundary=(
                     "Create, submit, optional receipt metadata, and work-order activity "
                     "marking complete in one owner transaction without ERP staging. "
+                    "New request identity equals its client reference. "
                     "Receipt storage is a flush-only participant. Manager approval "
                     "requires the selected approver, locks the verified payment "
-                    "snapshot, and stages the sole ERP release intent in the "
+                    "snapshot, validates canonical claim identity, and stages the sole "
+                    "ERP release intent in the "
                     "same transaction. Rejection and cancellation remain local; payment "
                     "stages a later ordered intent. Previewed recovery locks and "
                     "revalidates before appending linked replacement evidence. "
@@ -1223,6 +1229,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "operations.expense_requests.invalid_request",
                     "operations.expense_requests.approver_invalid",
                     "operations.expense_requests.approver_mismatch",
+                    "operations.expense_requests.claim_identity_inconsistent",
                     "operations.expense_requests.destination_expired",
                     "operations.expense_requests.destination_invalid",
                     "operations.expense_requests.destination_unavailable",
@@ -1263,6 +1270,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "unavailable or invalid ERP category rules",
                     "unavailable or mismatched ERP approver identity",
                     "missing, expired, or invalid ERP payment-destination token",
+                    "token-bearing request with inconsistent canonical claim identity",
                     "invalid receipt evidence",
                     "ambiguous ERP state during dead-event recovery",
                     "client-reference fingerprint conflict",
