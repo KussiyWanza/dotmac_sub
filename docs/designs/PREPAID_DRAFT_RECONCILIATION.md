@@ -231,6 +231,13 @@ the signed opening amount: they are neither reused as Payments nor quarantined
 again as current unbacked credit. Without a reviewed opening source, the generic
 all-history payment-backed classification remains unchanged.
 
+When a historical prepaid draft is finally settled after that boundary, its
+customer-position consumption debit likewise excludes exact active settlement
+applications recorded through the opening timestamp. The opening already
+contains their effect; only the remainder settled after the boundary is a new
+native debit. Scalar event reads and bounded cohort aggregation apply the same
+rule.
+
 A payment-linked structural ledger projection stays on the same side of that
 boundary as its Payment. A reconciliation or allocation recorded after the
 boundary cannot make the consumption of a pre-boundary Payment reduce newer

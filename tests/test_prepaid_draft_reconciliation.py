@@ -36,6 +36,7 @@ from app.models.prepaid_funding import (
 )
 from app.models.subscriber import SubscriberStatus
 from app.services import prepaid_draft_reconciliation as reconciliation_service
+from app.services.customer_financial_ledger import calculate_customer_balance
 from app.services.customer_financial_position import prepaid_available_balance
 from app.services.domain_errors import DomainError
 from app.services.events.types import EventType
@@ -1789,6 +1790,7 @@ def test_reviewed_historical_partial_allocation_settles_without_moving_anchor(
     assert replay.replayed is True
     assert replay.applied_amount == result.applied_amount
     assert replay.payment_applied_amount == result.payment_applied_amount
+    assert calculate_customer_balance(db_session, subscriber.id) == Decimal("375.00")
     assert prepaid_available_balance(db_session, subscriber.id) == Decimal("375.00")
 
 
