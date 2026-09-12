@@ -253,7 +253,7 @@ def get_expense_claim_deliveries(
         row
         for row in rows
         if str((row.payload or {}).get("_expense_action") or "submit")
-        in {"submit", "release_approved_v2"}
+        in {"submit", "release_approved_v2", "expense_submit_v3"}
     ]
     latest = {row.entity_id: row for row in rows}
     return {
@@ -342,7 +342,9 @@ def get_expense_decision_delivery(
         .all()
     )
     accepted_actions = (
-        {"approve", "release_approved_v2"} if action == "approve" else {action}
+        {"approve", "release_approved_v2", "expense_approve_v3"}
+        if action == "approve"
+        else {"reject", "expense_reject_v3"}
     )
     matching = next(
         (
@@ -452,8 +454,8 @@ def enqueue_expense_decision(
 
     if not owner_command_active(db, owner="operations.expense_requests"):
         raise RuntimeError("Expense release requires the expense request owner")
-    if action != "approve":
-        raise ValueError("Only manager approval may release an expense to ERP")
+    if action not in {"approve", "reject"}:
+        raise ValueError("A manager approval or rejection is required")
     if not _flow_owned_by_sub(db, "expense_claim"):
         return BackofficeEnqueueResult(status=BackofficeEnqueueStatus.NOT_OWNED)
 
@@ -467,13 +469,39 @@ def enqueue_expense_decision(
     event = enqueue(
         db,
         request,
-        action=ExpenseErpAction(action),
+        action=(
+            ExpenseErpAction.APPROVE_V3
+            if action == "approve"
+            else ExpenseErpAction.REJECT_V3
+        ),
         decision_id=decision_id,
         decided_by_email=decided_by_email,
         decided_at=decided_at,
         reason=reason,
         isolate=False,
     )
+    return BackofficeEnqueueResult(
+        status=BackofficeEnqueueStatus.ENQUEUED,
+        provider="dotmac.erp",
+        event=event,
+    )
+
+
+def enqueue_expense_submission(
+    db: Session, request: FieldExpenseRequest
+) -> BackofficeEnqueueResult:
+    """Stage the submission consequence inside the expense owner's transaction."""
+    from app.services.owner_commands import owner_command_active
+
+    if not owner_command_active(db, owner="operations.expense_requests"):
+        raise RuntimeError("Expense submission requires the expense request owner")
+    if not _flow_owned_by_sub(db, "expense_claim"):
+        return BackofficeEnqueueResult(status=BackofficeEnqueueStatus.NOT_OWNED)
+    from app.services.dotmac_erp.expense_sync import (
+        enqueue_expense_submission as enqueue,
+    )
+
+    event = enqueue(db, request, isolate=False)
     return BackofficeEnqueueResult(
         status=BackofficeEnqueueStatus.ENQUEUED,
         provider="dotmac.erp",

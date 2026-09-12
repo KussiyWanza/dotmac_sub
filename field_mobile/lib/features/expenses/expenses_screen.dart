@@ -158,8 +158,6 @@ class _ExpenseRequestTile extends StatelessWidget {
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         _ExpenseStatusChip(status: request.status),
-                        if (request.erpClaimStatus != null)
-                          Text('ERP ${request.erpClaimStatus}'),
                         Text(request.displayNumber),
                         if (date != null) Text(date),
                       ],
@@ -351,7 +349,11 @@ class _ExpenseStatusChip extends StatelessWidget {
     final color = _expenseStatusColor(context, status);
     return Chip(
       visualDensity: VisualDensity.compact,
-      label: Text(status.replaceAll('_', ' ')),
+      label: Text(
+        status.isEmpty
+            ? status
+            : '${status[0].toUpperCase()}${status.substring(1).replaceAll('_', ' ')}',
+      ),
       backgroundColor: color.withValues(alpha: 0.16),
       side: BorderSide(color: color.withValues(alpha: 0.4)),
     );
@@ -444,19 +446,6 @@ class _ExpenseErpSummary extends StatelessWidget {
       children: [
         Text('Finance', style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 8),
-        if (request.erpClaimNumber != null)
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.account_balance_outlined),
-            title: const Text('ERP claim'),
-            subtitle: Text(
-              [
-                request.erpClaimNumber!,
-                if (request.erpClaimStatus != null)
-                  request.erpClaimStatus!.replaceAll('_', ' '),
-              ].join(' · '),
-            ),
-          ),
         if (request.selectedApproverName != null)
           ListTile(
             contentPadding: EdgeInsets.zero,
@@ -478,13 +467,6 @@ class _ExpenseErpSummary extends StatelessWidget {
                   request.maskedAccountNumber!,
               ].join(' · '),
             ),
-          ),
-        if (request.erpSyncStatus != null)
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.sync_outlined),
-            title: const Text('ERP sync'),
-            subtitle: Text(_expenseErpSyncLabel(request.erpSyncStatus!)),
           ),
         if (request.paymentStatus != null)
           ListTile(
@@ -513,17 +495,6 @@ class _ExpenseErpSummary extends StatelessWidget {
     );
   }
 }
-
-String _expenseErpSyncLabel(String status) => switch (status) {
-  'pending' => 'Waiting to send',
-  'sent' => 'Sent; waiting for ERP confirmation',
-  'accepted' => 'Synced',
-  'rejected' => 'Rejected by ERP',
-  'dead' => 'Failed; needs attention',
-  'not_configured' => 'ERP delivery is not configured',
-  'not_queued' => 'Not queued; needs attention',
-  _ => status.replaceAll('_', ' '),
-};
 
 String _expensePaymentLabel(String status) => switch (status) {
   'queued' => 'Queued securely for ERP processing',

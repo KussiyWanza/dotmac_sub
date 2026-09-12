@@ -6,12 +6,14 @@
   rejection decision.
 - ERP owns the accounting claim, payment intent, transfer execution,
   reconciliation, and final paid fact.
-- Submission is local only and creates no ERP outbox event.
-- Manager approval is the sole release point. Approval and one versioned outbox
-  event commit atomically; rejection remains local.
-- The worker creates or retrieves an ERP draft, uploads every private receipt,
-  and only then delivers the trusted approval. Payment initiation remains a
-  separately authorized, ordered event.
+- Submission and `expense_submit_v3` commit atomically. The worker creates or
+  retrieves a hidden ERP draft, uploads every required receipt, invokes explicit
+  submit, and requires ERP status `SUBMITTED` before exposing the claim.
+- Manager approval or rejection and its separate `expense_approve_v3` or
+  `expense_reject_v3` event commit atomically. Each decision event waits for
+  accepted submission without consuming retry attempts.
+- Sub remains authoritative for the manager decision. ERP remains authoritative
+  for accounting, payment, reconciliation, and the final paid fact.
 
 ## Deployment prerequisites
 
@@ -27,14 +29,16 @@
    status, and Field manager decisions. Grant the separate exact
    `sub:expense:pay` scope only to the Sub integration identity that may request
    a transfer; do not grant broader human or finance-administration permissions.
-5. Confirm the ERP accepts stable Sub claim and line IDs, the
-   `exp-{request_id}-approved-release-v2` draft key, and receipt keys derived
-   from contract version, expense, line, and attachment.
+5. Confirm the ERP accepts stable Sub claim and line IDs, receipt keys derived
+   from contract version, expense, line, and attachment, and the one-UUID v3
+   keys: `exp-{request_id}-submitted-v3`,
+   `exp-{request_id}-approved-{decision_id}-v3`, and
+   `exp-{request_id}-rejected-{decision_id}-v3`.
    For every new token-bearing canary, confirm the destination-verification
    `source_claim_id`, submitted `client_ref`, `FieldExpenseRequest.id`, draft and
    receipt `source_claim_id`, approval `source_claim_id`, and status-poll key are
    the same UUID. A mismatch must block manager approval before any ERP event is
-   staged.
+   staged. Retain `release_approved_v2` behavior for already-staged legacy events.
 6. Confirm the previous expense sender is disabled before changing ownership.
 7. Verify every technician email and intended approver email has one exact
    active match across Sub and ERP. Verify at least one eligible ERP approver,
@@ -50,14 +54,16 @@
 1. Record and retain the pre-cutover legacy owner for
    `sync_flow_ownership.expense_claim` while deploying and validating the
    application change.
-2. Before ownership cutover, verify a submitted expense creates no outbox row.
+2. Before ownership cutover, verify submission fails closed without creating a
+   request or an event.
 3. Assign `expense_claim` ownership to `sub` through the reviewed production
    configuration procedure.
-4. Submit one newly created canary expense and verify it is work-order-bound and
-   creates no ERP outbox event.
-5. Approve the canary in the Field app and verify exactly one release event is
-   accepted, all required receipts are attached, and the ERP claim becomes
-   `APPROVED`, not `PENDING_APPROVAL`. Confirm the ERP claim names the selected
+4. Submit one newly created canary expense and verify exactly one submission
+   event is accepted, all required receipts are attached, and ERP reports
+   `SUBMITTED`. Confirm no ERP `DRAFT` is visible to normal ERP users.
+5. Approve the canary in the Field app and verify the separate approval event is
+   accepted and the same ERP claim becomes `APPROVED`, not `PENDING_APPROVAL`.
+   Confirm the ERP claim names the selected
    approver and contains the expected masked destination. Do not inspect or
    report the full account number.
 6. With a dedicated payment-authorized manager, select **Pay expense** and verify
@@ -69,7 +75,7 @@
 
 ## No historical backfill
 
-Do not enqueue or replay previously submitted or approved expenses during this
+Do not enqueue or replay previously submitted, approved, or rejected expenses during this
 cutover. Existing records are intentionally excluded. This branch
 contains no migration, startup hook, scheduled scan, or repair command that
 backfills them. Any future historical repair requires a separate reviewed scope.

@@ -103,6 +103,21 @@ class ErpExpenseReceiptUploadOutcome(BaseModel):
     created: bool
 
 
+class ErpExpenseSubmissionCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_claim_id: UUID
+
+
+class ErpExpenseClaimTransitionOutcome(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_claim_id: UUID
+    claim_id: UUID
+    claim_number: str
+    status: Literal["submitted", "approved", "rejected"]
+
+
 class ErpExpenseApprovalCommand(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -111,3 +126,7 @@ class ErpExpenseApprovalCommand(BaseModel):
     decided_by_email: str
     decided_at: str
     notes: str | None = None
+
+
+class ErpExpenseRejectionCommand(ErpExpenseApprovalCommand):
+    reason: str

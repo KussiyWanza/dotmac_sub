@@ -749,6 +749,17 @@ def submit_field_expense_request_command(
             .one_or_none()
         )
         if existing is not None:
+            from app.services.dotmac_erp.expense_sync import (
+                require_expense_delivery_identity,
+            )
+
+            try:
+                require_expense_delivery_identity(existing)
+            except ValueError as exc:
+                raise FieldExpenseRequestError(
+                    code="operations.expense_requests.identity_mismatch",
+                    message="Expense payment identity does not match this request.",
+                ) from exc
             requester_ids = {system_user.id}
             if system_user.person_party_id is not None:
                 requester_ids.add(system_user.person_party_id)
@@ -961,8 +972,28 @@ def submit_field_expense_request_command(
         validate_expense_receipt_delivery(db, request, category_rules=category_rules)
         _mark_sub_authoritative(row)
         db.flush()
-        # Submission is a local review transition only. Manager approval is
-        # the sole ERP release point.
+        try:
+            result = _enqueue_submission_backoffice(db, request)
+        except Exception as exc:
+            raise FieldExpenseRequestError(
+                code="operations.expense_requests.erp_staging_failed",
+                message=(
+                    "The expense was not submitted because its ERP delivery "
+                    "could not be queued. Please retry."
+                ),
+                details={"error_type": type(exc).__name__},
+            ) from exc
+        if (
+            result.status is not BackofficeEnqueueStatus.ENQUEUED
+            or result.event is None
+        ):
+            raise FieldExpenseRequestError(
+                code="operations.expense_requests.erp_delivery_not_configured",
+                message=(
+                    "The expense was not submitted because ERP delivery is not "
+                    "configured. Please retry."
+                ),
+            )
         return _submission_outcome(request)
 
     return execute_owner_command(
@@ -980,6 +1011,7 @@ def approve_field_expense_request_command(
 
     def operation() -> ExpenseRequestApprovalOutcome:
         request = _locked_expense_request(db, command.expense_request_id)
+        _require_token_bound_request_identity(request)
         if request.status == "approved":
             return _approval_outcome(db, request)
         if request.status != "submitted":
@@ -1073,22 +1105,24 @@ def _require_consistent_claim_identity(request: FieldExpenseRequest) -> None:
 def reject_field_expense_request_command(
     db: Session, *, command: RejectFieldExpenseRequest
 ) -> ExpenseRequestRejectionOutcome:
-    """Reject locally; an unapproved expense has no ERP claim to update."""
+    """Reject locally and durably stage the ordered ERP rejection."""
 
     def operation() -> ExpenseRequestRejectionOutcome:
         request = _locked_expense_request(db, command.expense_request_id)
+        _require_token_bound_request_identity(request)
         if request.status == "rejected":
             if request.rejected_at is None:
                 raise FieldExpenseRequestError(
                     code="operations.expense_requests.invalid_request",
                     message="Rejected expense evidence is incomplete.",
                 )
+            delivery = get_expense_decision_delivery(db, request.id, "reject")
             return ExpenseRequestRejectionOutcome(
                 id=request.id,
                 status="rejected",
                 rejected_at=request.rejected_at,
                 rejection_reason=request.rejection_reason or "Rejected",
-                erp_sync_event_id=None,
+                erp_sync_event_id=delivery.event_id,
             )
         if request.status != "submitted":
             raise FieldExpenseRequestError(
@@ -1122,13 +1156,43 @@ def reject_field_expense_request_command(
             occurred_at=now,
         )
         _mark_sub_authoritative(request.work_order_mirror)
+        try:
+            result = _enqueue_decision_backoffice(
+                db,
+                request,
+                action="reject",
+                decision_id=command.context.command_id,
+                reviewer_system_user_id=command.reviewer_system_user_id,
+                decided_at=now,
+                reason=request.rejection_reason,
+            )
+        except Exception as exc:
+            raise FieldExpenseRequestError(
+                code="operations.expense_requests.erp_staging_failed",
+                message=(
+                    "The expense was not rejected because its ERP delivery "
+                    "could not be queued. Please retry."
+                ),
+                details={"error_type": type(exc).__name__},
+            ) from exc
+        if (
+            result.status is not BackofficeEnqueueStatus.ENQUEUED
+            or result.event is None
+        ):
+            raise FieldExpenseRequestError(
+                code="operations.expense_requests.erp_delivery_not_configured",
+                message=(
+                    "The expense was not rejected because ERP delivery is not "
+                    "configured. Please retry."
+                ),
+            )
         db.flush()
         return ExpenseRequestRejectionOutcome(
             id=request.id,
             status="rejected",
             rejected_at=now,
             rejection_reason=request.rejection_reason,
-            erp_sync_event_id=None,
+            erp_sync_event_id=result.event.id,
         )
 
     return execute_owner_command(
@@ -2280,6 +2344,28 @@ def _enqueue_decision_backoffice(
     )
     db.flush()
     return result
+
+
+def _enqueue_submission_backoffice(
+    db: Session, request: FieldExpenseRequest
+) -> BackofficeEnqueueResult:
+    from app.services.backoffice import enqueue_expense_submission
+
+    result = enqueue_expense_submission(db, request)
+    db.flush()
+    return result
+
+
+def _require_token_bound_request_identity(request: FieldExpenseRequest) -> None:
+    from app.services.dotmac_erp.expense_sync import require_expense_delivery_identity
+
+    try:
+        require_expense_delivery_identity(request)
+    except ValueError as exc:
+        raise FieldExpenseRequestError(
+            code="operations.expense_requests.identity_mismatch",
+            message="Expense payment identity does not match this request.",
+        ) from exc
 
 
 def _note_approval_command(

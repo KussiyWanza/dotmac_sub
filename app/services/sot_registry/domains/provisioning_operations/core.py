@@ -891,7 +891,7 @@ SERVICES: tuple[SOTService, ...] = (
             "field expense request cancellation",
             "field expense ERP form context",
             "expense receipt staging for submitted claims",
-            "field expense approval and ERP delivery staging",
+            "field expense lifecycle ERP delivery staging",
             "dead expense delivery recovery",
             "field expense payment initiation and ERP delivery staging",
             "field expense vendor picker",
@@ -912,10 +912,10 @@ SERVICES: tuple[SOTService, ...] = (
             "supplies exact RBAC-authorized work-order evidence and derives the actor "
             "from the authenticated session. Every submission requires current "
             "technician-assignment evidence. Receipt metadata is staged flush-only "
-            "inside the same command. Submission never stages ERP delivery. Manager "
-            "approval is the sole ERP release point and atomically stages one event "
-            "that creates or reuses a draft, uploads missing receipts, then approves. "
-            "Rejection remains local. Explicit previewed recovery appends a linked "
+            "inside the same command. Submission atomically stages expense_submit_v3; "
+            "the worker creates a hidden draft, uploads receipts, and explicitly "
+            "submits it. Manager approval and rejection remain authoritative in Sub "
+            "and stage separate ordered v3 consequences. Explicit previewed recovery appends a linked "
             "replacement without changing the original dead event. A "
             "separately authorized payment command stages reimbursement initiation, "
             "while ERP remains the payment and settlement authority. New claims use one "
@@ -979,7 +979,7 @@ SERVICES: tuple[SOTService, ...] = (
                     canonical_writer="operations.expense_requests",
                 ),
                 ConcernContract(
-                    name="field expense approval and ERP delivery staging",
+                    name="field expense lifecycle ERP delivery staging",
                     role=OwnerRole.COMMAND_WRITER,
                     input_names=(
                         "canonical submitted expense request",
@@ -1186,15 +1186,15 @@ SERVICES: tuple[SOTService, ...] = (
             transaction=TransactionContract(
                 mode=TransactionMode.OWNER_MANAGED,
                 boundary=(
-                    "Create, submit, optional receipt metadata, and work-order activity "
-                    "marking complete in one owner transaction without ERP staging. "
+                    "Create, submit, optional receipt metadata, work-order activity, "
+                    "and one expense_submit_v3 intent in one owner transaction. "
                     "New request identity equals its client reference. "
                     "Receipt storage is a flush-only participant. Manager approval "
-                    "requires the selected approver, locks the verified payment "
-                    "snapshot, validates canonical claim identity, and stages the sole "
-                    "ERP release intent in the "
-                    "same transaction. Rejection and cancellation remain local; payment "
-                    "stages a later ordered intent. Previewed recovery locks and "
+                    "or rejection requires the selected approver, locks the verified "
+                    "payment snapshot, validates canonical claim identity, and stages "
+                    "a separate ordered v3 decision intent in the same transaction. "
+                    "Cancellation remains local; payment stages a later intent ordered "
+                    "after ERP approval. Previewed recovery locks and "
                     "revalidates before appending linked replacement evidence. "
                     "The vendor picker performs a "
                     "read-only session-scoped query. Requester-history reads are "
@@ -1236,6 +1236,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "operations.expense_requests.form_context_unavailable",
                     "operations.expense_requests.form_context_required",
                     "operations.expense_requests.idempotency_conflict",
+                    "operations.expense_requests.identity_mismatch",
                     "operations.expense_requests.erp_delivery_not_configured",
                     "operations.expense_requests.erp_staging_failed",
                     "operations.expense_requests.incomplete_approval",
@@ -1269,7 +1270,8 @@ SERVICES: tuple[SOTService, ...] = (
                     "work order without a current technician assignment",
                     "unavailable or invalid ERP category rules",
                     "unavailable or mismatched ERP approver identity",
-                    "missing, expired, or invalid ERP payment-destination token",
+                    "missing, expired, invalid, or claim-mismatched ERP "
+                    "payment-destination token",
                     "token-bearing request with inconsistent canonical claim identity",
                     "invalid receipt evidence",
                     "ambiguous ERP state during dead-event recovery",

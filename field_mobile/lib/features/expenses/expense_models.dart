@@ -420,7 +420,10 @@ class ExpenseRequest {
   double get totalAmount =>
       total ?? items.fold<double>(0, (sum, item) => sum + item.amount);
 
-  String get statusLabel => status.replaceAll('_', ' ');
+  String get statusLabel {
+    final value = status.replaceAll('_', ' ');
+    return value.isEmpty ? value : '${value[0].toUpperCase()}${value.substring(1)}';
+  }
 }
 
 class ExpenseRequestHistory {

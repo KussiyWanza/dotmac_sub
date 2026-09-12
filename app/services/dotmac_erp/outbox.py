@@ -48,6 +48,8 @@ from app.services.integrations.backoffice_contracts import (
     ErpExpenseClaimDraftCommand,
     ErpExpenseReceiptMimeType,
     ErpExpenseReceiptUploadCommand,
+    ErpExpenseRejectionCommand,
+    ErpExpenseSubmissionCommand,
 )
 from app.services.integrations.diagnostics import (
     DELIVERY_DIAGNOSTIC_KEY,
@@ -80,7 +82,7 @@ _REJECTED_STATUSES = frozenset(
 )
 # Response signals that mean ERP accepted/created the record.
 _ACCEPTED_STATUSES = frozenset(
-    {"accepted", "approved", "created", "ok", "success", "paid"}
+    {"accepted", "submitted", "approved", "created", "ok", "success", "paid"}
 )
 # Response keys that carry an ERP-side id (its presence confirms acceptance).
 _ERP_ID_KEYS = (
@@ -100,6 +102,9 @@ _EXPENSE_ACTION_ENDPOINTS = {
     "reject": "/api/v1/sync/sub/expense-claims/{entity_id}/reject",
     "initiate_payment": "/api/v1/sync/sub/expense-claims/{entity_id}/payments",
     "release_approved_v2": "typed:expense-release-v2",
+    "expense_submit_v3": "typed:expense-submit-v3",
+    "expense_approve_v3": "typed:expense-approve-v3",
+    "expense_reject_v3": "typed:expense-reject-v3",
 }
 
 
@@ -289,22 +294,16 @@ def deliver_pending(
             result.processed += 1
             row.attempts += 1
             try:
-                if _is_approved_expense_release(row):
+                if _is_typed_expense_event(row):
                     if not all(
                         hasattr(owned_client, name)
-                        for name in (
-                            "create_expense_claim_draft",
-                            "upload_expense_receipt",
-                            "approve_expense_claim",
-                        )
+                        for name in _required_expense_client_methods(row)
                     ):
                         raise DotMacERPError(
-                            "Approved expense delivery requires the ERP capability runtime"
+                            "Expense delivery requires the ERP capability runtime"
                         )
-                    response = _deliver_approved_expense_release(
-                        db,
-                        row,
-                        client=cast(ErpCapabilityClient, owned_client),
+                    response = _deliver_typed_expense_event(
+                        db, row, client=cast(ErpCapabilityClient, owned_client)
                     )
                 else:
                     response = owned_client.post(
@@ -319,10 +318,10 @@ def deliver_pending(
                         "ERP expense release is temporarily unavailable",
                         diagnostic=exc.diagnostic,
                     )
-                    if _is_approved_expense_release(row)
+                    if _is_typed_expense_event(row)
                     else exc
                 )
-                if _is_approved_expense_release(row):
+                if _is_typed_expense_event(row):
                     _record_delivery_diagnostic(row, safe_exc.diagnostic)
                 _mark_transient(row, safe_exc, max_attempts=max_attempts, result=result)
                 db.commit()
@@ -330,10 +329,10 @@ def deliver_pending(
             except DotMacERPError as exc:
                 error = (
                     _expense_release_error(exc)
-                    if _is_approved_expense_release(row)
+                    if _is_typed_expense_event(row)
                     else str(exc)
                 )
-                if _is_approved_expense_release(row):
+                if _is_typed_expense_event(row):
                     _record_delivery_diagnostic(row, exc.diagnostic)
                 _mark_dead(row, error)
                 result.dead += 1
@@ -373,11 +372,179 @@ def _is_approved_expense_release(row: FieldErpSyncEvent) -> bool:
     )
 
 
+def _is_typed_expense_event(row: FieldErpSyncEvent) -> bool:
+    if row.flow != FieldErpSyncFlow.expense_claim.value:
+        return False
+    return str((row.payload or {}).get("_expense_action")) in {
+        "release_approved_v2",
+        "expense_submit_v3",
+        "expense_approve_v3",
+        "expense_reject_v3",
+    }
+
+
+def _required_expense_client_methods(row: FieldErpSyncEvent) -> tuple[str, ...]:
+    action = str((row.payload or {}).get("_expense_action"))
+    if action == "release_approved_v2":
+        return (
+            "create_expense_claim_draft",
+            "upload_expense_receipt",
+            "approve_expense_claim",
+        )
+    if action == "expense_submit_v3":
+        return (
+            "create_expense_claim_draft",
+            "upload_expense_receipt",
+            "submit_expense_claim",
+        )
+    if action == "expense_approve_v3":
+        return ("approve_expense_claim",)
+    return ("reject_expense_claim",)
+
+
+def _deliver_typed_expense_event(
+    db: Session,
+    row: FieldErpSyncEvent,
+    *,
+    client: ErpCapabilityClient,
+) -> dict:
+    action = str((row.payload or {}).get("_expense_action"))
+    if action == "release_approved_v2":
+        return _deliver_approved_expense_release(db, row, client=client)
+    if action == "expense_submit_v3":
+        return _deliver_expense_submission(db, row, client=client)
+    if action == "expense_approve_v3":
+        command = ErpExpenseApprovalCommand.model_validate(_transport_payload(row))
+        outcome = client.approve_expense_claim(
+            command, idempotency_key=row.idempotency_key
+        )
+        response = _transition_outcome_dict(outcome)
+        if response.get("status") != "approved":
+            raise DotMacERPError("ERP did not accept expense approval")
+        return response
+    if action == "expense_reject_v3":
+        command = ErpExpenseRejectionCommand.model_validate(_transport_payload(row))
+        outcome = client.reject_expense_claim(
+            command, idempotency_key=row.idempotency_key
+        )
+        response = _transition_outcome_dict(outcome)
+        if response.get("status") != "rejected":
+            raise DotMacERPError("ERP did not accept expense rejection")
+        return response
+    raise DotMacERPError("Unsupported typed expense event")
+
+
 def _is_retired_preapproval_expense_event(row: FieldErpSyncEvent) -> bool:
     if row.flow != FieldErpSyncFlow.expense_claim.value:
         return False
     action = str((row.payload or {}).get("_expense_action") or "submit")
     return action in {"submit", "approve", "reject"}
+
+
+def _deliver_expense_submission(
+    db: Session,
+    row: FieldErpSyncEvent,
+    *,
+    client: ErpCapabilityClient,
+) -> dict:
+    """Create/reuse a hidden draft, upload receipts, then explicitly submit it."""
+    from app.models.field_expense import FieldExpenseRequest
+    from app.services.dotmac_erp.expense_sync import require_expense_delivery_identity
+    from app.services.field.attachments import resolve_expense_receipt_attachment
+
+    request = db.get(FieldExpenseRequest, row.entity_id)
+    if (
+        request is None
+        or request.work_order_mirror is None
+        or not request.work_order_mirror.is_active
+    ):
+        raise DotMacERPError("Submitted expense evidence is unavailable")
+    source_claim_id = UUID(str((row.payload or {}).get("source_claim_id")))
+    try:
+        require_expense_delivery_identity(request, source_claim_id=source_claim_id)
+    except ValueError as exc:
+        raise DotMacERPError("Expense delivery identity is invalid") from exc
+
+    draft_command = ErpExpenseClaimDraftCommand.model_validate(_transport_payload(row))
+    draft = client.create_expense_claim_draft(
+        draft_command,
+        idempotency_key=f"{row.idempotency_key}:draft",
+    )
+    line_items = {item.source_line_id: item.item_id for item in draft.items}
+    progress = dict(row.erp_response or {})
+    uploaded = {
+        str(value)
+        for value in progress.get("uploaded_source_attachment_ids", [])
+        if value
+    }
+    progress.update(
+        {
+            "contract_version": "work-order-expense.v3",
+            "claim_id": str(draft.claim_id),
+            "claim_number": draft.claim_number,
+            "claim_status": draft.status,
+            "uploaded_source_attachment_ids": sorted(uploaded),
+        }
+    )
+    row.erp_response = progress
+    db.flush()
+
+    descriptors = (row.payload or {}).get("_receipt_attachments") or []
+    if not isinstance(descriptors, list):
+        raise DotMacERPError("Expense receipt delivery evidence is invalid")
+    for descriptor in descriptors:
+        if not isinstance(descriptor, dict):
+            raise DotMacERPError("Expense receipt delivery evidence is invalid")
+        source_line_id = UUID(str(descriptor.get("source_line_id")))
+        source_attachment_id = UUID(str(descriptor.get("source_attachment_id")))
+        if str(source_attachment_id) in uploaded:
+            continue
+        item_id = line_items.get(source_line_id)
+        if item_id is None:
+            raise DotMacERPError("ERP expense draft line mapping is incomplete")
+        resolved = resolve_expense_receipt_attachment(
+            db,
+            work_order_id=request.work_order_mirror_id,
+            attachment_id=source_attachment_id,
+            allowed_owner_ids=frozenset(
+                value
+                for value in (
+                    request.requested_by_system_user_id,
+                    request.requested_by_person_id,
+                    request.requested_by_technician_id,
+                )
+                if value is not None
+            ),
+        )
+        receipt = ErpExpenseReceiptUploadCommand(
+            source_claim_id=request.id,
+            item_id=item_id,
+            source_line_id=source_line_id,
+            source_attachment_id=source_attachment_id,
+            file_name=resolved.file_name,
+            mime_type=cast(ErpExpenseReceiptMimeType, resolved.mime_type),
+            size_bytes=resolved.size_bytes,
+            checksum_sha256=resolved.checksum_sha256,
+            content_base64=base64.b64encode(resolved.content).decode("ascii"),
+        )
+        client.upload_expense_receipt(receipt)
+        uploaded.add(str(source_attachment_id))
+        progress["uploaded_source_attachment_ids"] = sorted(uploaded)
+        row.erp_response = progress
+        db.flush()
+
+    outcome = client.submit_expense_claim(
+        ErpExpenseSubmissionCommand(source_claim_id=request.id),
+        idempotency_key=row.idempotency_key,
+    )
+    response = _transition_outcome_dict(outcome)
+    if response.get("status") != "submitted":
+        raise DotMacERPError("ERP did not accept expense submission")
+    return {
+        **response,
+        "uploaded_source_attachment_ids": sorted(uploaded),
+        "contract_version": "work-order-expense.v3",
+    }
 
 
 def _deliver_approved_expense_release(
@@ -478,10 +645,11 @@ def _deliver_approved_expense_release(
         source_claim_id=request.id,
         **approval_payload,
     )
-    response = client.approve_expense_claim(
+    outcome = client.approve_expense_claim(
         approval,
         idempotency_key=f"{row.idempotency_key}:approve",
     )
+    response = _transition_outcome_dict(outcome)
     return {
         **response,
         "claim_id": response.get("claim_id") or str(draft.claim_id),
@@ -489,6 +657,14 @@ def _deliver_approved_expense_release(
         "uploaded_source_attachment_ids": sorted(uploaded),
         "contract_version": "work-order-expense.v2",
     }
+
+
+def _transition_outcome_dict(outcome: object) -> dict:
+    if hasattr(outcome, "model_dump"):
+        return cast(dict, outcome.model_dump(mode="json"))
+    if isinstance(outcome, dict):
+        return outcome
+    raise DotMacERPError("ERP expense transition response is invalid")
 
 
 def _transport_payload(row: FieldErpSyncEvent) -> dict:
