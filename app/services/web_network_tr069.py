@@ -150,7 +150,7 @@ _CONFIG_ACTIONS: dict[str, ConfigAction] = {
         description="Change the WiFi password (WPA key)",
         parameters=[
             "Device.WiFi.AccessPoint.1.Security.KeyPassphrase",
-            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.KeyPassphrase",
+            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.PreSharedKey",
         ],
     ),
     "wifi_enable": ConfigAction(

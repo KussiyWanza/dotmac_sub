@@ -193,6 +193,18 @@ WiFi execution is explicitly ACS-only. It carries forward the last OLT
 observation and does not resolve an OLT adapter or evaluate PPP authorization;
 neither concern can consume the WiFi delivery deadline or block the action.
 
+The effective model capability pack owns any non-standard WiFi password target
+set. The reconciler always resolves the standard primary `wifi.psk` path, then
+adds only the ordered `wifi.psk.additional.N` paths explicitly declared for
+that vendor/model/firmware capability. It never guesses password targets from
+`max_ssids`. One admitted password is resolved once and sent to every declared
+target in the same CWMP transaction; audit evidence records only the target
+count and redacted field name. For Huawei EG8145V5, deployed evidence selects
+the TR-098 root, WLAN instance 1 is the standard primary target, and capability
+entry `wifi.psk.additional.1` names WLAN instance 5. The supported value leaf
+is `PreSharedKey.1.PreSharedKey`; a CWMP 9007 from `KeyPassphrase` is a failed
+write, never convergence evidence.
+
 ## Return to inventory
 
 `network.ont_reconcile_projection` exposes the typed flush-only participant

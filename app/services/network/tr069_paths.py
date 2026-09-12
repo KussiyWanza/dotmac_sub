@@ -460,6 +460,59 @@ class Tr069PathResolver:
             )
             return None
 
+    def resolve_vendor_paths_by_prefix(
+        self,
+        root: str,
+        canonical_prefix: str,
+        *,
+        db: Session | None = None,
+        vendor: str | None = None,
+        model: str | None = None,
+        firmware: str | None = None,
+    ) -> tuple[str, ...]:
+        """Return an ordered family of explicit model-specific CWMP paths.
+
+        Prefix families have no standards fallback: their presence is a
+        deliberate capability-pack declaration for additional write targets.
+        """
+        self._validate_root(root)
+        if db is None or not vendor or not model or not canonical_prefix:
+            return ()
+        try:
+            from app.services.network.vendor_capabilities import (
+                Tr069ParameterMaps,
+                VendorCapabilities,
+            )
+
+            capability = VendorCapabilities.resolve_capability(
+                db, vendor=vendor, model=model, firmware=firmware
+            )
+            if capability is None:
+                return ()
+            paths = Tr069ParameterMaps.resolve_paths_by_prefix(
+                db,
+                capability_id=str(capability.id),
+                canonical_prefix=canonical_prefix,
+            )
+            return tuple(self._qualify_override(root, path) for path in paths)
+        except (SQLAlchemyError, ImportError) as exc:
+            logger.warning(
+                "Vendor capability family lookup failed for %s/%s/%s: %s",
+                vendor,
+                model,
+                canonical_prefix,
+                exc,
+                exc_info=True,
+            )
+            return ()
+
+    @staticmethod
+    def _qualify_override(root: str, path: str, *, instance_index: int = 1) -> str:
+        suffix = path.replace("{i}", str(instance_index))
+        if suffix.startswith(root + "."):
+            return suffix
+        return f"{root}.{suffix}"
+
     def resolve(
         self,
         root: str,
@@ -498,11 +551,7 @@ class Tr069PathResolver:
             firmware=firmware,
         )
         if override:
-            suffix = override.replace("{i}", str(instance_index))
-            # Override may be a full path or a suffix
-            if suffix.startswith(root + "."):
-                return suffix
-            return f"{root}.{suffix}"
+            return self._qualify_override(root, override, instance_index=instance_index)
 
         # 2. Standard path lookup
         paths = _STANDARD_PATHS.get(root)

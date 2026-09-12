@@ -43,6 +43,7 @@ from app.services.network.reconcile import (
     Plan,
     ReconcileFailureReason,
     Tr069RemoteAccessParameterPaths,
+    Tr069WifiParameterPaths,
     Tr181WanParameterPaths,
     compute_plan,
 )
@@ -698,6 +699,53 @@ def test_wifi_password_pushed_on_operator_password_change():
     assert _types(plan) == [AcsSetWifiConfig]
     assert plan.actions[0].password_ref == "new-pass"
     assert OltModifyDescription not in _types(plan)
+
+
+def test_wifi_password_plan_preserves_model_additional_psk_targets():
+    paths = Tr069WifiParameterPaths(
+        enabled="InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.Enable",
+        ssid="InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID",
+        psk_path=(
+            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1."
+            "PreSharedKey.1.PreSharedKey"
+        ),
+        channel="InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.Channel",
+        security_mode=(
+            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.BeaconType"
+        ),
+        additional_psk_paths=(
+            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.5."
+            "PreSharedKey.1.PreSharedKey",
+        ),
+    )
+    desired = _desired(
+        wifi_password_ref="new-pass",
+        wifi_paths=paths,
+        tr069_data_model_root="InternetGatewayDevice",
+    )
+    observed = _synced_observed(_desired(description="old-description"))
+    observed = dataclasses.replace(
+        observed,
+        acs=dataclasses.replace(
+            observed.acs,
+            acs_data_model_root="InternetGatewayDevice",
+            acs_observed_wifi_instance_index=5,
+        ),
+    )
+
+    plan = compute_plan(
+        desired,
+        observed,
+        "sync",
+        proposed_fields=frozenset({"wifi_password_ref"}),
+    )
+
+    assert _types(plan) == [AcsSetWifiConfig]
+    action = plan.actions[0]
+    assert isinstance(action, AcsSetWifiConfig)
+    assert ".WLANConfiguration.5." in action.paths.ssid
+    assert ".WLANConfiguration.1." in action.paths.psk_path
+    assert action.paths.additional_psk_paths == paths.additional_psk_paths
 
 
 def test_wifi_password_change_not_re_emitted_on_verify_plan():

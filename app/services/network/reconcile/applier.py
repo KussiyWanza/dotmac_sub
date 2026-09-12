@@ -683,7 +683,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             _refuse_unset(action, ("wifi_password_ref", action.password_ref))
             password = _resolve_or_fail(ctx, action, action.password_ref)
             params = {
-                "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.KeyPassphrase": password
+                "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.PreSharedKey": password
             }
             _acs_set(action, ctx, params)
             # Don't include the password in the AppliedAction — log the field name only.
@@ -706,6 +706,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             )
             wifi_params: dict[str, object] = {}
             changed: list[str] = []
+            password_target_count = 0
             if action.enabled is not None:
                 wifi_params[action.paths.enabled] = action.enabled
                 changed.append("wifi_enabled")
@@ -719,9 +720,15 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
                 wifi_params[action.paths.security_mode] = action.security_mode
                 changed.append("wifi_security_mode")
             if action.password_ref is not None:
-                wifi_params[action.paths.psk_path] = _resolve_or_fail(
-                    ctx, action, action.password_ref
+                password = _resolve_or_fail(ctx, action, action.password_ref)
+                psk_paths = tuple(
+                    dict.fromkeys(
+                        (action.paths.psk_path, *action.paths.additional_psk_paths)
+                    )
                 )
+                for psk_path in psk_paths:
+                    wifi_params[psk_path] = password
+                password_target_count = len(psk_paths)
                 changed.append("wifi_password_ref")
             if not wifi_params:
                 raise ApplyError(
@@ -736,7 +743,10 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
                 None,
                 ",".join(changed),
                 started,
-                evidence={"changed_fields": changed},
+                evidence={
+                    "changed_fields": changed,
+                    "password_target_count": password_target_count,
+                },
             )
 
         case AcsSetRemoteAccess():
