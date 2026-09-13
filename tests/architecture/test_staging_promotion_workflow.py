@@ -498,15 +498,15 @@ def test_production_promotion_reuses_the_staged_digest_without_a_build() -> None
     assert "self-hosted" not in workflow
 
 
-def test_a_disagreeing_version_alias_fails_the_promotion_step() -> None:
-    """A `:X.Y.Z` tag that already points elsewhere than `latest` must hard-fail
-    the alias step, not merely warn — a disagreeing alias is a release-integrity
-    problem, not a cosmetic one (nearby verification loop uses the same
-    `echo ... >&2; exit 1` convention)."""
+def test_a_disagreeing_version_alias_is_preserved_during_promotion() -> None:
+    """Published versions stay immutable while ``latest`` advances.
+
+    A candidate selected before the rolling version-bump PR merges still carries
+    the prior VERSION. Promotion must leave that existing version alias where it
+    is and attach only ``latest`` to the staging-accepted digest.
+    """
 
     workflow = _read(".github/workflows/release-promotion.yml")
-
-    assert "::warning title=Version alias not moved::" not in workflow
 
     match = re.search(
         r'if \[ "\$existing_digest" = "\$IMAGE_DIGEST" \]; then\n'
@@ -517,10 +517,12 @@ def test_a_disagreeing_version_alias_fails_the_promotion_step() -> None:
         workflow,
         re.DOTALL,
     )
-    assert match, "release-promotion.yml must guard a mismatched version alias"
+    assert match, "release-promotion.yml must preserve a mismatched version alias"
     mismatch_branch = match.group(1)
-    assert "exit 1" in mismatch_branch
-    assert ">&2" in mismatch_branch
+    assert "Version alias preserved" in mismatch_branch
+    assert "advancing only 'latest'" in mismatch_branch
+    assert 'alias_args+=(--tag "$version_ref")' not in mismatch_branch
+    assert "exit 1" not in mismatch_branch
 
 
 def test_promotion_separates_the_authorizing_main_from_the_staged_release() -> None:

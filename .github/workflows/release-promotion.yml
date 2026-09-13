@@ -346,8 +346,7 @@ jobs:
             if [ "$existing_digest" = "$IMAGE_DIGEST" ]; then
               alias_args+=(--tag "$version_ref")
             else
-              echo "$version_ref already points to $existing_digest; production authorization is bound to $IMAGE_DIGEST. Refusing to leave the version tag and 'latest' disagreeing." >&2
-              exit 1
+              echo "::notice title=Version alias preserved::$version_ref already points to $existing_digest; leaving it unchanged and advancing only 'latest' to the authorized digest $IMAGE_DIGEST."
             fi
           else
             alias_args+=(--tag "$version_ref")
