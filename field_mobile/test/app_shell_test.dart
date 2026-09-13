@@ -103,6 +103,7 @@ Widget _app({
   ManagerProfile? managerProfile,
   Future<ManagerProfile?> Function()? managerProfileLoader,
   List<ManagerJob> managerJobs = const [],
+  List<ExpenseRequest> managerExpenses = const [],
   Future<JobList> Function()? jobsLoader,
   AttendanceRepositoryContract? attendanceRepository,
   AttendanceLocationSource? attendanceLocationSource,
@@ -140,7 +141,7 @@ Widget _app({
           (ref) async => const <ManagerTechnician>[],
         ),
         managerJobsProvider.overrideWith((ref) async => managerJobs),
-        managerExpensesProvider.overrideWith((ref) async => const []),
+        managerExpensesProvider.overrideWith((ref) async => managerExpenses),
         expenseRequestsProvider.overrideWith(
           (ref) async => ExpenseRequestHistory(
             totalCount: 1,
@@ -268,7 +269,7 @@ void main() {
     expect(find.text('Sales'), findsNothing);
   });
 
-  testWidgets('manager shell shows personal expenses and approvals', (
+  testWidgets('manager shell shows expense queues and history details', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -301,6 +302,39 @@ void main() {
             assignedToLabel: 'Ada Technician',
           ),
         ],
+        managerExpenses: [
+          ExpenseRequest.fromJson({
+            'id': 'expense-pending-1',
+            'number': 'EXP-0001',
+            'status': 'submitted',
+            'purpose': 'Pending site transport',
+            'requested_by_name': 'Ada Technician',
+            'total_amount': '2500.00',
+          }),
+          ExpenseRequest.fromJson({
+            'id': 'expense-history-1',
+            'number': 'EXP-0002',
+            'status': 'approved',
+            'purpose': 'Approved site transport',
+            'requested_by_name': 'Ada Technician',
+            'selected_approver_name': 'Amaka Manager',
+            'work_order_id': 'WO-1024',
+            'currency': 'NGN',
+            'total_amount': '7500.00',
+            'expense_claim_number': 'ERP-EXP-42',
+            'expense_claim_status': 'approved',
+            'payment_status': 'queued',
+            'items': [
+              {
+                'id': 'line-1',
+                'category_code': 'TRANSPORT',
+                'category_name': 'Transport',
+                'description': 'Taxi to site',
+                'amount': '7500.00',
+              },
+            ],
+          }),
+        ],
       ),
     );
     await tester.pumpAndSettle();
@@ -328,11 +362,30 @@ void main() {
     await tester.tap(find.widgetWithText(NavigationDestination, 'Expenses'));
     await tester.pumpAndSettle();
 
-    expect(find.text('My requests'), findsOneWidget);
-    expect(find.text('Approvals'), findsOneWidget);
-    expect(find.text('No team expenses'), findsOneWidget);
+    expect(find.text('My request'), findsOneWidget);
+    expect(find.text('Pending'), findsOneWidget);
+    expect(find.text('Pending approvals (1)'), findsOneWidget);
+    expect(find.text('History'), findsOneWidget);
+    expect(find.text('Pending site transport'), findsOneWidget);
 
-    await tester.tap(find.text('My requests'));
+    await tester.tap(find.text('History'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('History (1)'), findsOneWidget);
+    expect(find.text('Approved site transport'), findsOneWidget);
+
+    await tester.tap(find.text('Approved site transport'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Expense details'), findsOneWidget);
+    expect(find.text('ERP-EXP-42'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Taxi to site'), 300);
+    expect(find.text('Taxi to site'), findsOneWidget);
+
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('My request'));
     await tester.pumpAndSettle();
 
     expect(find.text('My expense requests (1)'), findsOneWidget);

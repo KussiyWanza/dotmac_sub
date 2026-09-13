@@ -37,13 +37,25 @@ checks, audit evidence, and readiness refresh.
   is a Lead.
 - Conflicting identity evidence is ambiguous; no identity is unresolved.
 - A reviewed contact link always outranks newly observed display data.
+- An active conversation-to-Lead link contributes its recorded Party to the
+  structural identity comparison. A Customer and Lead for the same Party stay
+  classified as Customer; different Parties are ambiguous and resolution
+  fails closed.
 - Without a reviewed link, an observed name may narrow an exact normalized
   phone match only by exact normalized Customer-name equality. A mismatch is
   ambiguous and requires the agent to choose an existing Customer or a Lead.
 
-Customer selection searches and links an existing Customer only. Inbox has no
-Customer-creation command. Lead actions may link an existing Lead or create a
-Party-backed Lead through the existing Sales owner.
+Customer selection searches and links an existing Customer only. Opening the
+empty selector lazily requests a bounded set of conversation-derived likely
+matches; it does not fall back to recently updated, unrelated Customers. Once
+the operator enters at least two characters, those suggestions are replaced by
+a bounded search of all active Customers using only the entered name, email,
+phone, company/legal name, account number, subscriber number, display name, or
+exact Customer UUID. Search results are discovery evidence only. The existing
+reviewed contact-link command receives an exact selected Customer UUID and
+remains the identity decision. Inbox has no Customer-creation command. Lead
+actions may link an existing Lead or create a Party-backed Lead through the
+existing Sales owner.
 
 ## Resolution rule
 

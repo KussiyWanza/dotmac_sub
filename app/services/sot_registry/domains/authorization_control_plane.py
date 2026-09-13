@@ -1598,6 +1598,9 @@ DOMAIN = DomainSOT(
             ),
             notes=(
                 "ERP HR commands enter one verified coordinator transaction. "
+                "Provisioning explicitly supports trusted reconciliation and "
+                "a create-only reject policy that cannot mutate an existing "
+                "identity. "
                 "This owner writes staff identity and credential bootstrap, "
                 "keeps the canonical staff email and the one local credential "
                 "username aligned even while access is inactive, prepares "
@@ -1755,9 +1758,13 @@ DOMAIN = DomainSOT(
                     idempotency=(
                         "Email is the provision natural key; managed roles, active "
                         "state, and the local credential username converge to "
-                        "canonical staff state. Adapters carry a stable intent "
-                        "key, and invite expansion deduplicates on the immutable "
-                        "provisioning event id."
+                        "canonical staff state under the reconcile policy. The "
+                        "create-only policy rejects an existing natural key before "
+                        "mutation. Its stable ERP command reference is retained as "
+                        "Party external-reference provenance so an exact replay "
+                        "returns the created principal without mutating it. Invite "
+                        "expansion deduplicates on the immutable provisioning event "
+                        "id."
                     ),
                     retries=(
                         "Adapters may retry a failed request with the same "
@@ -1852,6 +1859,7 @@ DOMAIN = DomainSOT(
                 steward="platform security",
                 design_refs=(
                     "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/designs/ERP_WORKFORCE_ACCOUNT_PROVISIONING.md",
                     "docs/designs/STAFF_LOGIN_IDENTITY_RECONCILIATION.md",
                     "docs/adr/0002-owner-command-transaction-boundary.md",
                     "docs/designs/SOT_CODING_STANDARDS_REFACTOR.md",

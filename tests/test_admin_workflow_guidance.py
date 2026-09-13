@@ -52,6 +52,8 @@ def test_specific_workflow_routes_override_or_reject_broad_sections() -> None:
         "/admin/network": "network-access",
         "/admin/dispatch/work-orders/work-order-id": "work-order-expenses",
         "/admin/projects/project-id/edit": "project-authoring",
+        "/admin/projects/tasks/task-id": "project-task-subtasks",
+        "/admin/projects/templates/template-id/tasks/editor": "project-template-plans",
         "/admin/sales/sales-order/order-id": "sales-orders",
         "/admin/billing": "billing-overview",
         "/admin/billing/payments/reconciliation": "payment-reconciliation",
@@ -65,8 +67,6 @@ def test_specific_workflow_routes_override_or_reject_broad_sections() -> None:
         assert guide.id == guide_id
 
     for unrelated_path in (
-        "/admin/projects/templates",
-        "/admin/projects/tasks",
         "/admin/support/automation",
         "/admin/support/assignment-rules",
     ):
@@ -105,6 +105,27 @@ def test_project_guidance_explains_customer_typeahead_selection() -> None:
     assert "choose the matching result" in content
     assert "clear the customer field" in content
     assert "selected customer account" in content
+
+
+def test_project_template_and_subtask_guidance_explains_revision_scope() -> None:
+    template_guide = guidance_for_path(
+        "/admin/projects/templates/template-id/tasks/editor"
+    )
+    task_guide = guidance_for_path("/admin/projects/tasks/task-id")
+
+    assert template_guide is not None
+    assert template_guide.id == "project-template-plans"
+    template_content = " ".join((*template_guide.steps, *template_guide.notes)).lower()
+    assert "new revision" in template_content
+    assert "does not alter projects that already use the template" in template_content
+    assert "all of its active subtasks are done" in template_content
+
+    assert task_guide is not None
+    assert task_guide.id == "project-task-subtasks"
+    task_content = " ".join((*task_guide.steps, *task_guide.notes)).lower()
+    assert "only to one project" in task_guide.purpose.lower()
+    assert "preserves ad-hoc work" in task_content
+    assert "read-only history" in task_content
 
 
 def test_sales_quote_guidance_explains_direct_customer_subject() -> None:
@@ -146,6 +167,19 @@ def test_manager_ai_guidance_explains_question_and_answer_workflow() -> None:
     assert "response under answer" in content
     assert "html-like text remains plain text" in content
     assert "verify ai advice" in content
+
+
+def test_team_inbox_guidance_explains_lazy_customer_link_search() -> None:
+    guide = guidance_for_path("/admin/inbox/conversation-id")
+
+    assert guide is not None
+    assert guide.id == "team-inbox"
+    content = " ".join((*guide.steps, *guide.notes)).lower()
+    assert "click existing customer to load likely matches" in content
+    assert "type at least two characters" in content
+    assert "search all active customers" in content
+    assert "choose the exact result" in content
+    assert "link customer" in content
 
 
 def test_smtp_sender_guidance_explains_keyring_and_mailbox_route_mapping() -> None:

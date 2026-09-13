@@ -4584,6 +4584,18 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/field/manager/expenses/payment-deliveries/{event_id}/recovery-preview": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:event_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "d31d46d100e6",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/field/manager/jobs": {
    "params": [
     "header:authorization",
@@ -14890,6 +14902,19 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/field/manager/expenses/payment-deliveries/{event_id}/recover": {
+   "params": [
+    "header:X-Request-ID",
+    "header:authorization",
+    "header:x-api-key",
+    "path:event_id!"
+   ],
+   "request": "3be457dd9378",
+   "responses": {
+    "200": "258ed99a961f",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/field/manager/expenses/{expense_request_id}/approve": {
    "params": [
     "header:X-Request-ID",
@@ -18034,6 +18059,19 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/staff-accounts/{user_id}/nextcloud-talk/disable": {
+   "params": [
+    "header:Idempotency-Key",
+    "header:authorization",
+    "header:x-api-key",
+    "path:user_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "2096ff3b53e7",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/subscriber-custom-fields": {
    "params": [
     "header:authorization",
@@ -19195,6 +19233,19 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "PUT /api/v1/staff-accounts/{user_id}/nextcloud-talk": {
+   "params": [
+    "header:Idempotency-Key",
+    "header:authorization",
+    "header:x-api-key",
+    "path:user_id!"
+   ],
+   "request": "605c4b2465e6",
+   "responses": {
+    "200": "0e21bc5b4b9f",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "PUT /api/v1/staff-accounts/{user_id}/roles": {
    "params": [
     "header:Idempotency-Key",
@@ -19521,6 +19572,7 @@
   "EtaUpdateCreate": "3b90f58a7082",
   "EtaUpdateRead": "daaf62739ccf",
   "ExecutionMethod": "44ddf7e0d39d",
+  "ExistingStaffAccountPolicy": "0c283b6aefa0",
   "ExpenseRequestStatus": "afa9c66cd8ca",
   "ExternalEntityType": "a15467b5560e",
   "ExternalReferenceCreate": "e15ea6e3a712",
@@ -19590,6 +19642,9 @@
   "FieldExpenseDestinationVerify": "8d5426dc5450",
   "FieldExpenseFormContextRead": "0071f146bfb9",
   "FieldExpensePaymentRead": "0b8340a83012",
+  "FieldExpensePaymentRecoveryPreviewRead": "9a017d2973eb",
+  "FieldExpensePaymentRecoveryRead": "29d373ba518f",
+  "FieldExpensePaymentRecoveryRequest": "2754d308c379",
   "FieldExpenseProfileDestinationRead": "6dcef13f513e",
   "FieldExpenseRecoveryPreviewRead": "85ed7567c69d",
   "FieldExpenseRecoveryRead": "84483e229efc",
@@ -19728,7 +19783,7 @@
   "IPv6AddressRead": "d14ab909bf1f",
   "IPv6AddressUpdate": "c13ce5267072",
   "InboxAgentPerformanceRead": "6a8463944e15",
-  "InboxConversationContactLinkRead": "bb228be5e29a",
+  "InboxConversationContactLinkRead": "aedc114d3f1b",
   "InboxConversationContactLinkRequest": "f407043f0c43",
   "InboxConversationEscalateRequest": "616991a12b83",
   "InboxConversationEscalationRead": "504bf3a61754",
@@ -20324,7 +20379,7 @@
   "ProjectItem": "df3035be834b",
   "ProjectKanbanMove": "7578fb10fb86",
   "ProjectPriority": "81159a031246",
-  "ProjectRead": "8b9f6a8ed70b",
+  "ProjectRead": "810c5f428667",
   "ProjectStage": "0f50e77c4ccb",
   "ProjectStageState": "acffacb745a6",
   "ProjectStatus": "39abcda05ebd",
@@ -20333,9 +20388,10 @@
   "ProjectTaskDependencyInput": "3514e0577001",
   "ProjectTaskDependencyType": "a6d396625734",
   "ProjectTaskPriority": "d00b9c84024a",
-  "ProjectTaskRead": "444ab8fc494d",
+  "ProjectTaskRead": "413dd18b54b1",
   "ProjectTaskStatus": "07b9f5d6fe08",
   "ProjectTaskStatusTransition": "62828b3ad076",
+  "ProjectTaskTemplatePlanState": "70ae24942255",
   "ProjectTaskUpdate": "be5ae31b8297",
   "ProjectType": "a29853f91876",
   "ProjectUpdate": "53c319e44d41",
@@ -20512,9 +20568,12 @@
   "SplitterPortUpdate": "199be4a28b22",
   "SplitterRead": "462df98254d1",
   "SplitterUpdate": "fc09a009fc39",
-  "StaffAccountCreate": "b6432e3a2f81",
+  "StaffAccountCreate": "b04ecddd0616",
   "StaffAccountErpDepartmentRead": "8428a34c2b00",
   "StaffAccountErpDepartmentUpdate": "d0e389a1811d",
+  "StaffAccountNextcloudTalkDisableRead": "f89c96b313ed",
+  "StaffAccountNextcloudTalkRead": "b524fd4ee44a",
+  "StaffAccountNextcloudTalkUpdate": "d5a64a378c94",
   "StaffAccountRead": "cebf0aa826aa",
   "StaffAccountRolesUpdate": "cea929707cae",
   "StateKind": "c193abe43198",

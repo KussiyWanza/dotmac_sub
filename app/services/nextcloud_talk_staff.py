@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 FEATURE_SETTING = "nextcloud_talk_staff_notifications_enabled"
 OWNER = "communications.nextcloud_talk_staff"
-COMMAND_SCOPE = "communications:nextcloud-talk-staff"
+COMMAND_SCOPE = "communications:nextcloud_talk_staff:manage"
 MAX_RETRIES = 3
 STALE_ROOM_ERROR_CODES = frozenset({"provider_resource_not_found", "room_forbidden"})
 _SET_MAPPING_COMMAND = OwnerCommandDefinition(
@@ -59,6 +59,16 @@ _DISABLE_MAPPING_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
     concern="staff-to-Nextcloud username mapping",
     name="disable_staff_account_mapping",
+)
+_SET_DEFAULT_MAPPING_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="staff-to-Nextcloud username mapping",
+    name="set_default_staff_account_mapping",
+)
+_DISABLE_ALL_MAPPINGS_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="staff-to-Nextcloud username mapping",
+    name="disable_all_staff_account_mappings",
 )
 _TEST_CONNECTION_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
@@ -173,6 +183,25 @@ class SetStaffAccountMappingResult:
     integration_installation_id: UUID
     nextcloud_user_id: NextcloudUserId
     is_active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SetDefaultStaffAccountMappingCommand:
+    context: CommandContext
+    system_user_id: UUID
+    nextcloud_user_id: NextcloudUserId
+
+
+@dataclass(frozen=True, slots=True)
+class DisableAllStaffAccountMappingsCommand:
+    context: CommandContext
+    system_user_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class DisableAllStaffAccountMappingsResult:
+    system_user_id: UUID
+    disabled_mappings: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -369,6 +398,50 @@ def execute_set_staff_account_mapping(
     )
 
 
+def execute_set_default_staff_account_mapping(
+    db: Session,
+    command: SetDefaultStaffAccountMappingCommand,
+) -> SetStaffAccountMappingResult:
+    """Bind an ERP-provisioned staff identity to the enabled Talk installation."""
+
+    def operation() -> SetStaffAccountMappingResult:
+        user = db.get(SystemUser, command.system_user_id)
+        if user is None or not user.is_active:
+            raise NextcloudTalkStaffCommandError(
+                code=f"{OWNER}.invalid_mapping",
+                message="An active staff account is required for Talk mapping.",
+                details={"field": "system_user_id"},
+            )
+        try:
+            binding = nextcloud_talk_capability.require_binding(db)
+        except installations.InstallationError as exc:
+            raise NextcloudTalkStaffCommandError(
+                code=f"{OWNER}.binding_unavailable",
+                message="The enabled Nextcloud Talk binding is unavailable.",
+            ) from exc
+        mapping = set_staff_account_mapping(
+            db,
+            system_user_id=command.system_user_id,
+            integration_installation_id=binding.installation_id,
+            nextcloud_user_id=command.nextcloud_user_id,
+            actor=command.context.actor,
+        )
+        return SetStaffAccountMappingResult(
+            mapping_id=mapping.id,
+            system_user_id=mapping.system_user_id,
+            integration_installation_id=mapping.integration_installation_id,
+            nextcloud_user_id=command.nextcloud_user_id,
+            is_active=mapping.is_active,
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_SET_DEFAULT_MAPPING_COMMAND,
+        context=command.context,
+        operation=operation,
+    )
+
+
 def disable_staff_account_mapping(
     db: Session,
     *,
@@ -415,6 +488,53 @@ def execute_disable_staff_account_mapping(
             integration_installation_id=command.integration_installation_id,
             actor=command.context.actor,
         ),
+    )
+
+
+def execute_disable_all_staff_account_mappings(
+    db: Session,
+    command: DisableAllStaffAccountMappingsCommand,
+) -> DisableAllStaffAccountMappingsResult:
+    """Disable every Talk mapping when ERP removes a staff account's access."""
+
+    def operation() -> DisableAllStaffAccountMappingsResult:
+        if db.get(SystemUser, command.system_user_id) is None:
+            raise NextcloudTalkStaffCommandError(
+                code=f"{OWNER}.invalid_mapping",
+                message="The staff account for Talk mapping was not found.",
+                details={"field": "system_user_id"},
+            )
+        mappings = (
+            db.query(NextcloudTalkStaffAccount)
+            .filter(
+                NextcloudTalkStaffAccount.system_user_id == command.system_user_id,
+            )
+            .with_for_update()
+            .all()
+        )
+        disabled_mappings = 0
+        for mapping in mappings:
+            if mapping.is_active:
+                mapping.is_active = False
+                mapping.updated_by = command.context.actor
+                disabled_mappings += 1
+            _invalidate_room(
+                db,
+                system_user_id=command.system_user_id,
+                installation_id=mapping.integration_installation_id,
+                failure_code="staff_account_deactivated",
+            )
+        db.flush()
+        return DisableAllStaffAccountMappingsResult(
+            system_user_id=command.system_user_id,
+            disabled_mappings=disabled_mappings,
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_DISABLE_ALL_MAPPINGS_COMMAND,
+        context=command.context,
+        operation=operation,
     )
 
 

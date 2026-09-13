@@ -47,7 +47,7 @@ combined Inbox/Support workspace.
 | Inbound provider facts, deduplication, and identity-collision quarantine | `communications.team_inbox_observations` | Commits one normalized provider observation before consequences and durably quarantines conflicting SMTP candidates |
 | Consequence coordination | `communications.team_inbox_processing` | Locks a committed observation and invokes the relevant participants once |
 | Conversation identity and threading | `communications.team_inbox_threads` | Resolves provider message/thread identity and writes conversations/messages |
-| Contact, subscriber, reseller, and reviewed context | `communications.team_inbox_contact_resolution` | Produces explicit matched, ambiguous, suppressed, or unmatched outcomes and owns reviewed links |
+| Contact, subscriber, reseller, and reviewed context | `communications.team_inbox_contact_resolution` | Produces explicit matched, ambiguous, suppressed, or unmatched outcomes, owns reviewed links, and projects bounded lazy Customer link options |
 | Conversation-to-Lead provenance | `communications.conversation_lead_relationships` | Owns the durable, auditable, one-active-Lead-per-conversation relationship |
 | Customer context drawer | `communications.team_inbox_contact_context` | Composes permission-scoped Party, Lead, Ticket, conversation, Project, and Task sections with typed availability |
 | Profile and Lead action resolution | `communications.inbox_lead_actions` | Resolves and coordinates identity-aware actions without owning Party or Lead fields |
@@ -184,9 +184,17 @@ Otherwise it matches the exact normalized inbound endpoint and, for
 provider-scoped social identifiers, the same provider account scope. Ambiguous
 evidence fails closed as `not_calculated` instead of merging customer records.
 
-An operator-selected Subscriber is carried into the conversation command as an
-explicit identity decision. When the sender is the Customer, a reviewed manual
-contact link also repairs every
+The Existing Customer selector is lazy and has two explicit read modes. Focus
+on an empty field requests at most eight conversation-derived likely matches;
+there is no unrelated recently-updated-Customer fallback. Entering at least two
+characters replaces those suggestions with at most eight active Customers
+matched only from the entered name, email, phone, company/legal name, account
+number, subscriber number, display name, or exact Customer UUID. Requests are
+debounced and stale requests are cancelled. Neither mode writes identity.
+
+An operator-selected Subscriber UUID is carried into the conversation command
+as an explicit reviewed identity decision. When the sender is the Customer, a
+reviewed manual contact link also repairs every
 other active, unlinked conversation with the same normalized channel address;
 it never overwrites a different Subscriber relationship. This makes the
 customer conversation-history projection converge without matching names or
@@ -194,6 +202,14 @@ shared addresses in the browser. Before a reviewed link exists, the server may
 narrow an exact normalized phone match with an exact normalized observed name;
 a name mismatch remains ambiguous. Historical rows without reviewed or uniquely
 resolved contact evidence remain unlinked for explicit reconciliation.
+
+Contact-route writes serialize on the normalized channel endpoint before they
+lock conversation and route rows. Reapplying the same target reuses the active
+route and repairs only missing conversation projections. A reviewed different
+target preserves the prior row as inactive, flushes that deactivation before
+inserting its replacement, and leaves the partial unique index as the final
+one-active-route arbiter. Route evidence that changes during review fails
+closed and requires a fresh drawer.
 
 When the sender represents someone else, the operator instead selects the exact
 conversation participant, a represented existing Customer or Party-backed

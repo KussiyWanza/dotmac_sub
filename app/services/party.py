@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.field_vendor import FieldVendor, FieldVendorUser
@@ -1732,3 +1733,27 @@ def add_external_reference(
     db.add(reference)
     db.flush()
     return reference
+
+
+def external_reference_party_id(
+    db: Session,
+    *,
+    source_system: str,
+    entity_type: str,
+    external_id: str,
+) -> UUID | None:
+    """Resolve one external identity to its canonical Party."""
+
+    return db.execute(
+        select(PartyExternalReference.party_id)
+        .where(
+            PartyExternalReference.source_system
+            == _required_text(source_system, "source_system").lower(),
+            PartyExternalReference.entity_type
+            == _required_text(entity_type, "entity_type").lower(),
+            PartyExternalReference.external_id
+            == _required_text(external_id, "external_id"),
+            PartyExternalReference.is_active.is_(True),
+        )
+        .with_for_update()
+    ).scalar_one_or_none()

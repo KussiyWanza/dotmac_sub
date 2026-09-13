@@ -88,6 +88,7 @@ from app.services.domain_errors import DomainError
 from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
+    current_command_context,
     execute_owner_command,
     execute_owner_savepoint,
     owner_command_active,
@@ -268,11 +269,27 @@ class CreateInternalNoteOutcome:
     mentioned_user_ids: tuple[UUID, ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
+class LinkContactCommand:
+    context: CommandContext
+    conversation_id: UUID
+    target: team_inbox_contact_links.ContactLinkTarget
+    actor_person_id: UUID | None
+    note: str | None = None
+    expected_active_link_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ContactLinkOutcome:
-    conversation_id: str
+    conversation_id: UUID
     channel_type: str
-    target: str
+    normalized_contact: str
+    target: team_inbox_contact_links.ContactLinkTarget
+    contact_link_id: UUID
+    previous_link_ids_deactivated: tuple[UUID, ...]
+    repaired_conversation_ids: tuple[UUID, ...]
+    disposition: team_inbox_contact_links.ContactLinkDisposition
+    replayed: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -1962,46 +1979,34 @@ def take_over_conversation(
     return _commit(db, execute, context=command.context)
 
 
-def link_contact(
-    db: Session,
-    *,
-    conversation_id: str | UUID,
-    target_type: str,
-    subscriber_id: str | UUID | None = None,
-    reseller_id: str | UUID | None = None,
-    subscriber_id_manual: str | UUID | None = None,
-    reseller_id_manual: str | UUID | None = None,
-    actor_person_id: str | UUID | None = None,
-    note: str | None = None,
-) -> ContactLinkOutcome:
+def link_contact(db: Session, command: LinkContactCommand) -> ContactLinkOutcome:
     def action() -> ContactLinkOutcome:
-        conversation = _active_conversation(db, conversation_id)
+        conversation, _normalized_contact = (
+            team_inbox_contact_links.lock_conversation_contact_route(
+                db, conversation_id=command.conversation_id
+            )
+        )
         _require_human_control(
             db,
             conversation,
             mutation=ai_conversation_ownership.HumanConversationMutation.contact,
+            for_update=False,
         )
-        selected_subscriber = (
-            str(subscriber_id_manual or subscriber_id or "").strip() or None
-        )
-        selected_reseller = str(reseller_id_manual or reseller_id or "").strip() or None
-        if target_type == "subscriber":
-            selected_reseller = None
-        elif target_type == "reseller":
-            selected_subscriber = None
-        else:
-            raise InboxCommandError(
-                "Choose whether this contact belongs to a subscriber or reseller."
-            )
         result = team_inbox_contact_links.link_conversation_contact(
             db,
-            conversation=conversation,
-            subscriber_id=selected_subscriber,
-            reseller_id=selected_reseller,
-            linked_by_person_id=actor_person_id,
-            note=note,
+            team_inbox_contact_links.LinkConversationContactCommand(
+                context=command.context,
+                conversation_id=conversation.id,
+                target=command.target,
+                actor_person_id=command.actor_person_id,
+                source=(
+                    team_inbox_contact_links.ContactLinkSource.manual_inbox_conversation
+                ),
+                note=command.note,
+                expected_active_link_id=command.expected_active_link_id,
+            ),
         )
-        actor_uuid = coerce_uuid(actor_person_id)
+        actor_uuid = command.actor_person_id
         selected_customer = (
             db.get(Subscriber, result.subscriber_id) if result.subscriber_id else None
         )
@@ -2030,15 +2035,24 @@ def link_contact(
                     and selected_customer.party_id is not None
                     else None
                 ),
+                "contact_link_id": str(result.contact_link_id),
+                "disposition": result.disposition.value,
+                "replayed": result.replayed,
             },
         )
         return ContactLinkOutcome(
-            conversation_id=str(conversation.id),
+            conversation_id=conversation.id,
             channel_type=conversation.channel_type,
-            target="subscriber" if result.subscriber_id else "reseller",
+            normalized_contact=result.normalized_contact,
+            target=command.target,
+            contact_link_id=result.contact_link_id,
+            previous_link_ids_deactivated=result.previous_link_ids_deactivated,
+            repaired_conversation_ids=result.repaired_conversation_ids,
+            disposition=result.disposition,
+            replayed=result.replayed,
         )
 
-    return _commit(db, action)
+    return _commit(db, action, context=command.context)
 
 
 def link_represented_customer(
@@ -2692,10 +2706,17 @@ def _merge_conversation_lead_uncommitted(
         )
         team_inbox_contact_links.link_conversation_contact(
             db,
-            conversation=conversation,
-            subscriber_id=subscriber.id,
-            linked_by_person_id=actor_person_id,
-            note="Lead merged to customer from Inbox",
+            team_inbox_contact_links.LinkConversationContactCommand(
+                context=current_command_context(db),
+                conversation_id=conversation.id,
+                target=team_inbox_contact_links.ContactLinkTarget(
+                    team_inbox_contact_links.ContactLinkTargetType.subscriber,
+                    subscriber.id,
+                ),
+                actor_person_id=coerce_uuid(actor_person_id),
+                source=team_inbox_contact_links.ContactLinkSource.lead_conversion,
+                note="Lead merged to customer from Inbox",
+            ),
         )
         _record_lead_merge(
             conversation,
@@ -2727,10 +2748,17 @@ def _merge_conversation_lead_uncommitted(
         )
         team_inbox_contact_links.link_conversation_contact(
             db,
-            conversation=conversation,
-            reseller_id=reseller.id,
-            linked_by_person_id=actor_person_id,
-            note="Lead merged to reseller from Inbox",
+            team_inbox_contact_links.LinkConversationContactCommand(
+                context=current_command_context(db),
+                conversation_id=conversation.id,
+                target=team_inbox_contact_links.ContactLinkTarget(
+                    team_inbox_contact_links.ContactLinkTargetType.reseller,
+                    reseller.id,
+                ),
+                actor_person_id=coerce_uuid(actor_person_id),
+                source=team_inbox_contact_links.ContactLinkSource.lead_conversion,
+                note="Lead merged to reseller from Inbox",
+            ),
         )
         _record_lead_merge(
             conversation,
@@ -2791,6 +2819,13 @@ def merge_conversation_lead(
     actor_person_id: str | UUID | None = None,
 ) -> LeadMergeOutcome:
     def action() -> LeadMergeOutcome:
+        if target_type in {"subscriber", "reseller"}:
+            conversation_uuid = coerce_uuid(conversation_id)
+            if conversation_uuid is None:
+                raise ConversationNotFoundError()
+            team_inbox_contact_links.lock_conversation_contact_route(
+                db, conversation_id=conversation_uuid
+            )
         conversation = _active_conversation(db, conversation_id, for_update=True)
         lead = _lead_from_conversation_metadata(db, conversation)
         subscriber = (
@@ -2828,6 +2863,13 @@ def merge_contact(
     clean_query = str(target_query or "").strip()
 
     def action() -> ContactMergeOutcome:
+        if clean_target in {"subscriber", "reseller"}:
+            conversation_uuid = coerce_uuid(conversation_id)
+            if conversation_uuid is None:
+                raise ConversationNotFoundError()
+            team_inbox_contact_links.lock_conversation_contact_route(
+                db, conversation_id=conversation_uuid
+            )
         conversation = _active_conversation(db, conversation_id, for_update=True)
         if clean_target == "lead":
             created = create_lead_from_conversation_uncommitted(

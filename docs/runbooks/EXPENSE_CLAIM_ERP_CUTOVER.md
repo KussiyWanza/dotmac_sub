@@ -109,6 +109,18 @@ Legacy pre-approval `submit`, `approve`, or `reject` events are intentionally
 left untouched and refused by the worker. They are not eligible for this
 recovery command.
 
+Permission-denied payment recovery is separate from approval recovery and
+requires `operations:expense_request:pay`. Start with
+`GET /api/v1/field/manager/expenses/payment-deliveries/{event_id}/recovery-preview`,
+then submit the returned fingerprint to the matching `recover` endpoint. The
+preview permits only a dead `initiate_payment` event whose allowlisted ERP
+diagnostic is `permission_denied`, HTTP 403, for `initiate_expense_payment`. It
+also requires ERP to report the claim as approved with no payment intent,
+payment status, or paid time. Recovery changes that same event back to pending
+with its original idempotency key; it never creates a second payment command or
+replacement key. Re-preview after any subsequent failure instead of repeatedly
+recovering stale evidence.
+
 ## Rollback
 
 Restore the recorded pre-cutover legacy ownership of `expense_claim` to stop new

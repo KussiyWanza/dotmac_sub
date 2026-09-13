@@ -15,7 +15,7 @@ Compatibility and ownership decisions:
   visits; ``operations.work_order_commands`` is the sole writer of that link.
 * The fiber-stage engine (``FIBER_INSTALLATION_STAGE_ORDER``,
   ``_compute_fiber_stage_due_at``, ``_seed_fiber_installation_tasks``) and
-  template instantiation (``replace_project_tasks`` + ``_calculate_task_dates``)
+  template instantiation (``apply_template_plan`` + ``_calculate_task_dates``)
   remain project decisions. Customer composition lives in
   ``customer_experience_lifecycle``.
 * Retired CRM-to-Sub mirror emitters are absent. The "Installation complete"
@@ -42,7 +42,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, ClassVar, TypeVar
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -61,8 +61,10 @@ from app.models.project import (
     ProjectTaskAssignee,
     ProjectTaskComment,
     ProjectTaskDependency,
+    ProjectTaskDependencyType,
     ProjectTaskPriority,
     ProjectTaskStatus,
+    ProjectTaskTemplatePlanState,
     ProjectTemplate,
     ProjectTemplateTask,
     ProjectTemplateTaskDependency,
@@ -95,6 +97,8 @@ from app.schemas.project import (
     ProjectTaskStatusTransition,
     ProjectTaskUpdate,
     ProjectTemplateCreate,
+    ProjectTemplatePlanReplace,
+    ProjectTemplatePlanTaskInput,
     ProjectTemplateTaskCreate,
     ProjectTemplateTaskUpdate,
     ProjectTemplateUpdate,
@@ -141,6 +145,16 @@ _TEMPLATE_AUTO_CREATE_WORK_ORDER = "template_auto_create_work_order"
 _TEMPLATE_WORK_ORDER_REQUIRES_AS_BUILT = (
     "template_work_order_requires_as_built_evidence"
 )
+
+
+def current_project_task_plan_clause() -> ColumnElement[bool]:
+    """Select ad-hoc tasks and the current generated template plan."""
+
+    return or_(
+        ProjectTask.template_task_id.is_(None),
+        ProjectTask.template_plan_state.is_(None),
+        ProjectTask.template_plan_state == ProjectTaskTemplatePlanState.current.value,
+    )
 
 
 def active_project_status_values() -> tuple[str, ...]:
@@ -230,6 +244,24 @@ class ProjectTaskWorkOrderAutomation:
     requires_as_built_evidence: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectTemplatePlanReplaceOutcome:
+    template_id: UUID
+    previous_revision: int
+    revision: int
+    task_count: int
+    subtask_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectTemplateApplicationOutcome:
+    project_id: UUID
+    template_id: UUID | None
+    template_revision: int | None
+    created_task_ids: tuple[UUID, ...]
+    superseded_task_ids: tuple[UUID, ...]
+
+
 def template_task_work_order_automation_metadata(
     template_task: ProjectTemplateTask,
 ) -> dict[str, bool]:
@@ -293,6 +325,11 @@ _PROJECT_MUTATION = OwnerCommandDefinition(
     owner="operations.project_lifecycle",
     concern="Project and ProjectTask identity and lifecycle",
     name="mutate_project_aggregate",
+)
+_PROJECT_TEMPLATE_PLAN_MUTATION = OwnerCommandDefinition(
+    owner="operations.project_lifecycle",
+    concern="ProjectTemplate task-plan definition and application",
+    name="replace_project_template_plan",
 )
 
 
@@ -550,6 +587,7 @@ def apply_project_assignment_rule(
             select(ProjectTask)
             .where(ProjectTask.project_id == project.id)
             .where(ProjectTask.is_active.is_(True))
+            .where(current_project_task_plan_clause())
             .order_by(ProjectTask.id)
         ).all()
         for task in tasks:
@@ -932,7 +970,11 @@ def _fiber_stage_task(
 ) -> ProjectTask | None:
     candidates = (
         db.query(ProjectTask)
-        .filter(ProjectTask.project_id == project_id, ProjectTask.is_active.is_(True))
+        .filter(
+            ProjectTask.project_id == project_id,
+            ProjectTask.is_active.is_(True),
+            current_project_task_plan_clause(),
+        )
         .order_by(ProjectTask.created_at.asc())
         .all()
     )
@@ -1303,43 +1345,41 @@ def _next_template_task_label(
     if not project.project_template_id or not task.template_task_id:
         return None
 
-    template_tasks = (
-        db.query(ProjectTemplateTask)
-        .filter(ProjectTemplateTask.template_id == project.project_template_id)
-        .filter(ProjectTemplateTask.is_active.is_(True))
+    # Concrete ProjectTask rows are the project's immutable plan snapshot.
+    # Reading the live template here would leak later template revisions into
+    # customer notifications for older projects.
+    project_tasks = (
+        db.query(ProjectTask)
+        .filter(
+            ProjectTask.project_id == project.id,
+            ProjectTask.is_active.is_(True),
+            ProjectTask.template_task_id.isnot(None),
+            current_project_task_plan_clause(),
+        )
         .order_by(
-            ProjectTemplateTask.sort_order.asc(), ProjectTemplateTask.created_at.asc()
+            ProjectTask.created_at.asc(),
+            ProjectTask.id.asc(),
         )
         .all()
     )
-    if not template_tasks:
+    if not project_tasks:
         return None
 
-    current_index = None
-    for index, template_task in enumerate(template_tasks):
-        if template_task.id == task.template_task_id:
-            current_index = index
-            break
+    current_index = next(
+        (
+            index
+            for index, project_task in enumerate(project_tasks)
+            if project_task.id == task.id
+        ),
+        None,
+    )
     if current_index is None:
         return None
 
-    project_tasks = (
-        db.query(ProjectTask)
-        .filter(ProjectTask.project_id == project.id)
-        .filter(ProjectTask.is_active.is_(True))
-        .all()
-    )
-    project_tasks_by_template_id = {
-        project_task.template_task_id: project_task
-        for project_task in project_tasks
-        if project_task.template_task_id
-    }
-
-    for template_task in template_tasks[current_index + 1 :]:
-        mapped_task = project_tasks_by_template_id.get(template_task.id)
-        if mapped_task and mapped_task.status in _TASK_TERMINAL_STATUSES:
+    for candidate in project_tasks[current_index + 1 :]:
+        if candidate.status in _TASK_TERMINAL_STATUSES:
             continue
-        return mapped_task.title if mapped_task else template_task.title
+        return candidate.title
     return None
 
 
@@ -2174,7 +2214,11 @@ def _seed_fiber_installation_tasks(db: Session, project: Project) -> None:
         return
     existing = (
         db.query(ProjectTask)
-        .filter(ProjectTask.project_id == project.id, ProjectTask.is_active.is_(True))
+        .filter(
+            ProjectTask.project_id == project.id,
+            ProjectTask.is_active.is_(True),
+            current_project_task_plan_clause(),
+        )
         .first()
     )
     if existing:
@@ -2232,6 +2276,7 @@ def resolve_activation_gate_task(db: Session, project_id: UUID) -> ProjectTask |
         .filter(
             ProjectTask.project_id == project_id,
             ProjectTask.is_active.is_(True),
+            current_project_task_plan_clause(),
         )
         .order_by(ProjectTask.created_at.asc(), ProjectTask.id.asc())
         .all()
@@ -2337,10 +2382,11 @@ def prepare_sales_project(
     db.flush()
     _sync_project_sla_clock(db, project)
     if project_template is not None:
-        ProjectTemplateTasks.replace_project_tasks(
+        ProjectTemplateTasks.apply_template_plan(
             db,
             project_id=str(project.id),
             template_id=str(project_template.id),
+            context=None,
         )
     else:
         _seed_fiber_installation_tasks(db, project)
@@ -3220,10 +3266,11 @@ class Projects(ListResponseMixin):
             customer_name = _subscriber_name(_lead_subscriber(db, project))
 
         if payload.project_template_id:
-            ProjectTemplateTasks.replace_project_tasks(
+            ProjectTemplateTasks.apply_template_plan(
                 db=db,
                 project_id=str(project.id),
                 template_id=str(payload.project_template_id),
+                context=context,
             )
             _maybe_auto_assign_project(db, project, context=context)
         else:
@@ -3799,8 +3846,11 @@ class Projects(ListResponseMixin):
                 else None
             )
             if previous_template_id != new_template_id:
-                ProjectTemplateTasks.replace_project_tasks(
-                    db=db, project_id=str(project.id), template_id=new_template_id
+                ProjectTemplateTasks.apply_template_plan(
+                    db=db,
+                    project_id=str(project.id),
+                    template_id=new_template_id,
+                    context=context,
                 )
         _stage_project_audit(
             db,
@@ -3896,14 +3946,93 @@ class ProjectTemplates(ListResponseMixin):
 
 class ProjectTemplateTasks(ListResponseMixin):
     @staticmethod
+    def _current_plan_inputs(
+        db: Session, template_id: UUID
+    ) -> list[ProjectTemplatePlanTaskInput]:
+        tasks = db.scalars(
+            select(ProjectTemplateTask)
+            .where(
+                ProjectTemplateTask.template_id == template_id,
+                ProjectTemplateTask.is_active.is_(True),
+            )
+            .order_by(
+                ProjectTemplateTask.sort_order.asc(),
+                ProjectTemplateTask.created_at.asc(),
+            )
+        ).all()
+        task_ids = [task.id for task in tasks]
+        dependencies: dict[UUID, list[str]] = {}
+        if task_ids:
+            for link in db.scalars(
+                select(ProjectTemplateTaskDependency).where(
+                    ProjectTemplateTaskDependency.template_task_id.in_(task_ids)
+                )
+            ).all():
+                dependencies.setdefault(link.template_task_id, []).append(
+                    str(link.depends_on_template_task_id)
+                )
+        return [
+            ProjectTemplatePlanTaskInput(
+                client_id=str(task.id),
+                parent_client_id=(
+                    str(task.parent_template_task_id)
+                    if task.parent_template_task_id is not None
+                    else None
+                ),
+                title=task.title,
+                description=task.description or "",
+                status=(
+                    ProjectTaskStatus(task.status) if task.status is not None else None
+                ),
+                priority=(
+                    ProjectTaskPriority(task.priority)
+                    if task.priority is not None
+                    else None
+                ),
+                effort_hours=task.effort_hours,
+                auto_create_work_order=task.auto_create_work_order,
+                work_order_requires_as_built_evidence=(
+                    task.work_order_requires_as_built_evidence
+                ),
+                dependencies=dependencies.get(task.id, []),
+            )
+            for task in tasks
+        ]
+
+    @staticmethod
     def create(db: Session, payload: ProjectTemplateTaskCreate):
-        _ensure_project_template(db, str(payload.template_id))
-        data = _model_data(payload.model_dump())
-        task = ProjectTemplateTask(**data)
-        db.add(task)
-        db.commit()
-        db.refresh(task)
-        return task
+        template = _ensure_project_template(db, str(payload.template_id))
+        tasks = ProjectTemplateTasks._current_plan_inputs(db, template.id)
+        client_id = str(uuid4())
+        tasks.append(
+            ProjectTemplatePlanTaskInput(
+                client_id=client_id,
+                parent_client_id=(
+                    str(payload.parent_template_task_id)
+                    if payload.parent_template_task_id is not None
+                    else None
+                ),
+                title=payload.title,
+                description=payload.description or "",
+                status=payload.status,
+                priority=payload.priority,
+                effort_hours=payload.effort_hours,
+                auto_create_work_order=payload.auto_create_work_order,
+                work_order_requires_as_built_evidence=(
+                    payload.work_order_requires_as_built_evidence
+                ),
+            )
+        )
+        ProjectTemplateTasks.replace_plan(
+            db,
+            ProjectTemplatePlanReplace(
+                template_id=template.id,
+                expected_revision=template.revision,
+                tasks=tasks,
+                reason="legacy template task create",
+            ),
+        )
+        return ProjectTemplateTasks.get(db, client_id)
 
     @staticmethod
     def get(db: Session, task_id: str):
@@ -3944,70 +4073,404 @@ class ProjectTemplateTasks(ListResponseMixin):
 
     @staticmethod
     def update(db: Session, task_id: str, payload: ProjectTemplateTaskUpdate):
-        task = db.get(ProjectTemplateTask, coerce_uuid(task_id))
-        if not task:
+        task_uuid = coerce_uuid(task_id)
+        task = db.get(ProjectTemplateTask, task_uuid)
+        if not task or not task.is_active:
             raise _project_error("not_found", "Project template task not found")
-        data = _model_data(payload.model_dump(exclude_unset=True))
-        for key, value in data.items():
-            setattr(task, key, value)
-        db.commit()
-        db.refresh(task)
-        return task
+        template = _ensure_project_template(db, str(task.template_id))
+        updates = payload.model_dump(exclude_unset=True)
+        if updates.get("is_active") is False:
+            ProjectTemplateTasks.delete(db, task_id)
+            return ProjectTemplateTasks.get(db, task_id)
+        tasks = ProjectTemplateTasks._current_plan_inputs(db, template.id)
+        replacement: list[ProjectTemplatePlanTaskInput] = []
+        for item in tasks:
+            if item.client_id != str(task_uuid):
+                replacement.append(item)
+                continue
+            item_updates: dict[str, object] = {}
+            for key in (
+                "title",
+                "description",
+                "status",
+                "priority",
+                "effort_hours",
+                "auto_create_work_order",
+                "work_order_requires_as_built_evidence",
+            ):
+                if key in updates:
+                    item_updates[key] = updates[key]
+            if "parent_template_task_id" in updates:
+                parent_id = updates["parent_template_task_id"]
+                item_updates["parent_client_id"] = (
+                    str(parent_id) if parent_id is not None else None
+                )
+            replacement.append(item.model_copy(update=item_updates))
+        ProjectTemplateTasks.replace_plan(
+            db,
+            ProjectTemplatePlanReplace(
+                template_id=template.id,
+                expected_revision=template.revision,
+                tasks=replacement,
+                reason="legacy template task update",
+            ),
+        )
+        return ProjectTemplateTasks.get(db, task_id)
 
     @staticmethod
     def delete(db: Session, task_id: str):
-        task = db.get(ProjectTemplateTask, coerce_uuid(task_id))
-        if not task:
+        task_uuid = coerce_uuid(task_id)
+        task = db.get(ProjectTemplateTask, task_uuid)
+        if not task or not task.is_active:
             raise _project_error("not_found", "Project template task not found")
-        task.is_active = False
-        db.query(ProjectTemplateTaskDependency).filter(
-            ProjectTemplateTaskDependency.template_task_id == task.id
-        ).delete(synchronize_session=False)
-        db.query(ProjectTemplateTaskDependency).filter(
-            ProjectTemplateTaskDependency.depends_on_template_task_id == task.id
-        ).delete(synchronize_session=False)
-        db.commit()
+        template = _ensure_project_template(db, str(task.template_id))
+        tasks = ProjectTemplateTasks._current_plan_inputs(db, template.id)
+        removed_ids = {
+            str(task_uuid),
+            *(
+                item.client_id
+                for item in tasks
+                if item.parent_client_id == str(task_uuid)
+            ),
+        }
+        replacement = [
+            item.model_copy(
+                update={
+                    "dependencies": [
+                        dependency
+                        for dependency in item.dependencies
+                        if dependency not in removed_ids
+                    ]
+                }
+            )
+            for item in tasks
+            if item.client_id not in removed_ids
+        ]
+        ProjectTemplateTasks.replace_plan(
+            db,
+            ProjectTemplatePlanReplace(
+                template_id=template.id,
+                expected_revision=template.revision,
+                tasks=replacement,
+                reason="legacy template task delete",
+            ),
+        )
 
     @staticmethod
-    def replace_project_tasks(db: Session, project_id: str, template_id: str | None):
-        project_uuid = coerce_uuid(project_id)
-        template_task_ids_subquery = select(ProjectTask.id).where(
-            ProjectTask.project_id == project_uuid,
-            ProjectTask.template_task_id.isnot(None),
+    def replace_plan(
+        db: Session,
+        command: ProjectTemplatePlanReplace,
+        *,
+        actor_id: UUID | None = None,
+        context: CommandContext | None = None,
+    ) -> ProjectTemplatePlanReplaceOutcome:
+        """Replace one template definition without mutating existing projects."""
+
+        if context is None:
+            context = _project_command_context(
+                action="replace_project_template_plan",
+                actor=actor_id,
+                aggregate_id=command.template_id,
+                reason=command.reason,
+            )
+            db_session_adapter.release_read_transaction(db)
+            return execute_owner_command(
+                db,
+                definition=_PROJECT_TEMPLATE_PLAN_MUTATION,
+                context=context,
+                operation=lambda: ProjectTemplateTasks.replace_plan(
+                    db, command, actor_id=actor_id, context=context
+                ),
+            )
+
+        template = db.scalar(
+            select(ProjectTemplate)
+            .where(ProjectTemplate.id == command.template_id)
+            .with_for_update()
         )
-        db.query(ProjectTaskDependency).filter(
-            ProjectTaskDependency.task_id.in_(template_task_ids_subquery)
-        ).delete(synchronize_session=False)
-        db.query(ProjectTaskDependency).filter(
-            ProjectTaskDependency.depends_on_task_id.in_(template_task_ids_subquery)
-        ).delete(synchronize_session=False)
-        db.query(ProjectTask).filter(
-            ProjectTask.project_id == project_uuid,
-            ProjectTask.template_task_id.isnot(None),
-        ).delete(synchronize_session=False)
-        if not template_id:
+        if template is None:
+            raise _project_error("not_found", "Project template not found")
+        if template.revision != command.expected_revision:
+            raise _project_error(
+                "stale_state",
+                "The template changed while you were editing it. Reload and try again.",
+                expected_revision=command.expected_revision,
+                current_revision=template.revision,
+            )
+
+        item_by_client_id = {item.client_id: item for item in command.tasks}
+        if len(item_by_client_id) != len(command.tasks):
+            raise _project_error(
+                "relationship_conflict", "Duplicate template task identity"
+            )
+        order = {item.client_id: index for index, item in enumerate(command.tasks)}
+        for item in command.tasks:
+            parent_id = item.parent_client_id
+            if parent_id is not None:
+                parent = item_by_client_id.get(parent_id)
+                if parent is None:
+                    raise _project_error(
+                        "relationship_conflict",
+                        f"Parent task for '{item.title}' is not in this template",
+                    )
+                if parent.client_id == item.client_id or parent.parent_client_id:
+                    raise _project_error(
+                        "relationship_conflict",
+                        "Template subtasks support one level and require a top-level parent",
+                    )
+                if order[parent_id] >= order[item.client_id]:
+                    raise _project_error(
+                        "relationship_conflict",
+                        "A subtask must appear after its parent task",
+                    )
+            if len(set(item.dependencies)) != len(item.dependencies):
+                raise _project_error(
+                    "relationship_conflict",
+                    f"Task '{item.title}' has a duplicate dependency",
+                )
+            for dependency_id in item.dependencies:
+                dependency = item_by_client_id.get(dependency_id)
+                if dependency is None:
+                    raise _project_error(
+                        "relationship_conflict",
+                        f"Dependency for '{item.title}' is not in this template",
+                    )
+                if order[dependency_id] >= order[item.client_id]:
+                    raise _project_error(
+                        "relationship_conflict",
+                        f"Task '{item.title}' may depend only on an earlier task",
+                    )
+                if (
+                    dependency_id == parent_id
+                    or dependency.parent_client_id == item.client_id
+                ):
+                    raise _project_error(
+                        "relationship_conflict",
+                        "A parent and its subtask cannot also depend on one another",
+                    )
+
+        existing_tasks = db.scalars(
+            select(ProjectTemplateTask)
+            .where(ProjectTemplateTask.template_id == template.id)
+            .order_by(ProjectTemplateTask.id)
+            .with_for_update()
+        ).all()
+        existing_map = {str(task.id): task for task in existing_tasks}
+        for existing_task in existing_tasks:
+            existing_task.parent_template_task_id = None
+        db.flush()
+
+        client_to_task: dict[str, ProjectTemplateTask] = {}
+        kept_ids: set[UUID] = set()
+        for index, item in enumerate(command.tasks):
+            task = existing_map.get(item.client_id)
+            if task is None:
+                try:
+                    requested_id = UUID(item.client_id)
+                except ValueError:
+                    requested_id = uuid4()
+                if db.get(ProjectTemplateTask, requested_id) is not None:
+                    raise _project_error(
+                        "relationship_conflict",
+                        "Template task identity already belongs to another plan",
+                    )
+                task = ProjectTemplateTask(id=requested_id, template_id=template.id)
+                db.add(task)
+            task.title = item.title
+            task.description = item.description or None
+            task.status = item.status.value if item.status is not None else None
+            task.priority = item.priority.value if item.priority is not None else None
+            task.sort_order = index
+            task.effort_hours = item.effort_hours
+            task.auto_create_work_order = item.auto_create_work_order
+            task.work_order_requires_as_built_evidence = (
+                item.work_order_requires_as_built_evidence
+            )
+            task.is_active = True
             db.flush()
-            return
-        template_tasks = (
-            db.query(ProjectTemplateTask)
-            .filter(ProjectTemplateTask.template_id == coerce_uuid(template_id))
-            .filter(ProjectTemplateTask.is_active.is_(True))
+            client_to_task[item.client_id] = task
+            kept_ids.add(task.id)
+
+        for item in command.tasks:
+            task = client_to_task[item.client_id]
+            task.parent_template_task_id = (
+                client_to_task[item.parent_client_id].id
+                if item.parent_client_id is not None
+                else None
+            )
+        for task in existing_tasks:
+            if task.id not in kept_ids:
+                task.is_active = False
+
+        all_template_task_ids = list(
+            {task.id for task in existing_tasks}
+            | {task.id for task in client_to_task.values()}
+        )
+        if all_template_task_ids:
+            db.query(ProjectTemplateTaskDependency).filter(
+                or_(
+                    ProjectTemplateTaskDependency.template_task_id.in_(
+                        all_template_task_ids
+                    ),
+                    ProjectTemplateTaskDependency.depends_on_template_task_id.in_(
+                        all_template_task_ids
+                    ),
+                )
+            ).delete(synchronize_session=False)
+
+        for item in command.tasks:
+            task = client_to_task[item.client_id]
+            for dependency_client_id in item.dependencies:
+                db.add(
+                    ProjectTemplateTaskDependency(
+                        template_task_id=task.id,
+                        depends_on_template_task_id=client_to_task[
+                            dependency_client_id
+                        ].id,
+                        dependency_type=(
+                            ProjectTaskDependencyType.finish_to_start.value
+                        ),
+                        lag_days=0,
+                    )
+                )
+
+        previous_revision = template.revision
+        template.revision += 1
+        _stage_project_audit(
+            db,
+            context=context,
+            action="replace_template_plan",
+            entity_type="project_template",
+            entity_id=template.id,
+            changed_fields=["tasks", "subtasks", "dependencies", "revision"],
+        )
+        emit_event(
+            db,
+            EventType.custom,
+            {
+                "name": "project_template.plan_replaced",
+                "template_id": str(template.id),
+                "previous_revision": previous_revision,
+                "revision": template.revision,
+                "task_count": len(command.tasks),
+            },
+        )
+        db.flush()
+        return ProjectTemplatePlanReplaceOutcome(
+            template_id=template.id,
+            previous_revision=previous_revision,
+            revision=template.revision,
+            task_count=len(command.tasks),
+            subtask_count=sum(
+                item.parent_client_id is not None for item in command.tasks
+            ),
+        )
+
+    @staticmethod
+    def apply_template_plan(
+        db: Session,
+        *,
+        project_id: str,
+        template_id: str | None,
+        context: CommandContext | None,
+    ) -> ProjectTemplateApplicationOutcome:
+        """Apply a template snapshot while retaining the previous plan as history."""
+
+        project_uuid = coerce_uuid(project_id)
+        project = db.scalar(
+            select(Project).where(Project.id == project_uuid).with_for_update()
+        )
+        if project is None:
+            raise _project_error("not_found", "Project not found")
+
+        previous_tasks = db.scalars(
+            select(ProjectTask)
+            .where(
+                ProjectTask.project_id == project_uuid,
+                ProjectTask.template_task_id.isnot(None),
+                or_(
+                    ProjectTask.template_plan_state.is_(None),
+                    ProjectTask.template_plan_state
+                    == ProjectTaskTemplatePlanState.current.value,
+                ),
+            )
+            .order_by(ProjectTask.id)
+            .with_for_update()
+        ).all()
+        superseded_ids = tuple(task.id for task in previous_tasks)
+        for task in previous_tasks:
+            # Keep the row active so exact work-order and provisioning bindings
+            # remain valid; current-plan projections exclude this explicit state.
+            task.template_plan_state = ProjectTaskTemplatePlanState.superseded.value
+
+        if template_id is None:
+            project.applied_template_revision = None
+            if context is not None:
+                _stage_project_audit(
+                    db,
+                    context=context,
+                    action="clear_template_plan",
+                    entity_type="project",
+                    entity_id=project.id,
+                    changed_fields=[
+                        "project_template_id",
+                        "applied_template_revision",
+                    ],
+                )
+                emit_event(
+                    db,
+                    EventType.custom,
+                    {
+                        "name": "project.template_applied",
+                        "project_id": str(project.id),
+                        "template_id": None,
+                        "template_revision": None,
+                        "created_task_ids": [],
+                        "superseded_task_ids": [str(value) for value in superseded_ids],
+                    },
+                    subscriber_id=project.subscriber_id,
+                )
+            db.flush()
+            return ProjectTemplateApplicationOutcome(
+                project_id=project.id,
+                template_id=None,
+                template_revision=None,
+                created_task_ids=(),
+                superseded_task_ids=superseded_ids,
+            )
+
+        template = db.scalar(
+            select(ProjectTemplate)
+            .where(
+                ProjectTemplate.id == coerce_uuid(template_id),
+                ProjectTemplate.is_active.is_(True),
+            )
+            .with_for_update()
+        )
+        if template is None:
+            raise _project_error("not_found", "Active project template not found")
+        template_tasks = db.scalars(
+            select(ProjectTemplateTask)
+            .where(
+                ProjectTemplateTask.template_id == template.id,
+                ProjectTemplateTask.is_active.is_(True),
+            )
             .order_by(
                 ProjectTemplateTask.sort_order.asc(),
                 ProjectTemplateTask.created_at.asc(),
             )
-            .all()
-        )
-        task_id_map: dict[str, str] = {}
+        ).all()
+
+        task_id_map: dict[UUID, UUID] = {}
         task_obj_map: dict[str, ProjectTask] = {}
+        created_tasks: list[ProjectTask] = []
         for template_task in template_tasks:
-            data: dict = {
+            data: dict[str, object] = {
                 "project_id": project_uuid,
                 "title": template_task.title,
                 "template_task_id": template_task.id,
-                # Capture the automation decision on the ProjectTask. A later
-                # template edit must not reinterpret an already-created
-                # implementation scope during Quote-acceptance replay.
+                "template_revision": template.revision,
+                "template_plan_state": ProjectTaskTemplatePlanState.current.value,
                 "metadata_": template_task_work_order_automation_metadata(
                     template_task
                 ),
@@ -4034,46 +4497,74 @@ class ProjectTemplateTasks(ListResponseMixin):
             task = ProjectTask(**data)
             db.add(task)
             db.flush()
-            task_id_map[str(template_task.id)] = str(task.id)
+            task_id_map[template_task.id] = task.id
             task_obj_map[str(task.id)] = task
+            created_tasks.append(task)
+
+        for template_task in template_tasks:
+            if template_task.parent_template_task_id is not None:
+                task_obj_map[
+                    str(task_id_map[template_task.id])
+                ].parent_task_id = task_id_map[template_task.parent_template_task_id]
 
         template_task_ids = [template_task.id for template_task in template_tasks]
         dep_graph: dict[str, list[str]] = {}
         if template_task_ids:
-            dependencies = (
-                db.query(ProjectTemplateTaskDependency)
-                .filter(
+            dependencies = db.scalars(
+                select(ProjectTemplateTaskDependency).where(
                     ProjectTemplateTaskDependency.template_task_id.in_(
                         template_task_ids
                     )
                 )
-                .all()
-            )
+            ).all()
             for dependency in dependencies:
-                task_id = task_id_map.get(str(dependency.template_task_id))
-                depends_on_id = task_id_map.get(
-                    str(dependency.depends_on_template_task_id)
-                )
-                if not task_id or not depends_on_id or task_id == depends_on_id:
+                task_id = task_id_map.get(dependency.template_task_id)
+                depends_on_id = task_id_map.get(dependency.depends_on_template_task_id)
+                if task_id is None or depends_on_id is None or task_id == depends_on_id:
                     continue
-                dep_graph.setdefault(task_id, []).append(depends_on_id)
+                dep_graph.setdefault(str(task_id), []).append(str(depends_on_id))
                 db.add(
                     ProjectTaskDependency(
-                        task_id=coerce_uuid(task_id),
-                        depends_on_task_id=coerce_uuid(depends_on_id),
+                        task_id=task_id,
+                        depends_on_task_id=depends_on_id,
                         dependency_type=dependency.dependency_type,
                         lag_days=dependency.lag_days,
                     )
                 )
 
-        # Auto-calculate start_at/due_at from effort_hours and dependencies
-        project = db.get(Project, project_uuid)
-        project_start = (
-            project.start_at if project and project.start_at else datetime.now(UTC)
-        )
+        project_start = project.start_at or datetime.now(UTC)
         _calculate_task_dates(task_obj_map, dep_graph, project_start)
-
+        project.applied_template_revision = template.revision
+        if context is not None:
+            _stage_project_audit(
+                db,
+                context=context,
+                action="apply_template_plan",
+                entity_type="project",
+                entity_id=project.id,
+                changed_fields=["project_template_id", "applied_template_revision"],
+            )
+            emit_event(
+                db,
+                EventType.custom,
+                {
+                    "name": "project.template_applied",
+                    "project_id": str(project.id),
+                    "template_id": str(template.id),
+                    "template_revision": template.revision,
+                    "created_task_ids": [str(task.id) for task in created_tasks],
+                    "superseded_task_ids": [str(value) for value in superseded_ids],
+                },
+                subscriber_id=project.subscriber_id,
+            )
         db.flush()
+        return ProjectTemplateApplicationOutcome(
+            project_id=project.id,
+            template_id=template.id,
+            template_revision=template.revision,
+            created_task_ids=tuple(task.id for task in created_tasks),
+            superseded_task_ids=superseded_ids,
+        )
 
 
 def _calculate_task_dates(
@@ -4147,6 +4638,14 @@ def _lock_project_task_scope(
         raise _project_error("invalid_transition", "Project is archived")
     if require_active_task and not task.is_active:
         raise _project_error("invalid_transition", "Project task is archived")
+    if (
+        require_active_task
+        and task.template_plan_state == ProjectTaskTemplatePlanState.superseded.value
+    ):
+        raise _project_error(
+            "invalid_transition",
+            "Previous template-plan tasks are retained as read-only history",
+        )
     return project, task
 
 
@@ -4162,7 +4661,11 @@ def _validate_parent_task(
     parent = db.scalar(
         select(ProjectTask).where(ProjectTask.id == parent_task_id).with_for_update()
     )
-    if parent is None or not parent.is_active:
+    if (
+        parent is None
+        or not parent.is_active
+        or parent.template_plan_state == ProjectTaskTemplatePlanState.superseded.value
+    ):
         raise _project_error("not_found", "Active parent task not found")
     if parent.project_id != project_id:
         raise _project_error(
@@ -4190,7 +4693,7 @@ def _validate_parent_task(
 
 
 def _require_task_completion_ready(db: Session, task: ProjectTask) -> None:
-    blockers = (
+    dependency_blockers = (
         db.query(ProjectTask)
         .join(
             ProjectTaskDependency,
@@ -4206,10 +4709,21 @@ def _require_task_completion_ready(db: Session, task: ProjectTask) -> None:
         .order_by(ProjectTask.id)
         .all()
     )
+    child_blockers = (
+        db.query(ProjectTask)
+        .filter(
+            ProjectTask.parent_task_id == task.id,
+            ProjectTask.is_active.is_(True),
+            ProjectTask.status != ProjectTaskStatus.done.value,
+        )
+        .order_by(ProjectTask.id)
+        .all()
+    )
+    blockers = [*dependency_blockers, *child_blockers]
     if blockers:
         raise _project_error(
             "relationship_conflict",
-            "Complete all dependency tasks before completing this task",
+            "Complete all dependency tasks and subtasks before completing this task",
             blocking_task_ids=[str(blocker.id) for blocker in blockers],
         )
 
@@ -4429,6 +4943,8 @@ class ProjectTasks(ListResponseMixin):
             query = query.filter(ProjectTask.is_active.is_(True))
         else:
             query = query.filter(ProjectTask.is_active == is_active)
+        if is_active is not False:
+            query = query.filter(current_project_task_plan_clause())
         if filter_clause is not None:
             query = query.filter(filter_clause)
         query = apply_ordering(

@@ -45,6 +45,8 @@ from app.schemas.project import (
     ProjectTaskDependencyInput,
     ProjectTaskStatusTransition,
     ProjectTaskUpdate,
+    ProjectTemplatePlanReplace,
+    ProjectTemplatePlanTaskInput,
     ProjectUpdate,
 )
 from app.schemas.settings import DomainSettingCreate, DomainSettingUpdate
@@ -55,7 +57,9 @@ from app.services.projects import (
     FIBER_INSTALLATION_STAGE_ORDER,
     FIBER_INSTALLATION_STAGE_TITLES,
     ProjectServiceError,
+    _next_template_task_label,
     project_tasks,
+    project_template_tasks,
     projects,
     reconcile_project_projection,
 )
@@ -964,6 +968,56 @@ class TestTaskStateMachine:
 
         assert exc.value.code == "operations.project_lifecycle.relationship_conflict"
 
+    def test_parent_completion_requires_all_active_subtasks(
+        self, db_session, subscriber
+    ):
+        project = _create_fiber_project(db_session, subscriber)
+        parent = project_tasks.create(
+            db_session,
+            ProjectTaskCreate(project_id=project.id, title="Activation"),
+        )
+        child = project_tasks.create(
+            db_session,
+            ProjectTaskCreate(
+                project_id=project.id,
+                parent_task_id=parent.id,
+                title="Configuration",
+            ),
+        )
+
+        with pytest.raises(ProjectServiceError) as exc:
+            project_tasks.transition_status(
+                db_session,
+                str(parent.id),
+                ProjectTaskStatusTransition(
+                    expected_status="todo",
+                    status="done",
+                    reason="finish activation",
+                ),
+            )
+        assert exc.value.code == "operations.project_lifecycle.relationship_conflict"
+        assert str(child.id) in exc.value.details["blocking_task_ids"]
+
+        project_tasks.transition_status(
+            db_session,
+            str(child.id),
+            ProjectTaskStatusTransition(
+                expected_status="todo",
+                status="done",
+                reason="finish configuration",
+            ),
+        )
+        completed = project_tasks.transition_status(
+            db_session,
+            str(parent.id),
+            ProjectTaskStatusTransition(
+                expected_status="todo",
+                status="done",
+                reason="finish activation",
+            ),
+        )
+        assert completed.status == "done"
+
     def test_assignee_sync_multi(self, db_session, subscriber):
         project = _create_fiber_project(db_session, subscriber)
         task = _tasks_for(db_session, project)[0]
@@ -1286,7 +1340,9 @@ class TestTemplateInstantiation:
         assert _utc(move.start_at) == _utc(survey.due_at)
         assert _utc(move.due_at) == _utc(survey.due_at) + timedelta(hours=8)
 
-    def test_template_swap_replaces_template_tasks(self, db_session, subscriber):
+    def test_template_clear_preserves_previous_plan_and_ad_hoc_tasks(
+        self, db_session, subscriber
+    ):
         template, _first, _second = self._template_with_tasks(db_session)
         payload = ProjectCreate(
             name="Relocation",
@@ -1295,12 +1351,165 @@ class TestTemplateInstantiation:
             project_template_id=template.id,
         )
         project = projects.create(db_session, payload)
-        assert len(_tasks_for(db_session, project)) == 2
+        original_tasks = _tasks_for(db_session, project)
+        ad_hoc = project_tasks.create(
+            db_session,
+            ProjectTaskCreate(project_id=project.id, title="Site-specific check"),
+        )
 
         projects.update(
             db_session, str(project.id), ProjectUpdate(project_template_id=None)
         )
-        assert _tasks_for(db_session, project) == []
+        db_session.refresh(project)
+        assert project.applied_template_revision is None
+        assert all(task.template_plan_state == "superseded" for task in original_tasks)
+        assert db_session.get(ProjectTask, ad_hoc.id).is_active is True
+
+        current = project_tasks.list(
+            db_session,
+            project_id=str(project.id),
+            status=None,
+            priority=None,
+            assigned_to_person_id=None,
+            parent_task_id=None,
+            is_active=None,
+            order_by="created_at",
+            order_dir="asc",
+            limit=100,
+            offset=0,
+        )
+        assert [task.id for task in current] == [ad_hoc.id]
+
+    def test_template_subtasks_apply_only_to_future_project_snapshots(
+        self, db_session, subscriber
+    ):
+        template, parent_definition, child_definition = self._template_with_tasks(
+            db_session
+        )
+        existing = projects.create(
+            db_session,
+            ProjectCreate(
+                name="Existing relocation",
+                subscriber_id=subscriber.id,
+                project_template_id=template.id,
+            ),
+        )
+        existing_by_template = {
+            task.template_task_id: task for task in _tasks_for(db_session, existing)
+        }
+
+        project_template_tasks.replace_plan(
+            db_session,
+            ProjectTemplatePlanReplace(
+                template_id=template.id,
+                expected_revision=template.revision,
+                reason="Add configuration as an activation subtask",
+                tasks=[
+                    ProjectTemplatePlanTaskInput(
+                        client_id=str(parent_definition.id),
+                        title=parent_definition.title,
+                        effort_hours=parent_definition.effort_hours,
+                    ),
+                    ProjectTemplatePlanTaskInput(
+                        client_id="configuration",
+                        parent_client_id=str(parent_definition.id),
+                        title="Configuration",
+                    ),
+                    ProjectTemplatePlanTaskInput(
+                        client_id=str(child_definition.id),
+                        title=child_definition.title,
+                        effort_hours=child_definition.effort_hours,
+                    ),
+                ],
+            ),
+        )
+        future = projects.create(
+            db_session,
+            ProjectCreate(
+                name="Future relocation",
+                subscriber_id=subscriber.id,
+                project_template_id=template.id,
+            ),
+        )
+        future_by_template = {
+            task.template_task_id: task for task in _tasks_for(db_session, future)
+        }
+        future_tasks = _tasks_for(db_session, future)
+        configuration = next(
+            task for task in future_tasks if task.title == "Configuration"
+        )
+
+        assert all(
+            task.title != "Configuration" for task in _tasks_for(db_session, existing)
+        )
+        assert (
+            configuration.parent_task_id == future_by_template[parent_definition.id].id
+        )
+        assert (
+            _next_template_task_label(
+                db_session,
+                existing,
+                existing_by_template[parent_definition.id],
+            )
+            == child_definition.title
+        )
+        assert existing.applied_template_revision == 1
+        assert future.applied_template_revision == 2
+
+    def test_template_switch_keeps_history_and_ad_hoc_work(
+        self, db_session, subscriber
+    ):
+        first_template, _first, _second = self._template_with_tasks(db_session)
+        second_template = ProjectTemplate(name="Commissioning flow")
+        db_session.add(second_template)
+        db_session.flush()
+        commissioning = ProjectTemplateTask(
+            template_id=second_template.id,
+            title="Commission service",
+            sort_order=1,
+        )
+        db_session.add(commissioning)
+        db_session.commit()
+        project = projects.create(
+            db_session,
+            ProjectCreate(
+                name="Template switch",
+                subscriber_id=subscriber.id,
+                project_template_id=first_template.id,
+            ),
+        )
+        original_tasks = _tasks_for(db_session, project)
+        ad_hoc = project_tasks.create(
+            db_session,
+            ProjectTaskCreate(project_id=project.id, title="Customer-specific check"),
+        )
+
+        projects.update(
+            db_session,
+            str(project.id),
+            ProjectUpdate(project_template_id=second_template.id),
+        )
+        db_session.refresh(project)
+        all_tasks = _tasks_for(db_session, project)
+        new_tasks = [
+            task
+            for task in all_tasks
+            if task.template_plan_state == "current"
+            and task.template_task_id is not None
+        ]
+
+        assert project.project_template_id == second_template.id
+        assert project.applied_template_revision == second_template.revision
+        assert [task.title for task in new_tasks] == ["Commission service"]
+        assert all(task.is_active for task in original_tasks)
+        assert all(task.template_plan_state == "superseded" for task in original_tasks)
+        assert db_session.get(ProjectTask, ad_hoc.id).template_plan_state is None
+        with pytest.raises(ProjectServiceError, match="read-only history"):
+            project_tasks.update(
+                db_session,
+                str(original_tasks[0].id),
+                ProjectTaskUpdate(title="Do not mutate history"),
+            )
 
 
 class TestProjectLifecycle:

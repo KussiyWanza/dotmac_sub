@@ -50,7 +50,9 @@ from app.services.field import expense_requests as expense_requests_module
 from app.services.field.attachments import ResolvedExpenseReceiptAttachment
 from app.services.field.expense_recovery import (
     PreviewExpenseDeliveryRecovery,
+    PreviewExpensePaymentDeliveryRecovery,
     preview_expense_delivery_recovery,
+    preview_expense_payment_delivery_recovery,
 )
 from app.services.field.expense_requests import (
     ApproveFieldExpenseRequest,
@@ -62,6 +64,7 @@ from app.services.field.expense_requests import (
     GetFieldExpenseFormContext,
     InitiateFieldExpensePayment,
     RecoverExpenseDelivery,
+    RecoverExpensePaymentDelivery,
     RejectFieldExpenseRequest,
     ResolveFieldExpenseSubmissionContext,
     SelectedExpenseApprover,
@@ -72,6 +75,7 @@ from app.services.field.expense_requests import (
     get_field_expense_form_context,
     initiate_field_expense_payment_command,
     recover_expense_delivery,
+    recover_expense_payment_delivery,
     reject_field_expense_request_command,
     resolve_field_expense_submission_context,
     submit_field_expense_request_command,
@@ -85,7 +89,11 @@ from app.services.integrations.backoffice_contracts import (
     ErpExpensePaymentCommand,
     ErpExpensePaymentOutcome,
 )
-from app.services.integrations.diagnostics import safe_diagnostic
+from app.services.integrations.diagnostics import (
+    DELIVERY_DIAGNOSTIC_KEY,
+    diagnostic_evidence,
+    safe_diagnostic,
+)
 from app.services.owner_commands import CommandContext
 from tests.integration_platform_helpers import enable_erp_capability
 
@@ -1636,6 +1644,155 @@ def test_dead_event_recovery_is_previewed_linked_and_non_destructive(
     assert replacement.payload["_replaces_event_id"] == str(original_id)
     assert replacement.idempotency_key.endswith("expense-delivery-recovery.v1")
     assert replacement.erp_response["claim_status"] == "draft"
+
+
+def _permission_denied_payment_event(
+    db_session: Session,
+    request: FieldExpenseRequest,
+) -> FieldErpSyncEvent:
+    event = expense_sync.enqueue_expense_payment(
+        db_session,
+        request,
+        command_id=uuid4(),
+        initiated_by_email="payment.manager@example.com",
+        initiated_at=datetime.now(UTC),
+        isolate=False,
+    )
+    diagnostic = safe_diagnostic(status=403).model_copy(
+        update={
+            "operation": "initiate_expense_payment",
+            "request_id": uuid4(),
+        }
+    )
+    event.status = FieldErpSyncStatus.dead.value
+    event.attempts = 1
+    event.last_error = "ERP permission denied"
+    event.erp_response = {
+        DELIVERY_DIAGNOSTIC_KEY: diagnostic_evidence(diagnostic),
+    }
+    db_session.commit()
+    return event
+
+
+def test_permission_denied_payment_recovery_requeues_same_idempotent_event(
+    db_session,
+    monkeypatch,
+):
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.expense_claim.value})
+    request = _make_submitted_request(db_session)
+    _approve(db_session, request)
+    event = _permission_denied_payment_event(db_session, request)
+    event_id = event.id
+    idempotency_key = event.idempotency_key
+    original_count = len(_outbox_rows(db_session, request))
+    erp = _FakeERPClient(
+        status_outcomes=[{"status": "approved"}, {"status": "approved"}]
+    )
+    monkeypatch.setattr(expense_recovery_module, "capability_client", lambda _db: erp)
+
+    preview = preview_expense_payment_delivery_recovery(
+        db_session,
+        PreviewExpensePaymentDeliveryRecovery(dead_event_id=event_id),
+    )
+    db_session.commit()
+    command_id = uuid4()
+    outcome = recover_expense_payment_delivery(
+        db_session,
+        command=RecoverExpensePaymentDelivery(
+            context=CommandContext(
+                command_id=command_id,
+                correlation_id=command_id,
+                actor="user:payment-recovery-operator",
+                scope="operations:expense_request:pay",
+                reason="recover permission-denied payment delivery",
+                idempotency_key=str(command_id),
+            ),
+            dead_event_id=event_id,
+            preview_fingerprint=preview.fingerprint,
+        ),
+    )
+
+    db_session.expire_all()
+    recovered = db_session.get(FieldErpSyncEvent, event_id)
+    assert recovered is not None
+    assert outcome.event_id == event_id
+    assert outcome.idempotency_key == idempotency_key
+    assert outcome.replayed is False
+    assert recovered.status == FieldErpSyncStatus.pending.value
+    assert recovered.attempts == 1
+    assert len(_outbox_rows(db_session, request)) == original_count
+    recovery_evidence = request.metadata_["expense_payment_delivery_recoveries"][-1]
+    assert recovery_evidence["event_id"] == str(event_id)
+    assert recovery_evidence["idempotency_key"] == idempotency_key
+
+
+def test_payment_recovery_rejects_approval_write_scope(db_session, monkeypatch):
+    request = _make_submitted_request(db_session)
+    _approve(db_session, request)
+    event = _permission_denied_payment_event(db_session, request)
+    event_id = event.id
+    erp = _FakeERPClient(status_outcomes=[{"status": "approved"}])
+    monkeypatch.setattr(expense_recovery_module, "capability_client", lambda _db: erp)
+    preview = preview_expense_payment_delivery_recovery(
+        db_session,
+        PreviewExpensePaymentDeliveryRecovery(dead_event_id=event_id),
+    )
+    db_session.commit()
+    command_id = uuid4()
+
+    with pytest.raises(
+        expense_recovery_module.ExpenseDeliveryRecoveryError,
+        match="payment permission",
+    ):
+        recover_expense_payment_delivery(
+            db_session,
+            command=RecoverExpensePaymentDelivery(
+                context=CommandContext(
+                    command_id=command_id,
+                    correlation_id=command_id,
+                    actor="user:approval-only-operator",
+                    scope="operations:expense_request:write",
+                    reason="attempt payment recovery with approval scope",
+                    idempotency_key=str(command_id),
+                ),
+                dead_event_id=event_id,
+                preview_fingerprint=preview.fingerprint,
+            ),
+        )
+
+    db_session.expire_all()
+    assert (
+        db_session.get(FieldErpSyncEvent, event_id).status
+        == FieldErpSyncStatus.dead.value
+    )
+
+
+def test_payment_recovery_fails_closed_when_erp_has_payment_evidence(
+    db_session,
+    monkeypatch,
+):
+    request = _make_submitted_request(db_session)
+    _approve(db_session, request)
+    event = _permission_denied_payment_event(db_session, request)
+    erp = _FakeERPClient(
+        status_outcomes=[
+            {
+                "status": "approved",
+                "payment_status": "processing",
+                "payment_intent_id": str(uuid4()),
+            }
+        ]
+    )
+    monkeypatch.setattr(expense_recovery_module, "capability_client", lambda _db: erp)
+
+    with pytest.raises(
+        expense_recovery_module.ExpenseDeliveryRecoveryError,
+        match="unambiguous recovery",
+    ):
+        preview_expense_payment_delivery_recovery(
+            db_session,
+            PreviewExpensePaymentDeliveryRecovery(dead_event_id=event.id),
+        )
 
 
 def test_local_rejection_enqueues_ordered_erp_delivery(db_session):

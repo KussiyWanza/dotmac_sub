@@ -21,6 +21,13 @@ are bounded to five newest records. Database reads are transaction-current;
 the drawer records its observation time and refreshes on every return to the
 originating conversation. Each section has its own availability result.
 
+An active conversation-to-Lead link contributes its recorded Party as exact
+structural evidence. When it is the only Party evidence, the drawer shows that
+Party and the linked Lead as `Origin Lead`. When Subscriber, participant,
+completed-intake, and active-Lead evidence name different Parties, the drawer
+returns `identity_review_required`; it may show the exact linked Lead for
+review but never broadens into either Party's other records.
+
 The drawer exposes conversation history as a dedicated tab beside customer
 details. Its badge is the full count of matching previous active and resolved
 Inbox conversations, independent of which agent handled them. The typed match

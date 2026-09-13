@@ -680,12 +680,15 @@ async def project_template_tasks_editor_update(
     form = await request.form()
     tasks_json = form.get("tasks_json")
     try:
+        expected_revision = int(str(form.get("expected_revision") or ""))
         projects_web_service.save_template_tasks_from_editor(
             db,
             template_id=template_id,
+            expected_revision=expected_revision,
             tasks_json=tasks_json if isinstance(tasks_json, str) else "",
+            actor_id=_actor_id(request),
         )
-    except (ValidationError, ValueError) as exc:
+    except (DomainError, ValidationError, ValueError) as exc:
         db.rollback()
         template = projects_service.project_templates.get(db, template_id)
         context = _ctx(request, db, active_page="project-templates")
@@ -807,7 +810,7 @@ async def project_template_task_update(
         projects_web_service.update_template_task_from_form(
             db, template_id=template_id, task_id=task_id, **form
         )
-    except (ValidationError, ValueError) as exc:
+    except (DomainError, ValidationError, ValueError) as exc:
         db.rollback()
         template = projects_service.project_templates.get(db, template_id)
         task = projects_web_service.get_template_task_checked(

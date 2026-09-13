@@ -16,6 +16,9 @@ from app.schemas.field import (
     FieldEquipmentReturnRequest,
     FieldExpenseApprovalRead,
     FieldExpensePaymentRead,
+    FieldExpensePaymentRecoveryPreviewRead,
+    FieldExpensePaymentRecoveryRead,
+    FieldExpensePaymentRecoveryRequest,
     FieldExpenseRecoveryPreviewRead,
     FieldExpenseRecoveryRead,
     FieldExpenseRecoveryRequest,
@@ -51,7 +54,9 @@ from app.services.field.equipment_custody import field_equipment_custody
 from app.services.field.expense_recovery import (
     ExpenseDeliveryRecoveryError,
     PreviewExpenseDeliveryRecovery,
+    PreviewExpensePaymentDeliveryRecovery,
     preview_expense_delivery_recovery,
+    preview_expense_payment_delivery_recovery,
 )
 from app.services.field.expense_requests import (
     ApproveFieldExpenseRequest,
@@ -60,11 +65,13 @@ from app.services.field.expense_requests import (
     InitiateFieldExpensePayment,
     ManagerExpenseReviewQuery,
     RecoverExpenseDelivery,
+    RecoverExpensePaymentDelivery,
     RejectFieldExpenseRequest,
     approve_field_expense_request_command,
     initiate_field_expense_payment_command,
     list_manager_expense_requests,
     recover_expense_delivery,
+    recover_expense_payment_delivery,
     reject_field_expense_request_command,
 )
 from app.services.field.manager import field_manager
@@ -346,6 +353,57 @@ def field_manager_recover_expense_delivery(
                     request_id=command_id,
                     action="recover_delivery",
                     scope="operations:expense_request:write",
+                ),
+                dead_event_id=event_id,
+                preview_fingerprint=payload.preview_fingerprint,
+            ),
+        )
+    except ExpenseDeliveryRecoveryError as exc:
+        raise _expense_approval_error(exc) from exc
+
+
+@router.get(
+    "/expenses/payment-deliveries/{event_id}/recovery-preview",
+    response_model=FieldExpensePaymentRecoveryPreviewRead,
+)
+def field_manager_preview_expense_payment_recovery(
+    event_id: UUID,
+    auth: dict = Depends(_expense_pay),
+    db: Session = Depends(get_db),
+):
+    del auth
+    try:
+        return preview_expense_payment_delivery_recovery(
+            db,
+            PreviewExpensePaymentDeliveryRecovery(dead_event_id=event_id),
+        )
+    except ExpenseDeliveryRecoveryError as exc:
+        raise _expense_approval_error(exc) from exc
+
+
+@router.post(
+    "/expenses/payment-deliveries/{event_id}/recover",
+    response_model=FieldExpensePaymentRecoveryRead,
+)
+def field_manager_recover_expense_payment_delivery(
+    event_id: UUID,
+    payload: FieldExpensePaymentRecoveryRequest,
+    auth: dict = Depends(_expense_pay),
+    request_id: UUID | None = Header(default=None, alias="X-Request-ID"),
+    db: Session = Depends(get_db),
+):
+    command_id = request_id or uuid4()
+    db_session_adapter.release_read_transaction(db)
+    try:
+        return recover_expense_payment_delivery(
+            db,
+            command=RecoverExpensePaymentDelivery(
+                context=_expense_action_context(
+                    auth,
+                    expense_request_id=event_id,
+                    request_id=command_id,
+                    action="recover_payment_delivery",
+                    scope="operations:expense_request:pay",
                 ),
                 dead_event_id=event_id,
                 preview_fingerprint=payload.preview_fingerprint,

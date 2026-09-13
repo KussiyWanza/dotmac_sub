@@ -277,9 +277,12 @@ def _canonical_values(
 def classification(
     db: Session, conversation: InboxConversation
 ) -> InboxIdentityClassification:
+    evidence = conversation_lead_relationships.relationship_evidence(db, conversation)
+    if evidence.identity_conflict or evidence.lead_party_mismatch:
+        return InboxIdentityClassification.ambiguous
     if conversation.subscriber_id is not None:
         return InboxIdentityClassification.customer
-    if conversation_lead_relationships.active_link(db, conversation.id) is not None:
+    if evidence.active_lead_id is not None:
         return InboxIdentityClassification.lead
     completed_lead_id = db.scalar(
         select(LeadIntakeInvitation.lead_id)
@@ -292,7 +295,7 @@ def classification(
     )
     if completed_lead_id is not None:
         return InboxIdentityClassification.lead
-    party_ids = conversation_lead_relationships.exact_party_ids(db, conversation)
+    party_ids = evidence.authoritative_party_ids
     if len(party_ids) > 1:
         return InboxIdentityClassification.ambiguous
     return InboxIdentityClassification.unresolved

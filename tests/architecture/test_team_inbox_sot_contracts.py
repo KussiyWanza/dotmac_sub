@@ -66,6 +66,54 @@ def test_observation_owner_contracts_collision_quarantine() -> None:
     assert "ObservationCollisionPolicy.quarantine" in smtp
 
 
+def test_contact_resolution_owns_lazy_customer_link_options() -> None:
+    service = service_relationship("communications.team_inbox_contact_resolution")
+
+    assert service.contract is not None
+    assert "conversation-aware lazy Customer link-option projection" in service.owns
+    assert "bounded lazy Customer link options" in {
+        projection.name for projection in service.contract.projections
+    }
+
+    owner = (ROOT / "app/services/team_inbox_contact_links.py").read_text(
+        encoding="utf-8"
+    )
+    adapter = (ROOT / "app/web/admin/inbox.py").read_text(encoding="utf-8")
+    template = (ROOT / "templates/admin/inbox/_authoritative_context.html").read_text(
+        encoding="utf-8"
+    )
+    assert "class CustomerLinkOptionsQuery" in owner
+    assert "def customer_link_options(" in owner
+    assert "search_text=q" in adapter
+    assert "data-typeahead-initial-url=" in template
+    assert "customer-link-options" in template
+
+
+def test_contact_link_writes_use_one_typed_serialized_owner_path() -> None:
+    service = service_relationship("communications.team_inbox_contact_resolution")
+    assert service.contract is not None
+    assert service.contract.transaction.locking
+    assert "transaction advisory lock" in service.contract.transaction.locking
+
+    owner = (ROOT / "app/services/team_inbox_contact_links.py").read_text(
+        encoding="utf-8"
+    )
+    coordinator = (ROOT / "app/services/team_inbox_commands.py").read_text(
+        encoding="utf-8"
+    )
+    admin_adapter = (ROOT / "app/web/admin/inbox.py").read_text(encoding="utf-8")
+    support_adapter = (ROOT / "app/api/support.py").read_text(encoding="utf-8")
+
+    assert "class LinkConversationContactCommand" in owner
+    assert "pg_advisory_xact_lock" in owner
+    assert '"team_inbox.contact_link_changed.v1"' in owner
+    assert "command: LinkContactCommand" in coordinator
+    assert "team_inbox_commands.link_contact(" in admin_adapter
+    assert "team_inbox_commands.link_contact(" in support_adapter
+    assert "link_conversation_contact_by_id_committed(" not in admin_adapter
+    assert "link_conversation_contact_by_id_committed(" not in support_adapter
+
+
 def test_routing_owner_contracts_signed_in_agent_presence() -> None:
     service = service_relationship("communications.team_inbox_routing")
     assert service.contract is not None

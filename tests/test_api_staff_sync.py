@@ -14,10 +14,13 @@ from app.api.staff_sync import (
     ErpDepartmentReference,
     StaffAccountCreate,
     StaffAccountErpDepartmentUpdate,
+    StaffAccountNextcloudTalkUpdate,
     StaffAccountRolesUpdate,
     create_staff_account,
     deactivate_staff_account,
+    disable_staff_nextcloud_talk_mapping,
     get_staff_account,
+    set_staff_nextcloud_talk_mapping,
     sync_staff_erp_department,
     update_staff_account_roles,
 )
@@ -25,7 +28,11 @@ from app.models.auth import AuthProvider
 from app.models.rbac import Role, SystemUserRole
 from app.models.service_team import ServiceTeamExternalReference, ServiceTeamMember
 from app.models.system_user import SystemUser
-from app.services import credential_party_binding, service_team_lifecycle
+from app.services import (
+    credential_party_binding,
+    nextcloud_talk_staff,
+    service_team_lifecycle,
+)
 from app.services.operator_tenant import provision_operator_tenant
 from app.services.owner_commands import CommandContext
 
@@ -36,6 +43,7 @@ _AUTH = {
         "rbac:assign",
         "rbac:roles:read",
         "operations:service_team:membership",
+        "communications:nextcloud_talk_staff:manage",
     ],
 }
 
@@ -107,6 +115,107 @@ def test_create_is_idempotent_on_email(db_session, staff_role):
     assert user.email == "new.hire@dotmac.io"
     assert user.display_name == "New Hire"
     assert first.roles == ["staff"]
+
+
+def test_create_only_conflict_does_not_reconcile_existing_identity(
+    db_session, staff_role, field_role
+):
+    created = create_staff_account(_payload(), auth=_AUTH, db=db_session)
+
+    with pytest.raises(HTTPException) as exc:
+        create_staff_account(
+            _payload(
+                first_name="Changed",
+                last_name="Identity",
+                roles=["field_technician"],
+                existing_account_policy="reject",
+            ),
+            auth=_AUTH,
+            db=db_session,
+        )
+
+    assert exc.value.status_code == 409
+    user = db_session.get(SystemUser, created.id)
+    assert user.display_name == "New Hire"
+    assert get_staff_account(email=created.email, _auth=_AUTH, db=db_session).roles == [
+        "staff"
+    ]
+
+
+def test_create_only_retry_returns_original_account_without_mutation(
+    db_session, staff_role
+):
+    payload = _payload(existing_account_policy="reject")
+    first = create_staff_account(
+        payload,
+        auth=_AUTH,
+        db=db_session,
+        idempotency_key="erp-employee-create-123",
+    )
+    replay = create_staff_account(
+        payload,
+        auth=_AUTH,
+        db=db_session,
+        idempotency_key="erp-employee-create-123",
+    )
+
+    assert first.created is True
+    assert replay.created is False
+    assert replay.changed is False
+    assert replay.id == first.id
+
+
+def test_talk_mapping_endpoints_delegate_with_machine_scope(db_session, monkeypatch):
+    user_id = uuid4()
+    installation_id = uuid4()
+    captured = {}
+
+    def set_mapping(_db, command):
+        captured["set"] = command
+        return nextcloud_talk_staff.SetStaffAccountMappingResult(
+            mapping_id=uuid4(),
+            system_user_id=user_id,
+            integration_installation_id=installation_id,
+            nextcloud_user_id=command.nextcloud_user_id,
+            is_active=True,
+        )
+
+    def disable_mappings(_db, command):
+        captured["disable"] = command
+        return nextcloud_talk_staff.DisableAllStaffAccountMappingsResult(
+            system_user_id=user_id,
+            disabled_mappings=1,
+        )
+
+    monkeypatch.setattr(
+        nextcloud_talk_staff,
+        "execute_set_default_staff_account_mapping",
+        set_mapping,
+    )
+    monkeypatch.setattr(
+        nextcloud_talk_staff,
+        "execute_disable_all_staff_account_mappings",
+        disable_mappings,
+    )
+
+    mapped = set_staff_nextcloud_talk_mapping(
+        str(user_id),
+        StaffAccountNextcloudTalkUpdate(nextcloud_user_id="New.Hire"),
+        auth=_AUTH,
+        db=db_session,
+        idempotency_key="erp-talk-map-1",
+    )
+    disabled = disable_staff_nextcloud_talk_mapping(
+        str(user_id),
+        auth=_AUTH,
+        db=db_session,
+        idempotency_key="erp-talk-disable-1",
+    )
+
+    assert mapped.nextcloud_user_id == "New.Hire"
+    assert disabled.disabled_mappings == 1
+    assert captured["set"].context.scope == nextcloud_talk_staff.COMMAND_SCOPE
+    assert captured["disable"].context.scope == nextcloud_talk_staff.COMMAND_SCOPE
 
 
 def test_create_unknown_role_is_422(db_session):

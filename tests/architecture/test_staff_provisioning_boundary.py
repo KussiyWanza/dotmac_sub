@@ -66,6 +66,8 @@ def test_staff_sync_adapter_owns_no_persistence_or_delivery() -> None:
     assert "provision_staff_account" in calls
     assert "sync_staff_account_roles" in calls
     assert "set_staff_account_active" in calls
+    assert "execute_set_default_staff_account_mapping" in calls
+    assert "execute_disable_all_staff_account_mappings" in calls
     assert not {"add", "delete", "flush", "commit", "rollback"} & calls
     assert "send_user_invite" not in source
 

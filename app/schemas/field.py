@@ -660,6 +660,24 @@ class FieldExpenseRecoveryRead(BaseModel):
     replayed: bool
 
 
+class FieldExpensePaymentRecoveryPreviewRead(BaseModel):
+    dead_event_id: UUID
+    expense_request_id: UUID
+    idempotency_key: str
+    fingerprint: str
+    erp_claim_status: Literal["approved"]
+
+
+class FieldExpensePaymentRecoveryRequest(BaseModel):
+    preview_fingerprint: str = Field(min_length=64, max_length=64)
+
+
+class FieldExpensePaymentRecoveryRead(BaseModel):
+    event_id: UUID
+    idempotency_key: str
+    replayed: bool
+
+
 class FieldExpensePaymentRead(BaseModel):
     id: UUID
     status: Literal["approved"]

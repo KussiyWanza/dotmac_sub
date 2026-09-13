@@ -1756,7 +1756,9 @@ DOMAIN = DomainSOT(
             ),
             notes=(
                 "Ticket and project owners stage a notification row in their "
-                "own transaction. This owner resolves the explicit staff mapping "
+                "own transaction. The ERP adapter enters typed owner commands to "
+                "set or disable the explicit staff mapping. This owner resolves "
+                "that mapping "
                 "and calls only the version-pinned collaboration capability from "
                 "the asynchronous notification worker."
             ),
@@ -1864,7 +1866,7 @@ DOMAIN = DomainSOT(
                 transaction=TransactionContract(
                     mode=TransactionMode.OWNER_MANAGED,
                     boundary=(
-                        "Admin mapping and connection-test commands enter "
+                        "ERP and admin mapping, disable, and connection-test commands enter "
                         "execute_owner_command on a transaction-free session. Business "
                         "owners stage notification outbox rows as transaction-neutral "
                         "participants, and the worker completes only delivery-owned rows."
@@ -1896,7 +1898,8 @@ DOMAIN = DomainSOT(
                         ),
                     ),
                     mapping_owner=(
-                        "admin system routes and the notification delivery worker"
+                        "app.api.staff_sync, admin system routes, and the notification "
+                        "delivery worker"
                     ),
                     retryable_codes=(
                         "communications.nextcloud_talk_staff.room_create_failed",
@@ -1959,10 +1962,12 @@ DOMAIN = DomainSOT(
                 steward="customer experience platform",
                 design_refs=(
                     "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/designs/ERP_WORKFORCE_ACCOUNT_PROVISIONING.md",
                     "docs/designs/INTEGRATION_PLATFORM_SOT.md",
                     "docs/designs/NOTIFICATION_CHANNEL_POLICY.md",
                 ),
                 test_refs=(
+                    "tests/test_api_staff_sync.py",
                     "tests/test_nextcloud_talk_staff_notifications.py",
                     "tests/architecture/test_sot_manifest_contracts.py",
                     "tests/architecture/test_adapter_transaction_ownership.py",
@@ -2641,6 +2646,7 @@ DOMAIN = DomainSOT(
                 "contact subscriber reseller and ticket association resolution",
                 "reviewed contact association and projection repair",
                 "bounded trusted support customer-identity projection",
+                "conversation-aware lazy Customer link-option projection",
                 "conversation-scoped representative customer association resolution",
             ),
             depends_on=(
@@ -2665,6 +2671,10 @@ DOMAIN = DomainSOT(
                         OwnerRole.RESOLVER,
                     ),
                     (
+                        "conversation-aware lazy Customer link-option projection",
+                        OwnerRole.RESOLVER,
+                    ),
+                    (
                         "conversation-scoped representative customer association resolution",
                         OwnerRole.RESOLVER,
                     ),
@@ -2680,7 +2690,7 @@ DOMAIN = DomainSOT(
                         name="customer identity scope",
                         owner="customer.identity_scope",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                        source="Active Subscriber and reseller ownership identifiers; never fuzzy name or shared-address inference.",
+                        source="Active Subscriber identifiers and profile search fields plus reseller ownership identifiers; fuzzy discovery results never decide identity.",
                     ),
                     AuthorityInput(
                         name="conversation contact route",
@@ -2696,9 +2706,40 @@ DOMAIN = DomainSOT(
                     ),
                 ),
                 transaction_mode=TransactionMode.OWNER_MANAGED,
+                transaction_contract=TransactionContract(
+                    mode=TransactionMode.OWNER_MANAGED,
+                    boundary=(
+                        "Operator adapters enter the Team Inbox command coordinator once; "
+                        "reviewed repair enters the contact-resolution owner once; the "
+                        "contact writer remains flush-only inside either boundary."
+                    ),
+                    locking=(
+                        "Normalize the exact channel endpoint, acquire its PostgreSQL "
+                        "transaction advisory lock, then lock the conversation, active "
+                        "contact route, selected target, and eligible historical "
+                        "conversations in stable order."
+                    ),
+                    idempotency=(
+                        "An active route already pointing at the selected target is reused; "
+                        "only missing conversation projections are repaired. A reviewed "
+                        "different target preserves the old inactive row and creates one "
+                        "replacement guarded by active-route uniqueness."
+                    ),
+                    retries=(
+                        "Retry only the complete owner or coordinator command after rollback. "
+                        "Stale route evidence is a domain refusal; the partial unique index "
+                        "remains the final concurrent-winner arbiter."
+                    ),
+                ),
+                domain_error_codes=(
+                    "communications.team_inbox_contact_resolution.owner_command_required",
+                    "communications.team_inbox_contact_resolution.stale_contact_route",
+                    "communications.team_inbox_contact_resolution.stale_contact_link",
+                ),
                 event_types=("team_inbox.contact_link_changed.v1",),
                 projections=(
                     "InboxContactLink canonical contact-point projection",
+                    "bounded lazy Customer link options",
                     "conversation-scoped represented Customer association",
                 ),
                 design_refs=(

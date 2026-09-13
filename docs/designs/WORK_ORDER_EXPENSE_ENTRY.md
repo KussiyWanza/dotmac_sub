@@ -150,9 +150,11 @@ active-profile and assigned-work-order checks. List responses report the full
 filtered count before pagination.
 
 For a manager who is also a technician, the Field Expenses destination exposes
-both `My requests` and `Approvals`. Approvals remain the default operational
-view, while the requester-owned tab uses the same history resolver as every
-other field technician; manager capability never hides personal history.
+`My request`, `Pending`, and `History`. Pending remains the
+default operational view, History contains resolved manager expenses and links
+each item to its detailed projection, and the requester-owned tab uses the same
+history resolver as every other field technician; manager capability never
+hides personal history.
 The manager approval list uses a typed owner query and labels every card
 `Raised by` with the requester display identity resolved by
 `auth.staff_provisioning`. A historical row without exact SystemUser identity

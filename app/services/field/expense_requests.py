@@ -259,6 +259,13 @@ class RecoverExpenseDelivery:
 
 
 @dataclass(frozen=True, slots=True)
+class RecoverExpensePaymentDelivery:
+    context: CommandContext
+    dead_event_id: UUID
+    preview_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
 class InitiateFieldExpensePayment:
     context: CommandContext
     expense_request_id: UUID
@@ -314,6 +321,13 @@ class ExpenseDeliveryRecoveryOutcome:
     original_event_id: UUID
     replacement_event_id: UUID
     replacement_idempotency_key: str
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ExpensePaymentDeliveryRecoveryOutcome:
+    event_id: UUID
+    idempotency_key: str
     replayed: bool
 
 
@@ -671,6 +685,12 @@ _RECOVER_EXPENSE_DELIVERY = OwnerCommandDefinition(
     owner="operations.expense_requests",
     concern="dead expense delivery recovery",
     name="recover_dead_expense_delivery",
+)
+
+_RECOVER_EXPENSE_PAYMENT_DELIVERY = OwnerCommandDefinition(
+    owner="operations.expense_requests",
+    concern="dead expense payment delivery recovery",
+    name="recover_dead_expense_payment_delivery",
 )
 
 
@@ -1353,6 +1373,115 @@ def recover_expense_delivery(
     return execute_owner_command(
         db,
         definition=_RECOVER_EXPENSE_DELIVERY,
+        context=command.context,
+        operation=operation,
+    )
+
+
+def recover_expense_payment_delivery(
+    db: Session,
+    *,
+    command: RecoverExpensePaymentDelivery,
+) -> ExpensePaymentDeliveryRecoveryOutcome:
+    """Requeue one verified payment event with its original idempotency key."""
+
+    from app.services.backoffice import (
+        BackofficeDeliveryStatus,
+        inspect_expense_payment_recovery_delivery,
+        requeue_expense_payment_delivery,
+    )
+    from app.services.field.expense_recovery import (
+        PAYMENT_RECOVERY_CONTRACT_VERSION,
+        ExpenseDeliveryRecoveryError,
+        _preview_payment,
+    )
+
+    def operation() -> ExpensePaymentDeliveryRecoveryOutcome:
+        if command.context.scope != "operations:expense_request:pay":
+            raise ExpenseDeliveryRecoveryError(
+                code="operations.expense_requests.payment_recovery_forbidden",
+                message="Payment recovery requires the expense payment permission.",
+            )
+        delivery = inspect_expense_payment_recovery_delivery(
+            db,
+            event_id=command.dead_event_id,
+            lock=True,
+        )
+        request: FieldExpenseRequest | None = (
+            db.get(FieldExpenseRequest, delivery.expense_request_id)
+            if delivery is not None
+            else None
+        )
+        recoveries = list(
+            ((request.metadata_ or {}).get("expense_payment_delivery_recoveries") or [])
+            if request is not None
+            else []
+        )
+        matching_recovery = next(
+            (
+                item
+                for item in recoveries
+                if isinstance(item, dict)
+                and item.get("event_id") == str(command.dead_event_id)
+                and item.get("command_id") == str(command.context.command_id)
+                and item.get("preview_fingerprint") == command.preview_fingerprint
+            ),
+            None,
+        )
+        if (
+            delivery is not None
+            and delivery.status is not BackofficeDeliveryStatus.DEAD
+            and matching_recovery is not None
+        ):
+            return ExpensePaymentDeliveryRecoveryOutcome(
+                event_id=delivery.event_id,
+                idempotency_key=delivery.idempotency_key,
+                replayed=True,
+            )
+
+        preview = _preview_payment(db, command.dead_event_id, lock=True)
+        if preview.fingerprint != command.preview_fingerprint:
+            raise ExpenseDeliveryRecoveryError(
+                code="operations.expense_requests.payment_recovery_preview_stale",
+                message="Payment recovery evidence changed; preview it again.",
+            )
+        request = db.get(FieldExpenseRequest, preview.expense_request_id)
+        if request is None:
+            raise ExpenseDeliveryRecoveryError(
+                code="operations.expense_requests.payment_recovery_state_invalid",
+                message="The expense recovery evidence is no longer available.",
+            )
+        _require_consistent_claim_identity(request)
+        staged = requeue_expense_payment_delivery(
+            db,
+            dead_event_id=command.dead_event_id,
+        )
+
+        metadata = dict(request.metadata_ or {})
+        recoveries = list(metadata.get("expense_payment_delivery_recoveries") or [])
+        recoveries.append(
+            {
+                "contract_version": PAYMENT_RECOVERY_CONTRACT_VERSION,
+                "event_id": str(staged.event_id),
+                "idempotency_key": staged.idempotency_key,
+                "preview_fingerprint": preview.fingerprint,
+                "command_id": str(command.context.command_id),
+                "actor": command.context.actor,
+                "occurred_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        metadata["expense_payment_delivery_recoveries"] = recoveries[-100:]
+        request.metadata_ = metadata
+        db.flush()
+        return ExpensePaymentDeliveryRecoveryOutcome(
+            event_id=staged.event_id,
+            idempotency_key=staged.idempotency_key,
+            replayed=False,
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_RECOVER_EXPENSE_PAYMENT_DELIVERY,
         context=command.context,
         operation=operation,
     )

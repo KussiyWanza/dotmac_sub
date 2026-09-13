@@ -26,6 +26,7 @@ from app.schemas.field import FieldManagerTechniciansQuery
 from app.schemas.geocoding import ReverseGeocodeResult
 from app.services.auth_dependencies import require_user_auth
 from app.services.field import expense_categories as expense_categories_module
+from app.services.field.expense_recovery import ExpensePaymentDeliveryRecoveryPreview
 from app.services.field.expense_requests import (
     ApproveFieldExpenseRequest,
     ExpenseCategoryRule,
@@ -611,3 +612,43 @@ def test_manager_api_forbidden_without_permissions(db_session):
 
     response = client.get("/api/v1/field/manager/me")
     assert response.status_code == 403
+
+
+def test_payment_recovery_preview_requires_exact_pay_scope(db_session):
+    user = _user(db_session, "Recovery")
+    db_session.commit()
+    event_id = uuid4()
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[require_user_auth] = lambda: {
+        **_auth(user, roles=[]),
+        "scopes": ["operations:expense_request:write"],
+    }
+    client = TestClient(app)
+
+    denied = client.get(
+        f"/api/v1/field/manager/expenses/payment-deliveries/{event_id}/recovery-preview"
+    )
+    assert denied.status_code == 403
+
+    app.dependency_overrides[require_user_auth] = lambda: {
+        **_auth(user, roles=[]),
+        "scopes": ["operations:expense_request:pay"],
+    }
+    with patch(
+        "app.api.field.manager.preview_expense_payment_delivery_recovery",
+        return_value=ExpensePaymentDeliveryRecoveryPreview(
+            dead_event_id=event_id,
+            expense_request_id=uuid4(),
+            idempotency_key="exp-payment-recovery-test",
+            fingerprint="a" * 64,
+            erp_claim_status="approved",
+        ),
+    ):
+        allowed = client.get(
+            "/api/v1/field/manager/expenses/payment-deliveries/"
+            f"{event_id}/recovery-preview"
+        )
+    assert allowed.status_code == 200

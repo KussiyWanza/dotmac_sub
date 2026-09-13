@@ -1,5 +1,13 @@
 # Staff Login Identity Reconciliation
 
+ERP workforce onboarding uses the same canonical provisioning owner with
+`existing_account_policy=reject`. That create-only policy returns an identity
+conflict before any role, activation, credential, or profile mutation when the
+email already exists. Administrative reconciliation retains the default
+`reconcile` policy. See
+`docs/designs/ERP_WORKFORCE_ACCOUNT_PROVISIONING.md` for the ordered Mailcow,
+Nextcloud, Selfcare, and Talk-mapping flow.
+
 ## Decision
 
 `auth.staff_provisioning` is the sole writer for staff profile identity, local

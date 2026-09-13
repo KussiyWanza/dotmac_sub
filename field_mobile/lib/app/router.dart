@@ -128,6 +128,12 @@ GoRouter buildRouter(Ref ref) {
         builder: (_, state) =>
             ExpenseRequestDetailScreen(id: state.pathParameters['id']!),
       ),
+      GoRoute(
+        path: '/manager/expenses/:id',
+        builder: (_, state) => ManagerExpenseDetailScreen(
+          expenseRequestId: state.pathParameters['id']!,
+        ),
+      ),
       StatefulShellRoute.indexedStack(
         builder: (context, state, shell) => _AppShell(shell: shell),
         branches: [
@@ -307,7 +313,7 @@ class _ManagerExpensesHub extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 2,
+      length: 3,
       initialIndex: 1,
       child: Scaffold(
         appBar: AppBar(
@@ -321,15 +327,23 @@ class _ManagerExpensesHub extends StatelessWidget {
           ],
           bottom: const TabBar(
             tabs: [
-              Tab(text: 'My requests'),
-              Tab(text: 'Approvals'),
+              Tab(text: 'My request'),
+              Tab(text: 'Pending'),
+              Tab(text: 'History'),
             ],
           ),
         ),
         body: const TabBarView(
           children: [
             ExpensesScreen(embedded: true),
-            ManagerExpenseReviewScreen(embedded: true),
+            ManagerExpenseReviewScreen(
+              embedded: true,
+              filter: ManagerExpenseReviewFilter.pendingApprovals,
+            ),
+            ManagerExpenseReviewScreen(
+              embedded: true,
+              filter: ManagerExpenseReviewFilter.history,
+            ),
           ],
         ),
       ),
