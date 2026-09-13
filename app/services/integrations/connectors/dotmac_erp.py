@@ -195,6 +195,7 @@ class DotmacErpRunner:
                 "submit_expense_claim",
                 "approve_expense_claim",
                 "reject_expense_claim",
+                "initiate_expense_payment",
                 "expense_claim_status",
                 "material_request_status",
                 "purchase_invoice_status",
@@ -374,6 +375,16 @@ class DotmacErpRunner:
                 return client.post(
                     "/api/v1/sync/sub/expense-claims/"
                     f"{params['source_claim_id']}/reject",
+                    dict(params["payload"]),
+                    idempotency_key=str(
+                        params.get("idempotency_key") or idempotency_key
+                    ),
+                    expected_status_codes={200},
+                )
+            if action == "initiate_expense_payment":
+                return client.post(
+                    "/api/v1/sync/sub/expense-claims/"
+                    f"{params['source_claim_id']}/payments",
                     dict(params["payload"]),
                     idempotency_key=str(
                         params.get("idempotency_key") or idempotency_key

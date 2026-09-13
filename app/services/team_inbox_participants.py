@@ -76,6 +76,25 @@ class ParticipantRow:
     is_active: bool
 
 
+@dataclass(frozen=True, slots=True)
+class MarkRepresentativeCommand:
+    """Reviewed, conversation-scoped classification of one participant."""
+
+    conversation_id: UUID
+    participant_id: UUID
+    actor_person_id: UUID | None
+    source: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class RepresentativeParticipant:
+    conversation_id: UUID
+    participant_id: UUID
+    normalized_endpoint: str
+    already_classified: bool
+
+
 def _normalize(db: Session, channel_type: str, value: str | None) -> str | None:
     """Normalize the way the resolver does, so endpoints join up later."""
     if channel_type in _OPAQUE_ENDPOINT_CHANNELS:
@@ -275,6 +294,76 @@ def bind_endpoint_to_contact_point(
     row.relationship_type = InboxParticipantRelationship.contact.value
     db.flush()
     return row
+
+
+def mark_representative(
+    db: Session,
+    command: MarkRepresentativeCommand,
+) -> RepresentativeParticipant:
+    """Classify one exact participant as speaking for this conversation's subject.
+
+    This does not bind the endpoint to the represented Customer and does not
+    create a reusable contact route. The coordinator separately records which
+    Customer this conversation concerns.
+    """
+
+    source = command.source.strip()
+    reason = command.reason.strip()
+    if not source:
+        raise ValueError("Representative classification source is required.")
+    if not reason:
+        raise ValueError("Explain why this person represents the Customer.")
+    if len(source) > 80:
+        raise ValueError("Representative classification source is too long.")
+    if len(reason) > 2000:
+        raise ValueError("Representative classification reason is too long.")
+
+    row = db.scalars(
+        select(InboxConversationParticipant)
+        .where(
+            InboxConversationParticipant.id == command.participant_id,
+            InboxConversationParticipant.conversation_id == command.conversation_id,
+            InboxConversationParticipant.is_active.is_(True),
+        )
+        .with_for_update()
+    ).one_or_none()
+    if row is None:
+        raise ValueError("The selected conversation participant was not found.")
+    if row.relationship_type == InboxParticipantRelationship.customer.value:
+        raise ValueError(
+            "This participant is already classified as the Customer; review the "
+            "identity before changing it to a representative."
+        )
+
+    already_classified = (
+        row.relationship_type == InboxParticipantRelationship.representative.value
+    )
+    if already_classified:
+        return RepresentativeParticipant(
+            conversation_id=row.conversation_id,
+            participant_id=row.id,
+            normalized_endpoint=row.normalized_endpoint,
+            already_classified=True,
+        )
+    row.relationship_type = InboxParticipantRelationship.representative.value
+    metadata = dict(row.metadata_ or {})
+    metadata["relationship_classification"] = {
+        "relationship_type": InboxParticipantRelationship.representative.value,
+        "source": source,
+        "reason": reason,
+        "reviewed_at": datetime.now(UTC).isoformat(),
+        "reviewed_by_person_id": (
+            str(command.actor_person_id) if command.actor_person_id else None
+        ),
+    }
+    row.metadata_ = metadata
+    db.flush()
+    return RepresentativeParticipant(
+        conversation_id=row.conversation_id,
+        participant_id=row.id,
+        normalized_endpoint=row.normalized_endpoint,
+        already_classified=already_classified,
+    )
 
 
 def list_participants(

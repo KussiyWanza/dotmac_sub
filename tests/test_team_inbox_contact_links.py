@@ -4,9 +4,20 @@ import uuid
 
 from app.api import support as support_api
 from app.models.subscriber import Reseller, Subscriber, SubscriberStatus
-from app.models.team_inbox import InboxChannelType, InboxContactLink, InboxConversation
+from app.models.team_inbox import (
+    InboxChannelType,
+    InboxContactLink,
+    InboxConversation,
+    InboxConversationParticipant,
+    InboxParticipantAdmissionSource,
+    InboxParticipantRelationship,
+)
 from app.schemas.team_inbox import InboxConversationContactLinkRequest
-from app.services import team_inbox_channel_receive, team_inbox_contact_links
+from app.services import (
+    team_inbox_channel_receive,
+    team_inbox_contact_links,
+    team_inbox_customer_completion,
+)
 
 
 def _subscriber(db_session, *, email: str = "ada@example.com") -> Subscriber:
@@ -92,6 +103,52 @@ def test_reviewed_contact_link_does_not_repair_a_different_contact(db_session):
 
     assert result.repaired_conversation_ids == ()
     assert unrelated.subscriber_id is None
+
+
+def test_representative_link_is_conversation_scoped_and_not_a_contact_route(
+    db_session,
+):
+    subscriber = _subscriber(db_session)
+    conversation = _conversation(db_session)
+    other_conversation = _conversation(db_session)
+    other_conversation.external_thread_id = "facebook_messenger:other-represented"
+    participant = InboxConversationParticipant(
+        conversation_id=conversation.id,
+        channel_type=conversation.channel_type,
+        normalized_endpoint=conversation.contact_address,
+        provider_account_scope="default",
+        admission_source=InboxParticipantAdmissionSource.inbound_from.value,
+    )
+    db_session.add(participant)
+    db_session.flush()
+
+    result = team_inbox_contact_links.associate_represented_customer(
+        db_session,
+        team_inbox_contact_links.AssociateRepresentedCustomerCommand(
+            conversation_id=conversation.id,
+            participant_id=participant.id,
+            subscriber_id=subscriber.id,
+            actor_person_id=uuid.uuid4(),
+            reason="Calling for the account holder",
+        ),
+    )
+
+    assert result.conversation_id == conversation.id
+    assert result.participant_id == participant.id
+    assert conversation.subscriber_id == subscriber.id
+    assert (
+        participant.relationship_type
+        == InboxParticipantRelationship.representative.value
+    )
+    assert conversation.metadata_["contact_resolution"]["status"] == (
+        "represented_customer"
+    )
+    assert db_session.query(InboxContactLink).count() == 0
+    assert other_conversation.subscriber_id is None
+    assert (
+        team_inbox_customer_completion.classification(db_session, conversation).value
+        == "customer"
+    )
 
 
 def test_link_conversation_contact_to_reseller(db_session):

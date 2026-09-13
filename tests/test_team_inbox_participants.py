@@ -250,6 +250,45 @@ def test_relationship_is_not_admission_source(db_session):
     assert customer.admission_source == InboxParticipantAdmissionSource.inbound_cc.value
 
 
+def test_representative_classification_preserves_admission_and_review_evidence(
+    db_session,
+):
+    conversation = _conversation(db_session)
+    participant = InboxConversationParticipant(
+        conversation_id=conversation.id,
+        channel_type=InboxChannelType.email.value,
+        normalized_endpoint="representative@example.com",
+        admission_source=InboxParticipantAdmissionSource.inbound_from.value,
+    )
+    db_session.add(participant)
+    db_session.flush()
+    actor_id = uuid.uuid4()
+
+    result = team_inbox_participants.mark_representative(
+        db_session,
+        team_inbox_participants.MarkRepresentativeCommand(
+            conversation_id=conversation.id,
+            participant_id=participant.id,
+            actor_person_id=actor_id,
+            source="test.review",
+            reason="Confirmed that the sender speaks for the account holder",
+        ),
+    )
+
+    assert result.participant_id == participant.id
+    assert participant.relationship_type == (
+        InboxParticipantRelationship.representative.value
+    )
+    assert participant.admission_source == (
+        InboxParticipantAdmissionSource.inbound_from.value
+    )
+    evidence = participant.metadata_["relationship_classification"]
+    assert evidence["reviewed_by_person_id"] == str(actor_id)
+    assert evidence["reason"] == (
+        "Confirmed that the sender speaks for the account holder"
+    )
+
+
 def test_party_evidence_is_all_or_nothing(db_session):
     """Same rule as inbox_contact_links: a binding carries its evidence."""
     from sqlalchemy.exc import IntegrityError

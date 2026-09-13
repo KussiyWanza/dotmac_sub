@@ -670,7 +670,8 @@ implementation.
   user, or requester email input is accepted. A stable client reference prevents
   double creation. The command owner rechecks current technician assignment while
   holding the work-order lock, so a direct or stale form submission fails closed.
-  - Form: the submitter selects an ERP-eligible approver and either the masked
+  - Form: the submitter selects an ERP-eligible approver other than themselves;
+    the requester is omitted from the choices. They also select either the masked
     ERP profile destination or editable one-expense beneficiary/bank/account
     details. The override is verified by ERP and never updates the profile or
     survives a failed redisplay as a raw account number. Purpose and expense
@@ -710,7 +711,9 @@ implementation.
 - Manager approval list: every expense card labels `Raised by` from the
   owner-supplied staff display identity. Missing historical identity is rendered
   as unavailable and is never inferred from current assignment. The manager
-  bottom navigation omits the Materials destination. While manager capability
+  cannot approve a claim they raised, including a historical self-selected claim;
+  the owner refuses that transition before changing status or staging delivery.
+  The manager bottom navigation omits the Materials destination. While manager capability
   is unresolved or unavailable, navigation also omits Materials, and a manager
   restored onto that branch receives manager content rather than the material
   list.

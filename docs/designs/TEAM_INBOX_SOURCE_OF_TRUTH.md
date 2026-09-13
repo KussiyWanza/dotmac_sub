@@ -185,7 +185,8 @@ provider-scoped social identifiers, the same provider account scope. Ambiguous
 evidence fails closed as `not_calculated` instead of merging customer records.
 
 An operator-selected Subscriber is carried into the conversation command as an
-explicit identity decision. A reviewed manual contact link also repairs every
+explicit identity decision. When the sender is the Customer, a reviewed manual
+contact link also repairs every
 other active, unlinked conversation with the same normalized channel address;
 it never overwrites a different Subscriber relationship. This makes the
 customer conversation-history projection converge without matching names or
@@ -193,6 +194,15 @@ shared addresses in the browser. Before a reviewed link exists, the server may
 narrow an exact normalized phone match with an exact normalized observed name;
 a name mismatch remains ambiguous. Historical rows without reviewed or uniquely
 resolved contact evidence remain unlinked for explicit reconciliation.
+
+When the sender represents someone else, the operator instead selects the exact
+conversation participant, a represented existing Customer or Party-backed
+Lead, and a required reason. The contact-resolution owner links a Customer only
+to that conversation; the conversation-to-Lead owner records a selected Lead;
+and the participant owner records `representative`. Neither path creates a
+reusable contact route or performs historical repair, because one
+representative endpoint may legitimately speak for different subjects in
+different conversations.
 
 Agent resolution uses the Customer-only completion gate defined in
 `docs/designs/INBOX_CUSTOMER_COMPLETION_GATE.md`. Customer conversations must
@@ -526,6 +536,8 @@ queue interval, or assignment ending timestamp. See
 | Projection | Inputs | Canonical writer | Repair |
 | --- | --- | --- | --- |
 | Contact link | Conversation route plus reviewed Party/customer facts | contact-resolution owner | Revalidate/reapply a reviewed link, which repairs active unlinked threads on that exact normalized route; use the digest-bound `repair_team_inbox_subscriber_links` operator workflow for existing uniquely resolved routes; ambiguity remains explicit |
+| Represented Customer association | Exact active conversation participant, selected active Customer, authenticated operator, and required review reason | contact-resolution owner with participant-owner classification | Reapply the reviewed command to the same conversation, participant, and Customer; it is idempotent and never widens to another conversation or creates a global contact route |
+| Represented Lead association | Exact active conversation participant, selected active Party-backed Lead, authenticated operator, and required review reason | conversation-to-Lead owner with participant-owner classification | Reapply the reviewed command to the same conversation, participant, and Lead; the active link is idempotent and never creates a Lead or global contact route |
 | Operator unread | Message chronology plus per-person read cursor | operator-state owner | Set-based grouped queries recompute the projection; `rebuild_operator_read_state` removes impossible cross-conversation cursors |
 | Queue metrics and response cohorts | Conversation lifecycle, ordered message chronology, agent reply provenance/delivery, ticket handoff, assignment, and read state | projection query owner | Recompute on every query; no independent flag or counter is authoritative |
 | Performance report cohorts | Conversation lifecycle, ordered message chronology, recorded sender provenance, assignments, team composition, and staff identity in the selected half-open UTC period | `communications.team_inbox_metrics` | Recompute in set-based queries on every request; defaults to the latest 30 days, rejects ranges over 366 days, and exposes the effective period in the typed outcome |

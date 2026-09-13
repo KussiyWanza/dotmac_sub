@@ -44,6 +44,8 @@ from app.services.integrations.backoffice_contracts import (
     ErpExpenseClaimDraftCommand,
     ErpExpenseClaimDraftOutcome,
     ErpExpenseClaimTransitionOutcome,
+    ErpExpensePaymentCommand,
+    ErpExpensePaymentOutcome,
     ErpExpenseReceiptUploadCommand,
     ErpExpenseReceiptUploadOutcome,
     ErpExpenseRejectionCommand,
@@ -291,6 +293,27 @@ class ErpCapabilityClient:
             correlation_id=f"erp-expense-reject:{idempotency_key}",
         )
         return ErpExpenseClaimTransitionOutcome.model_validate(response)
+
+    def initiate_expense_payment(
+        self,
+        command: ErpExpensePaymentCommand,
+        *,
+        idempotency_key: str,
+    ) -> ErpExpensePaymentOutcome:
+        response = self._execute(
+            ERP_OUTBOX_CAPABILITY,
+            "initiate_expense_payment",
+            {
+                "source_claim_id": str(command.source_claim_id),
+                "payload": command.model_dump(
+                    mode="json", exclude={"source_claim_id"}, exclude_none=True
+                ),
+                "idempotency_key": idempotency_key,
+            },
+            trigger=OperationTrigger.scheduled,
+            correlation_id=f"erp-expense-payment:{idempotency_key}",
+        )
+        return ErpExpensePaymentOutcome.model_validate(response)
 
     def list_inventory(self, **params) -> dict:
         return self._execute(

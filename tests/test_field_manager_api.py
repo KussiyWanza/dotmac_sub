@@ -376,6 +376,7 @@ def test_manager_assign_validation(db_session):
 
 
 def test_manager_expense_approve_and_reject(db_session):
+    manager = _user(db_session, "ExpenseManager")
     tech_user = _user(db_session, "Tech")
     profile = _profile(db_session, tech_user, crm_person_id="crm-exp-tech")
     subscriber = _subscriber(db_session)
@@ -413,14 +414,14 @@ def test_manager_expense_approve_and_reject(db_session):
     } == {"Tech Staff"}
 
     approved = _approve_expense(
-        db_session, request_id=first["id"], reviewer_id=tech_user.id
+        db_session, request_id=first["id"], reviewer_id=manager.id
     )
     assert approved.status == "approved"
     assert approved.approved_at is not None
     assert approved.erp_sync_status.value == "pending"
 
     rejection_id = uuid4()
-    reviewer_id = tech_user.id
+    reviewer_id = manager.id
     second_id = second["id"]
     db_session.commit()
     rejected_outcome = reject_field_expense_request_command(
@@ -443,7 +444,7 @@ def test_manager_expense_approve_and_reject(db_session):
     assert rejected_outcome.rejection_reason == "No receipt provided"
 
     re_approved = _approve_expense(
-        db_session, request_id=first["id"], reviewer_id=tech_user.id
+        db_session, request_id=first["id"], reviewer_id=manager.id
     )
     assert re_approved.status == "approved"
     assert re_approved.erp_sync_event_id == approved.erp_sync_event_id

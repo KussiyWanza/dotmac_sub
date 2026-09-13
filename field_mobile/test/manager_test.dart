@@ -232,7 +232,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Payment queued securely in ERP'), findsOneWidget);
+    expect(find.text('Payment queued; waiting for ERP'), findsOneWidget);
     expect(find.text('Payment in progress'), findsOneWidget);
   });
 }

@@ -886,6 +886,7 @@ class InboxParticipantRelationship(enum.Enum):
 
     customer = "customer"
     contact = "contact"
+    representative = "representative"
     third_party = "third_party"
     unknown = "unknown"
 

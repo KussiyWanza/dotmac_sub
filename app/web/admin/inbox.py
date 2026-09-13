@@ -82,6 +82,7 @@ from app.services.file_storage import (
 )
 from app.services.owner_commands import CommandContext
 from app.services.sales import lead_intake
+from app.services.sales import service as sales_service
 from app.services.workqueue import principal_from_auth
 from app.services.workqueue.scope import WorkqueuePermissionError, get_workqueue_scope
 from app.web.templates import templates
@@ -2680,6 +2681,178 @@ def team_inbox_contact_link(
         message=(
             f"Linked {outcome.channel_type.replace('_', ' ')} contact to "
             f"{outcome.target}."
+        ),
+    )
+
+
+@router.post(
+    "/{conversation_id}/represented-customer",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_represented_customer(
+    conversation_id: UUID,
+    request: Request,
+    participant_id: str = Form(...),
+    subscriber_id: str = Form(...),
+    reason: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    try:
+        participant_uuid = _uuid_form_value(participant_id)
+        subscriber_uuid = _uuid_form_value(subscriber_id)
+    except ValueError:
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message="Select a valid participant and Customer.",
+        )
+    if participant_uuid is None or subscriber_uuid is None:
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message="Select who is speaking and the Customer they represent.",
+        )
+    actor_person_id = _actor_uuid_from_request(request)
+    actor_label = (
+        f"person:{actor_person_id}"
+        if actor_person_id is not None
+        else f"system-user:{_system_user_uuid_from_request(request)}"
+    )
+    _prepare_mutation(db)
+    try:
+        outcome = team_inbox_commands.link_represented_customer(
+            db,
+            team_inbox_commands.LinkRepresentedCustomerCommand(
+                context=CommandContext.system(
+                    actor=actor_label,
+                    scope="team-inbox:represented-customer",
+                    reason="record reviewed representative and represented Customer",
+                ),
+                conversation_id=conversation_id,
+                participant_id=participant_uuid,
+                subscriber_id=subscriber_uuid,
+                actor_person_id=actor_person_id,
+                reason=reason,
+            ),
+        )
+    except team_inbox_commands.ConversationNotFoundError:
+        return RedirectResponse(
+            url="/admin/inbox?status=error&message=Conversation%20not%20found",
+            status_code=303,
+        )
+    except ai_conversation_ownership.AiConversationOwnedError as exc:
+        return _domain_conflict_response(exc)
+    except team_inbox_commands.InboxCommandError as exc:
+        return _detail_redirect(conversation_id, status="error", message=str(exc))
+    return _detail_redirect(
+        conversation_id,
+        status="success",
+        message=(
+            "Representative recorded and conversation linked to the Customer."
+            if not outcome.already_linked
+            else "This representative and Customer were already linked."
+        ),
+    )
+
+
+@router.get(
+    "/search/leads",
+    dependencies=[
+        Depends(require_permission("support:ticket:read")),
+        Depends(require_permission("crm:lead:read")),
+    ],
+)
+def team_inbox_lead_search(
+    q: str = Query(min_length=2, max_length=120),
+    limit: int = Query(default=8, ge=1, le=20),
+    db: Session = Depends(get_db),
+):
+    """Return active Party-backed Leads for the representative picker."""
+
+    page = sales_service.leads.search_for_quote(
+        db,
+        sales_service.QuoteLeadSearchQuery(term=q, limit=limit),
+    )
+    return {
+        "items": [
+            {"id": str(item.id), "label": item.label, "type": "lead"}
+            for item in page.items
+        ],
+        "count": page.count,
+        "limit": page.limit,
+        "offset": 0,
+    }
+
+
+@router.post(
+    "/{conversation_id}/represented-lead",
+    dependencies=[
+        Depends(require_permission("support:ticket:update")),
+        Depends(require_permission("crm:lead:write")),
+    ],
+)
+def team_inbox_represented_lead(
+    conversation_id: UUID,
+    request: Request,
+    participant_id: str = Form(...),
+    lead_id: str = Form(...),
+    reason: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    try:
+        participant_uuid = _uuid_form_value(participant_id)
+        lead_uuid = _uuid_form_value(lead_id)
+    except ValueError:
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message="Select a valid participant and Lead.",
+        )
+    if participant_uuid is None or lead_uuid is None:
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message="Select who is speaking and the Lead they represent.",
+        )
+    actor_person_id = _actor_uuid_from_request(request)
+    actor_label = (
+        f"person:{actor_person_id}"
+        if actor_person_id is not None
+        else f"system-user:{_system_user_uuid_from_request(request)}"
+    )
+    _prepare_mutation(db)
+    try:
+        outcome = team_inbox_commands.link_represented_lead(
+            db,
+            team_inbox_commands.LinkRepresentedLeadCommand(
+                context=CommandContext.system(
+                    actor=actor_label,
+                    scope="team-inbox:represented-lead",
+                    reason="record reviewed representative and represented Lead",
+                ),
+                conversation_id=conversation_id,
+                participant_id=participant_uuid,
+                lead_id=lead_uuid,
+                actor_person_id=actor_person_id,
+                reason=reason,
+            ),
+        )
+    except team_inbox_commands.ConversationNotFoundError:
+        return RedirectResponse(
+            url="/admin/inbox?status=error&message=Conversation%20not%20found",
+            status_code=303,
+        )
+    except ai_conversation_ownership.AiConversationOwnedError as exc:
+        return _domain_conflict_response(exc)
+    except team_inbox_commands.InboxCommandError as exc:
+        return _detail_redirect(conversation_id, status="error", message=str(exc))
+    return _detail_redirect(
+        conversation_id,
+        status="success",
+        message=(
+            "Representative recorded and conversation linked to the Lead."
+            if not outcome.already_linked
+            else "This representative and Lead were already linked."
         ),
     )
 

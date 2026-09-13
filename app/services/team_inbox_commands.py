@@ -60,6 +60,7 @@ from app.schemas.sales import (
 )
 from app.services import (
     ai_conversation_ownership,
+    conversation_lead_relationships,
     inbox_sla,
     team_inbox_assignment,
     team_inbox_contact_links,
@@ -272,6 +273,43 @@ class ContactLinkOutcome:
     conversation_id: str
     channel_type: str
     target: str
+
+
+@dataclass(frozen=True, slots=True)
+class LinkRepresentedCustomerCommand:
+    context: CommandContext
+    conversation_id: UUID
+    participant_id: UUID
+    subscriber_id: UUID
+    actor_person_id: UUID | None
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class LinkRepresentedCustomerOutcome:
+    conversation_id: UUID
+    participant_id: UUID
+    subscriber_id: UUID
+    already_linked: bool
+
+
+@dataclass(frozen=True, slots=True)
+class LinkRepresentedLeadCommand:
+    context: CommandContext
+    conversation_id: UUID
+    participant_id: UUID
+    lead_id: UUID
+    actor_person_id: UUID | None
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class LinkRepresentedLeadOutcome:
+    conversation_id: UUID
+    participant_id: UUID
+    lead_id: UUID
+    party_id: UUID
+    already_linked: bool
 
 
 @dataclass(frozen=True)
@@ -2001,6 +2039,172 @@ def link_contact(
         )
 
     return _commit(db, action)
+
+
+def link_represented_customer(
+    db: Session,
+    command: LinkRepresentedCustomerCommand,
+) -> LinkRepresentedCustomerOutcome:
+    """Record that a participant speaks for this conversation's Customer."""
+
+    def action() -> LinkRepresentedCustomerOutcome:
+        conversation = _active_conversation(
+            db,
+            command.conversation_id,
+            for_update=True,
+        )
+        _require_human_control(
+            db,
+            conversation,
+            mutation=ai_conversation_ownership.HumanConversationMutation.contact,
+            for_update=False,
+        )
+        try:
+            result = team_inbox_contact_links.associate_represented_customer(
+                db,
+                team_inbox_contact_links.AssociateRepresentedCustomerCommand(
+                    conversation_id=conversation.id,
+                    participant_id=command.participant_id,
+                    subscriber_id=command.subscriber_id,
+                    actor_person_id=command.actor_person_id,
+                    reason=command.reason,
+                ),
+            )
+        except ValueError as exc:
+            raise InboxCommandRejected(
+                str(exc), conversation_id=conversation.id
+            ) from exc
+        actor_uuid = command.actor_person_id
+        if not result.already_linked:
+            stage_audit_event(
+                db,
+                action="inbox_represented_customer_selected",
+                entity_type="inbox_conversation",
+                entity_id=str(conversation.id),
+                actor=AuditActor(
+                    actor_type=(
+                        AuditActorType.user if actor_uuid else AuditActorType.service
+                    ),
+                    actor_id=str(actor_uuid) if actor_uuid else OWNER,
+                ),
+                metadata={
+                    "decision_source": "reviewed_conversation_representation",
+                    "representative_participant_id": str(result.participant_id),
+                    "represented_customer_id": str(result.subscriber_id),
+                    "reason": command.reason.strip(),
+                    "created_global_contact_route": False,
+                },
+            )
+        return LinkRepresentedCustomerOutcome(
+            conversation_id=result.conversation_id,
+            participant_id=result.participant_id,
+            subscriber_id=result.subscriber_id,
+            already_linked=result.already_linked,
+        )
+
+    return _commit(db, action, context=command.context)
+
+
+def link_represented_lead(
+    db: Session,
+    command: LinkRepresentedLeadCommand,
+) -> LinkRepresentedLeadOutcome:
+    """Record that a participant speaks for this conversation's Lead."""
+
+    def action() -> LinkRepresentedLeadOutcome:
+        conversation = _active_conversation(
+            db,
+            command.conversation_id,
+            for_update=True,
+        )
+        _require_human_control(
+            db,
+            conversation,
+            mutation=ai_conversation_ownership.HumanConversationMutation.contact,
+            for_update=False,
+        )
+        if conversation.subscriber_id is not None:
+            raise InboxCommandRejected(
+                "This conversation is already linked to a Customer.",
+                conversation_id=conversation.id,
+            )
+        lead = db.get(Lead, command.lead_id)
+        if (
+            lead is None
+            or not lead.is_active
+            or lead.party_id is None
+            or lead.status in (LeadStatus.won.value, LeadStatus.lost.value)
+        ):
+            raise InboxCommandRejected(
+                "Choose an active Party-backed Lead.",
+                conversation_id=conversation.id,
+            )
+        try:
+            participant = team_inbox_participants.mark_representative(
+                db,
+                team_inbox_participants.MarkRepresentativeCommand(
+                    conversation_id=conversation.id,
+                    participant_id=command.participant_id,
+                    actor_person_id=command.actor_person_id,
+                    source=OWNER,
+                    reason=command.reason,
+                ),
+            )
+            link = conversation_lead_relationships.link_conversation_lead_participant(
+                db,
+                conversation_lead_relationships.ConversationLeadLinkCommand(
+                    context=command.context,
+                    conversation_id=conversation.id,
+                    lead_id=lead.id,
+                    party_id=lead.party_id,
+                    actor_person_id=command.actor_person_id,
+                    source=(
+                        conversation_lead_relationships.ConversationLeadLinkSource.reviewed_selection
+                    ),
+                    reason="Representative identified the selected existing Lead",
+                ),
+            )
+        except (ValueError, DomainError) as exc:
+            raise InboxCommandRejected(
+                str(exc), conversation_id=conversation.id
+            ) from exc
+        already_linked = participant.already_classified and link.replayed
+        if not already_linked:
+            stage_audit_event(
+                db,
+                action="inbox_represented_lead_selected",
+                entity_type="inbox_conversation",
+                entity_id=str(conversation.id),
+                actor=AuditActor(
+                    actor_type=(
+                        AuditActorType.user
+                        if command.actor_person_id
+                        else AuditActorType.service
+                    ),
+                    actor_id=(
+                        str(command.actor_person_id)
+                        if command.actor_person_id
+                        else OWNER
+                    ),
+                ),
+                metadata={
+                    "decision_source": "reviewed_conversation_representation",
+                    "representative_participant_id": str(participant.participant_id),
+                    "represented_lead_id": str(link.lead_id),
+                    "represented_party_id": str(link.party_id),
+                    "reason": command.reason.strip(),
+                    "created_global_contact_route": False,
+                },
+            )
+        return LinkRepresentedLeadOutcome(
+            conversation_id=conversation.id,
+            participant_id=participant.participant_id,
+            lead_id=link.lead_id,
+            party_id=link.party_id,
+            already_linked=already_linked,
+        )
+
+    return _commit(db, action, context=command.context)
 
 
 def _lead_source_for_channel(channel_type: str) -> str:

@@ -46,6 +46,7 @@ from app.services.dotmac_erp.client import (
 from app.services.integrations.backoffice_contracts import (
     ErpExpenseApprovalCommand,
     ErpExpenseClaimDraftCommand,
+    ErpExpensePaymentCommand,
     ErpExpenseReceiptMimeType,
     ErpExpenseReceiptUploadCommand,
     ErpExpenseRejectionCommand,
@@ -380,6 +381,7 @@ def _is_typed_expense_event(row: FieldErpSyncEvent) -> bool:
         "expense_submit_v3",
         "expense_approve_v3",
         "expense_reject_v3",
+        "initiate_payment",
     }
 
 
@@ -399,6 +401,8 @@ def _required_expense_client_methods(row: FieldErpSyncEvent) -> tuple[str, ...]:
         )
     if action == "expense_approve_v3":
         return ("approve_expense_claim",)
+    if action == "initiate_payment":
+        return ("initiate_expense_payment",)
     return ("reject_expense_claim",)
 
 
@@ -431,6 +435,14 @@ def _deliver_typed_expense_event(
         if response.get("status") != "rejected":
             raise DotMacERPError("ERP did not accept expense rejection")
         return response
+    if action == "initiate_payment":
+        payment_command = ErpExpensePaymentCommand.model_validate(
+            {"source_claim_id": row.entity_id, **_transport_payload(row)}
+        )
+        payment_outcome = client.initiate_expense_payment(
+            payment_command, idempotency_key=row.idempotency_key
+        )
+        return _transition_outcome_dict(payment_outcome)
     raise DotMacERPError("Unsupported typed expense event")
 
 

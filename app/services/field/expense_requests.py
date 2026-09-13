@@ -477,6 +477,8 @@ def _local_expense_approvers(
     db: Session,
     *,
     erp_approvers: tuple[ExpenseApproverOption, ...],
+    requester_system_user_id: UUID,
+    requester_email: str,
 ) -> tuple[SelectedExpenseApprover, ...]:
     emails = {item.email.strip().lower() for item in erp_approvers}
     if not emails:
@@ -499,6 +501,8 @@ def _local_expense_approvers(
         )
         for item in erp_approvers
         if item.email.strip().lower() in local_users
+        and local_users[item.email.strip().lower()].id != requester_system_user_id
+        and item.email.strip().lower() != requester_email.strip().lower()
     )
 
 
@@ -520,7 +524,12 @@ def get_field_expense_form_context(
             message="Expense approvers and payment details are unavailable from ERP.",
         ) from exc
     return FieldExpenseFormContext(
-        approvers=_local_expense_approvers(db, erp_approvers=erp_approvers),
+        approvers=_local_expense_approvers(
+            db,
+            erp_approvers=erp_approvers,
+            requester_system_user_id=requester.id,
+            requester_email=requester.email,
+        ),
         banks=banks,
         profile_destination=profile_destination,
     )
@@ -580,7 +589,12 @@ def resolve_field_expense_submission_context(
     selected = next(
         (
             approver
-            for approver in _local_expense_approvers(db, erp_approvers=erp_approvers)
+            for approver in _local_expense_approvers(
+                db,
+                erp_approvers=erp_approvers,
+                requester_system_user_id=requester.id,
+                requester_email=requester.email,
+            )
             if approver.erp_employee_id == query.selected_approver_erp_id
         ),
         None,
@@ -742,6 +756,15 @@ def submit_field_expense_request_command(
                 code="operations.expense_requests.requester_not_found",
                 message="The requesting staff user is unavailable.",
             )
+        approver = command.selected_approver
+        if approver is not None and (
+            approver.system_user_id == system_user.id
+            or approver.email.strip().lower() == system_user.email.strip().lower()
+        ):
+            raise FieldExpenseRequestError(
+                code="operations.expense_requests.approver_invalid",
+                message="Select an expense approver other than yourself.",
+            )
         existing = (
             db.query(FieldExpenseRequest)
             .options(selectinload(FieldExpenseRequest.items))
@@ -771,7 +794,6 @@ def submit_field_expense_request_command(
                     message="Request identity was already used with different expense details.",
                 )
             return _submission_outcome(existing)
-        approver = command.selected_approver
         destination = command.payment_destination
         if (approver is None) != (destination is None):
             raise FieldExpenseRequestError(
@@ -1009,6 +1031,28 @@ def approve_field_expense_request_command(
                 message="Only submitted expense requests can be approved.",
             )
         _require_consistent_claim_identity(request)
+        requester_system_user_id = _expense_requester_system_user_ids(
+            db, [request]
+        ).get(request.id)
+        requester_user = (
+            db.get(SystemUser, requester_system_user_id)
+            if requester_system_user_id is not None
+            else None
+        )
+        if requester_system_user_id is not None and (
+            command.reviewer_system_user_id == requester_system_user_id
+            or request.selected_approver_system_user_id == requester_system_user_id
+            or (
+                requester_user is not None
+                and request.selected_approver_email is not None
+                and request.selected_approver_email.strip().lower()
+                == requester_user.email.strip().lower()
+            )
+        ):
+            raise FieldExpenseRequestError(
+                code="operations.expense_requests.approver_invalid",
+                message="Expense requesters cannot approve their own expense.",
+            )
         if (
             request.selected_approver_system_user_id is not None
             and request.selected_approver_system_user_id

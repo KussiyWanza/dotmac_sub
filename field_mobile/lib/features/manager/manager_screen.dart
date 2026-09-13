@@ -1482,7 +1482,7 @@ class _ExpenseApprovalCardState extends ConsumerState<_ExpenseApprovalCard> {
           .read(managerRepositoryProvider)
           .payExpense(widget.request.id);
       return result.paymentStatus == 'queued'
-          ? 'Payment queued securely in ERP'
+          ? 'Payment queued; waiting for ERP'
           : 'Payment status: ${result.paymentStatus}';
     }, failureMessage: 'Could not initiate payment. No retry was assumed.');
   }

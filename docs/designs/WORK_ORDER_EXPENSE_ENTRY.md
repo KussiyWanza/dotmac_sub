@@ -41,9 +41,13 @@ the selected work order when the request is submitted.
   the typed owner command. It does not commit or call ERP.
 - Sub is authoritative for the Field manager's approval or rejection decision.
   The submitter selects one eligible approver from ERP; Sub maps that employee
-  to one active SystemUser by normalized email and only that user may approve
-  or reject. ERP accepts that trusted, evidenced decision without constructing
-  a second approval chain. ERP remains authoritative for approver eligibility,
+  to one active SystemUser by normalized email, excludes the requester from the
+  offered choices, and only that selected user may approve or reject. The
+  submission owner independently rejects a requester selected as approver, and
+  the approval owner re-resolves exact persisted requester identity and refuses
+  self-approval before changing state or staging ERP delivery. ERP accepts that
+  trusted, evidenced decision without constructing a second approval chain.
+  ERP remains authoritative for approver eligibility,
   its bank directory, account-name verification, reimbursement bank details,
   payment intent state, transfer execution, reconciliation, and the final paid
   fact. Cost-centre, ERP task, fleet vehicle, and receipt-number controls remain
@@ -122,6 +126,11 @@ payment command for an approved expense. The Field app never calls Paystack or
 marks the claim paid. ERP creates and initiates the transfer, and Sub projects
 `queued`, `pending`, `processing`, `indeterminate`, `failed`, `completed`, and
 the resulting `paid` claim fact from ERP responses and polling.
+`initiate_payment` is delivered only through the typed ERP payment
+command/outcome capability. The generic path sender is not a payment transport.
+Until ERP accepts that command, Field labels the local state as queued and
+waiting for ERP. Rejected and dead payment deliveries retain only allowlisted
+diagnostic evidence and never imply that a transfer was attempted.
 
 Verification requires a live connection and expires after 30 minutes. Mobile
 may save the ordinary non-sensitive draft, but it must not persist raw account
@@ -163,9 +172,9 @@ fails closed while any staff-created rows without technician links exist.
 
 ## Validation and recovery
 
-The server requires an eligible selected approver, a valid ERP destination
-token, purpose, claim date, a three-letter currency, and one to 50
-positive-amount lines. Each line requires an active ERP category and a
+The server requires an eligible selected approver who is not the requester, a
+valid ERP destination token, purpose, claim date, a three-letter currency, and
+one to 50 positive-amount lines. Each line requires an active ERP category and a
 description of at most 500 characters. A receipt URL and receipt upload are
 individually optional alternatives; when the selected ERP category requires
 receipt evidence, either one satisfies that rule. The browser never marks the

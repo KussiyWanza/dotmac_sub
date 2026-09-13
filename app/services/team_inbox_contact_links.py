@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import TypeVar
 from uuid import UUID
 
-from sqlalchemy import or_
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models.organization import Organization
@@ -21,6 +21,7 @@ from app.models.party import (
 )
 from app.models.subscriber import Reseller, Subscriber
 from app.models.team_inbox import InboxContactLink, InboxConversation
+from app.services import team_inbox_participants
 from app.services.common import coerce_uuid
 from app.services.owner_commands import (
     CommandContext,
@@ -62,6 +63,23 @@ class ContactLinkResult:
     reseller_id: UUID | None
     previous_link_ids_deactivated: list[UUID]
     repaired_conversation_ids: tuple[UUID, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AssociateRepresentedCustomerCommand:
+    conversation_id: UUID
+    participant_id: UUID
+    subscriber_id: UUID
+    actor_person_id: UUID | None
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class RepresentedCustomerAssociation:
+    conversation_id: UUID
+    participant_id: UUID
+    subscriber_id: UUID
+    already_linked: bool
 
 
 T = TypeVar("T")
@@ -240,6 +258,78 @@ def _target(
     if reseller is not None and not reseller.is_active:
         raise ContactLinkError("Cannot link an inactive reseller.")
     return subscriber, reseller
+
+
+def associate_represented_customer(
+    db: Session,
+    command: AssociateRepresentedCustomerCommand,
+) -> RepresentedCustomerAssociation:
+    """Link only this conversation to the Customer another person represents.
+
+    Unlike ``link_conversation_contact``, this deliberately creates no
+    ``InboxContactLink`` and performs no historical repair. A representative's
+    endpoint may be used for several different Customers, so treating it as a
+    reusable Customer route would silently misidentify future conversations.
+    """
+
+    reason = command.reason.strip()
+    if not reason:
+        raise ContactLinkError("Explain why this person represents the Customer.")
+    if len(reason) > 2000:
+        raise ContactLinkError("Representative link reason is too long.")
+    conversation = db.scalars(
+        select(InboxConversation)
+        .where(
+            InboxConversation.id == command.conversation_id,
+            InboxConversation.is_active.is_(True),
+        )
+        .with_for_update()
+    ).one_or_none()
+    if conversation is None:
+        raise ConversationContactLinkError("Conversation not found.")
+    subscriber = db.get(Subscriber, command.subscriber_id)
+    if subscriber is None or not subscriber.is_active:
+        raise ContactLinkError("Choose an active Customer.")
+    if (
+        conversation.subscriber_id is not None
+        and conversation.subscriber_id != subscriber.id
+    ):
+        raise ContactLinkError(
+            "This conversation is already linked to another Customer. Use the "
+            "reviewed identity correction workflow."
+        )
+
+    participant = team_inbox_participants.mark_representative(
+        db,
+        team_inbox_participants.MarkRepresentativeCommand(
+            conversation_id=conversation.id,
+            participant_id=command.participant_id,
+            actor_person_id=command.actor_person_id,
+            source="communications.team_inbox_contact_resolution",
+            reason=reason,
+        ),
+    )
+    already_linked = conversation.subscriber_id == subscriber.id
+    conversation.subscriber_id = subscriber.id
+    metadata = dict(conversation.metadata_ or {})
+    contact_resolution = dict(metadata.get("contact_resolution") or {})
+    contact_resolution.update(
+        {
+            "status": "represented_customer",
+            "subscriber_id": str(subscriber.id),
+            "representative_participant_id": str(participant.participant_id),
+            "decision_source": "reviewed_conversation_representation",
+        }
+    )
+    metadata["contact_resolution"] = contact_resolution
+    conversation.metadata_ = metadata
+    db.flush()
+    return RepresentedCustomerAssociation(
+        conversation_id=conversation.id,
+        participant_id=participant.participant_id,
+        subscriber_id=subscriber.id,
+        already_linked=already_linked and participant.already_classified,
+    )
 
 
 def bind_contact_link_party_contact_point(

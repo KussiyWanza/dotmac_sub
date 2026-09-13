@@ -355,6 +355,7 @@ def enqueue_expense_payment(
     )
     payload: dict[str, object] = {
         "_expense_action": ExpenseErpAction.INITIATE_PAYMENT.value,
+        "_expense_contract_version": "work-order-expense-payment.v1",
         "_depends_on_idempotency_key": approval_dependency,
         "command_id": str(command_id),
         "initiated_by_email": initiated_by_email,

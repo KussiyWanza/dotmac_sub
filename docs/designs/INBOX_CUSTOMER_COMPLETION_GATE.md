@@ -55,6 +55,13 @@ status owner asks the completion owner for one authoritative verdict:
 - Lead: profile completeness is advisory and never blocks resolution.
 - Unresolved or ambiguous: identification must be completed before resolution.
 
+A reviewed representative association takes the classification of its selected
+subject while the exact participant remains classified as the representative.
+For a represented Customer, completion is evaluated against that Customer's
+canonical profile. For a represented existing Lead, profile completeness stays
+advisory. Neither path evaluates the representative's endpoint or fabricates a
+Lead.
+
 Bulk resolution skips blocked conversations and returns blocker details. Macro
 resolution records the failed action and cannot bypass the same gate. System
 maintenance and AI lifecycle reasons retain their separately owned transition

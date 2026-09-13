@@ -770,6 +770,7 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "auth.permission_gate",
         "communications.nextcloud_talk_staff",
         "communications.staff_notifications",
+        "communications.conversation_lead_relationships",
         "communications.team_inbox_threads",
         "communications.team_inbox_contact_resolution",
         "communications.team_inbox_routing",

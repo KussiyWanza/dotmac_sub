@@ -41,7 +41,8 @@
    staged. Retain `release_approved_v2` behavior for already-staged legacy events.
 6. Confirm the previous expense sender is disabled before changing ownership.
 7. Verify every technician email and intended approver email has one exact
-   active match across Sub and ERP. Verify at least one eligible ERP approver,
+   active match across Sub and ERP. Verify the requester is absent from their
+   own approver choices and at least one other eligible ERP approver remains,
    an active ERP bank directory, and each technician's intended default bank
    profile. An incomplete profile is allowed only when the technician uses a
    verified one-expense override.
@@ -61,14 +62,18 @@
 4. Submit one newly created canary expense and verify exactly one submission
    event is accepted, all required receipts are attached, and ERP reports
    `SUBMITTED`. Confirm no ERP `DRAFT` is visible to normal ERP users.
-5. Approve the canary in the Field app and verify the separate approval event is
+5. With the selected approver, who must be different from the requester, approve
+   the canary in the Field app and verify the separate approval event is
    accepted and the same ERP claim becomes `APPROVED`, not `PENDING_APPROVAL`.
    Confirm the ERP claim names the selected
    approver and contains the expected masked destination. Do not inspect or
    report the full account number.
 6. With a dedicated payment-authorized manager, select **Pay expense** and verify
-   one payment event is staged. Confirm ERP creates one payment intent and reports
-   `PROCESSING` (or `COMPLETED` for an immediate success).
+   one `work-order-expense-payment.v1` event is staged, then delivered through
+   the typed `initiate_expense_payment` capability. Confirm ERP creates one
+   payment intent and reports `PROCESSING` (or `COMPLETED` for an immediate
+   success). A queued Sub event is waiting for ERP and is not proof that ERP
+   created an intent.
 7. Exercise the webhook or polling path and verify `COMPLETED` changes the ERP
    claim and both Field views to `PAID`. Exercise an indeterminate sandbox result
    and verify no automatic duplicate transfer is attempted.

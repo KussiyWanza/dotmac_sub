@@ -1995,13 +1995,23 @@ DOMAIN = DomainSOT(
         SOTService(
             name="communications.team_inbox_participants",
             module="app.services.team_inbox_participants",
-            owns=("conversation participant endpoint projection",),
-            depends_on=("communications.team_inbox_routing",),
+            owns=(
+                "conversation participant endpoint projection",
+                "reviewed conversation participant relationship classification",
+            ),
+            depends_on=(
+                "auth.permission_gate",
+                "communications.team_inbox_routing",
+            ),
             contract=_team_inbox_contract(
                 service_name="communications.team_inbox_participants",
                 concerns=(
                     (
                         "conversation participant endpoint projection",
+                        OwnerRole.PROJECTION_WRITER,
+                    ),
+                    (
+                        "reviewed conversation participant relationship classification",
                         OwnerRole.PROJECTION_WRITER,
                     ),
                 ),
@@ -2017,6 +2027,12 @@ DOMAIN = DomainSOT(
                         owner="communications.team_inbox_routing",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source="Configured team inbox email routes and intake recipients, so our own mailboxes are never admitted as participants.",
+                    ),
+                    AuthorityInput(
+                        name="reviewed participant relationship command",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="Authenticated operator, exact conversation participant, typed relationship, source, and review reason.",
                     ),
                 ),
                 transaction_mode=TransactionMode.PARTICIPANT,
@@ -2625,11 +2641,13 @@ DOMAIN = DomainSOT(
                 "contact subscriber reseller and ticket association resolution",
                 "reviewed contact association and projection repair",
                 "bounded trusted support customer-identity projection",
+                "conversation-scoped representative customer association resolution",
             ),
             depends_on=(
                 "party.registry",
                 "customer.identity_scope",
                 "communications.team_inbox_threads",
+                "communications.team_inbox_participants",
             ),
             contract=_team_inbox_contract(
                 service_name="communications.team_inbox_contact_resolution",
@@ -2644,6 +2662,10 @@ DOMAIN = DomainSOT(
                     ),
                     (
                         "bounded trusted support customer-identity projection",
+                        OwnerRole.RESOLVER,
+                    ),
+                    (
+                        "conversation-scoped representative customer association resolution",
                         OwnerRole.RESOLVER,
                     ),
                 ),
@@ -2666,18 +2688,29 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source="Conversation channel and normalized contact address.",
                     ),
+                    AuthorityInput(
+                        name="conversation participant relationship",
+                        owner="communications.team_inbox_participants",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="Exact active participant and reviewed conversation-scoped representative classification.",
+                    ),
                 ),
                 transaction_mode=TransactionMode.OWNER_MANAGED,
                 event_types=("team_inbox.contact_link_changed.v1",),
-                projections=("InboxContactLink canonical contact-point projection",),
+                projections=(
+                    "InboxContactLink canonical contact-point projection",
+                    "conversation-scoped represented Customer association",
+                ),
                 design_refs=(
                     "docs/designs/TEAM_INBOX_SOURCE_OF_TRUTH.md",
                     "docs/runbooks/TEAM_INBOX_SUBSCRIBER_LINK_REPAIR.md",
                     "docs/SOT_RELATIONSHIP_MAP.md",
                     "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    "docs/designs/INBOX_CONVERSATION_PARTICIPANTS.md",
                 ),
                 test_refs=(
                     "tests/test_team_inbox_contact_links.py",
+                    "tests/test_team_inbox_admin_contact_links.py",
                     "tests/test_repair_team_inbox_subscriber_links.py",
                     "tests/architecture/test_team_inbox_sot_contracts.py",
                 ),
@@ -3445,6 +3478,7 @@ DOMAIN = DomainSOT(
                 "auth.permission_gate",
                 "communications.nextcloud_talk_staff",
                 "communications.staff_notifications",
+                "communications.conversation_lead_relationships",
                 "communications.team_inbox_threads",
                 "communications.team_inbox_contact_resolution",
                 "communications.team_inbox_routing",
@@ -3498,7 +3532,19 @@ DOMAIN = DomainSOT(
                         name="contact association decision",
                         owner="communications.team_inbox_contact_resolution",
                         kind=AuthorityKind.DERIVED_PROJECTION,
-                        source="Reviewed subscriber/reseller/contact-point outcome.",
+                        source=(
+                            "Reviewed subscriber/reseller/contact-point outcome or "
+                            "conversation-scoped represented Customer association."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="conversation Lead relationship decision",
+                        owner="communications.conversation_lead_relationships",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Durable represented-Lead selection with exact Lead "
+                            "Party provenance and idempotent active link."
+                        ),
                     ),
                     AuthorityInput(
                         name="routing transition decision",
@@ -3557,6 +3603,7 @@ DOMAIN = DomainSOT(
                 domain_error_codes=(
                     "communications.team_inbox_commands.conversation_busy",
                     "communications.team_inbox_commands.assigned_to_other",
+                    "communications.team_inbox_commands.command_rejected",
                     "communications.team_inbox_commands.ai_owned",
                     "communications.team_inbox_commands.takeover_conflict",
                     "communications.team_inbox_commands.takeover_permission_denied",

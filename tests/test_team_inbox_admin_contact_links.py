@@ -8,6 +8,7 @@ from fastapi import BackgroundTasks
 from starlette.requests import Request
 
 from app.models.notification import Notification, NotificationStatus
+from app.models.party import Party, PartyType
 from app.models.sales import Lead
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
 from app.models.subscriber import Reseller, Subscriber, SubscriberStatus
@@ -16,11 +17,15 @@ from app.models.team_inbox import (
     InboxChannelType,
     InboxContactLink,
     InboxConversation,
+    InboxConversationLeadLink,
+    InboxConversationParticipant,
     InboxConversationStatus,
     InboxLabel,
     InboxMessage,
     InboxMessageDirection,
     InboxMessageTemplate,
+    InboxParticipantAdmissionSource,
+    InboxParticipantRelationship,
     InboxReplyMacro,
 )
 from app.services import team_inbox_operations, team_inbox_projection, team_inbox_read
@@ -160,6 +165,130 @@ def test_admin_contact_link_route_reports_missing_target(db_session):
     assert response.status_code == 303
     assert "status=error" in response.headers["location"]
     assert db_session.query(InboxContactLink).count() == 0
+
+
+def test_admin_represented_customer_route_keeps_sender_as_representative(
+    db_session, monkeypatch
+):
+    actor_id = uuid.uuid4()
+    subscriber = _subscriber(db_session)
+    conversation = _conversation(db_session)
+    participant = InboxConversationParticipant(
+        conversation_id=conversation.id,
+        channel_type=conversation.channel_type,
+        normalized_endpoint=conversation.contact_address,
+        provider_account_scope="default",
+        admission_source=InboxParticipantAdmissionSource.inbound_from.value,
+    )
+    db_session.add(participant)
+    db_session.flush()
+    from app.services import web_admin as web_admin_service
+
+    monkeypatch.setattr(
+        web_admin_service, "get_actor_id", lambda request: str(actor_id)
+    )
+
+    response = inbox_web.team_inbox_represented_customer(
+        conversation.id,
+        _request(),
+        participant_id=str(participant.id),
+        subscriber_id=str(subscriber.id),
+        reason="Calling for the account holder",
+        db=db_session,
+    )
+
+    db_session.refresh(conversation)
+    db_session.refresh(participant)
+    assert response.status_code == 303
+    assert "status=success" in response.headers["location"]
+    assert conversation.subscriber_id == subscriber.id
+    assert (
+        participant.relationship_type
+        == InboxParticipantRelationship.representative.value
+    )
+    assert db_session.query(InboxContactLink).count() == 0
+
+
+def test_admin_represented_lead_route_links_subject_not_sender(db_session, monkeypatch):
+    actor_id = uuid.uuid4()
+    conversation = _conversation(db_session)
+    participant = InboxConversationParticipant(
+        conversation_id=conversation.id,
+        channel_type=conversation.channel_type,
+        normalized_endpoint=conversation.contact_address,
+        provider_account_scope="default",
+        admission_source=InboxParticipantAdmissionSource.inbound_from.value,
+    )
+    represented_party = Party(
+        party_type=PartyType.person.value,
+        display_name="Represented Prospect",
+    )
+    db_session.add_all([participant, represented_party])
+    db_session.flush()
+    lead = Lead(
+        party_id=represented_party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Explicit represented Lead fixture",
+        title="Represented Prospect",
+    )
+    db_session.add(lead)
+    db_session.flush()
+    from app.services import web_admin as web_admin_service
+
+    monkeypatch.setattr(
+        web_admin_service, "get_actor_id", lambda request: str(actor_id)
+    )
+
+    response = inbox_web.team_inbox_represented_lead(
+        conversation.id,
+        _request(),
+        participant_id=str(participant.id),
+        lead_id=str(lead.id),
+        reason="Calling for the prospective account holder",
+        db=db_session,
+    )
+
+    db_session.refresh(participant)
+    relationship = db_session.query(InboxConversationLeadLink).one()
+    assert response.status_code == 303
+    assert "status=success" in response.headers["location"]
+    assert relationship.lead_id == lead.id
+    assert relationship.party_id == represented_party.id
+    assert participant.relationship_type == (
+        InboxParticipantRelationship.representative.value
+    )
+    assert conversation.subscriber_id is None
+    assert db_session.query(InboxContactLink).count() == 0
+
+
+def test_inbox_represented_lead_search_uses_typed_active_lead_query(db_session):
+    represented_party = Party(
+        party_type=PartyType.person.value,
+        display_name="Searchable Represented Prospect",
+    )
+    db_session.add(represented_party)
+    db_session.flush()
+    lead = Lead(
+        party_id=represented_party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Explicit represented Lead fixture",
+        title="Searchable Represented Prospect",
+    )
+    db_session.add(lead)
+    db_session.flush()
+
+    response = inbox_web.team_inbox_lead_search(
+        q="Searchable Represented",
+        limit=8,
+        db=db_session,
+    )
+
+    assert len(response["items"]) == 1
+    assert response["items"][0]["id"] == str(lead.id)
+    assert response["items"][0]["type"] == "lead"
+    assert "Searchable Represented Prospect" in response["items"][0]["label"]
 
 
 def test_admin_merge_contact_route_finds_customer_and_attaches_lead(

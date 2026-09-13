@@ -32,6 +32,7 @@ from app.services import (
     projects,
     support,
     team_inbox_customer_completion,
+    team_inbox_participants,
 )
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,7 @@ class InboxContactContext:
     identity_state: InboxIdentityState
     party_id: UUID | None
     subscriber_id: UUID | None
+    participants: tuple[team_inbox_participants.ParticipantRow, ...]
     conversation_history_scope: ConversationHistoryScope
     profile: ContextSection[PartyProfileSummary]
     leads: ContextSection[LeadSummary]
@@ -916,6 +918,11 @@ def build_contact_context(
         identity_state=identity_state,
         party_id=party_id,
         subscriber_id=subscriber_id,
+        participants=tuple(
+            team_inbox_participants.list_participants(
+                db, conversation_id=conversation_id
+            )
+        ),
         conversation_history_scope=conversation_history_scope,
         profile=_safe_section(
             "profile",

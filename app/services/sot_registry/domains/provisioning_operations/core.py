@@ -927,7 +927,9 @@ SERVICES: tuple[SOTService, ...] = (
             "read-only and projects active vendor labels for expense entry. ERP "
             "owns eligible approvers, bank identity, account verification, and the "
             "opaque claim-bound destination token. Sub stores no raw account number; "
-            "it owns the selected local approver link and masked expense snapshot. "
+            "it owns the selected local approver link and masked expense snapshot, "
+            "excludes the requester from local approver choices, and refuses "
+            "self-selection and self-approval before mutation or ERP staging. "
             "ERP delivery failures retain only typed allowlisted diagnostic codes, "
             "HTTP status, and request identifiers alongside partial-delivery progress."
             " Requester history resolves exact SystemUser, Person Party, and every "
@@ -1190,7 +1192,9 @@ SERVICES: tuple[SOTService, ...] = (
                     "and one expense_submit_v3 intent in one owner transaction. "
                     "New request identity equals its client reference. "
                     "Receipt storage is a flush-only participant. Manager approval "
-                    "or rejection requires the selected approver, locks the verified "
+                    "or rejection requires the selected approver; submission and "
+                    "approval independently require that approver to differ from the "
+                    "requester. Approval locks the verified "
                     "payment snapshot, validates canonical claim identity, and stages "
                     "a separate ordered v3 decision intent in the same transaction. "
                     "Cancellation remains local; payment stages a later intent ordered "
@@ -1270,6 +1274,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "work order without a current technician assignment",
                     "unavailable or invalid ERP category rules",
                     "unavailable or mismatched ERP approver identity",
+                    "requester selected as or acting as their own approver",
                     "missing, expired, invalid, or claim-mismatched ERP "
                     "payment-destination token",
                     "token-bearing request with inconsistent canonical claim identity",
@@ -1353,8 +1358,9 @@ SERVICES: tuple[SOTService, ...] = (
                 new_owner="operations.expense_requests",
                 verification=(
                     "Work-order-bound submission, approval-only release, private receipt "
-                    "delivery, partial-failure replay, explicit dead-event recovery, "
-                    "conflict, requester-history, and identity-repair tests pass."
+                    "delivery, typed payment delivery and write-back, partial-failure "
+                    "replay, explicit dead-event recovery, conflict, requester-history, "
+                    "and identity-repair tests pass."
                 ),
                 cutover_gate=(
                     "Mobile clients use the typed submit, decision, and payment "
