@@ -710,7 +710,7 @@ class _NewMaterialRequestScreenState
                     });
                   },
             child: InputDecorator(
-              isEmpty: selected == null,
+              isEmpty: false,
               decoration: InputDecoration(
                 labelText: 'Work order',
                 helperText: selected == null
@@ -1166,7 +1166,7 @@ class _MaterialWorkOrderAvailability extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         InputDecorator(
-          isEmpty: true,
+          isEmpty: false,
           decoration: const InputDecoration(labelText: 'Work order'),
           child: Row(
             children: [
@@ -1387,13 +1387,18 @@ class _LocationSelectors extends StatelessWidget {
         DropdownButtonFormField<String?>(
           key: const Key('source-location'),
           initialValue: sourceValue,
+          isExpanded: true,
           decoration: const InputDecoration(labelText: 'Source location'),
           items: [
             const DropdownMenuItem(value: null, child: Text('Any location')),
             for (final location in locations)
               DropdownMenuItem(
                 value: location.id,
-                child: Text(_locationLabel(location)),
+                child: Text(
+                  _locationLabel(location),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
           ],
           onChanged: onSourceChanged,
@@ -1402,13 +1407,18 @@ class _LocationSelectors extends StatelessWidget {
         DropdownButtonFormField<String?>(
           key: const Key('destination-location'),
           initialValue: destinationValue,
+          isExpanded: true,
           decoration: const InputDecoration(labelText: 'Destination location'),
           items: [
             const DropdownMenuItem(value: null, child: Text('Not selected')),
             for (final location in locations)
               DropdownMenuItem(
                 value: location.id,
-                child: Text(_locationLabel(location)),
+                child: Text(
+                  _locationLabel(location),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
           ],
           onChanged: onDestinationChanged,

@@ -397,10 +397,22 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(360, 640));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
+    const longLocationLabel =
+        'Regional operations and materials distribution warehouse (WH-REGIONAL-OPS)';
+
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
-          inventoryLocationsProvider.overrideWith((ref) async => const []),
+          inventoryLocationsProvider.overrideWith(
+            (ref) async => const [
+              InventoryLocation(
+                id: 'warehouse-with-long-label',
+                name:
+                    'Regional operations and materials distribution warehouse',
+                code: 'WH-REGIONAL-OPS',
+              ),
+            ],
+          ),
           inventorySearchProvider.overrideWith((ref) async => const []),
           allAssignedJobsProvider.overrideWith(
             (ref) async => _testAssignedJobs(),
@@ -418,6 +430,50 @@ void main() {
     expect(find.text('Work order ID'), findsNothing);
     expect(find.text('Project ID'), findsNothing);
     expect(find.text('Ticket ID'), findsNothing);
+    final workOrderDecorator = tester.widget<InputDecorator>(
+      find.descendant(
+        of: find.byKey(const Key('material-work-order')),
+        matching: find.byType(InputDecorator),
+      ),
+    );
+    expect(workOrderDecorator.isEmpty, isFalse);
+
+    await tester.tap(find.byKey(const Key('source-location')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(longLocationLabel).last);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('destination-location')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(longLocationLabel).last);
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('unavailable work order message keeps its label separate', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          inventoryLocationsProvider.overrideWith((ref) async => const []),
+          inventorySearchProvider.overrideWith((ref) async => const []),
+          allAssignedJobsProvider.overrideWith(
+            (ref) async => const JobList([]),
+          ),
+        ],
+        child: const MaterialApp(home: NewMaterialRequestScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final message = find.text('No assigned work orders are available.');
+    expect(message, findsOneWidget);
+    final workOrderDecorator = tester.widget<InputDecorator>(
+      find.ancestor(of: message, matching: find.byType(InputDecorator)),
+    );
+    expect(workOrderDecorator.isEmpty, isFalse);
   });
 
   testWidgets(

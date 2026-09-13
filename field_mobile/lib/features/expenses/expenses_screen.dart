@@ -886,7 +886,7 @@ class _NewExpenseRequestScreenState
                     });
                   },
             child: InputDecorator(
-              isEmpty: selected == null,
+              isEmpty: false,
               decoration: InputDecoration(
                 labelText: 'Work order',
                 helperText: selected == null
@@ -1790,7 +1790,7 @@ class _WorkOrderAvailability extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         InputDecorator(
-          isEmpty: true,
+          isEmpty: false,
           decoration: const InputDecoration(labelText: 'Work order'),
           child: Row(
             children: [

@@ -1313,6 +1313,13 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      final workOrderDecorator = tester.widget<InputDecorator>(
+        find.descendant(
+          of: find.byKey(const Key('expense-work-order')),
+          matching: find.byType(InputDecorator),
+        ),
+      );
+      expect(workOrderDecorator.isEmpty, isFalse);
       await tester.tap(find.byKey(const Key('expense-work-order')));
       await tester.pumpAndSettle();
       expect(
@@ -1330,6 +1337,38 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('unavailable expense work order keeps its label separate', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          expenseCategoriesProvider.overrideWith(
+            (ref) async => const [
+              ExpenseCategory(categoryCode: 'FUEL', categoryName: 'Fuel'),
+            ],
+          ),
+          expenseVendorsProvider.overrideWith((ref) async => const []),
+          expenseFormContextProvider.overrideWith(
+            (ref) async => _testFormContext,
+          ),
+          allAssignedJobsProvider.overrideWith(
+            (ref) async => const JobList([]),
+          ),
+        ],
+        child: const MaterialApp(home: NewExpenseRequestScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final message = find.text('No assigned work orders are available.');
+    expect(message, findsOneWidget);
+    final workOrderDecorator = tester.widget<InputDecorator>(
+      find.ancestor(of: message, matching: find.byType(InputDecorator)),
+    );
+    expect(workOrderDecorator.isEmpty, isFalse);
+  });
 
   testWidgets('new expense request requires receipt for receipt categories', (
     tester,
