@@ -284,6 +284,10 @@ def test_admin_guidance_uses_one_accessible_centered_modal() -> None:
     assert 'aria-modal="true"' in control
     assert 'x-trap.inert.noscroll="workflowHelpOpen"' in control
     assert "items-center justify-center" in control
+    assert 'button_class="h-10 w-10"' in control
+    assert "h-7 w-7" in control
+    assert "bg-slate-100" in control
+    assert "dark:bg-slate-800" in control
     assert "{{ workflow_guide.purpose }}" in control
     assert "{% for step in workflow_guide.steps %}" in control
     assert "billingHelpOpen" not in billing
