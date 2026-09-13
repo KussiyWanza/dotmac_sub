@@ -75,7 +75,7 @@ class Brand {
 
   /// App version label for the About screen (set per release build).
   static const String version =
-      String.fromEnvironment('APP_VERSION', defaultValue: '8.46.2');
+      String.fromEnvironment('APP_VERSION', defaultValue: '8.47.0');
 
   /// Hex brand colour (e.g. `#3b82f6`) used as the Material seed colour.
   static const String _primaryColorHex =
