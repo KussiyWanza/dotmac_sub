@@ -12,6 +12,8 @@ from jose import JWTError
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.csrf import renew_csrf_cookie
+
 logger = logging.getLogger(__name__)
 
 from app.models.auth import AuthProvider, MFAMethod, UserCredential
@@ -793,7 +795,7 @@ def customer_refresh(request: Request, db: Session):
         else customer_portal.get_session_max_age(db)
     )
 
-    response = Response(status_code=204)
+    response = Response(status_code=204, headers={"Cache-Control": "no-store"})
     response.set_cookie(
         key=customer_portal.SESSION_COOKIE_NAME,
         value=session_token,
@@ -802,4 +804,5 @@ def customer_refresh(request: Request, db: Session):
         samesite="lax",
         max_age=max_age,
     )
+    renew_csrf_cookie(response, request)
     return response

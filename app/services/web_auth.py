@@ -9,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from starlette.responses import Response
 
+from app.csrf import renew_csrf_cookie
 from app.services import auth_flow as auth_flow_service
 from app.services import credential_recovery, staff_party_authentication
 from app.services.auth_flow import AuthFlow, LoginAudience
@@ -719,6 +720,7 @@ def refresh_session(request: Request, db: Session) -> Response:
             request,
             persistent=_wants_persistent_session(request),
         )
+    renew_csrf_cookie(response, request)
     return response
 
 
