@@ -23,9 +23,10 @@ from app.models.billing import (
     TaxRate,
 )
 from app.models.event_store import EventStore
-from app.schemas.billing import PaymentAllocationApply, PaymentCreate
+from app.schemas.billing import PaymentCreate
 from app.services import billing as billing_service
 from app.services.billing._common import get_spendable_account_credit_balance
+from app.services.billing.account_credit import AccountCreditApplications
 from app.services.billing.invoices import Invoices
 from app.services.billing.payments import PaymentAllocations
 from app.services.events.types import EventType
@@ -158,14 +159,18 @@ def _scenario(db_session, subscriber) -> _Scenario:
             currency="NGN",
             status=PaymentStatus.succeeded,
             external_id=f"test-historical-tax-{uuid4()}",
-            allocations=[
-                PaymentAllocationApply(
-                    invoice_id=source.id,
-                    amount=Decimal("200000.00"),
-                )
-            ],
         ),
+        auto_allocate=False,
     )
+    funding_preview = AccountCreditApplications.preview_invoice_funding(
+        db_session, source
+    )
+    AccountCreditApplications.apply_invoice_fully(
+        db_session,
+        source,
+        preview_fingerprint=funding_preview.fingerprint,
+    )
+    db_session.commit()
     db_session.refresh(source)
     db_session.refresh(source_line)
     assert source.status is InvoiceStatus.paid

@@ -661,16 +661,20 @@ def observed_inbound_identity(
         )
     if provider_account_id == "default":
         provider_account_id = None
+    provider_scoped = bool(
+        conversation.channel_type in _PROVIDER_SCOPED_IDENTITY_CHANNELS
+        and provider
+        and provider_account_id
+    )
+    if not provider_scoped:
+        provider = None
+        provider_account_id = None
     return ObservedInboundIdentity(
         channel_type=conversation.channel_type,
         normalized_endpoint=normalized_endpoint,
         provider=provider,
         provider_account_id=provider_account_id,
-        external_subject_id=(
-            normalized_endpoint
-            if conversation.channel_type in _PROVIDER_SCOPED_IDENTITY_CHANNELS
-            else None
-        ),
+        external_subject_id=(normalized_endpoint if provider_scoped else None),
     )
 
 

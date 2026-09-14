@@ -71,10 +71,10 @@ BASELINE = Path("tests/architecture/session_construction_baseline.txt")
 #: +1 from tests/test_erp_staff_talk_mapping_permission_migration.py: one
 #: isolated in-memory rehearsal proves the permission migration is idempotent
 #: and reversible without sharing state with the application test database.
-#: +1 from tests/integration/test_team_inbox_contact_link_concurrency.py: one
-#: two-session PostgreSQL proof that simultaneous reviewed endpoint links
-#: converge on the single active contact route enforced by the partial index.
-TEST_FIXTURE_BASELINE_TOTAL = 129
+#: +2 from tests/integration/test_team_inbox_contact_link_concurrency.py: two
+#: PostgreSQL concurrency proofs for reviewed endpoint links and first-inbound
+#: identity claims, each with its own `sessionmaker`.
+TEST_FIXTURE_BASELINE_TOTAL = 131
 
 
 def _baseline() -> dict[str, int]:

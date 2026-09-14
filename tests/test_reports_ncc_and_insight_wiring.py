@@ -332,7 +332,7 @@ def test_insight_route_generates_and_renders(db_session, monkeypatch):
         patch.object(
             reports_web.ticket_sla_reports_service,
             "summary",
-            lambda db, a, b: {
+            lambda *, db, query: {
                 "total_clocks": 40,
                 "total_breaches": 12,
                 "breach_rate": 0.3,
@@ -353,7 +353,11 @@ def test_insight_route_degrades_gracefully_when_disabled(db_session, monkeypatch
     with patch.object(
         reports_web.ticket_sla_reports_service,
         "summary",
-        lambda db, a, b: {"total_clocks": 0, "total_breaches": 0, "breach_rate": 0.0},
+        lambda *, db, query: {
+            "total_clocks": 0,
+            "total_breaches": 0,
+            "breach_rate": 0.0,
+        },
     ):
         resp = reports_web.reports_generate_insight(
             _request(), "ticket_sla_advisor", db=db_session

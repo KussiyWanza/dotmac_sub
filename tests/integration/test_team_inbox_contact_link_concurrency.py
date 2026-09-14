@@ -57,7 +57,7 @@ def test_same_endpoint_links_converge_on_one_active_route(engine) -> None:
                 InboxMessage(
                     conversation_id=conversation.id,
                     direction=InboxMessageDirection.inbound.value,
-                    body_text="Hello",
+                    body="Hello",
                     metadata_={
                         "provider": "meta_social",
                         "provider_account_scope": "page-concurrency",

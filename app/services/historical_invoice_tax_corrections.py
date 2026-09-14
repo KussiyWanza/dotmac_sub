@@ -18,7 +18,6 @@ from decimal import Decimal
 from typing import NoReturn
 from uuid import UUID
 
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -38,7 +37,6 @@ from app.models.billing import (
     TaxApplication,
     TaxRate,
 )
-from app.models.idempotency import IdempotencyKey
 from app.schemas.audit import AuditEventCreate
 from app.schemas.billing import InvoiceCreate, SystemInvoiceLineCreate
 from app.services.audit import AuditEvents
@@ -70,7 +68,6 @@ from app.services.owner_commands import (
 OWNER = "financial.historical_invoice_tax_corrections"
 CONCERN = "reviewed historical invoice tax correction coordination"
 CORRECTION_SCOPE = "billing:invoice:update"
-_IDEMPOTENCY_SCOPE = "historical-invoice-tax-correction"
 _POLICY_VERSION = "historical-invoice-tax-correction-v1"
 _MAX_REASON_LENGTH = 500
 
@@ -496,8 +493,8 @@ def _build_preview(
             subscription_invoice=subscription_invoice,
         )
     try:
-        void_preview = Invoices.preview_void(db, str(source_invoice.id))
-    except (HTTPException, InvoiceOwnerError):
+        void_preview = Invoices.preview_void_for_owner(db, source_invoice.id)
+    except InvoiceOwnerError:
         return _manual_preview(
             query,
             reason="Invoice owner cannot safely void and release the source invoice.",
@@ -887,44 +884,12 @@ def _correct_historical_invoice_tax(
     if len(command.expected_preview_fingerprint) != 64:
         _error("preview_invalid", "A SHA-256 correction preview is required.")
 
-    reservation = db.scalar(
-        select(IdempotencyKey).where(
-            IdempotencyKey.scope == _IDEMPOTENCY_SCOPE,
-            IdempotencyKey.key == key,
-        )
-    )
-    if reservation is not None:
-        if reservation.account_id != command.query.account_id or not reservation.ref_id:
-            _error(
-                "idempotency_conflict",
-                "Correction idempotency key belongs to other or incomplete evidence.",
-            )
-        replacement = db.get(Invoice, UUID(reservation.ref_id))
-        if replacement is None:
-            _error("correction_evidence_missing", "Replacement invoice is missing.")
-        return _result_from_replacement(
-            db,
-            replacement=replacement,
-            expected_fingerprint=command.expected_preview_fingerprint,
-            replayed=True,
-        )
-
     lock_account(db, str(command.query.account_id))
-    reservation = db.scalar(
-        select(IdempotencyKey).where(
-            IdempotencyKey.scope == _IDEMPOTENCY_SCOPE,
-            IdempotencyKey.key == key,
-        )
-    )
-    if reservation is not None:
-        if reservation.account_id != command.query.account_id or not reservation.ref_id:
-            _error("idempotency_conflict", "Correction key is already in use.")
-        replacement = db.get(Invoice, UUID(reservation.ref_id))
-        if replacement is None:
-            _error("correction_evidence_missing", "Replacement invoice is missing.")
+    existing = _existing_replacement(db, command.query)
+    if existing is not None:
         return _result_from_replacement(
             db,
-            replacement=replacement,
+            replacement=existing[0],
             expected_fingerprint=command.expected_preview_fingerprint,
             replayed=True,
         )
@@ -954,14 +919,6 @@ def _correct_historical_invoice_tax(
             "customer_tax_policy_changed",
             "Customer is currently VAT-exempt; correction requires renewed review.",
         )
-
-    reservation = IdempotencyKey(
-        scope=_IDEMPOTENCY_SCOPE,
-        key=key,
-        account_id=command.query.account_id,
-    )
-    db.add(reservation)
-    db.flush()
 
     source = db.get(Invoice, command.query.source_invoice_id)
     void_evidence = db.get(Invoice, command.query.void_evidence_invoice_id)
@@ -1114,7 +1071,6 @@ def _correct_historical_invoice_tax(
         replacement.id,
         evidence=evidence,
     )
-    reservation.ref_id = str(replacement.id)
     db.flush()
 
     payment_available_after = round_money(

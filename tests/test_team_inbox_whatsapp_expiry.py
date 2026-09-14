@@ -147,6 +147,7 @@ def test_expiry_releases_assignment_and_queue_without_resolving(db_session):
     assert entry.status == InboxQueueEntryStatus.cancelled.value
     assert entry.metadata_["settlement_reason"] == "whatsapp_window_expired"
     assert assigned.status == queued.status == "open"
+    db_session.rollback()
 
     repeated = team_inbox_maintenance.sweep_expired_whatsapp_windows(
         db_session,
@@ -360,6 +361,7 @@ def test_historical_assignment_repair_is_dry_run_and_idempotent(db_session):
     assert dry_run.stale_assignments_found == 1
     assert dry_run.assignments_released == 0
     assert assignment.is_active is True
+    db_session.rollback()
 
     applied = team_inbox_maintenance.repair_expired_whatsapp_assignments(
         db_session,

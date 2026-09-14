@@ -2171,6 +2171,7 @@ def _settle_exact_payment_fundable_renewal(
         preview_payment_funding_for_owner,
     )
 
+    decision_at = _utc(decision_at)
     try:
         Invoices.issue_draft_for_owner(
             db,

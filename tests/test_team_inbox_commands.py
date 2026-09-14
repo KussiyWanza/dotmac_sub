@@ -120,19 +120,17 @@ def test_status_command_rejects_cross_team_actor(db_session):
         name=f"Actor Team {uuid.uuid4().hex[:8]}",
         team_type=ServiceTeamType.support.value,
     )
+    db_session.add_all([target_team, actor_team])
+    db_session.flush()
     conversation = _conversation(db_session)
     conversation.primary_service_team_id = target_team.id
     user, person = add_bound_staff_user(db_session)
-    db_session.add_all(
-        [
-            target_team,
-            actor_team,
-            ServiceTeamMember(
-                team_id=actor_team.id,
-                person_id=person.id,
-                is_active=True,
-            ),
-        ]
+    db_session.add(
+        ServiceTeamMember(
+            team_id=actor_team.id,
+            person_id=person.id,
+            is_active=True,
+        )
     )
     db_session.flush()
     principal = WorkqueuePrincipal(

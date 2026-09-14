@@ -1055,6 +1055,19 @@ class Invoices(ListResponseMixin):
         return _build_closure_preview(db, invoice, InvoiceClosureType.void)
 
     @staticmethod
+    def preview_void_for_owner(db: Session, invoice_id: UUID) -> InvoiceClosurePreview:
+        """Return a transport-neutral void preview to a composing owner."""
+
+        try:
+            return Invoices.preview_void(db, str(invoice_id))
+        except HTTPException as exc:
+            raise InvoiceOwnerError(
+                code="financial.invoice.void_preview_rejected",
+                message="Invoice owner rejected the composed void preview.",
+                details={"invoice_id": str(invoice_id), "reason": str(exc.detail)},
+            ) from exc
+
+    @staticmethod
     def preview_write_off(db: Session, invoice_id: str) -> InvoiceClosurePreview:
         invoice = get_by_id(db, Invoice, invoice_id)
         if not invoice:
