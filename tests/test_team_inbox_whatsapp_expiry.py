@@ -166,6 +166,34 @@ def test_expiry_releases_assignment_and_queue_without_resolving(db_session):
     assert db_session.query(InboxRoutingEvent).count() == 1
 
 
+def test_scheduled_sweep_respects_rollout_watermark(db_session):
+    team, agent_id = _team_and_agent(db_session)
+    historical = _whatsapp(
+        db_session, inbound_at=NOW - timedelta(hours=30), team_id=team.id
+    )
+    historical_assignment = _assign(db_session, historical, team.id, agent_id)
+    newly_expired = _whatsapp(
+        db_session, inbound_at=NOW - timedelta(hours=25), team_id=team.id
+    )
+    newly_expired_assignment = _assign(db_session, newly_expired, team.id, agent_id)
+    db_session.commit()
+
+    result = team_inbox_maintenance.sweep_expired_whatsapp_windows(
+        db_session,
+        team_inbox_maintenance.WhatsAppWindowExpirySweepCommand(
+            context=_context("watermarked_expiry_sweep"),
+            now=NOW,
+            expired_after=NOW - timedelta(hours=2),
+        ),
+    )
+
+    db_session.refresh(historical_assignment)
+    db_session.refresh(newly_expired_assignment)
+    assert result.assignments_released == 1
+    assert historical_assignment.is_active is True
+    assert newly_expired_assignment.is_active is False
+
+
 def test_expired_whatsapp_does_not_consume_capacity_or_accept_assignment(db_session):
     team, agent_id = _team_and_agent(db_session, capacity=3)
     active = _whatsapp(db_session, inbound_at=NOW - timedelta(hours=1), team_id=team.id)
@@ -563,6 +591,17 @@ def test_historical_assignment_repair_is_dry_run_and_idempotent(db_session):
         db_session, inbound_at=NOW - timedelta(hours=25), team_id=team.id
     )
     assignment = _assign(db_session, conversation, team.id, agent_id)
+    queued = _whatsapp(
+        db_session, inbound_at=NOW - timedelta(hours=26), team_id=team.id
+    )
+    queue_entry = InboxConversationQueueEntry(
+        conversation_id=queued.id,
+        service_team_id=team.id,
+        queue_position=1,
+        status=InboxQueueEntryStatus.queued.value,
+        entered_at=NOW - timedelta(hours=26),
+    )
+    db_session.add(queue_entry)
     db_session.commit()
 
     dry_run = team_inbox_maintenance.repair_expired_whatsapp_assignments(
@@ -573,7 +612,9 @@ def test_historical_assignment_repair_is_dry_run_and_idempotent(db_session):
     )
     db_session.refresh(assignment)
     assert dry_run.stale_assignments_found == 1
+    assert dry_run.stale_queues_found == 1
     assert dry_run.assignments_released == 0
+    assert dry_run.queues_cancelled == 0
     assert assignment.is_active is True
 
     applied = team_inbox_maintenance.repair_expired_whatsapp_assignments(
@@ -589,5 +630,9 @@ def test_historical_assignment_repair_is_dry_run_and_idempotent(db_session):
         ),
     )
     assert applied.assignments_released == 1
+    assert applied.queues_cancelled == 1
+    db_session.refresh(queue_entry)
+    assert queue_entry.status == InboxQueueEntryStatus.cancelled.value
     assert repeated.assignments_released == 0
-    assert repeated.already_correct == 1
+    assert repeated.queues_cancelled == 0
+    assert repeated.already_correct == 2

@@ -293,6 +293,31 @@ class TestSyncScheduledTask:
         db_session.refresh(task)
         assert task.enabled is False
 
+    def test_initializes_scheduler_kwargs_once(self, db_session):
+        scheduler_config._sync_scheduled_task(
+            db_session,
+            name="watermarked_task",
+            task_name="app.tasks.test.watermarked",
+            enabled=True,
+            interval_seconds=60,
+            initialize_missing_kwargs_json={"managed_after": "first"},
+        )
+        scheduler_config._sync_scheduled_task(
+            db_session,
+            name="watermarked_task",
+            task_name="app.tasks.test.watermarked",
+            enabled=True,
+            interval_seconds=60,
+            initialize_missing_kwargs_json={"managed_after": "second"},
+        )
+
+        task = (
+            db_session.query(ScheduledTask)
+            .filter(ScheduledTask.name == "watermarked_task")
+            .one()
+        )
+        assert task.kwargs_json == {"managed_after": "first"}
+
     def test_no_update_when_unchanged(self, db_session):
         """Test no commit when nothing changed."""
         task = ScheduledTask(

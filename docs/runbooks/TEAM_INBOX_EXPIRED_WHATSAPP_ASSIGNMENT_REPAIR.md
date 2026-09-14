@@ -8,7 +8,10 @@ creates a queue record.
 ## Preconditions
 
 1. Deploy the schema migration and application code to the selected environment.
-2. Confirm the expiry scheduler is healthy.
+   The schedule stores a one-time `managed_after` rollout watermark, so the
+   recurring worker handles only windows expiring after activation.
+2. Confirm the expiry scheduler is healthy and has a timezone-aware
+   `managed_after` keyword argument.
 3. Obtain explicit approval before applying on production.
 4. Run from a non-deployment operator shell configured for the target database.
 
@@ -19,7 +22,8 @@ poetry run python -m scripts.one_off.repair_expired_whatsapp_assignments
 ```
 
 The default is read-only dry-run. Review `examined`,
-`stale_assignments_found`, `already_correct`, `conflicts`, and `errors`.
+`stale_assignments_found`, `stale_queues_found`, `already_correct`, `conflicts`,
+and `errors`.
 
 ## Apply
 
@@ -30,10 +34,11 @@ poetry run python -m scripts.one_off.repair_expired_whatsapp_assignments --apply
 Apply rechecks every candidate under the conversation lock. It ends only a
 still-active stale assignment, writes one routing event with reason
 `whatsapp_window_expired`, preserves the assignment interval, and settles an
-impossible coexisting active FIFO generation if present.
+impossible active FIFO generation if present. A standalone stale FIFO
+generation is settled without inventing an assignment.
 
-Run the preview again. A converged result reports zero stale assignments;
-repeating Apply is a no-op.
+Run the preview again. A converged result reports zero stale assignments and
+zero stale queues; repeating Apply is a no-op.
 
 ## Rollback
 

@@ -476,15 +476,18 @@ in that filter. Workflow states such as open, pending, snoozed, and resolved
 remain owned only by `communications.team_inbox_status`.
 
 For WhatsApp, the maintenance scheduler consumes this calculated state every
-60 seconds. It selects only conversations with an active assignment or active
-FIFO generation, locks each conversation, and recomputes the reply-window
-decision. If still expired, the routing owner appends one `unassigned` event
-with reason `whatsapp_window_expired`, ends the assignment interval, settles
-the queue generation, and closes its agent reminder. Conversation status and
-Customer/Lead identity are untouched. A qualifying inbound that wins the lock
-race makes the expiry command a no-op; an inbound that follows release reruns
-the existing identity, intake, routing, FIFO, and assignment flow without
-restoring the historical agent.
+60 seconds. Its scheduled-task row captures a timezone-aware `managed_after`
+watermark once, so rollout does not silently execute the historical repair:
+the recurring worker selects only windows expiring at or after that watermark
+and having an active assignment or FIFO generation. It locks each conversation
+and recomputes the reply-window decision. If still expired, the routing owner
+appends one `unassigned` event with reason `whatsapp_window_expired`, ends the
+assignment interval, settles the queue generation, and closes its agent
+reminder. Conversation status and Customer/Lead identity are untouched. A
+qualifying inbound that wins the lock race makes the expiry command a no-op; an
+inbound that follows release reruns the existing identity, intake, routing,
+FIFO, and assignment flow without restoring the historical agent. Older drift
+remains behind the explicit dry-run-first repair command.
 
 Normal manual/self assignment, automation, queue admission, FIFO promotion,
 queue-notification delivery preflight, and stale auto-resolution all reject or

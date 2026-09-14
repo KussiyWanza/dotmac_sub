@@ -32,7 +32,9 @@ def test_expiry_release_is_a_scheduled_typed_owner_path() -> None:
         in assignment
     )
     assert "expire_whatsapp_service_windows" in tasks
+    assert "managed_after rollout watermark is required" in tasks
     assert 'name="team_inbox_whatsapp_window_expiry"' in scheduler
+    assert '"managed_after": datetime.now(UTC).isoformat()' in scheduler
     assert "release_expired_whatsapp_conversation" in receive
 
 

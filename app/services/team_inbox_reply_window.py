@@ -103,12 +103,14 @@ def expiry_cutoff(now: datetime | None = None) -> datetime:
 
 
 def expired_whatsapp_conversation_ids_query(
-    *, now: datetime | None = None
+    *,
+    now: datetime | None = None,
+    expired_after: datetime | None = None,
 ) -> Select[tuple[UUID]]:
     """Return the single SQL worklist definition for expired WhatsApp threads."""
 
     latest_inbound = latest_qualifying_inbound_subquery()
-    return (
+    statement = (
         select(InboxConversation.id)
         .join(
             latest_inbound,
@@ -120,6 +122,12 @@ def expired_whatsapp_conversation_ids_query(
             latest_inbound.c.last_inbound_at <= expiry_cutoff(now),
         )
     )
+    managed_after = _aware(expired_after)
+    if managed_after is not None:
+        statement = statement.where(
+            latest_inbound.c.last_inbound_at >= managed_after - WINDOW_DURATION
+        )
+    return statement
 
 
 def coerce_conversation_id(value: str | UUID | None) -> UUID | None:

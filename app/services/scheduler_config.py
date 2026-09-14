@@ -64,6 +64,7 @@ def _sync_scheduled_task(
     task_name: str,
     enabled: bool,
     interval_seconds: int,
+    initialize_missing_kwargs_json: dict[str, object] | None = None,
 ) -> None:
     # Match by NAME (the stable logical identity), not task_name. Matching by
     # task_name meant a task rename/move (e.g. run_dunning -> run_billing_
@@ -84,6 +85,7 @@ def _sync_scheduled_task(
             task_name=task_name,
             schedule_type=ScheduleType.interval,
             interval_seconds=interval_seconds,
+            kwargs_json=dict(initialize_missing_kwargs_json or {}),
             enabled=True,
         )
         db.add(task)
@@ -106,6 +108,13 @@ def _sync_scheduled_task(
     if task.enabled != enabled:
         task.enabled = enabled
         changed = True
+    if initialize_missing_kwargs_json:
+        kwargs_json = dict(task.kwargs_json or {})
+        for key, value in initialize_missing_kwargs_json.items():
+            if key not in kwargs_json:
+                kwargs_json[key] = value
+                changed = True
+        task.kwargs_json = kwargs_json
     if changed:
         db.commit()
 
@@ -1189,6 +1198,13 @@ def build_beat_schedule() -> dict:
             task_name="app.tasks.team_inbox.expire_whatsapp_service_windows",
             enabled=True,
             interval_seconds=60,
+            initialize_missing_kwargs_json={
+                # Establish a durable rollout watermark exactly once. The
+                # recurring lifecycle worker owns expirations crossing after
+                # this instant; older drift remains behind the explicit,
+                # dry-run-first repair boundary.
+                "managed_after": datetime.now(UTC).isoformat(),
+            },
         )
         _sync_scheduled_task(
             session,

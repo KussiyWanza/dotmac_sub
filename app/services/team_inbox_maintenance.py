@@ -86,6 +86,7 @@ class WhatsAppWindowExpirySweepCommand:
     context: CommandContext
     limit: int = 200
     now: datetime | None = None
+    expired_after: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +112,9 @@ class RepairExpiredWhatsAppAssignmentsCommand:
 class RepairExpiredWhatsAppAssignmentsOutcome:
     examined: int
     stale_assignments_found: int
+    stale_queues_found: int
     assignments_released: int
+    queues_cancelled: int
     already_correct: int
     conflicts: int
     errors: int
@@ -992,9 +995,11 @@ def _expired_whatsapp_ids(
     now: datetime,
     limit: int,
     actionable_only: bool,
+    expired_after: datetime | None = None,
 ) -> tuple[UUID, ...]:
     statement = team_inbox_reply_window.expired_whatsapp_conversation_ids_query(
-        now=now
+        now=now,
+        expired_after=expired_after,
     ).where(InboxConversation.is_active.is_(True))
     if actionable_only:
         active_assignment = (
@@ -1035,6 +1040,7 @@ def sweep_expired_whatsapp_windows(
             now=observed_at,
             limit=command.limit,
             actionable_only=True,
+            expired_after=command.expired_after,
         )
         released = cancelled = correct = conflicts = 0
         for conversation_id in candidate_ids:
@@ -1081,7 +1087,7 @@ def repair_expired_whatsapp_assignments(
             limit=command.limit,
             actionable_only=False,
         )
-        stale = released = correct = conflicts = 0
+        stale = stale_queues = released = cancelled = correct = conflicts = 0
         for conversation_id in candidate_ids:
             active_assignment = db.scalar(
                 select(InboxConversationAssignment.id).where(
@@ -1089,10 +1095,18 @@ def repair_expired_whatsapp_assignments(
                     InboxConversationAssignment.is_active.is_(True),
                 )
             )
-            if active_assignment is None:
+            active_queue = db.scalar(
+                select(InboxConversationQueueEntry.id).where(
+                    InboxConversationQueueEntry.conversation_id == conversation_id,
+                    InboxConversationQueueEntry.status
+                    == InboxQueueEntryStatus.queued.value,
+                )
+            )
+            if active_assignment is None and active_queue is None:
                 correct += 1
                 continue
-            stale += 1
+            stale += int(active_assignment is not None)
+            stale_queues += int(active_queue is not None)
             if command.dry_run:
                 continue
             outcome = team_inbox_assignment.release_expired_whatsapp_conversation(
@@ -1103,13 +1117,16 @@ def repair_expired_whatsapp_assignments(
                 ),
             )
             released += int(outcome.assignment_released)
+            cancelled += int(outcome.queue_cancelled)
             conflicts += int(outcome.conflict)
             if outcome.already_correct:
                 correct += 1
         return RepairExpiredWhatsAppAssignmentsOutcome(
             examined=len(candidate_ids),
             stale_assignments_found=stale,
+            stale_queues_found=stale_queues,
             assignments_released=released,
+            queues_cancelled=cancelled,
             already_correct=correct,
             conflicts=conflicts,
             errors=0,

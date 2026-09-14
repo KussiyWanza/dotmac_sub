@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from uuid import UUID
 
 from app.celery_app import celery_app
@@ -22,8 +23,20 @@ logger = logging.getLogger(__name__)
 
 
 @celery_app.task(name="app.tasks.team_inbox.expire_whatsapp_service_windows")
-def expire_whatsapp_service_windows(*, limit: int = 200) -> dict[str, int]:
+def expire_whatsapp_service_windows(
+    *, limit: int = 200, managed_after: str | None = None
+) -> dict[str, int]:
     """Release routing state after the canonical WhatsApp window closes."""
+
+    if not managed_after:
+        raise ValueError("managed_after rollout watermark is required")
+    try:
+        expiry_watermark = datetime.fromisoformat(managed_after)
+    except ValueError as exc:
+        raise ValueError("managed_after must be an ISO-8601 datetime") from exc
+    if expiry_watermark.tzinfo is None or expiry_watermark.utcoffset() is None:
+        raise ValueError("managed_after must include a timezone")
+    expiry_watermark = expiry_watermark.astimezone(UTC)
 
     with db_session_adapter.owner_command_session() as session:
         result = team_inbox_maintenance.sweep_expired_whatsapp_windows(
@@ -35,6 +48,7 @@ def expire_whatsapp_service_windows(*, limit: int = 200) -> dict[str, int]:
                     reason="release expired WhatsApp assignment and queue state",
                 ),
                 limit=limit,
+                expired_after=expiry_watermark,
             ),
         )
         payload = {
