@@ -71,6 +71,7 @@ class EventType(enum.Enum):
     invoice_discount_changed = "invoice.discount_changed"
     invoice_discount_removed = "invoice.discount_removed"
     invoice_discount_inherited = "invoice.discount_inherited"
+    invoice_tax_correction_completed = "invoice.tax_correction_completed"
 
     # Billing - Payment events (5)
     payment_received = "payment.received"
