@@ -9,7 +9,7 @@ import pytest
 from app.models.party import Party
 from app.models.sales import Lead
 from app.models.service_team import ServiceTeam, ServiceTeamType
-from app.models.subscriber import Subscriber
+from app.models.subscriber import Subscriber, SubscriberContact
 from app.models.team_inbox import (
     InboxChannelType,
     InboxConversation,
@@ -407,6 +407,34 @@ def test_fiber_widget_exact_subscriber_match_creates_no_prospect(db_session):
     assert conversation.subscriber_id == subscriber.id
     assert db_session.query(Lead).count() == 0
     assert db_session.query(Party).count() == 0
+
+
+def test_fiber_widget_secondary_customer_identity_creates_no_duplicate_lead(db_session):
+    subscriber = _subscriber(db_session)
+    db_session.add(
+        SubscriberContact(
+            subscriber_id=subscriber.id,
+            contact_type="general",
+            email="secondary@example.com",
+            whatsapp="08037778888",
+        )
+    )
+    db_session.commit()
+    command = _fiber_chat_command(
+        email="SECONDARY@example.com",
+        phone="+2348037778888",
+    )
+
+    with _chat_enabled():
+        outcome = team_inbox_widget.broker_fiber_visitor_session_committed(
+            db_session,
+            command=command,
+        )
+
+    conversation = db_session.get(InboxConversation, outcome.conversation_id)
+    assert outcome.resolution_status == "linked_subscriber"
+    assert conversation.subscriber_id == subscriber.id
+    assert db_session.query(Lead).count() == 0
 
 
 def test_fiber_widget_conflicting_matches_fail_closed(db_session):

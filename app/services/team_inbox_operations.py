@@ -36,6 +36,7 @@ from app.services import (
     team_inbox_assignment,
     team_inbox_filters,
     team_inbox_outbound,
+    team_inbox_reply_window,
     team_inbox_status,
 )
 from app.services.common import coerce_uuid
@@ -1148,6 +1149,11 @@ def queue_metrics(db: Session) -> InboxQueueMetrics:
         .filter(InboxConversation.is_active.is_(True))
         .filter(InboxConversation.status != "resolved")
         .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
+        .filter(
+            ~InboxConversation.id.in_(
+                team_inbox_reply_window.expired_whatsapp_conversation_ids_query()
+            )
+        )
         .one()
     )
     return InboxQueueMetrics(
@@ -1225,6 +1231,13 @@ def auto_resolve_stale_conversations(
         .filter(InboxConversation.status.in_(["open", "pending", "snoozed"]))
         .filter(InboxConversation.last_message_at.isnot(None))
         .filter(InboxConversation.last_message_at <= cutoff)
+        .filter(
+            ~InboxConversation.id.in_(
+                team_inbox_reply_window.expired_whatsapp_conversation_ids_query(
+                    now=clock
+                )
+            )
+        )
         .order_by(InboxConversation.last_message_at.asc())
         .limit(max(1, int(limit)))
         .with_for_update(skip_locked=True)

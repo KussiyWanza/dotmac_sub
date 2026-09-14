@@ -14,6 +14,7 @@ from app.models.lead_intake import LeadIntakeInvitation, LeadIntakePartyType
 from app.models.party import Party, PartyContactPoint, PartyRole
 from app.models.sales import Lead, LeadOriginCapture
 from app.models.service_team import ServiceTeam
+from app.models.subscriber import Subscriber, SubscriberContact
 from app.models.subscription_engine import SettingValueType
 from app.models.system_user import SystemUser
 from app.models.team_inbox import (
@@ -391,3 +392,72 @@ def test_manual_form_completion_creates_party_first_lead_and_binds_inbox(db_sess
         db_session.get(InboxConversation, conversation_id).primary_service_team_id
         == team_id
     )
+
+
+def test_form_submission_late_customer_match_repairs_conversation_without_lead(
+    db_session,
+):
+    staff, team = _staff_and_team(db_session)
+    _published_template(db_session, staff=staff, team=team)
+    conversation, message = _conversation(db_session)
+    issued = lead_intake.issue_manual_invitation(
+        db_session,
+        lead_intake.ManualInvitationCommand(
+            context=_context(f"late-match-invite:{conversation.id}"),
+            conversation_id=conversation.id,
+            trigger_message_id=message.id,
+            party_type=LeadIntakePartyType.individual,
+            actor_system_user_id=staff.id,
+        ),
+    )
+    assert issued.token is not None
+    customer = Subscriber(
+        first_name="Existing",
+        last_name="Customer",
+        email=f"existing-{uuid4().hex}@example.com",
+    )
+    db_session.add(customer)
+    db_session.flush()
+    db_session.add(
+        SubscriberContact(
+            subscriber_id=customer.id,
+            contact_type="general",
+            whatsapp=conversation.contact_address,
+        )
+    )
+    db_session.commit()
+    submission = LeadIntakeSubmission(
+        full_name="Existing Customer",
+        gender="female",
+        date_of_birth=date(1994, 5, 12),
+        latitude=9.0765,
+        longitude=7.3986,
+        address_confirmation=True,
+        privacy_acknowledged=True,
+    )
+    address = ResolvedLeadIntakeAddress(
+        display_name="Wuse 2, Abuja, Nigeria",
+        latitude=9.0765,
+        longitude=7.3986,
+        state="FCT",
+        country_code="ng",
+    )
+
+    outcome = lead_intake.submit_form(
+        db_session,
+        lead_intake.SubmitLeadIntakeCommand(
+            context=_context(f"late-match-submit:{conversation.id}"),
+            token=issued.token,
+            submission=submission,
+            resolved_address=address,
+        ),
+    )
+
+    assert outcome.kind is lead_intake.SubmitLeadIntakeKind.customer_linked
+    assert outcome.lead_id is None
+    assert db_session.query(Lead).count() == 0
+    assert (
+        db_session.get(InboxConversation, conversation.id).subscriber_id == customer.id
+    )
+    invitation = db_session.get(LeadIntakeInvitation, issued.invitation_id)
+    assert invitation.status == "revoked"

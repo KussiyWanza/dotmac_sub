@@ -17,7 +17,8 @@ from app.models.team_inbox import (
     InboxConversationStatus,
     InboxStatusTransitionEvent,
 )
-from app.services import team_inbox_customer_completion
+from app.services import team_inbox_customer_completion, team_inbox_reply_window
+from app.services.domain_errors import DomainError
 from app.services.owner_commands import execute_owner_savepoint, owner_command_active
 
 OWNER = "communications.team_inbox_status"
@@ -47,6 +48,61 @@ class InboxStatusReason(StrEnum):
     historical_reconstruction = "historical_reconstruction"
 
 
+class InboxResolutionReason(StrEnum):
+    customer_stopped_responding = "customer_stopped_responding"
+    whatsapp_window_expired = "whatsapp_window_expired"
+    issue_completed_before_expiry = "issue_completed_before_expiry"
+    duplicate_conversation = "duplicate_conversation"
+    no_further_action_required = "no_further_action_required"
+    spam_irrelevant = "spam_irrelevant"
+    other = "other"
+
+
+RESOLUTION_REASON_LABELS: dict[InboxResolutionReason, str] = {
+    InboxResolutionReason.customer_stopped_responding: "Customer stopped responding",
+    InboxResolutionReason.whatsapp_window_expired: "WhatsApp window expired",
+    InboxResolutionReason.issue_completed_before_expiry: "Issue completed before expiry",
+    InboxResolutionReason.duplicate_conversation: "Duplicate conversation",
+    InboxResolutionReason.no_further_action_required: "No further action required",
+    InboxResolutionReason.spam_irrelevant: "Spam/irrelevant",
+    InboxResolutionReason.other: "Other",
+}
+
+
+class InboxChannelState(StrEnum):
+    active_window = "active_window"
+    expired = "expired"
+    unavailable = "unavailable"
+    not_applicable = "not_applicable"
+
+
+@dataclass(frozen=True, slots=True)
+class InboxResolutionReadiness:
+    customer_readiness: team_inbox_customer_completion.InboxCustomerResolutionReadiness
+    channel_state: InboxChannelState
+    can_agent_resolve: bool
+    requires_resolution_reason: bool
+    allowed_resolution_reasons: tuple[tuple[str, str], ...]
+
+    @property
+    def classification(
+        self,
+    ) -> team_inbox_customer_completion.InboxIdentityClassification:
+        return self.customer_readiness.classification
+
+    @property
+    def fields(
+        self,
+    ) -> tuple[team_inbox_customer_completion.CustomerFieldReadiness, ...]:
+        return self.customer_readiness.fields
+
+    @property
+    def missing_fields(
+        self,
+    ) -> tuple[team_inbox_customer_completion.CustomerProfileField, ...]:
+        return self.customer_readiness.missing_fields
+
+
 @dataclass(frozen=True, slots=True)
 class InboxStatusTransitionCommand:
     conversation_id: UUID
@@ -57,6 +113,7 @@ class InboxStatusTransitionCommand:
     occurred_at: datetime
     compatibility_source: str
     macro_id: UUID | None = None
+    resolution_reason: InboxResolutionReason | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +129,10 @@ class InboxStatusTransitionError(RuntimeError):
     pass
 
 
+class InboxResolutionError(DomainError):
+    pass
+
+
 _AGENT_RESOLUTION_REASONS = frozenset(
     {
         InboxStatusReason.operator_change,
@@ -79,6 +140,40 @@ _AGENT_RESOLUTION_REASONS = frozenset(
         InboxStatusReason.macro,
     }
 )
+
+
+def resolution_readiness(
+    db: Session,
+    conversation: InboxConversation,
+    *,
+    evaluated_at: datetime | None = None,
+) -> InboxResolutionReadiness:
+    observed_at = evaluated_at or datetime.now(UTC)
+    customer = team_inbox_customer_completion.resolution_readiness(
+        db, conversation, evaluated_at=observed_at
+    )
+    window = team_inbox_reply_window.decide_reply_window(
+        db, conversation=conversation, now=observed_at
+    )
+    state = {
+        team_inbox_reply_window.ReplyWindowStatus.open: InboxChannelState.active_window,
+        team_inbox_reply_window.ReplyWindowStatus.expired: InboxChannelState.expired,
+        team_inbox_reply_window.ReplyWindowStatus.unavailable: InboxChannelState.unavailable,
+        team_inbox_reply_window.ReplyWindowStatus.not_applicable: InboxChannelState.not_applicable,
+    }[window.status]
+    expired_whatsapp = (
+        conversation.channel_type == "whatsapp" and state is InboxChannelState.expired
+    )
+    return InboxResolutionReadiness(
+        customer_readiness=customer,
+        channel_state=state,
+        can_agent_resolve=expired_whatsapp or customer.can_agent_resolve,
+        requires_resolution_reason=expired_whatsapp,
+        allowed_resolution_reasons=tuple(
+            (reason.value, RESOLUTION_REASON_LABELS[reason])
+            for reason in InboxResolutionReason
+        ),
+    )
 
 
 def _apply_status_transition(
@@ -100,15 +195,30 @@ def _apply_status_transition(
             event_id=None,
             already_set=True,
         )
+    resolution_policy: InboxResolutionReadiness | None = None
+    if command.status is InboxConversationStatus.resolved:
+        resolution_policy = resolution_readiness(
+            db, conversation, evaluated_at=command.occurred_at
+        )
     if (
         command.status is InboxConversationStatus.resolved
         and command.reason in _AGENT_RESOLUTION_REASONS
-        and not (
+    ):
+        assert resolution_policy is not None
+        if resolution_policy.requires_resolution_reason:
+            if command.resolution_reason is None:
+                raise InboxResolutionError(
+                    code=f"{OWNER}.expired_resolution_reason_required",
+                    message="Choose a resolution reason for this expired WhatsApp conversation.",
+                    details={"conversation_id": str(conversation.id)},
+                )
+        elif not (
             conversation.customer_completion_policy_version_id is None
             and db.get_bind().dialect.name == "sqlite"
-        )
-    ):
-        team_inbox_customer_completion.require_agent_resolution_ready(db, conversation)
+        ):
+            team_inbox_customer_completion.require_agent_resolution_ready(
+                db, conversation
+            )
     effective_at = command.occurred_at
     event = InboxStatusTransitionEvent(
         conversation_id=conversation.id,
@@ -116,6 +226,12 @@ def _apply_status_transition(
         status=command.status.value,
         actor_person_id=command.actor_person_id,
         reason_code=command.reason.value,
+        resolution_reason=(
+            command.resolution_reason.value if command.resolution_reason else None
+        ),
+        channel_state_at_resolution=(
+            resolution_policy.channel_state.value if resolution_policy else None
+        ),
         source=InboxAuditSource.status_command,
         source_id=command.source_id,
         evidence_grade=InboxAuditEvidenceGrade.native,
@@ -135,6 +251,12 @@ def _apply_status_transition(
     }
     if command.macro_id is not None:
         compatibility_entry["macro_id"] = str(command.macro_id)
+    if command.resolution_reason is not None:
+        compatibility_entry["resolution_reason"] = command.resolution_reason.value
+    if resolution_policy is not None:
+        compatibility_entry["channel_state_at_resolution"] = (
+            resolution_policy.channel_state.value
+        )
     history.append(compatibility_entry)
     metadata["status_history"] = history[-50:]
     conversation.metadata_ = metadata
@@ -142,6 +264,20 @@ def _apply_status_transition(
     db.flush()
     if command.status is InboxConversationStatus.resolved:
         from app.services import team_inbox_assignment
+
+        expired_whatsapp_resolution = (
+            resolution_policy is not None
+            and resolution_policy.channel_state is InboxChannelState.expired
+            and conversation.channel_type == "whatsapp"
+        )
+        if expired_whatsapp_resolution:
+            team_inbox_assignment.release_expired_whatsapp_conversation(
+                db,
+                team_inbox_assignment.ReleaseExpiredWhatsAppConversationCommand(
+                    conversation_id=conversation.id,
+                    occurred_at=effective_at,
+                ),
+            )
 
         team_inbox_assignment.cancel_queued_conversation(
             db,
@@ -155,34 +291,36 @@ def _apply_status_transition(
             service_team_id=conversation.primary_service_team_id,
         )
 
-        def create_csat_request():
-            from app.services import support_csat
+        if not expired_whatsapp_resolution:
 
-            return support_csat.ensure_inbox_request(
-                db,
-                conversation,
-                transition_event_id=event.id,
-                resolution_at=effective_at,
-                actor_person_id=command.actor_person_id,
-            )
+            def create_csat_request():
+                from app.services import support_csat
 
-        try:
-            if owner_command_active(db):
-                execute_owner_savepoint(db, create_csat_request)
-            else:
+                return support_csat.ensure_inbox_request(
+                    db,
+                    conversation,
+                    transition_event_id=event.id,
+                    resolution_at=effective_at,
+                    actor_person_id=command.actor_person_id,
+                )
+
+            try:
+                if owner_command_active(db):
+                    execute_owner_savepoint(db, create_csat_request)
+                else:
+                    logger.warning(
+                        "inbox_csat_request_skipped_no_owner_command "
+                        "conversation_id=%s event_id=%s",
+                        conversation.id,
+                        event.id,
+                    )
+            except Exception as exc:  # noqa: BLE001 - status transition must persist
                 logger.warning(
-                    "inbox_csat_request_skipped_no_owner_command "
-                    "conversation_id=%s event_id=%s",
+                    "inbox_csat_request_failed conversation_id=%s event_id=%s error=%s",
                     conversation.id,
                     event.id,
+                    exc,
                 )
-        except Exception as exc:  # noqa: BLE001 - status transition must persist
-            logger.warning(
-                "inbox_csat_request_failed conversation_id=%s event_id=%s error=%s",
-                conversation.id,
-                event.id,
-                exc,
-            )
     return InboxStatusTransitionOutcome(
         conversation_id=conversation.id,
         previous_status=previous,
@@ -203,6 +341,7 @@ def apply_status_transition(
     occurred_at: datetime | None = None,
     compatibility_source: str | None = None,
     macro_id: UUID | None = None,
+    resolution_reason: InboxResolutionReason | None = None,
 ) -> InboxStatusTransitionOutcome:
     """Normalize callers into the one typed, flush-only command contract."""
 
@@ -218,5 +357,6 @@ def apply_status_transition(
             occurred_at=occurred_at or datetime.now(UTC),
             compatibility_source=compatibility_source or reason.value,
             macro_id=macro_id,
+            resolution_reason=resolution_reason,
         ),
     )

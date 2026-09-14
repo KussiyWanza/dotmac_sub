@@ -17,7 +17,7 @@ from app.models.team_inbox import (
     InboxReplyMacro,
 )
 from app.services import (
-    team_inbox_channel_receive,
+    team_inbox_contact_links,
     team_inbox_customer_completion,
     team_inbox_customer_completion_policy,
     team_inbox_operations,
@@ -178,7 +178,7 @@ def test_complete_customer_can_resolve(db_session):
     assert conversation.status == "resolved"
 
 
-def test_unreviewed_phone_match_is_narrowed_by_exact_observed_name(db_session):
+def test_unique_phone_match_is_not_vetoed_by_observed_name(db_session):
     customer = Subscriber(
         first_name="Ada",
         last_name="Lovelace",
@@ -189,23 +189,102 @@ def test_unreviewed_phone_match_is_narrowed_by_exact_observed_name(db_session):
     db_session.add(customer)
     db_session.flush()
 
-    matched = team_inbox_channel_receive.resolve_contact_context(
+    matched = team_inbox_contact_links.resolve_contact_context(
         db_session,
-        channel_type="whatsapp",
-        contact_address="+2348012345678",
-        contact_name="Ada Lovelace",
+        team_inbox_contact_links.ContactResolutionQuery(
+            channel_type="whatsapp",
+            contact_address="+2348012345678",
+            contact_name="Ada Lovelace",
+        ),
     )
-    mismatch = team_inbox_channel_receive.resolve_contact_context(
+    mismatch = team_inbox_contact_links.resolve_contact_context(
         db_session,
-        channel_type="whatsapp",
-        contact_address="+2348012345678",
-        contact_name="Different Person",
+        team_inbox_contact_links.ContactResolutionQuery(
+            channel_type="whatsapp",
+            contact_address="+2348012345678",
+            contact_name="Different Person",
+        ),
     )
 
     assert matched.subscriber_id == customer.id
     assert matched.status == "linked_subscriber"
-    assert mismatch.subscriber_id is None
-    assert mismatch.status == "ambiguous"
+    assert mismatch.subscriber_id == customer.id
+    assert mismatch.status == "linked_subscriber"
+
+
+def test_shared_phone_can_be_narrowed_by_one_exact_customer_name(db_session):
+    selected = Subscriber(
+        first_name="Ada",
+        last_name="Lovelace",
+        display_name="Ada Lovelace",
+        email=f"{uuid4().hex}@example.test",
+        phone="08012345678",
+    )
+    other = Subscriber(
+        first_name="Grace",
+        last_name="Hopper",
+        display_name="Grace Hopper",
+        email=f"{uuid4().hex}@example.test",
+        phone="+2348012345678",
+    )
+    db_session.add_all([selected, other])
+    db_session.flush()
+
+    resolution = team_inbox_contact_links.resolve_contact_context(
+        db_session,
+        team_inbox_contact_links.ContactResolutionQuery(
+            channel_type="whatsapp",
+            contact_address="2348012345678",
+            contact_name="Ada Lovelace",
+        ),
+    )
+
+    assert resolution.subscriber_id == selected.id
+    assert resolution.status == "linked_subscriber"
+    assert resolution.name_tiebreaker_used is True
+
+
+def test_automatic_link_changes_readiness_from_identity_to_customer_policy(db_session):
+    policy = _policy(db_session)
+    customer = Subscriber(
+        first_name="Ada",
+        last_name="Lovelace",
+        display_name="Ada Lovelace",
+        email=f"{uuid4().hex}@example.test",
+        phone="08012345678",
+        address_line1="",
+    )
+    conversation = InboxConversation(
+        customer_completion_policy_version_id=policy.id,
+        channel_type="whatsapp",
+        contact_address="+2348012345678",
+        status="open",
+        is_active=True,
+        metadata_={"contact_resolution": {"status": "unmatched"}},
+    )
+    db_session.add_all([customer, conversation])
+    db_session.flush()
+
+    before = team_inbox_customer_completion.resolution_readiness(
+        db_session, conversation
+    )
+    outcome = team_inbox_contact_links.resolve_and_link_conversation_customer(
+        db_session,
+        team_inbox_contact_links.ResolveConversationCustomerCommand(
+            conversation_id=conversation.id,
+            reason="pytest automatic identity",
+        ),
+    )
+    after = team_inbox_customer_completion.resolution_readiness(
+        db_session, conversation
+    )
+
+    assert before.readiness.blockers[0].code == "inbox_identity_required"
+    assert outcome.subscriber_id == customer.id
+    assert after.classification.value == "customer"
+    assert {blocker.code for blocker in after.readiness.blockers} == {
+        "customer_address_required"
+    }
 
 
 def test_inbox_save_updates_canonical_customer_and_refreshes_readiness(db_session):

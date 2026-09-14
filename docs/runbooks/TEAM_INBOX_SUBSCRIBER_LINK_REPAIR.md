@@ -10,7 +10,11 @@ conversation or message rows.
 The repair uses the registered
 `communications.team_inbox_contact_resolution` owner. Only one uniquely
 resolved active Subscriber for the normalized channel contact is eligible.
-Ambiguous, unmatched, and inactive-customer results remain unchanged.
+Resolution aggregates direct Subscriber fields, `SubscriberContact`,
+`SubscriberChannel`, `CustomerIdentityIndex`, verified `PartyContactPoint`, and
+reviewed provider-scoped `InboxContactLink` evidence. Ambiguous, unmatched,
+inactive-customer, incomplete-social-scope, and already-linked results remain
+unchanged. The command never creates a Lead or replaces an existing Customer.
 
 ## Preview
 
@@ -21,9 +25,22 @@ database:
 poetry run python -m scripts.one_off.repair_team_inbox_subscriber_links --limit 1000
 ```
 
-The report is PII-free and includes the exact SHA-256 digest, eligible route
-representatives, and ambiguous/unmatched/suppressed counts. Review the UUIDs
-and counts. Increase the limit only after confirming the bounded batch.
+The report is PII-free and includes the exact SHA-256 digest, every eligible
+conversation, and linked/projected, ambiguous, unmatched, suppressed, skipped,
+conflict, and error counts. Review the UUIDs and counts. Increase the limit only
+after confirming the bounded batch.
+
+Before deploying migration 595, verify there is no duplicate active
+`PartyContactPoint` tuple for `(channel_type, provider, provider_account_id,
+external_subject_id)`. Index creation deliberately fails closed if such a tuple
+is already assigned more than once. Count legacy active Messenger/Instagram
+Inbox links without full provider scope as review debt; the migration backfills
+only links already bound to an exact scoped Party contact point.
+
+Deployment order is: apply migration 595; deploy the resolver/ingress code;
+verify new WhatsApp, email, Messenger, Instagram, and Fiber conversations; run
+this command in preview mode; and apply a reviewed batch only under a separate
+production approval. The application never launches this repair automatically.
 
 ## Apply
 
@@ -44,10 +61,12 @@ poetry run python -m scripts.one_off.repair_team_inbox_subscriber_links \
 
 Do not apply when the preview contains unexpected volume or identity scope.
 Re-run preview immediately before apply; digest drift must stop the operation.
+The command is never invoked by the migration or deployment process. Production
+apply requires a separately approved, explicitly named target.
 
 ## Verification
 
-1. Re-run the preview and confirm the repaired exact routes are no longer
+1. Re-run the preview and confirm the repaired conversations are no longer
    eligible.
 2. Open representative customers in Team Inbox Contact Details and confirm
    their separate conversation threads appear.
@@ -58,3 +77,9 @@ Re-run preview immediately before apply; digest drift must stop the operation.
 The operation is additive. A wrong reviewed association must be corrected
 through the existing manual contact-link workflow; do not directly edit the
 conversation table.
+
+Application rollback must precede schema downgrade. Do not downgrade after two
+same-looking social subjects have legitimately been stored under different
+provider accounts until those rows are reviewed: restoring the retired global
+`(channel_type, normalized_contact)` uniqueness index would otherwise fail or
+collapse valid identities.

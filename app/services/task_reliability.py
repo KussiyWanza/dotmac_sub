@@ -704,6 +704,15 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
         "Locks FIFO queue entries and team capacity before promotion; settled "
         "entries are skipped and stale entries are durably cancelled on re-run.",
     ),
+    "app.tasks.team_inbox.expire_whatsapp_service_windows": _c(
+        "support",
+        SWEEP,
+        IDEMP,
+        STATUS,
+        "Rechecks the canonical WhatsApp customer-service window under the "
+        "conversation lock, ends at most one active assignment, and settles at "
+        "most one active FIFO generation; repeated runs are no-ops.",
+    ),
     "app.tasks.team_inbox.send_queue_position_notifications": _c(
         "support",
         SWEEP,

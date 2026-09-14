@@ -40,14 +40,14 @@
             <h3 id="manager-agents-title" class="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">Agents</h3>
             <div class="space-y-2">
                 {% for agent in manager_dashboard.agents %}
-                <details class="group rounded-xl border border-slate-200 bg-white open:border-amber-300 open:bg-amber-50/60 dark:border-slate-700 dark:bg-slate-800 dark:open:border-amber-500/40 dark:open:bg-amber-500/10">
+                <details class="group rounded-xl border bg-white open:bg-amber-50/60 dark:bg-slate-800 dark:open:bg-amber-500/10 {{ 'border-rose-300 dark:border-rose-700' if agent.unavailability_reason == 'at_capacity' else 'border-slate-200 open:border-amber-300 dark:border-slate-700 dark:open:border-amber-500/40' }}">
                     <summary class="flex cursor-pointer list-none items-center gap-3 rounded-xl p-3 hover:bg-amber-50 dark:hover:bg-amber-500/10">
                         <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-[11px] font-bold text-slate-600 dark:bg-slate-700 dark:text-slate-200">{{ agent.initials }}</span>
                         <span class="min-w-0 flex-1"><span class="block truncate text-sm font-semibold text-slate-800 dark:text-slate-100">{{ agent.name }}</span><span class="inline-flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400"><span class="h-1.5 w-1.5 rounded-full {{ 'bg-emerald-500' if agent.presence_status == 'online' else 'bg-slate-400' }}"></span>{{ agent.presence_status | replace('_', ' ') | title }}</span></span>
-                        <span class="text-xs font-semibold tabular-nums text-slate-600 dark:text-slate-300">{{ agent.active_chats }} chats</span>
+                        <span class="text-xs font-semibold tabular-nums {{ 'text-rose-700 dark:text-rose-300' if agent.unavailability_reason == 'at_capacity' else 'text-slate-600 dark:text-slate-300' }}">{{ agent.active_chats }}/{{ agent.max_concurrent_conversations }} assigned{% if agent.unavailability_reason == 'at_capacity' %} · At capacity{% endif %}</span>
                         <svg class="h-4 w-4 text-slate-400 group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
                     </summary>
-                    <div class="border-t border-amber-200/60 px-3 py-2 text-xs text-slate-600 dark:border-amber-500/20 dark:text-slate-300">Current load: {{ agent.active_chats }}{% if agent.max_concurrent_conversations %} of {{ agent.max_concurrent_conversations }} conversations{% else %} active conversations{% endif %}.</div>
+                    <div class="border-t border-amber-200/60 px-3 py-2 text-xs text-slate-600 dark:border-amber-500/20 dark:text-slate-300">Current load: {{ agent.active_chats }}/{{ agent.max_concurrent_conversations }} assigned. {% if agent.unavailability_reason == 'at_capacity' %}No additional automatic assignments until workload drops below the limit.{% elif agent.presence_status != 'online' %}Capacity is available, but the agent is not online.{% else %}Eligible for {{ agent.available_capacity }} additional assignment{{ '' if agent.available_capacity == 1 else 's' }}.{% endif %}</div>
                 </details>
                 {% else %}
                 <p class="rounded-xl border border-dashed border-slate-200 p-4 text-center text-xs text-slate-500 dark:border-slate-700">No active team agents are configured.</p>

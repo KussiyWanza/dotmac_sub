@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from enum import StrEnum
 from urllib.parse import urlencode
 from uuid import UUID
@@ -39,6 +39,7 @@ from app.services import (
     team_inbox_media,
     team_inbox_observations,
     team_inbox_read_state,
+    team_inbox_reply_window,
 )
 
 
@@ -348,6 +349,11 @@ def queue_conversation_count(db: Session) -> int:
         _base_queue_query(db)
         .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
         .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
+        .filter(
+            ~InboxConversation.id.in_(
+                team_inbox_reply_window.expired_whatsapp_conversation_ids_query()
+            )
+        )
         .with_entities(func.count(InboxConversation.id))
         .scalar()
         or 0
@@ -362,6 +368,11 @@ def queued_conversation_count(db: Session) -> int:
         _base_queue_query(db)
         .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
         .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
+        .filter(
+            ~InboxConversation.id.in_(
+                team_inbox_reply_window.expired_whatsapp_conversation_ids_query()
+            )
+        )
         .filter(InboxConversation.id.in_(queued_ids))
         .with_entities(func.count(InboxConversation.id))
         .scalar()
@@ -382,6 +393,11 @@ def assigned_conversation_count(
         .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
         .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
         .filter(
+            ~InboxConversation.id.in_(
+                team_inbox_reply_window.expired_whatsapp_conversation_ids_query()
+            )
+        )
+        .filter(
             InboxConversation.id.in_(
                 select(InboxConversationAssignment.conversation_id).where(
                     InboxConversationAssignment.person_id == assignee_uuid,
@@ -400,6 +416,11 @@ def needs_response_conversation_count(db: Session) -> int:
         _base_queue_query(db)
         .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
         .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
+        .filter(
+            ~InboxConversation.id.in_(
+                team_inbox_reply_window.expired_whatsapp_conversation_ids_query()
+            )
+        )
         .filter(_latest_visible_direction() == InboxMessageDirection.inbound.value)
         .with_entities(func.count(InboxConversation.id))
         .scalar()
@@ -415,6 +436,11 @@ def needs_attention_conversation_count(db: Session) -> int:
         _base_queue_query(db)
         .filter(InboxConversation.id.in_(conversation_ids))
         .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
+        .filter(
+            ~InboxConversation.id.in_(
+                team_inbox_reply_window.expired_whatsapp_conversation_ids_query()
+            )
+        )
         .with_entities(func.count(InboxConversation.id))
         .scalar()
         or 0
@@ -1196,6 +1222,9 @@ def list_conversations(
         query = query.filter(
             InboxConversation.status != InboxConversationStatus.resolved.value,
             ~ai_conversation_ownership.ai_owned_conversation_clause(),
+            ~InboxConversation.id.in_(
+                team_inbox_reply_window.expired_whatsapp_conversation_ids_query()
+            ),
         )
     elif (
         ownership_cohort
@@ -1215,6 +1244,9 @@ def list_conversations(
             InboxConversation.status != InboxConversationStatus.resolved.value,
             ~ai_conversation_ownership.ai_owned_conversation_clause(),
             InboxConversation.id.in_(queued_ids),
+            ~InboxConversation.id.in_(
+                team_inbox_reply_window.expired_whatsapp_conversation_ids_query()
+            ),
         )
     clean_channel_types = tuple(
         str(item).strip() for item in (channel_types or ()) if str(item).strip()
@@ -1225,26 +1257,7 @@ def list_conversations(
         query = query.filter(InboxConversation.channel_type.in_(clean_channel_types))
     clean_reply_window_status = str(reply_window_status or "").strip().lower()
     if clean_reply_window_status == "expired":
-        reply_window_cutoff = datetime.now(UTC) - timedelta(hours=24)
-        latest_inbound = (
-            db.query(
-                InboxMessage.conversation_id.label("conversation_id"),
-                func.max(
-                    func.coalesce(InboxMessage.received_at, InboxMessage.created_at)
-                ).label("last_inbound_at"),
-            )
-            .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
-            .filter(
-                or_(
-                    InboxMessage.metadata_["reply_window_qualifying"]
-                    .as_boolean()
-                    .isnot(False),
-                    InboxMessage.metadata_["reply_window_qualifying"].is_(None),
-                )
-            )
-            .group_by(InboxMessage.conversation_id)
-            .subquery()
-        )
+        latest_inbound = team_inbox_reply_window.latest_qualifying_inbound_subquery()
         query = query.join(
             latest_inbound,
             latest_inbound.c.conversation_id == InboxConversation.id,
@@ -1257,7 +1270,7 @@ def list_conversations(
                 )
             ),
             latest_inbound.c.last_inbound_at.isnot(None),
-            latest_inbound.c.last_inbound_at <= reply_window_cutoff,
+            latest_inbound.c.last_inbound_at <= team_inbox_reply_window.expiry_cutoff(),
         )
         if not status:
             query = query.filter(
@@ -1712,22 +1725,10 @@ def _reply_window_statuses(
     }
     if not meta_conversation_ids:
         return statuses
+    latest_inbound = team_inbox_reply_window.latest_qualifying_inbound_subquery()
     rows = (
-        db.query(
-            InboxMessage.conversation_id,
-            func.max(func.coalesce(InboxMessage.received_at, InboxMessage.created_at)),
-        )
-        .filter(InboxMessage.conversation_id.in_(meta_conversation_ids))
-        .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
-        .filter(
-            or_(
-                InboxMessage.metadata_["reply_window_qualifying"]
-                .as_boolean()
-                .isnot(False),
-                InboxMessage.metadata_["reply_window_qualifying"].is_(None),
-            )
-        )
-        .group_by(InboxMessage.conversation_id)
+        db.query(latest_inbound.c.conversation_id, latest_inbound.c.last_inbound_at)
+        .filter(latest_inbound.c.conversation_id.in_(meta_conversation_ids))
         .all()
     )
     now = datetime.now(UTC)
@@ -1737,7 +1738,9 @@ def _reply_window_statuses(
         if last_inbound_at.tzinfo is None:
             last_inbound_at = last_inbound_at.replace(tzinfo=UTC)
         statuses[conversation_id] = (
-            "open" if now < last_inbound_at + timedelta(hours=24) else "expired"
+            team_inbox_reply_window.ReplyWindowStatus.open.value
+            if now < last_inbound_at + team_inbox_reply_window.WINDOW_DURATION
+            else team_inbox_reply_window.ReplyWindowStatus.expired.value
         )
     return statuses
 

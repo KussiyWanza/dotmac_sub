@@ -29,6 +29,9 @@ from tests.staff_identity_fixtures import add_bound_staff_user
 CONVERSATION = Path("templates/admin/inbox/_conversation.html").read_text()
 JAVASCRIPT = Path("static/js/admin-inbox.js").read_text()
 ROUTES = Path("app/web/admin/inbox.py").read_text()
+SETTINGS_TEMPLATE = Path("templates/admin/inbox/email_routes.html").read_text()
+MANAGER_DASHBOARD = Path("templates/admin/inbox/_manager_dashboard.html").read_text()
+MANAGER_OVERLAY = Path("templates/admin/inbox/_overlays.html").read_text()
 
 
 def _team(db_session, name="Support", *, member_id=None):
@@ -142,6 +145,21 @@ def test_teammate_picker_shows_capacity_and_disables_full_agents():
     assert "agent.assignment_eligible" in CONVERSATION
     assert "Capacity full" in CONVERSATION
     assert "Full or unavailable agents cannot be selected." in CONVERSATION
+
+
+def test_team_inbox_settings_exposes_the_authoritative_capacity_control():
+    assert "Maximum active chats per agent" in SETTINGS_TEMPLATE
+    assert 'action="/admin/crm/inbox/capacity"' in SETTINGS_TEMPLATE
+    assert "inbox_capacity_setting.maximum_active_chats_per_agent" in SETTINGS_TEMPLATE
+    assert 'require_permission("system:settings:write")' in ROUTES
+    assert "UpdateDefaultInboxCapacityCommand" in ROUTES
+
+
+def test_manager_workload_panels_show_effective_capacity_and_full_state():
+    for template in (MANAGER_DASHBOARD, MANAGER_OVERLAY):
+        assert "agent.active_chats }}/{{ agent.max_concurrent_conversations" in template
+        assert "agent.unavailability_reason == 'at_capacity'" in template
+        assert "No additional automatic assignments" in template
 
 
 def test_agent_options_project_the_routing_owners_exact_capacity(db_session):

@@ -11,9 +11,12 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
+from app.models.audit import AuditActorType
 from app.models.domain_settings import SettingDomain
 from app.models.service_team import ServiceTeam, ServiceTeamMember
+from app.models.subscription_engine import SettingValueType
 from app.models.system_user import SystemUser
 from app.models.team_inbox import (
     InboxAgentPresence,
@@ -21,12 +24,14 @@ from app.models.team_inbox import (
     InboxAgentPresenceStatus,
     InboxAuditEvidenceGrade,
     InboxAuditSource,
+    InboxChannelType,
     InboxConversation,
     InboxConversationAssignment,
     InboxConversationQueueEntry,
     InboxConversationStatus,
     InboxConversationTeam,
     InboxQueueEntryStatus,
+    InboxReplyReminder,
     InboxRoutingDecisionMode,
     InboxRoutingEvent,
     InboxRoutingEventType,
@@ -34,11 +39,17 @@ from app.models.team_inbox import (
     InboxTeamRoundRobinCursor,
     InboxTeamSource,
 )
+from app.schemas.settings import DomainSettingUpdate
 from app.services import (
     ai_conversation_ownership,
+    domain_settings,
+    settings_spec,
     team_inbox_agent_introduction,
     team_inbox_queue_notifications,
+    team_inbox_reply_window,
 )
+from app.services.audit_adapter import stage_audit_event
+from app.services.domain_errors import DomainError
 from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
@@ -46,9 +57,12 @@ from app.services.owner_commands import (
     owner_command_active,
 )
 from app.services.session_hooks import run_after_commit
-from app.services.settings_spec import resolve_integer
+from app.services.setting_history import (
+    SettingChangeContext,
+    reset_change_context,
+    set_change_context,
+)
 
-DEFAULT_MAX_CONCURRENT_CONVERSATIONS = 10
 AGENT_PRESENCE_FRESHNESS_SECONDS = 30 * 60
 COUNTABLE_CAPACITY_STATUSES = frozenset(
     {
@@ -67,6 +81,11 @@ _ROUTING_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
     concern="routing assignment and escalation transitions",
     name="execute_team_inbox_routing_command",
+)
+_CAPACITY_CONFIGURATION_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="global Inbox capacity configuration coordination",
+    name="update_default_inbox_capacity",
 )
 
 
@@ -154,6 +173,25 @@ class InboxQueueSweepResult:
     remaining: int
 
 
+class InboxAssignmentReleaseReason(StrEnum):
+    whatsapp_window_expired = "whatsapp_window_expired"
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseExpiredWhatsAppConversationCommand:
+    conversation_id: UUID
+    occurred_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseExpiredWhatsAppConversationOutcome:
+    conversation_id: UUID
+    assignment_released: bool
+    queue_cancelled: bool
+    already_correct: bool
+    conflict: bool
+
+
 @dataclass(frozen=True)
 class InboxTeamCapacitySnapshot:
     active_assignments: int
@@ -171,6 +209,44 @@ class InboxAgentAvailabilitySnapshot:
     available_capacity: int
     assignment_eligible: bool
     unavailability_reason: InboxAgentUnavailabilityReason | None
+
+
+@dataclass(frozen=True, slots=True)
+class InboxCapacitySettingSnapshot:
+    maximum_active_chats_per_agent: int
+    minimum_allowed: int
+    maximum_allowed: int
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateDefaultInboxCapacityCommand:
+    context: CommandContext
+    maximum_active_chats_per_agent: int
+    actor_system_user_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateDefaultInboxCapacityOutcome:
+    previous_value: int
+    new_value: int
+    changed: bool
+
+
+def countable_active_assignment_clauses(
+    *, now: datetime | None = None
+) -> tuple[ColumnElement[bool], ...]:
+    """One workload definition shared by capacity and active-work reporting."""
+
+    expired_whatsapp_ids = (
+        team_inbox_reply_window.expired_whatsapp_conversation_ids_query(now=now)
+    )
+    return (
+        InboxConversationAssignment.is_active.is_(True),
+        InboxConversation.status.in_(COUNTABLE_CAPACITY_STATUSES),
+        InboxConversation.is_active.is_(True),
+        ~ai_conversation_ownership.ai_owned_conversation_clause(),
+        ~InboxConversation.id.in_(expired_whatsapp_ids),
+    )
 
 
 def estimate_queue_wait_minutes(
@@ -192,26 +268,125 @@ def estimate_queue_wait_minutes(
 
 
 def resolve_default_max_concurrent_conversations(db: Session) -> int:
-    """Resolve the configurable default agent capacity with a bounded fallback."""
+    """Resolve the one database-authoritative default agent capacity."""
 
-    try:
-        value = resolve_integer(
+    return settings_spec.resolve_integer(
+        db,
+        SettingDomain.comms,
+        settings_spec.INBOX_AGENT_DEFAULT_MAX_CONCURRENT_CONVERSATIONS_KEY,
+    )
+
+
+def inbox_capacity_setting_snapshot(db: Session) -> InboxCapacitySettingSnapshot:
+    """Project the effective value and the registered UI validation bounds."""
+
+    spec = settings_spec.get_spec(
+        SettingDomain.comms,
+        settings_spec.INBOX_AGENT_DEFAULT_MAX_CONCURRENT_CONVERSATIONS_KEY,
+    )
+    if spec is None or spec.min_value is None or spec.max_value is None:
+        raise RuntimeError("The Team Inbox capacity setting spec is incomplete.")
+    return InboxCapacitySettingSnapshot(
+        maximum_active_chats_per_agent=(
+            resolve_default_max_concurrent_conversations(db)
+        ),
+        minimum_allowed=spec.min_value,
+        maximum_allowed=spec.max_value,
+    )
+
+
+def _capacity_configuration_error(message: str, *, value: object) -> DomainError:
+    return DomainError(
+        code=f"{OWNER}.invalid_capacity_configuration",
+        message=message,
+        details={"maximum_active_chats_per_agent": value},
+    )
+
+
+def update_default_inbox_capacity(
+    db: Session,
+    command: UpdateDefaultInboxCapacityCommand,
+) -> UpdateDefaultInboxCapacityOutcome:
+    """Persist the global capacity without modifying existing assignments."""
+
+    def operation() -> UpdateDefaultInboxCapacityOutcome:
+        snapshot = inbox_capacity_setting_snapshot(db)
+        requested = command.maximum_active_chats_per_agent
+        if isinstance(requested, bool) or not isinstance(requested, int):
+            raise _capacity_configuration_error(
+                "Maximum active chats per agent must be an integer.",
+                value=requested,
+            )
+        if requested < snapshot.minimum_allowed or requested > snapshot.maximum_allowed:
+            raise _capacity_configuration_error(
+                "Maximum active chats per agent must be between "
+                f"{snapshot.minimum_allowed} and {snapshot.maximum_allowed}.",
+                value=requested,
+            )
+        previous = snapshot.maximum_active_chats_per_agent
+        if previous == requested:
+            return UpdateDefaultInboxCapacityOutcome(
+                previous_value=previous,
+                new_value=requested,
+                changed=False,
+            )
+
+        change_context_token = set_change_context(
+            SettingChangeContext(
+                reason=command.context.reason,
+                request_id=str(command.context.correlation_id),
+            )
+        )
+        try:
+            domain_settings.comms_settings.stage_upsert_by_key(
+                db,
+                settings_spec.INBOX_AGENT_DEFAULT_MAX_CONCURRENT_CONVERSATIONS_KEY,
+                DomainSettingUpdate(
+                    value_type=SettingValueType.integer,
+                    value_text=str(requested),
+                    value_json=None,
+                    is_secret=False,
+                    is_active=True,
+                ),
+            )
+        finally:
+            reset_change_context(change_context_token)
+
+        stage_audit_event(
             db,
-            SettingDomain.comms,
-            "inbox_agent_default_max_concurrent_conversations",
-        )
-    except Exception:
-        logger.exception(
-            "team_inbox_capacity_setting_resolution_failed",
-            extra={
-                "event": "team_inbox_capacity_setting_resolution_failed",
-                "setting_domain": SettingDomain.comms.value,
-                "setting_key": "inbox_agent_default_max_concurrent_conversations",
-                "fallback_capacity": DEFAULT_MAX_CONCURRENT_CONVERSATIONS,
+            action="team_inbox.capacity_configuration_changed",
+            entity_type="domain_setting",
+            entity_id=(
+                f"{SettingDomain.comms.value}:"
+                f"{settings_spec.INBOX_AGENT_DEFAULT_MAX_CONCURRENT_CONVERSATIONS_KEY}"
+            ),
+            actor_type=AuditActorType.user,
+            actor_id=str(command.actor_system_user_id),
+            metadata={
+                "owner": OWNER,
+                "scope": "global_inbox_default",
+                "previous_value": previous,
+                "new_value": requested,
             },
+            request_id=str(command.context.correlation_id),
         )
-        return DEFAULT_MAX_CONCURRENT_CONVERSATIONS
-    return max(1, min(int(value), 100))
+        if requested > previous:
+            schedule_queue_promotion_after_commit(
+                db,
+                reason="global_agent_capacity_increased",
+            )
+        return UpdateDefaultInboxCapacityOutcome(
+            previous_value=previous,
+            new_value=requested,
+            changed=True,
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_CAPACITY_CONFIGURATION_COMMAND,
+        context=command.context,
+        operation=operation,
+    )
 
 
 def schedule_queue_promotion_after_commit(
@@ -439,11 +614,8 @@ def agent_availability_snapshots(
             InboxConversation,
             InboxConversation.id == InboxConversationAssignment.conversation_id,
         )
-        .filter(InboxConversationAssignment.is_active.is_(True))
         .filter(InboxConversationAssignment.person_id.in_(person_ids))
-        .filter(InboxConversation.status.in_(COUNTABLE_CAPACITY_STATUSES))
-        .filter(InboxConversation.is_active.is_(True))
-        .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
+        .filter(*countable_active_assignment_clauses(now=observed_at))
         .group_by(InboxConversationAssignment.person_id)
         .all()
     )
@@ -886,9 +1058,18 @@ def _team_queue_head(
 
     return (
         db.query(InboxConversationQueueEntry)
+        .join(
+            InboxConversation,
+            InboxConversation.id == InboxConversationQueueEntry.conversation_id,
+        )
         .filter(InboxConversationQueueEntry.service_team_id == service_team_id)
         .filter(
             InboxConversationQueueEntry.status == InboxQueueEntryStatus.queued.value
+        )
+        .filter(
+            ~InboxConversation.id.in_(
+                team_inbox_reply_window.expired_whatsapp_conversation_ids_query()
+            )
         )
         .order_by(
             InboxConversationQueueEntry.entered_at.asc(),
@@ -927,6 +1108,11 @@ def _settle_queue_entry(
     )
     entry.status = status.value
     entry.settled_at = now
+    entry.metadata_ = {
+        **dict(entry.metadata_ or {}),
+        "settlement_reason": reason,
+        "settled_at": now.isoformat(),
+    }
     db.flush()
     return entry
 
@@ -1072,6 +1258,112 @@ def _append_routing_event(
     return event
 
 
+def _expired_whatsapp_window(
+    db: Session,
+    conversation: InboxConversation,
+    *,
+    now: datetime,
+) -> bool:
+    return (
+        conversation.channel_type == InboxChannelType.whatsapp.value
+        and team_inbox_reply_window.decide_reply_window(
+            db, conversation=conversation, now=now
+        ).status
+        is team_inbox_reply_window.ReplyWindowStatus.expired
+    )
+
+
+def release_expired_whatsapp_conversation(
+    db: Session,
+    command: ReleaseExpiredWhatsAppConversationCommand,
+) -> ReleaseExpiredWhatsAppConversationOutcome:
+    """End stale routing state without changing conversation resolution state.
+
+    This is a flush-only routing participant. The caller owns the transaction.
+    The conversation lock serializes expiry against inbound receipt and agent
+    assignment; the reply-window decision is recomputed after that lock.
+    """
+
+    conversation = (
+        db.query(InboxConversation)
+        .filter(InboxConversation.id == command.conversation_id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if conversation is None or not conversation.is_active:
+        return ReleaseExpiredWhatsAppConversationOutcome(
+            conversation_id=command.conversation_id,
+            assignment_released=False,
+            queue_cancelled=False,
+            already_correct=False,
+            conflict=True,
+        )
+    window = team_inbox_reply_window.decide_reply_window(
+        db, conversation=conversation, now=command.occurred_at
+    )
+    if (
+        conversation.channel_type != InboxChannelType.whatsapp.value
+        or window.status is not team_inbox_reply_window.ReplyWindowStatus.expired
+    ):
+        return ReleaseExpiredWhatsAppConversationOutcome(
+            conversation_id=conversation.id,
+            assignment_released=False,
+            queue_cancelled=False,
+            already_correct=False,
+            conflict=True,
+        )
+
+    assignment = _active_assignment(db, conversation)
+    queue_entry = cancel_queued_conversation(
+        db,
+        conversation=conversation,
+        now=command.occurred_at,
+        reason=InboxAssignmentReleaseReason.whatsapp_window_expired.value,
+    )
+    if assignment is not None:
+        _append_routing_event(
+            db,
+            conversation=conversation,
+            event_type=InboxRoutingEventType.unassigned,
+            previous_assignment=assignment,
+            service_team_id=assignment.service_team_id,
+            person_id=None,
+            actor_person_id=None,
+            reason_code=InboxAssignmentReleaseReason.whatsapp_window_expired.value,
+            occurred_at=command.occurred_at,
+            source_id=(
+                f"whatsapp-window-expired:{conversation.id}:"
+                f"{window.expires_at.isoformat() if window.expires_at else 'unknown'}"
+            ),
+            decision_mode=InboxRoutingDecisionMode.system,
+            decision_evidence=None,
+        )
+        reminders = (
+            db.query(InboxReplyReminder)
+            .filter(InboxReplyReminder.assignment_id == assignment.id)
+            .filter(InboxReplyReminder.is_active.is_(True))
+            .with_for_update()
+            .all()
+        )
+        for reminder in reminders:
+            reminder.is_active = False
+            reminder.resolved_at = command.occurred_at
+        schedule_queue_promotion_after_commit(
+            db,
+            reason="whatsapp_window_expired_opened_capacity",
+            service_team_id=assignment.service_team_id,
+        )
+    db.flush()
+    changed = assignment is not None or queue_entry is not None
+    return ReleaseExpiredWhatsAppConversationOutcome(
+        conversation_id=conversation.id,
+        assignment_released=assignment is not None,
+        queue_cancelled=queue_entry is not None,
+        already_correct=not changed,
+        conflict=False,
+    )
+
+
 def assign_conversation_to_agent(
     db: Session,
     *,
@@ -1153,6 +1445,15 @@ def assign_conversation_to_agent(
             reason="Conversation not found",
         )
     conversation = locked_conversation
+    if _expired_whatsapp_window(db, conversation, now=assigned_at):
+        return InboxAssignmentResult(
+            kind="reply_window_expired",
+            service_team_id=str(team_uuid),
+            reason=(
+                "Expired WhatsApp conversations cannot receive an active "
+                "assignment. Resolve it internally or wait for a customer reply."
+            ),
+        )
     if provenance is not InboxAssignmentProvenance.ai_intake_handoff:
         ai_conversation_ownership.require_human_control(
             db,
@@ -1413,6 +1714,18 @@ def queue_conversation_for_team(
             reason="Conversation not found",
         )
     conversation = locked_conversation
+    if _expired_whatsapp_window(db, conversation, now=queued_at):
+        cancel_queued_conversation(
+            db,
+            conversation=conversation,
+            now=queued_at,
+            reason=InboxAssignmentReleaseReason.whatsapp_window_expired.value,
+        )
+        return InboxAssignmentResult(
+            kind="reply_window_expired",
+            service_team_id=str(team_uuid),
+            reason="Expired WhatsApp conversations cannot enter the active queue.",
+        )
     if provenance is not InboxAssignmentProvenance.ai_intake_handoff:
         ai_conversation_ownership.require_human_control(
             db,
@@ -1789,6 +2102,17 @@ def sweep_queued_conversations(
                         reason="queue_state_invalid",
                     )
                     cancelled += 1
+                    continue
+                if _expired_whatsapp_window(db, conversation, now=observed_at):
+                    release = release_expired_whatsapp_conversation(
+                        db,
+                        ReleaseExpiredWhatsAppConversationCommand(
+                            conversation_id=conversation.id,
+                            occurred_at=observed_at,
+                        ),
+                    )
+                    if release.queue_cancelled:
+                        cancelled += 1
                     continue
                 if _active_assignment(db, conversation) is not None:
                     _settle_queue_entry(

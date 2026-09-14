@@ -189,7 +189,10 @@ async def lead_intake_submit(
         return _render(
             request, public_form, values=values, error=exc.message, status_code=400
         )
-    if not outcome.replayed:
+    if (
+        not outcome.replayed
+        and outcome.kind is lead_intake.SubmitLeadIntakeKind.lead_created
+    ):
         lead_intake_ai.send_completion_confirmation(db, outcome=outcome)
     return templates.TemplateResponse(
         "public/lead_intake/thank_you.html",

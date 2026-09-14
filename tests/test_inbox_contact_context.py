@@ -253,6 +253,52 @@ def test_contact_context_uses_zero_only_for_successful_empty_query(db_session):
     assert projection.projects.total_count is None
 
 
+def test_contact_context_lists_all_customer_communication_identities(db_session):
+    conversation = _conversation(db_session, address=f"party-{uuid4()}@example.com")
+    party = _bind_party(db_session, conversation)
+    db_session.add_all(
+        [
+            PartyContactPoint(
+                party_id=party.id,
+                channel_type="whatsapp",
+                normalized_value="+2348033274788",
+                display_value="+234 803 327 4788",
+                is_primary=False,
+            ),
+            PartyContactPoint(
+                party_id=party.id,
+                channel_type="whatsapp",
+                normalized_value="+2348055512345",
+                display_value="+234 805 551 2345",
+                is_primary=False,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    projection = team_inbox_contact_context.build_contact_context(
+        db_session,
+        conversation_id=conversation.id,
+        permissions=team_inbox_contact_context.InboxContactContextPermissions(
+            can_read_profile=True,
+            can_edit_profile=False,
+            can_read_leads=True,
+            can_write_leads=False,
+            can_read_tickets=True,
+            can_read_projects=True,
+            can_read_project_tasks=True,
+        ),
+    )
+
+    assert projection is not None
+    assert projection.linked_identities.total_count == 3
+    assert {
+        item.label
+        for item in projection.linked_identities.items
+        if item.channel_type == "whatsapp"
+    } == {"+234 803 327 4788", "+234 805 551 2345"}
+
+
 def test_contact_context_projects_cross_agent_customer_conversation_history(
     db_session, subscriber
 ):

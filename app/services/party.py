@@ -134,6 +134,30 @@ class PartyContactPointSet:
     source: str
 
 
+@dataclass(frozen=True, slots=True)
+class EnsureReviewedContactIdentityCommand:
+    """Append or reuse one explicitly reviewed Party communication identity."""
+
+    party_id: UUID
+    channel_type: PartyContactPointType
+    normalized_value: str
+    display_value: str | None
+    scope_key: str
+    provider: str | None
+    provider_account_id: str | None
+    external_subject_id: str | None
+    actor_person_id: UUID | None
+    source: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class EnsureReviewedContactIdentityOutcome:
+    party_contact_point_id: UUID
+    party_id: UUID
+    replayed: bool
+
+
 _ROLE_CAPABILITY_DOMAINS: dict[str, tuple[str, ...]] = {
     PartyRoleType.prospect.value: ("sales",),
     PartyRoleType.customer.value: ("sales", "billing", "support"),
@@ -1479,6 +1503,116 @@ def add_contact_point(
     db.add(contact_point)
     db.flush()
     return contact_point
+
+
+def ensure_reviewed_contact_identity(
+    db: Session,
+    command: EnsureReviewedContactIdentityCommand,
+) -> EnsureReviewedContactIdentityOutcome:
+    """Append an agent-confirmed identity without replacing existing points.
+
+    This is a flush-only Party participant. Provider-scoped identities are
+    immutable ownership keys: an existing active point on another Party is a
+    conflict, never an implicit repoint. Exact retries reuse the same row and
+    may promote its verification evidence to reviewed/verified.
+    """
+
+    source = _required_text(command.source, "source")
+    reason = _required_text(command.reason, "reason")
+    party = _party(db, command.party_id)
+    channel = _enum_value(command.channel_type, PartyContactPointType, "channel_type")
+    value = _required_text(command.normalized_value, "normalized_value")
+    if channel == PartyContactPointType.email.value:
+        value = value.casefold()
+    scope_key = _required_text(command.scope_key, "scope_key")
+    provider = (command.provider or "").strip() or None
+    provider_account_id = (command.provider_account_id or "").strip() or None
+    external_subject_id = (command.external_subject_id or "").strip() or None
+    provider_scoped = channel in _SCOPED_SOCIAL_CONTACT_TYPES
+    if provider_scoped and not (
+        provider and provider_account_id and external_subject_id
+    ):
+        raise PartyInvariantError(
+            "Reviewed social identities require provider, provider account, and "
+            "external subject."
+        )
+
+    rows = db.query(PartyContactPoint).filter(
+        PartyContactPoint.channel_type == channel,
+        PartyContactPoint.is_active.is_(True),
+    )
+    if provider_scoped:
+        rows = rows.filter(
+            PartyContactPoint.provider == provider,
+            PartyContactPoint.provider_account_id == provider_account_id,
+            PartyContactPoint.external_subject_id == external_subject_id,
+        )
+    else:
+        rows = rows.filter(
+            PartyContactPoint.normalized_value == value,
+            PartyContactPoint.scope_key == scope_key,
+        )
+    matches = rows.with_for_update().all()
+    foreign = [point for point in matches if point.party_id != party.id]
+    if foreign:
+        raise PartyInvariantError(
+            "This communication identity is already owned by another active Party; "
+            "use the reviewed identity-conflict workflow."
+        )
+    existing = next((point for point in matches if point.party_id == party.id), None)
+    now = datetime.now(UTC)
+    if existing is None:
+        existing = add_contact_point(
+            db,
+            party_id=party.id,
+            channel_type=channel,
+            normalized_value=value,
+            display_value=command.display_value,
+            scope_key=scope_key,
+            provider=provider,
+            provider_account_id=provider_account_id,
+            external_subject_id=external_subject_id,
+            is_primary=False,
+            verification_status=PartyContactVerificationStatus.verified,
+            consent_status=PartyContactConsentStatus.unknown,
+            metadata={
+                "identity_resolution_method": "manual_review",
+                "reviewed_by_person_id": (
+                    str(command.actor_person_id) if command.actor_person_id else None
+                ),
+                "reviewed_at": now.isoformat(),
+                "review_source": source,
+                "review_reason": reason,
+            },
+        )
+        existing.verified_at = now
+        existing.verification_source = source
+        db.flush()
+        return EnsureReviewedContactIdentityOutcome(
+            party_contact_point_id=existing.id,
+            party_id=party.id,
+            replayed=False,
+        )
+
+    existing.verification_status = PartyContactVerificationStatus.verified.value
+    existing.verified_at = existing.verified_at or now
+    existing.verification_source = existing.verification_source or source
+    metadata = dict(existing.metadata_ or {})
+    metadata.setdefault("identity_resolution_method", "manual_review")
+    metadata.setdefault(
+        "reviewed_by_person_id",
+        str(command.actor_person_id) if command.actor_person_id else None,
+    )
+    metadata.setdefault("reviewed_at", now.isoformat())
+    metadata.setdefault("review_source", source)
+    metadata.setdefault("review_reason", reason)
+    existing.metadata_ = metadata
+    db.flush()
+    return EnsureReviewedContactIdentityOutcome(
+        party_contact_point_id=existing.id,
+        party_id=party.id,
+        replayed=True,
+    )
 
 
 def update_person_profile(db: Session, command: PersonPartyProfileUpdate) -> Party:

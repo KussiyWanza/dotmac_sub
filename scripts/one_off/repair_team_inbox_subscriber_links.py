@@ -19,7 +19,8 @@ from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.models.team_inbox import InboxConversation
-from app.services import team_inbox_channel_receive, team_inbox_contact_links
+from app.services import team_inbox_contact_links
+from app.services.owner_commands import CommandContext
 
 FINAL_CONFIRMATION = "APPLY_TEAM_INBOX_SUBSCRIBER_LINK_REPAIR"
 
@@ -47,16 +48,23 @@ class SubscriberLinkRepairPlan:
     ambiguous: int
     unmatched: int
     suppressed: int
+    skipped: int
+    errors: int
     digest: str
 
     def public_dict(self) -> dict[str, object]:
         return {
             "digest": self.digest,
             "scanned": self.scanned,
-            "eligible_routes": len(self.items),
+            "eligible_conversations": len(self.items),
+            "projected_linked": len(self.items),
+            "linked": 0,
             "ambiguous": self.ambiguous,
             "unmatched": self.unmatched,
             "suppressed": self.suppressed,
+            "skipped": self.skipped,
+            "conflicts": 0,
+            "errors": self.errors,
             "items": [item.canonical() for item in self.items],
         }
 
@@ -74,31 +82,66 @@ def build_plan(db: Session, *, limit: int) -> SubscriberLinkRepairPlan:
     rows = (
         db.query(InboxConversation)
         .filter(InboxConversation.subscriber_id.is_(None))
-        .filter(InboxConversation.contact_address.isnot(None))
         .filter(InboxConversation.is_active.is_(True))
         .order_by(InboxConversation.created_at.asc(), InboxConversation.id.asc())
         .limit(max(1, min(limit, 5000)))
         .all()
     )
-    items_by_route: dict[tuple[str, str], SubscriberLinkRepairItem] = {}
-    counts = {"ambiguous": 0, "unmatched": 0, "suppressed": 0}
+    items: list[SubscriberLinkRepairItem] = []
+    counts = {
+        "ambiguous": 0,
+        "unmatched": 0,
+        "suppressed": 0,
+        "skipped": 0,
+        "errors": 0,
+    }
     for conversation in rows:
-        resolution = team_inbox_channel_receive.resolve_contact_context(
-            db,
-            channel_type=conversation.channel_type,
-            contact_address=conversation.contact_address or "",
+        if not conversation.contact_address:
+            counts["skipped"] += 1
+            continue
+        provider, provider_account_id, external_subject_id = (
+            team_inbox_contact_links.conversation_provider_identity(db, conversation)
         )
+        if conversation.channel_type in {
+            "facebook_messenger",
+            "instagram_dm",
+        } and not (provider and provider_account_id and external_subject_id):
+            counts["skipped"] += 1
+            continue
+        try:
+            resolution = team_inbox_contact_links.resolve_contact_context(
+                db,
+                team_inbox_contact_links.ContactResolutionQuery(
+                    channel_type=conversation.channel_type,
+                    contact_address=conversation.contact_address,
+                    contact_name=str(
+                        (conversation.metadata_ or {}).get("contact_name") or ""
+                    )
+                    or None,
+                    provider=provider,
+                    provider_account_id=provider_account_id,
+                    external_subject_id=external_subject_id,
+                ),
+            )
+        except Exception:
+            counts["errors"] += 1
+            continue
         if resolution.subscriber_id is None:
-            if resolution.status == "ambiguous":
+            if (
+                resolution.status
+                is team_inbox_contact_links.ContactResolutionStatus.ambiguous
+            ):
                 counts["ambiguous"] += 1
-            elif resolution.status == "suppressed_inactive":
+            elif (
+                resolution.status
+                is team_inbox_contact_links.ContactResolutionStatus.suppressed_inactive
+            ):
                 counts["suppressed"] += 1
             else:
                 counts["unmatched"] += 1
             continue
-        route = (conversation.channel_type, resolution.normalized_contact)
-        items_by_route.setdefault(
-            route,
+        assert resolution.normalized_contact is not None
+        items.append(
             SubscriberLinkRepairItem(
                 conversation_id=conversation.id,
                 subscriber_id=resolution.subscriber_id,
@@ -108,19 +151,21 @@ def build_plan(db: Session, *, limit: int) -> SubscriberLinkRepairPlan:
                 ).hexdigest(),
             ),
         )
-    items = tuple(
+    sorted_items = tuple(
         sorted(
-            items_by_route.values(),
+            items,
             key=lambda item: (item.channel_type, str(item.conversation_id)),
         )
     )
     return SubscriberLinkRepairPlan(
-        items=items,
+        items=sorted_items,
         scanned=len(rows),
         ambiguous=counts["ambiguous"],
         unmatched=counts["unmatched"],
         suppressed=counts["suppressed"],
-        digest=_digest(items),
+        skipped=counts["skipped"],
+        errors=counts["errors"],
+        digest=_digest(sorted_items),
     )
 
 
@@ -132,27 +177,68 @@ def apply_plan(
     actor_person_id: UUID,
     reason: str,
     approval_reference: str,
-) -> tuple[UUID, ...]:
+) -> dict[str, object]:
     if plan.digest != expected_digest.strip():
         raise ValueError("Repair plan digest changed; run a fresh preview.")
     if not reason.strip() or not approval_reference.strip():
         raise ValueError("Reason and approval reference are required.")
     repaired: list[UUID] = []
+    counts = {
+        "linked": 0,
+        "ambiguous": 0,
+        "unmatched": 0,
+        "skipped": 0,
+        "conflicts": 0,
+        "errors": 0,
+    }
     for item in plan.items:
         db.rollback()
-        result = team_inbox_contact_links.link_conversation_contact_by_id_committed(
-            db,
-            conversation_id=item.conversation_id,
-            subscriber_id=item.subscriber_id,
-            linked_by_person_id=actor_person_id,
-            note=(
-                f"Approved historical Subscriber-link repair "
-                f"{approval_reference.strip()}: {reason.strip()}"
-            ),
-        )
-        repaired.append(item.conversation_id)
-        repaired.extend(result.repaired_conversation_ids)
-    return tuple(dict.fromkeys(repaired))
+        try:
+            result = team_inbox_contact_links.repair_conversation_customer_committed(
+                db,
+                team_inbox_contact_links.RepairConversationCustomerCommand(
+                    context=CommandContext.system(
+                        actor=f"person:{actor_person_id}",
+                        scope="team-inbox:subscriber-link-repair",
+                        reason=(
+                            f"Approved repair {approval_reference.strip()}: "
+                            f"{reason.strip()}"
+                        ),
+                        idempotency_key=f"team-inbox-link-repair:{item.conversation_id}",
+                    ),
+                    conversation_id=item.conversation_id,
+                    reason=(
+                        f"Approved repair {approval_reference.strip()}: "
+                        f"{reason.strip()}"
+                    ),
+                    expected_subscriber_id=item.subscriber_id,
+                ),
+            )
+        except Exception:
+            db.rollback()
+            counts["errors"] += 1
+            continue
+        if result.status is team_inbox_contact_links.AutomaticCustomerLinkStatus.linked:
+            counts["linked"] += 1
+            repaired.append(item.conversation_id)
+        elif (
+            result.status
+            is team_inbox_contact_links.AutomaticCustomerLinkStatus.already_linked
+        ):
+            counts["skipped"] += 1
+        elif (
+            result.status
+            is team_inbox_contact_links.AutomaticCustomerLinkStatus.conflict
+        ):
+            counts["conflicts"] += 1
+        elif (
+            result.resolution.status
+            is team_inbox_contact_links.ContactResolutionStatus.ambiguous
+        ):
+            counts["ambiguous"] += 1
+        else:
+            counts["unmatched"] += 1
+    return {**counts, "repaired_conversation_ids": [str(item) for item in repaired]}
 
 
 def main() -> int:
@@ -179,7 +265,7 @@ def main() -> int:
             raise ValueError(f"Apply requires --confirm {FINAL_CONFIRMATION}")
         if not str(args.target or "").strip():
             raise ValueError("Apply requires an explicitly named --target.")
-        repaired = apply_plan(
+        applied = apply_plan(
             db,
             plan=plan,
             expected_digest=str(args.expected_digest or ""),
@@ -187,13 +273,7 @@ def main() -> int:
             reason=str(args.reason or ""),
             approval_reference=str(args.approval_reference or ""),
         )
-        report.update(
-            {
-                "target": args.target,
-                "applied": len(repaired),
-                "repaired_conversation_ids": [str(item) for item in repaired],
-            }
-        )
+        report.update({"target": args.target, **applied})
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0
     finally:

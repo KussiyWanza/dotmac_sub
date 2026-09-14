@@ -21,6 +21,7 @@ from app.schemas.sales import (
     LeadOriginCaptureCreate,
 )
 from app.services import (
+    team_inbox_contact_links,
     team_inbox_observations,
 )
 from app.services.customer_identity_normalization import (
@@ -29,7 +30,6 @@ from app.services.customer_identity_normalization import (
 )
 from app.services.owner_commands import CommandContext
 from app.services.sales import capture
-from app.services.team_inbox_channel_receive import resolve_contact_context
 
 PROVIDER = team_inbox_observations.InboxProvider.fiber_website
 CHANNEL = InboxChannelType.website_fiber
@@ -86,18 +86,22 @@ def resolve_fiber_identity(
     db: Session, *, email: str, phone: str | None
 ) -> FiberIdentityResolution:
     resolutions = [
-        resolve_contact_context(
+        team_inbox_contact_links.resolve_contact_context(
             db,
-            channel_type=InboxChannelType.email.value,
-            contact_address=email,
+            team_inbox_contact_links.ContactResolutionQuery(
+                channel_type=InboxChannelType.email.value,
+                contact_address=email,
+            ),
         )
     ]
     if phone:
         resolutions.append(
-            resolve_contact_context(
+            team_inbox_contact_links.resolve_contact_context(
                 db,
-                channel_type=InboxChannelType.whatsapp.value,
-                contact_address=phone,
+                team_inbox_contact_links.ContactResolutionQuery(
+                    channel_type=InboxChannelType.whatsapp.value,
+                    contact_address=phone,
+                ),
             )
         )
     matched = tuple(
@@ -120,12 +124,16 @@ def resolve_fiber_identity(
     )
     ambiguous = (
         any(
-            resolution.status in {"ambiguous", "suppressed_inactive"}
+            resolution.status
+            in {
+                team_inbox_contact_links.ContactResolutionStatus.ambiguous,
+                team_inbox_contact_links.ContactResolutionStatus.suppressed_inactive,
+            }
             for resolution in resolutions
         )
         or len(matched) > 1
     )
-    subscriber_id = UUID(matched[0]) if len(matched) == 1 and not ambiguous else None
+    subscriber_id = matched[0] if len(matched) == 1 and not ambiguous else None
     if subscriber_id is not None:
         status = "linked_subscriber"
     elif ambiguous or suppressed:
@@ -135,8 +143,8 @@ def resolve_fiber_identity(
     return FiberIdentityResolution(
         status=status,
         subscriber_id=subscriber_id,
-        matched_subscriber_ids=matched,
-        suppressed_subscriber_ids=suppressed,
+        matched_subscriber_ids=tuple(str(item) for item in matched),
+        suppressed_subscriber_ids=tuple(str(item) for item in suppressed),
         identity_review_required=status == "identity_review_required",
     )
 

@@ -49,6 +49,7 @@ from app.services import (
     settings_api,
     settings_spec,
     team_inbox_agent_introduction,
+    team_inbox_assignment,
     team_inbox_commands,
     team_inbox_contact_links,
     team_inbox_customer_completion,
@@ -62,6 +63,7 @@ from app.services import (
     team_inbox_read,
     team_inbox_read_state,
     team_inbox_routing,
+    team_inbox_status,
 )
 from app.services import email as email_service
 from app.services import (
@@ -259,14 +261,14 @@ def _ctx(request: Request, db: Session) -> dict:
 
 def _resolution_readiness(
     db: Session, conversation_id: UUID | str
-) -> team_inbox_customer_completion.InboxCustomerResolutionReadiness | None:
+) -> team_inbox_status.InboxResolutionReadiness | None:
     resolved_id = coerce_uuid(conversation_id)
     if resolved_id is None:
         return None
     conversation = db.get(InboxConversation, resolved_id)
     if conversation is None:
         return None
-    return team_inbox_customer_completion.resolution_readiness(db, conversation)
+    return team_inbox_status.resolution_readiness(db, conversation)
 
 
 def _manager_ai_scope(request: Request, db: Session):
@@ -2094,6 +2096,11 @@ def team_inbox_label_apply(
             url="/admin/inbox?status=error&message=Conversation%20not%20found",
             status_code=303,
         )
+    except DomainError as exc:
+        return RedirectResponse(
+            url=f"/admin/inbox?status=error&message={quote_plus(exc.message)}",
+            status_code=303,
+        )
     except (
         team_inbox_commands.InboxCommandError,
         team_inbox_operations.InboxOperationError,
@@ -2439,6 +2446,7 @@ def team_inbox_bulk_action(
     conversation_ids: list[str] = Form(default=[]),
     action: str = Form(...),
     status_value: str | None = Form(default=None),
+    resolution_reason: str | None = Form(default=None),
     priority: int | None = Form(default=None),
     label_id: str | None = Form(default=None),
     service_team_id: str | None = Form(default=None),
@@ -2446,13 +2454,69 @@ def team_inbox_bulk_action(
     auto_assign: bool = Form(default=True),
     db: Session = Depends(get_db),
 ):
+    clean_action = _query_text(action) or ""
+    clean_status = _query_text(status_value)
+    resolving = clean_action == "resolve" or (
+        clean_action == "status" and clean_status == "resolved"
+    )
+    actor_person_id = _actor_uuid_from_request(request)
+    scope = None
+    if resolving:
+        if actor_person_id is None:
+            raise HTTPException(status_code=403, detail="Staff identity is required.")
+        auth = getattr(request.state, "auth", None) or {}
+        try:
+            scope = get_workqueue_scope(db, principal_from_auth(db, auth))
+        except WorkqueuePermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
     _prepare_mutation(db)
     try:
+        if resolving:
+            assert scope is not None and actor_person_id is not None
+            reason_text = _query_text(resolution_reason)
+            try:
+                reason = (
+                    team_inbox_status.InboxResolutionReason(reason_text)
+                    if reason_text
+                    else None
+                )
+            except ValueError as exc:
+                raise team_inbox_commands.InboxCommandError(
+                    "Unsupported resolution reason."
+                ) from exc
+            typed_ids = tuple(
+                conversation_id
+                for raw_id in conversation_ids
+                if (conversation_id := coerce_uuid(raw_id)) is not None
+            )
+            result = team_inbox_commands.bulk_resolve_conversations(
+                db,
+                team_inbox_commands.BulkResolveConversationsCommand(
+                    context=CommandContext.system(
+                        actor=f"person:{actor_person_id}",
+                        scope="team-inbox:bulk-resolve",
+                        reason="resolve selected Team Inbox conversations",
+                    ),
+                    conversation_ids=typed_ids,
+                    actor_person_id=actor_person_id,
+                    resolution_reason=reason,
+                    permitted_team_ids=scope.accessible_service_team_ids,
+                    org_wide=scope.is_org_wide,
+                ),
+            )
+            count = len(result.resolved)
+            message = f"Resolved {count} conversation(s)."
+            if result.already_resolved:
+                message += f" {len(result.already_resolved)} already resolved."
+            return RedirectResponse(
+                url=(f"/admin/inbox?status=success&message={quote_plus(message)}"),
+                status_code=303,
+            )
         outcome = team_inbox_commands.bulk_action(
             db,
             conversation_ids=conversation_ids,
-            action=action,
-            status_value=status_value,
+            action=clean_action,
+            status_value=clean_status,
             priority=priority,
             label_id=label_id,
             service_team_id=service_team_id,
@@ -2468,6 +2532,11 @@ def team_inbox_bulk_action(
     ) as exc:
         return RedirectResponse(
             url=f"/admin/inbox?status=error&message={quote_plus(str(exc))}",
+            status_code=303,
+        )
+    except DomainError as exc:
+        return RedirectResponse(
+            url=f"/admin/inbox?status=error&message={quote_plus(exc.message)}",
             status_code=303,
         )
     return RedirectResponse(
@@ -2611,21 +2680,49 @@ def team_inbox_contact_link(
     reseller_id: str | None = Form(default=None),
     subscriber_id_manual: str | None = Form(default=None),
     reseller_id_manual: str | None = Form(default=None),
+    representative_party_id: str | None = Form(default=None),
+    representative_name: str | None = Form(default=None),
+    representative_role: str | None = Form(default=None),
     note: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
     _prepare_mutation(db)
     try:
+        actor_person_id = coerce_uuid(_actor_id_from_request(request))
+        selected_subscriber = coerce_uuid(subscriber_id_manual or subscriber_id)
+        selected_reseller = coerce_uuid(reseller_id_manual or reseller_id)
+        kind = {
+            "subscriber": team_inbox_contact_links.ReviewedContactIdentityKind.customer,
+            "customer": team_inbox_contact_links.ReviewedContactIdentityKind.customer,
+            "representative": team_inbox_contact_links.ReviewedContactIdentityKind.representative,
+            "reseller": team_inbox_contact_links.ReviewedContactIdentityKind.reseller,
+        }.get(str(target_type or "").strip().lower())
+        if kind is None:
+            raise team_inbox_commands.InboxCommandError(
+                "Choose an existing Customer, representative, or reseller."
+            )
         outcome = team_inbox_commands.link_contact(
             db,
-            conversation_id=conversation_id,
-            target_type=target_type,
-            subscriber_id=subscriber_id,
-            reseller_id=reseller_id,
-            subscriber_id_manual=subscriber_id_manual,
-            reseller_id_manual=reseller_id_manual,
-            actor_person_id=_actor_id_from_request(request),
-            note=note,
+            team_inbox_commands.LinkContactCommand(
+                context=CommandContext.system(
+                    actor=(
+                        f"person:{actor_person_id}"
+                        if actor_person_id
+                        else "system:team-inbox-admin"
+                    ),
+                    scope="team-inbox:identify-contact",
+                    reason="review Team Inbox contact identity",
+                ),
+                conversation_id=conversation_id,
+                identity_kind=kind,
+                subscriber_id=selected_subscriber,
+                reseller_id=selected_reseller,
+                representative_party_id=coerce_uuid(representative_party_id),
+                representative_name=representative_name,
+                representative_role=representative_role,
+                actor_person_id=actor_person_id,
+                note=note,
+            ),
         )
     except team_inbox_commands.ConversationNotFoundError:
         return RedirectResponse(
@@ -2637,12 +2734,24 @@ def team_inbox_contact_link(
         team_inbox_contact_links.ContactLinkError,
     ) as exc:
         return _detail_redirect(conversation_id, status="error", message=str(exc))
+    if (
+        outcome.disposition
+        is team_inbox_contact_links.ReviewedContactLinkDisposition.conflict
+    ):
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message=(
+                "That communication identity already has a reviewed owner. "
+                "The existing association was preserved for human review."
+            ),
+        )
     return _detail_redirect(
         conversation_id,
         status="success",
         message=(
             f"Linked {outcome.channel_type.replace('_', ' ')} contact to "
-            f"{outcome.target}."
+            f"{outcome.target.replace('_', ' ')}."
         ),
     )
 
@@ -2687,13 +2796,35 @@ def team_inbox_merge_contact(
         team_inbox_contact_links.ContactLinkError,
     ) as exc:
         return _detail_redirect(conversation_id, status="error", message=str(exc))
+    if outcome.target_type == "ambiguous_customer":
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message=(
+                "Customer evidence is ambiguous. No Lead was created; review the "
+                "identity before continuing."
+            ),
+        )
+    if outcome.target_type == "identity_conflict":
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message=(
+                "That identity already has a reviewed owner. The existing link "
+                "was preserved."
+            ),
+        )
     return _detail_redirect(
         conversation_id,
         status="success",
         message=(
             "Contact captured as a lead."
             if outcome.target_type == "lead"
-            else f"Contact merged to {outcome.target_type.replace('_', ' ')}."
+            else (
+                "Existing Customer found and linked; no Lead was created."
+                if outcome.target_type == "customer"
+                else f"Contact linked to {outcome.target_type.replace('_', ' ')}."
+            )
         ),
     )
 
@@ -2835,16 +2966,62 @@ def team_inbox_status_action(
     conversation_id: UUID,
     request: Request,
     status_value: str = Form(...),
+    resolution_reason: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
+    clean_status = _query_text(status_value) or ""
+    actor_person_id = _actor_uuid_from_request(request)
+    scope = None
+    if clean_status == "resolved":
+        if actor_person_id is None:
+            raise HTTPException(status_code=403, detail="Staff identity is required.")
+        auth = getattr(request.state, "auth", None) or {}
+        try:
+            scope = get_workqueue_scope(db, principal_from_auth(db, auth))
+        except WorkqueuePermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
     _prepare_mutation(db)
     try:
-        outcome = team_inbox_commands.update_status(
-            db,
-            conversation_id=conversation_id,
-            status_value=status_value,
-            actor_person_id=_actor_id_from_request(request),
-        )
+        if clean_status == "resolved":
+            assert scope is not None and actor_person_id is not None
+            reason_text = _query_text(resolution_reason)
+            try:
+                reason = (
+                    team_inbox_status.InboxResolutionReason(reason_text)
+                    if reason_text
+                    else None
+                )
+            except ValueError as exc:
+                raise team_inbox_commands.InboxCommandError(
+                    "Unsupported resolution reason."
+                ) from exc
+            resolved = team_inbox_commands.resolve_conversation(
+                db,
+                team_inbox_commands.ResolveConversationCommand(
+                    context=CommandContext.system(
+                        actor=f"person:{actor_person_id}",
+                        scope="team-inbox:resolve",
+                        reason="resolve Team Inbox conversation",
+                    ),
+                    conversation_id=conversation_id,
+                    actor_person_id=actor_person_id,
+                    resolution_reason=reason,
+                    permitted_team_ids=scope.accessible_service_team_ids,
+                    org_wide=scope.is_org_wide,
+                ),
+            )
+            outcome = team_inbox_commands.StatusOutcome(
+                conversation_id=str(resolved.conversation_id),
+                status=resolved.status.value,
+                already_set=resolved.already_resolved,
+            )
+        else:
+            outcome = team_inbox_commands.update_status(
+                db,
+                conversation_id=conversation_id,
+                status_value=clean_status,
+                actor_person_id=_actor_id_from_request(request),
+            )
     except team_inbox_commands.ConversationNotFoundError:
         return RedirectResponse(
             url="/admin/inbox?status=error&message=Conversation%20not%20found",
@@ -3148,6 +3325,9 @@ def _settings_context(
             "notice_message": _query_text(message),
             "ai_intake_preview_result": ai_intake_preview_result,
             "introduction_preference": introduction_preference,
+            "inbox_capacity_setting": (
+                team_inbox_assignment.inbox_capacity_setting_snapshot(db)
+            ),
             "customer_completion_policy": customer_completion_policy,
             "customer_completion_fields": tuple(
                 {
@@ -3163,6 +3343,53 @@ def _settings_context(
     context.update(ai_policy_context)
     context.update(_polish_settings_context(db))
     return context
+
+
+@settings_router.post(
+    "/capacity",
+    dependencies=[Depends(require_permission("system:settings:write"))],
+)
+def team_inbox_capacity_update(
+    request: Request,
+    maximum_active_chats_per_agent: int = Form(...),
+    db: Session = Depends(get_db),
+):
+    actor_system_user_id = _actor_uuid_from_request(request)
+    if actor_system_user_id is None:
+        return _routes_redirect(
+            status="error",
+            message="An authenticated administrator identity is required.",
+        )
+    _prepare_mutation(db)
+    try:
+        outcome = team_inbox_assignment.update_default_inbox_capacity(
+            db,
+            team_inbox_assignment.UpdateDefaultInboxCapacityCommand(
+                context=CommandContext.system(
+                    actor=f"system-user:{actor_system_user_id}",
+                    scope="team-inbox:global-capacity",
+                    reason="update maximum active chats per agent",
+                ),
+                maximum_active_chats_per_agent=maximum_active_chats_per_agent,
+                actor_system_user_id=actor_system_user_id,
+            ),
+        )
+    except DomainError as exc:
+        return _routes_redirect(status="error", message=exc.message)
+    if not outcome.changed:
+        return _routes_redirect(
+            status="success",
+            message=(
+                f"Maximum active chats per agent was already {outcome.new_value}."
+            ),
+        )
+    return _routes_redirect(
+        status="success",
+        message=(
+            "Maximum active chats per agent changed from "
+            f"{outcome.previous_value} to {outcome.new_value}."
+        ),
+    )
 
 
 @settings_router.post(

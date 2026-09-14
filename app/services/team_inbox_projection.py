@@ -23,7 +23,6 @@ from app.models.team_inbox import (
     InboxAgentPresenceStatus,
     InboxChannelType,
     InboxConversation,
-    InboxConversationAssignment,
     InboxConversationReadState,
     InboxConversationStatus,
     InboxConversationTeam,
@@ -384,17 +383,13 @@ class InboxAgentOption:
     name: str
     initials: str
     presence_status: str
+    active_conversation_count: int
+    max_concurrent_conversations: int
+    available_capacity: int
+    assignment_eligible: bool
+    unavailability_reason: team_inbox_assignment.InboxAgentUnavailabilityReason | None
     email: str = ""
     team_ids: tuple[UUID, ...] = ()
-    active_conversation_count: int = 0
-    max_concurrent_conversations: int = (
-        team_inbox_assignment.DEFAULT_MAX_CONCURRENT_CONVERSATIONS
-    )
-    available_capacity: int = 0
-    assignment_eligible: bool = False
-    unavailability_reason: (
-        team_inbox_assignment.InboxAgentUnavailabilityReason | None
-    ) = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -404,7 +399,10 @@ class InboxManagerAgent:
     initials: str
     presence_status: str
     active_chats: int
-    max_concurrent_conversations: int | None
+    max_concurrent_conversations: int
+    available_capacity: int
+    assignment_eligible: bool
+    unavailability_reason: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -721,6 +719,10 @@ def list_mentionable_users(
         .limit(max(1, min(int(limit), 20)))
         .all()
     )
+    availability_by_person = team_inbox_assignment.agent_availability_snapshots(
+        db,
+        [row.id for row in rows],
+    )
     return tuple(
         InboxAgentOption(
             id=row.id,
@@ -730,7 +732,16 @@ def list_mentionable_users(
                 or row.email
             ),
             initials=_initials(row.first_name, row.last_name, row.display_name),
-            presence_status=InboxAgentPresenceStatus.offline.value,
+            presence_status=availability_by_person[row.id].presence_status.value,
+            active_conversation_count=(
+                availability_by_person[row.id].active_conversation_count
+            ),
+            max_concurrent_conversations=(
+                availability_by_person[row.id].max_concurrent_conversations
+            ),
+            available_capacity=availability_by_person[row.id].available_capacity,
+            assignment_eligible=availability_by_person[row.id].assignment_eligible,
+            unavailability_reason=availability_by_person[row.id].unavailability_reason,
             email=row.email,
             team_ids=tuple(active_team_ids),
         )
@@ -835,66 +846,39 @@ def build_manager_dashboard_projection(
     """Build the read-only manager panel from Inbox-owned observations."""
 
     agent_options = list_agent_options(db)
-    person_ids = [agent.id for agent in agent_options]
-    presence_rows = (
-        db.query(InboxAgentPresence)
-        .filter(InboxAgentPresence.person_id.in_(person_ids))
-        .all()
-        if person_ids
-        else []
-    )
-    presence_by_person = {row.person_id: row for row in presence_rows}
-    observed_at = datetime.now(UTC)
     online_person_ids = {
-        row.person_id
-        for row in presence_rows
-        if team_inbox_assignment.effective_presence_status(row, now=observed_at)
-        == InboxAgentPresenceStatus.online.value
+        agent.id
+        for agent in agent_options
+        if agent.presence_status == InboxAgentPresenceStatus.online.value
     }
-
-    active_assignments = (
-        db.query(InboxConversationAssignment)
-        .join(
-            InboxConversation,
-            InboxConversation.id == InboxConversationAssignment.conversation_id,
-        )
-        .filter(InboxConversationAssignment.is_active.is_(True))
-        .filter(InboxConversation.is_active.is_(True))
-        .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
-        .all()
-    )
-    chat_counts = Counter(row.person_id for row in active_assignments)
-    chats_with_online_agents = len(
-        {
-            row.conversation_id
-            for row in active_assignments
-            if row.person_id in online_person_ids
-        }
+    chats_with_online_agents = sum(
+        agent.active_conversation_count
+        for agent in agent_options
+        if agent.id in online_person_ids
     )
     agent_rows: list[InboxManagerAgent] = []
     for agent in agent_options:
-        presence = presence_by_person.get(agent.id)
         agent_rows.append(
             InboxManagerAgent(
                 id=agent.id,
                 name=agent.name,
                 initials=agent.initials,
-                presence_status=(
-                    team_inbox_assignment.effective_presence_status(
-                        presence, now=observed_at
-                    )
-                    if presence is not None
-                    else "offline"
-                ),
-                active_chats=chat_counts[agent.id],
-                max_concurrent_conversations=(
-                    presence.max_concurrent_conversations
-                    if presence is not None
+                presence_status=agent.presence_status,
+                active_chats=agent.active_conversation_count,
+                max_concurrent_conversations=agent.max_concurrent_conversations,
+                available_capacity=agent.available_capacity,
+                assignment_eligible=agent.assignment_eligible,
+                unavailability_reason=(
+                    agent.unavailability_reason.value
+                    if agent.unavailability_reason is not None
                     else None
                 ),
             )
         )
     agents = tuple(agent_rows)
+    expired_whatsapp_ids = (
+        team_inbox_reply_window.expired_whatsapp_conversation_ids_query()
+    )
 
     raw_channel_counts = {
         channel: int(count)
@@ -903,6 +887,7 @@ def build_manager_dashboard_projection(
             .filter(InboxConversation.is_active.is_(True))
             .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
             .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
+            .filter(~InboxConversation.id.in_(expired_whatsapp_ids))
             .group_by(InboxConversation.channel_type)
             .all()
         )
@@ -938,6 +923,7 @@ def build_manager_dashboard_projection(
         .filter(InboxConversation.is_active.is_(True))
         .filter(InboxConversation.status == InboxConversationStatus.open.value)
         .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
+        .filter(~InboxConversation.id.in_(expired_whatsapp_ids))
         .scalar()
         or 0
     )
@@ -946,6 +932,7 @@ def build_manager_dashboard_projection(
         .filter(InboxConversation.is_active.is_(True))
         .filter(InboxConversation.status == InboxConversationStatus.pending.value)
         .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
+        .filter(~InboxConversation.id.in_(expired_whatsapp_ids))
         .scalar()
         or 0
     )
@@ -1012,6 +999,11 @@ def _assignment_counts(
                     InboxConversation.status != InboxConversationStatus.resolved.value
                 )
                 .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
+                .filter(
+                    ~InboxConversation.id.in_(
+                        team_inbox_reply_window.expired_whatsapp_conversation_ids_query()
+                    )
+                )
                 .filter(InboxConversationTeam.is_active.is_(True))
                 .filter(InboxConversationTeam.service_team_id.in_(team_ids))
                 .scalar()
@@ -1376,7 +1368,11 @@ def get_conversation_projection(
             and not outbound_unsupported
             and not provider_window_blocks,
             can_private_note=not ownership.ai_owned and not is_resolved,
-            can_assign=not ownership.ai_owned and not is_resolved,
+            can_assign=(
+                not ownership.ai_owned
+                and not is_resolved
+                and reply_window.status != "expired"
+            ),
             can_change_status=not ownership.ai_owned,
             can_create_ticket=not ownership.ai_owned and not is_resolved,
             can_run_macro=not ownership.ai_owned and not is_resolved,

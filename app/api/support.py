@@ -580,11 +580,19 @@ def link_inbox_conversation_contact(
     try:
         result = team_inbox_contact_links.link_conversation_contact_by_id_committed(
             db,
-            conversation_id=conversation_id,
-            subscriber_id=payload.subscriber_id,
-            reseller_id=payload.reseller_id,
-            linked_by_person_id=_actor_id(auth),
-            note=payload.note,
+            team_inbox_contact_links.ReviewConversationContactCommand(
+                conversation_id=conversation_id,
+                identity_kind=team_inbox_contact_links.ReviewedContactIdentityKind(
+                    payload.identity_kind
+                ),
+                subscriber_id=payload.subscriber_id,
+                reseller_id=payload.reseller_id,
+                representative_party_id=payload.representative_party_id,
+                representative_name=payload.representative_name,
+                representative_role=payload.representative_role,
+                actor_person_id=coerce_uuid(_actor_id(auth)),
+                note=payload.note,
+            ),
         )
     except team_inbox_contact_links.ConversationContactLinkError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -597,7 +605,10 @@ def link_inbox_conversation_contact(
         normalized_contact=result.normalized_contact,
         subscriber_id=result.subscriber_id,
         reseller_id=result.reseller_id,
-        previous_link_ids_deactivated=result.previous_link_ids_deactivated,
+        disposition=result.disposition.value,
+        party_contact_point_id=result.party_contact_point_id,
+        speaking_party_id=result.speaking_party_id,
+        previous_link_ids_deactivated=list(result.previous_link_ids_deactivated),
         repaired_conversation_ids=result.repaired_conversation_ids,
     )
 

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+import pytest
+from sqlalchemy.exc import IntegrityError
+
 from app.models.comms import CustomerNotificationEvent
 from app.models.communication_log import (
     CommunicationChannel,
@@ -9,6 +12,14 @@ from app.models.communication_log import (
     CommunicationLog,
 )
 from app.models.customer_identity import CustomerIdentityIndex
+from app.models.party import (
+    Party,
+    PartyContactPoint,
+    PartyContactPointType,
+    PartyRelationship,
+    PartyRelationshipType,
+    PartyType,
+)
 from app.models.subscriber import (
     ChannelType,
     Subscriber,
@@ -24,6 +35,7 @@ from app.services.customer_identity_resolution import (
     MATCH_CONFIDENCE_LOW,
     MATCH_CONFIDENCE_MEDIUM,
     MATCH_VIA_HISTORICAL_PARTICIPANT,
+    MATCH_VIA_PARTY_CONTACT_POINT,
     MATCH_VIA_SUBSCRIBER,
     MATCH_VIA_SUBSCRIBER_CHANNEL,
     MATCH_VIA_SUBSCRIBER_CONTACT,
@@ -82,6 +94,27 @@ def test_resolve_exact_email_prefers_direct_subscriber_over_same_subscriber_cont
     assert result.matched_via == MATCH_VIA_SUBSCRIBER
     assert result.matched_field == "email"
     assert result.match_confidence == MATCH_CONFIDENCE_HIGH
+
+
+def test_resolve_can_use_customer_identity_index_projection(db_session):
+    subscriber = _subscriber(email="current@example.com")
+    db_session.add(subscriber)
+    db_session.flush()
+    db_session.add(
+        CustomerIdentityIndex(
+            identity_type="email",
+            normalized_value="indexed-alias@example.com",
+            subscriber_id=subscriber.id,
+            source_table="subscribers",
+            source_field="email",
+        )
+    )
+    db_session.flush()
+
+    result = resolve_customer_identity(db_session, "INDEXED-ALIAS@example.com")
+
+    assert result.subscriber_id == subscriber.id
+    assert result.source_table == "subscribers"
 
 
 def test_resolve_phone_and_whatsapp_matches_contact(db_session):
@@ -256,6 +289,176 @@ def test_resolve_uses_historical_participant_linkage_with_low_confidence_when_no
     assert result.matched_via == MATCH_VIA_HISTORICAL_PARTICIPANT
     assert result.match_confidence == MATCH_CONFIDENCE_LOW
     assert identity_resolution_requires_manual_review(result) is True
+
+
+def test_provider_scoped_social_subjects_do_not_collide_across_accounts(db_session):
+    first_party = Party(party_type=PartyType.person.value, display_name="First")
+    second_party = Party(party_type=PartyType.person.value, display_name="Second")
+    db_session.add_all([first_party, second_party])
+    db_session.flush()
+    first = _subscriber(party_id=first_party.id)
+    second = _subscriber(party_id=second_party.id)
+    db_session.add_all([first, second])
+    db_session.flush()
+    db_session.add_all(
+        [
+            PartyContactPoint(
+                party_id=first_party.id,
+                channel_type=PartyContactPointType.instagram_dm.value,
+                normalized_value="same-looking-id",
+                scope_key="ig-business-a",
+                provider="meta_social",
+                provider_account_id="ig-business-a",
+                external_subject_id="same-looking-id",
+                verification_status="verified",
+            ),
+            PartyContactPoint(
+                party_id=second_party.id,
+                channel_type=PartyContactPointType.instagram_dm.value,
+                normalized_value="same-looking-id",
+                scope_key="ig-business-b",
+                provider="meta_social",
+                provider_account_id="ig-business-b",
+                external_subject_id="same-looking-id",
+                verification_status="verified",
+            ),
+        ]
+    )
+    db_session.flush()
+
+    first_result = resolve_customer_identity(
+        db_session,
+        "same-looking-id",
+        channel_hint="instagram_dm",
+        provider="meta_social",
+        provider_account_id="ig-business-a",
+        external_subject_id="same-looking-id",
+    )
+    second_result = resolve_customer_identity(
+        db_session,
+        "same-looking-id",
+        channel_hint="instagram_dm",
+        provider="meta_social",
+        provider_account_id="ig-business-b",
+        external_subject_id="same-looking-id",
+    )
+
+    assert first_result.subscriber_id == first.id
+    assert second_result.subscriber_id == second.id
+    assert first_result.matched_via == MATCH_VIA_PARTY_CONTACT_POINT
+    assert first_result.identity_type == "provider_subject"
+
+
+def test_one_customer_can_own_multiple_social_identities(db_session):
+    party = Party(party_type=PartyType.person.value, display_name="Multi channel")
+    db_session.add(party)
+    db_session.flush()
+    subscriber = _subscriber(party_id=party.id)
+    db_session.add(subscriber)
+    db_session.flush()
+    for account, subject in (("ig-a", "subject-a"), ("ig-b", "subject-b")):
+        db_session.add(
+            PartyContactPoint(
+                party_id=party.id,
+                channel_type=PartyContactPointType.instagram_dm.value,
+                normalized_value=subject,
+                scope_key=account,
+                provider="meta_social",
+                provider_account_id=account,
+                external_subject_id=subject,
+                verification_status="verified",
+            )
+        )
+    db_session.flush()
+
+    results = [
+        resolve_customer_identity(
+            db_session,
+            subject,
+            channel_hint="instagram_dm",
+            provider="meta_social",
+            provider_account_id=account,
+            external_subject_id=subject,
+        )
+        for account, subject in (("ig-a", "subject-a"), ("ig-b", "subject-b"))
+    ]
+
+    assert {result.subscriber_id for result in results} == {subscriber.id}
+
+
+def test_active_provider_identity_cannot_belong_to_two_parties(db_session):
+    first_party = Party(party_type=PartyType.person.value, display_name="First")
+    second_party = Party(party_type=PartyType.person.value, display_name="Second")
+    db_session.add_all([first_party, second_party])
+    db_session.flush()
+    for party in (first_party, second_party):
+        db_session.add(
+            PartyContactPoint(
+                party_id=party.id,
+                channel_type=PartyContactPointType.facebook_messenger.value,
+                normalized_value="psid-123",
+                scope_key="page-a",
+                provider="meta_social",
+                provider_account_id="page-a",
+                external_subject_id="psid-123",
+                verification_status="verified",
+            )
+        )
+
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_representative_social_identity_resolves_customer_without_moving_endpoint(
+    db_session,
+):
+    customer_party = Party(
+        party_type=PartyType.organization.value,
+        display_name="Customer Organization",
+    )
+    representative_party = Party(
+        party_type=PartyType.person.value,
+        display_name="Actual Speaker",
+    )
+    db_session.add_all([customer_party, representative_party])
+    db_session.flush()
+    subscriber = _subscriber(party_id=customer_party.id)
+    db_session.add(subscriber)
+    db_session.add(
+        PartyRelationship(
+            subject_party_id=representative_party.id,
+            object_party_id=customer_party.id,
+            relationship_type=PartyRelationshipType.contact_for.value,
+            status="active",
+            source="pytest",
+        )
+    )
+    point = PartyContactPoint(
+        party_id=representative_party.id,
+        channel_type=PartyContactPointType.facebook_messenger.value,
+        normalized_value="representative-psid",
+        scope_key="page-a",
+        provider="meta_social",
+        provider_account_id="page-a",
+        external_subject_id="representative-psid",
+        verification_status="verified",
+    )
+    db_session.add(point)
+    db_session.flush()
+
+    result = resolve_customer_identity(
+        db_session,
+        "representative-psid",
+        channel_hint="facebook_messenger",
+        provider="meta_social",
+        provider_account_id="page-a",
+        external_subject_id="representative-psid",
+    )
+
+    assert result.subscriber_id == subscriber.id
+    assert result.participant_party_id == representative_party.id
+    assert result.matched_party_contact_point_id == point.id
+    assert point.party_id == representative_party.id
 
 
 def test_resolve_marks_duplicate_identifier_ambiguous_without_logging_pii(

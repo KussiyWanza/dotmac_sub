@@ -349,6 +349,7 @@ SERVICES: tuple[SOTService, ...] = (
         owns=(
             "versioned lead-intake template lifecycle",
             "sales lead eligibility and invitation lifecycle",
+            "pre-creation canonical Customer identity recheck",
             "atomic Inbox form to Party and Lead conversion",
         ),
         depends_on=(
@@ -391,6 +392,15 @@ SERVICES: tuple[SOTService, ...] = (
                         "shared customer intake sales handoff",
                         "explicit Lead intake rollout configuration",
                         "published Lead intake template versions",
+                    ),
+                ),
+                ConcernContract(
+                    name="pre-creation canonical Customer identity recheck",
+                    role=OwnerRole.APPLICATION_COORDINATOR,
+                    input_names=(
+                        "canonical Lead intake invitation",
+                        "canonical Customer identity decision",
+                        "canonical unknown Inbox conversation state",
                     ),
                 ),
                 ConcernContract(
@@ -468,6 +478,12 @@ SERVICES: tuple[SOTService, ...] = (
                     source="Party, representative, prospect role and exact contact point",
                 ),
                 AuthorityInput(
+                    name="canonical Customer identity decision",
+                    owner="communications.team_inbox_contact_resolution",
+                    kind=AuthorityKind.DERIVED_PROJECTION,
+                    source="Unique active canonical phone, email, reviewed Inbox link, or provider-scoped Party identity; ambiguity fails closed.",
+                ),
+                AuthorityInput(
                     name="canonical Lead lifecycle state",
                     owner="sales.lead_lifecycle",
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
@@ -478,7 +494,7 @@ SERVICES: tuple[SOTService, ...] = (
                 mode=TransactionMode.COORDINATOR_MANAGED,
                 boundary="Each mutation enters execute_owner_command once and commits or rolls back atomically.",
                 locking="Templates, conversation, message, invitation, participant and actor are locked before mutation.",
-                idempotency="One assessment per message, one automatic invite per conversation and one completion per token.",
+                idempotency="One assessment per message, one automatic invite per conversation, and one terminal lead-created or customer-linked outcome per token.",
                 retries="Adapters retry only the complete owner command after rollback.",
             ),
             errors=ErrorContract(

@@ -6,7 +6,9 @@ from uuid import uuid4
 
 import pytest
 
-from app.models.domain_settings import SettingDomain
+from app.models.audit import AuditEvent
+from app.models.domain_setting_history import DomainSettingHistory
+from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
 from app.models.team_inbox import (
     InboxAgentPresence,
@@ -14,7 +16,10 @@ from app.models.team_inbox import (
     InboxAgentPresenceStatus,
     InboxConversation,
     InboxConversationAssignment,
+    InboxConversationQueueEntry,
+    InboxConversationStatus,
     InboxConversationTeam,
+    InboxQueueEntryStatus,
     InboxRoutingDecisionMode,
     InboxRoutingEvent,
     InboxRoutingEventType,
@@ -26,6 +31,8 @@ from app.services import (
     team_inbox_commands,
     web_system_settings_forms,
 )
+from app.services.domain_errors import DomainError
+from app.services.owner_commands import CommandContext
 from tests.staff_identity_fixtures import add_bound_staff_user
 
 
@@ -126,6 +133,47 @@ def test_available_team_agents_ignore_full_members(db_session):
     )
     assert availability[free].available_capacity == 1
     assert availability[free].assignment_eligible is True
+
+
+def test_only_active_actionable_assignments_consume_capacity(db_session):
+    team = _team(db_session)
+    agent = _member(db_session, team, max_concurrent=2)
+    active = _conversation(db_session)
+    resolved = _conversation(db_session)
+    resolved.status = InboxConversationStatus.resolved.value
+    queued = _conversation(db_session)
+    db_session.add_all(
+        [
+            InboxConversationAssignment(
+                conversation_id=active.id,
+                service_team_id=team.id,
+                person_id=agent,
+                is_active=True,
+            ),
+            InboxConversationAssignment(
+                conversation_id=resolved.id,
+                service_team_id=team.id,
+                person_id=agent,
+                is_active=True,
+            ),
+            InboxConversationQueueEntry(
+                conversation_id=queued.id,
+                service_team_id=team.id,
+                queue_position=1,
+                status=InboxQueueEntryStatus.queued.value,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    snapshot = team_inbox_assignment.agent_availability_snapshots(
+        db_session,
+        (agent,),
+    )[agent]
+
+    assert snapshot.active_conversation_count == 1
+    assert snapshot.available_capacity == 1
+    assert snapshot.assignment_eligible is True
 
 
 def test_assign_conversation_escalates_to_team_and_online_agent(db_session):
@@ -413,7 +461,7 @@ def test_admin_capacity_setting_is_consumed_by_assignment_runtime(db_session):
         "inbox_agent_default_max_concurrent_conversations",
     )
     assert spec is not None
-    assert spec.label == "Default active Inbox conversations per agent"
+    assert spec.label == "Maximum active chats per agent"
     assert spec.default == 10
     assert (spec.min_value, spec.max_value) == (1, 100)
     service = settings_spec.DOMAIN_SETTINGS_SERVICE[SettingDomain.comms]
@@ -430,6 +478,166 @@ def test_admin_capacity_setting_is_consumed_by_assignment_runtime(db_session):
         team_inbox_assignment.resolve_default_max_concurrent_conversations(db_session)
         == 7
     )
+
+
+def test_capacity_owner_persists_and_audits_global_setting(db_session):
+    team = _team(db_session)
+    actor = _member(db_session, team)
+    db_session.commit()
+
+    outcome = team_inbox_assignment.update_default_inbox_capacity(
+        db_session,
+        team_inbox_assignment.UpdateDefaultInboxCapacityCommand(
+            context=CommandContext.system(
+                actor=f"system-user:{actor}",
+                scope="team-inbox:global-capacity",
+                reason="capacity test",
+            ),
+            maximum_active_chats_per_agent=15,
+            actor_system_user_id=actor,
+        ),
+    )
+
+    stored = (
+        db_session.query(DomainSetting)
+        .filter(DomainSetting.domain == SettingDomain.comms)
+        .filter(
+            DomainSetting.key
+            == settings_spec.INBOX_AGENT_DEFAULT_MAX_CONCURRENT_CONVERSATIONS_KEY
+        )
+        .one()
+    )
+    audit = (
+        db_session.query(AuditEvent)
+        .filter(AuditEvent.action == "team_inbox.capacity_configuration_changed")
+        .one()
+    )
+    history = (
+        db_session.query(DomainSettingHistory)
+        .filter(DomainSettingHistory.setting_id == stored.id)
+        .one()
+    )
+    assert outcome.previous_value == 10
+    assert outcome.new_value == 15
+    assert outcome.changed is True
+    assert stored.value_text == "15"
+    assert audit.actor_id == str(actor)
+    assert audit.metadata_["scope"] == "global_inbox_default"
+    assert audit.metadata_["previous_value"] == 10
+    assert audit.metadata_["new_value"] == 15
+    assert history.value_before is None
+    assert history.value_after == "15"
+    assert history.change_reason == "capacity test"
+
+
+@pytest.mark.parametrize("value", [0, -1, 101])
+def test_capacity_owner_rejects_values_outside_registered_bounds(db_session, value):
+    team = _team(db_session)
+    actor = _member(db_session, team)
+    db_session.commit()
+
+    with pytest.raises(DomainError, match="must be between 1 and 100"):
+        team_inbox_assignment.update_default_inbox_capacity(
+            db_session,
+            team_inbox_assignment.UpdateDefaultInboxCapacityCommand(
+                context=CommandContext.system(
+                    actor=f"system-user:{actor}",
+                    scope="team-inbox:global-capacity",
+                    reason="invalid capacity test",
+                ),
+                maximum_active_chats_per_agent=value,
+                actor_system_user_id=actor,
+            ),
+        )
+
+
+def test_lowered_global_capacity_preserves_existing_work_and_blocks_more(db_session):
+    team = _team(db_session)
+    actor = _member(db_session, team)
+    existing = (_conversation(db_session), _conversation(db_session))
+    for conversation in existing:
+        db_session.add(
+            InboxConversationAssignment(
+                conversation_id=conversation.id,
+                service_team_id=team.id,
+                person_id=actor,
+                is_active=True,
+            )
+        )
+    additional = _conversation(db_session)
+    db_session.commit()
+
+    team_inbox_assignment.update_default_inbox_capacity(
+        db_session,
+        team_inbox_assignment.UpdateDefaultInboxCapacityCommand(
+            context=CommandContext.system(
+                actor=f"system-user:{actor}",
+                scope="team-inbox:global-capacity",
+                reason="lower capacity test",
+            ),
+            maximum_active_chats_per_agent=1,
+            actor_system_user_id=actor,
+        ),
+    )
+    snapshot = team_inbox_assignment.agent_availability_snapshots(
+        db_session,
+        (actor,),
+    )[actor]
+    refused = team_inbox_assignment.assign_conversation_to_agent(
+        db_session,
+        conversation=additional,
+        service_team_id=team.id,
+        person_id=actor,
+    )
+
+    assert snapshot.active_conversation_count == 2
+    assert snapshot.max_concurrent_conversations == 1
+    assert snapshot.available_capacity == 0
+    assert snapshot.assignment_eligible is False
+    assert refused.kind == "agent_unavailable"
+    assert (
+        db_session.query(InboxConversationAssignment)
+        .filter(InboxConversationAssignment.is_active.is_(True))
+        .count()
+        == 2
+    )
+
+
+def test_increasing_global_capacity_immediately_restores_eligibility(db_session):
+    team = _team(db_session)
+    actor = _member(db_session, team)
+    conversation = _conversation(db_session)
+    db_session.add(
+        InboxConversationAssignment(
+            conversation_id=conversation.id,
+            service_team_id=team.id,
+            person_id=actor,
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+    for capacity in (1, 2):
+        team_inbox_assignment.update_default_inbox_capacity(
+            db_session,
+            team_inbox_assignment.UpdateDefaultInboxCapacityCommand(
+                context=CommandContext.system(
+                    actor=f"system-user:{actor}",
+                    scope="team-inbox:global-capacity",
+                    reason=f"set capacity to {capacity}",
+                ),
+                maximum_active_chats_per_agent=capacity,
+                actor_system_user_id=actor,
+            ),
+        )
+    snapshot = team_inbox_assignment.agent_availability_snapshots(
+        db_session,
+        (actor,),
+    )[actor]
+
+    assert snapshot.active_conversation_count == 1
+    assert snapshot.max_concurrent_conversations == 2
+    assert snapshot.assignment_eligible is True
 
 
 def test_assign_conversation_queues_when_no_agent_available(db_session):

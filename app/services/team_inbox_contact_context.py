@@ -15,7 +15,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.lead_intake import LeadIntakeInvitation
-from app.models.party import Party, PartyContactPoint
+from app.models.party import (
+    Party,
+    PartyContactPoint,
+    PartyRelationship,
+    PartyRelationshipStatus,
+    PartyRelationshipType,
+)
 from app.models.project import Project, ProjectTask
 from app.models.sales import Lead, LeadStatus
 from app.models.subscriber import Reseller, Subscriber
@@ -32,6 +38,7 @@ from app.services import (
     projects,
     support,
     team_inbox_customer_completion,
+    team_inbox_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,6 +100,23 @@ class PartyProfileSummary:
     address: str | None
     subscriber_id: UUID | None
     subscriber_url: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class LinkedIdentitySummary:
+    id: UUID
+    channel_type: str
+    label: str
+    provider_label: str | None
+    is_primary: bool
+    verification_status: str
+
+
+@dataclass(frozen=True, slots=True)
+class SpeakingPartySummary:
+    party_id: UUID
+    display_name: str
+    relationship_type: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +202,8 @@ class InboxContactContext:
     subscriber_id: UUID | None
     conversation_history_scope: ConversationHistoryScope
     profile: ContextSection[PartyProfileSummary]
+    linked_identities: ContextSection[LinkedIdentitySummary]
+    speaking_parties: ContextSection[SpeakingPartySummary]
     leads: ContextSection[LeadSummary]
     tickets: ContextSection[TicketSummary]
     recent_conversations: ContextSection[ConversationSummary]
@@ -185,9 +211,7 @@ class InboxContactContext:
     project_tasks: ContextSection[ProjectTaskSummary]
     profile_action: inbox_lead_actions.InboxResolvedAction
     lead_action: inbox_lead_actions.InboxResolvedAction
-    resolution_readiness: (
-        team_inbox_customer_completion.InboxCustomerResolutionReadiness
-    )
+    resolution_readiness: team_inbox_status.InboxResolutionReadiness
     customer_values: dict[
         team_inbox_customer_completion.CustomerProfileField, str | None
     ]
@@ -296,6 +320,129 @@ def _profile(
                 else None,
             ),
         ),
+    )
+
+
+def _linked_identities(
+    db: Session,
+    *,
+    party_id: UUID | None,
+    permitted: bool,
+) -> ContextSection[LinkedIdentitySummary]:
+    if not permitted:
+        return _restricted()
+    if party_id is None:
+        return _not_applicable("No authoritative Customer Party is linked.")
+    points = tuple(
+        db.scalars(
+            select(PartyContactPoint)
+            .where(
+                PartyContactPoint.party_id == party_id,
+                PartyContactPoint.is_active.is_(True),
+            )
+            .order_by(
+                PartyContactPoint.channel_type,
+                PartyContactPoint.is_primary.desc(),
+                PartyContactPoint.created_at,
+            )
+        ).all()
+    )
+    if not points:
+        return ContextSection(
+            ContextAvailability.empty,
+            total_count=0,
+            message="No linked communication identities.",
+        )
+    social_channels = {"facebook_messenger", "instagram_dm", "telegram", "linkedin"}
+    items: list[LinkedIdentitySummary] = []
+    for point in points:
+        display = str(point.display_value or "").strip()
+        if point.channel_type in social_channels:
+            label = display or "Reviewed scoped identity"
+            if label == str(point.external_subject_id or "").strip():
+                label = "Reviewed scoped identity"
+        else:
+            label = display or point.normalized_value
+        provider_label = None
+        if point.provider or point.provider_account_id:
+            provider_label = " / ".join(
+                value for value in (point.provider, point.provider_account_id) if value
+            )
+        items.append(
+            LinkedIdentitySummary(
+                id=point.id,
+                channel_type=point.channel_type,
+                label=label,
+                provider_label=provider_label,
+                is_primary=point.is_primary,
+                verification_status=point.verification_status,
+            )
+        )
+    return ContextSection(
+        ContextAvailability.available,
+        items=tuple(items),
+        total_count=len(items),
+    )
+
+
+def _speaking_parties(
+    db: Session,
+    *,
+    conversation_id: UUID,
+    customer_party_id: UUID | None,
+    permitted: bool,
+) -> ContextSection[SpeakingPartySummary]:
+    if not permitted:
+        return _restricted()
+    if customer_party_id is None:
+        return _not_applicable("No represented Customer Party is linked.")
+    rows = db.execute(
+        select(Party, PartyRelationship.relationship_type)
+        .join(PartyContactPoint, PartyContactPoint.party_id == Party.id)
+        .join(
+            InboxConversationParticipant,
+            InboxConversationParticipant.party_contact_point_id == PartyContactPoint.id,
+        )
+        .join(
+            PartyRelationship,
+            PartyRelationship.subject_party_id == Party.id,
+        )
+        .where(
+            InboxConversationParticipant.conversation_id == conversation_id,
+            InboxConversationParticipant.is_active.is_(True),
+            PartyContactPoint.is_active.is_(True),
+            PartyRelationship.object_party_id == customer_party_id,
+            PartyRelationship.relationship_type.in_(
+                (
+                    PartyRelationshipType.contact_for.value,
+                    PartyRelationshipType.billing_contact_for.value,
+                    PartyRelationshipType.technical_contact_for.value,
+                    PartyRelationshipType.emergency_contact_for.value,
+                )
+            ),
+            PartyRelationship.status == PartyRelationshipStatus.active.value,
+        )
+        .distinct()
+        .order_by(Party.display_name, Party.id)
+    ).all()
+    if not rows:
+        return ContextSection(
+            ContextAvailability.empty,
+            total_count=0,
+            message="The Customer is speaking directly.",
+        )
+    items = tuple(
+        SpeakingPartySummary(
+            party_id=party.id,
+            display_name=party.display_name,
+            relationship_type=relationship_type,
+        )
+        for party, relationship_type in rows
+    )
+    return ContextSection(
+        ContextAvailability.available,
+        items=items,
+        total_count=len(items),
     )
 
 
@@ -926,6 +1073,23 @@ def build_contact_context(
                 permitted=permissions.can_read_profile,
             ),
         ),
+        linked_identities=_safe_section(
+            "linked_identities",
+            lambda: _linked_identities(
+                db,
+                party_id=party_id,
+                permitted=permissions.can_read_profile,
+            ),
+        ),
+        speaking_parties=_safe_section(
+            "speaking_parties",
+            lambda: _speaking_parties(
+                db,
+                conversation_id=conversation_id,
+                customer_party_id=party_id if subscriber_id is not None else None,
+                permitted=permissions.can_read_profile,
+            ),
+        ),
         leads=_safe_section(
             "leads",
             lambda: _leads(
@@ -973,9 +1137,7 @@ def build_contact_context(
         ),
         profile_action=profile_action,
         lead_action=lead_action,
-        resolution_readiness=team_inbox_customer_completion.resolution_readiness(
-            db, conversation
-        ),
+        resolution_readiness=team_inbox_status.resolution_readiness(db, conversation),
         customer_values=team_inbox_customer_completion.canonical_customer_values(
             db, conversation
         ),

@@ -31,13 +31,30 @@ checks, audit evidence, and readiness refresh.
   is a Lead.
 - Conflicting identity evidence is ambiguous; no identity is unresolved.
 - A reviewed contact link always outranks newly observed display data.
-- Without a reviewed link, an observed name may narrow an exact normalized
-  phone match only by exact normalized Customer-name equality. A mismatch is
-  ambiguous and requires the agent to choose an existing Customer or a Lead.
+- A unique eligible Customer found by an exact normalized canonical phone or
+  email is authoritative. A provider profile/display name is observational
+  evidence and cannot veto that unique match.
+- When the same normalized phone or email identifies multiple eligible
+  Customers, an exact normalized Customer-name match may narrow the candidates
+  only when it leaves exactly one. Otherwise the result remains ambiguous and
+  requires review.
+- Messenger and Instagram subjects are opaque provider identities. They resolve
+  only in `(channel, provider, provider account, external subject)` scope and
+  are never interpreted as phone numbers.
 
 Customer selection searches and links an existing Customer only. Inbox has no
 Customer-creation command. Lead actions may link an existing Lead or create a
 Party-backed Lead through the existing Sales owner.
+Identify Contact persists the reviewed route as an additive canonical Party
+contact point as well as linking the current conversation. It never replaces a
+Customer's other phones, emails, or social identities. Representative selection
+keeps the speaking Person Party and its endpoint separate from the represented
+Customer while still setting the authoritative `subscriber_id`. A reviewed
+identity-owner conflict remains blocked for human adjudication.
+
+Immediately before manual Lead capture, the Inbox command reruns canonical
+Customer resolution. A unique Customer is linked instead, ambiguity creates no
+Lead, and only a genuine no-match may enter the Party-backed Lead owner.
 
 ## Resolution rule
 
@@ -53,6 +70,21 @@ Bulk resolution skips blocked conversations and returns blocker details. Macro
 resolution records the failed action and cannot bypass the same gate. System
 maintenance and AI lifecycle reasons retain their separately owned transition
 rules.
+
+The status owner provides one narrow expired-conversation path. When—and only
+when—the locked conversation is WhatsApp and the canonical reply-window owner
+returns `expired`, an authorized agent or manager may resolve without first
+completing Customer identity/profile fields. The command requires one bounded
+resolution reason and records that reason plus
+`channel_state_at_resolution='expired'` on the immutable status event. The
+Customer readiness verdict remains blocked and visible as context; it is not
+weakened or rewritten. An active-window, unavailable, or non-WhatsApp
+conversation continues to obey the normal verdict.
+
+Expired resolution is internal-only. It does not send a message or template,
+create an assignment or FIFO entry, start AI intake, or alter the reply-window
+chronology. Assignment/queue release is a separate routing consequence of
+expiry and never implies `resolved`.
 
 ## Canonical save and conflicts
 
@@ -81,3 +113,7 @@ field key, or ambiguous identity fails closed and is its own drift signal.
 Reopening the drawer or retrying the status command deterministically rebuilds
 the verdict; structural Lead-link repair remains with
 `communications.conversation_lead_relationships`.
+`InboxConversation.subscriber_id` is the authoritative Customer association.
+Automatic identity resolution and the reviewed repair command populate that
+field transactionally; the readiness owner then changes classification without
+any template or cached-readiness override.

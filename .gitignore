@@ -83,6 +83,9 @@ chat-customer-portal.png
 data/olt_samples/
 .playwright-mcp/
 
+# Local Graphify knowledge graph and extraction cache
+/graphify-out/
+
 # Runtime-uploaded avatars (keep the dir, ignore the uploads)
 /static/avatars/*
 !/static/avatars/.gitkeep

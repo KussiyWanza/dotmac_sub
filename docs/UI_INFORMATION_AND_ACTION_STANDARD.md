@@ -473,6 +473,13 @@ implementation.
   The bounded newest-first list shows endpoint, channel, status, and last
   activity and routes each row to the exact prior Inbox conversation.
   Assignment does not narrow this customer history.
+- Identify Contact offers Existing Customer, Lead, and Representative for an
+  existing Customer. A successful reviewed choice refreshes the conversation;
+  no unrelated workflow action is required to clear the identity blocker.
+- The Customer context lists every active canonical communication identity
+  using a human-readable label where available. Raw opaque social subject IDs
+  are not displayed merely for troubleshooting. A representative speaker is
+  shown separately from the represented Customer.
 
 ## Inbox Email Recipient And Copy Contract
 
@@ -513,13 +520,36 @@ implementation.
   another agent sends nothing and returns the conflict message **This
   conversation is currently assigned to [agent].** The composer presents that
   message without implying that its draft was sent.
-- Admin → System → Settings → Comms exposes **Default active Inbox
-  conversations per agent** with range 1–100 and default 10. Per-agent backend
+- Team Inbox Settings exposes **Maximum active chats per agent** with the
+  registered range 1–100 and default 10 to users with
+  `system:settings:write`. All workload and assignment surfaces display
+  `active/effective_max assigned` from the routing owner's projection. Online
+  state remains separate from capacity state, and over-capacity values such as
+  `15/10 assigned` remain visible after a limit reduction. Per-agent backend
   overrides are not presented as though they are editable when no Admin writer
   exists.
 - Queue heartbeats are off by default. If enabled in AI intake policy they are
   clearly identified as reassurance, use different copy from a position
   update, and never repeat the current position.
+
+## Team Inbox Expired WhatsApp Contract
+
+- Display channel window, conversation lifecycle, and assignment/FIFO state as
+  independent dimensions. `Expired` never implies `Resolved`, and
+  `Unresolved` never implies an active assignment.
+- An expired unresolved WhatsApp conversation shows no normal assignment or
+  **Assign to me** action. Its status action offers internal **Resolve** with a
+  required bounded reason and explains that no customer message or template
+  will be sent.
+- Customer/profile blockers remain visible as context, but the status owner's
+  explicit expired-resolution readiness determines the action. Templates do
+  not infer this exception from a badge.
+- Bulk **Resolve** requires a reason and uses the same team-scoped command as
+  single resolution. Unauthorized selections fail the transaction; replayed
+  resolved rows are idempotent.
+- The default unresolved view excludes resolved rows. Expired and Resolved
+  filters may be combined so `Expired + Unresolved` and `Expired + Resolved`
+  remain independently searchable.
 
 ## Agent Performance Analytics Page Contract
 

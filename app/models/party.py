@@ -490,6 +490,24 @@ class PartyContactPoint(Base):
             sqlite_where=text("is_primary IS TRUE AND is_active IS TRUE"),
             postgresql_where=text("is_primary IS TRUE AND is_active IS TRUE"),
         ),
+        Index(
+            "uq_party_contact_points_active_provider_identity",
+            "channel_type",
+            "provider",
+            "provider_account_id",
+            "external_subject_id",
+            unique=True,
+            sqlite_where=text(
+                "is_active IS TRUE AND channel_type IN "
+                "('facebook_messenger', 'instagram_dm') AND provider IS NOT NULL "
+                "AND provider_account_id IS NOT NULL AND external_subject_id IS NOT NULL"
+            ),
+            postgresql_where=text(
+                "is_active IS TRUE AND channel_type IN "
+                "('facebook_messenger', 'instagram_dm') AND provider IS NOT NULL "
+                "AND provider_account_id IS NOT NULL AND external_subject_id IS NOT NULL"
+            ),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

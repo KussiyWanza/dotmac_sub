@@ -7,7 +7,9 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.models.party import PartyContactPoint
 from app.models.service_team import ServiceTeam
+from app.models.subscriber import Subscriber
 from app.models.team_inbox import (
     InboxAutomationTrigger,
     InboxChannelType,
@@ -15,6 +17,7 @@ from app.models.team_inbox import (
     InboxConversationStatus,
     InboxMessage,
     InboxMessageDirection,
+    InboxParticipantRelationship,
     InboxTeamSource,
 )
 from app.schemas.fiber_inquiry import FiberInquiryRequest
@@ -23,7 +26,7 @@ from app.services import (
     inbox_sla,
     team_inbox_assignment,
     team_inbox_automation,
-    team_inbox_channel_receive,
+    team_inbox_contact_links,
     team_inbox_customer_completion_policy,
     team_inbox_fiber_receive,
     team_inbox_operations,
@@ -564,11 +567,13 @@ def receive_inbound_email(
     # The already-parsed address, not the raw `From:` header â€” a header carries
     # a display name ("Ada <ada@example.com>") and the channel normalizer does
     # not strip one, so passing it raw resolved nobody.
-    resolution = team_inbox_channel_receive.resolve_contact_context(
+    resolution = team_inbox_contact_links.resolve_contact_context(
         db,
-        channel_type=InboxChannelType.email.value,
-        contact_address=normalized_from or payload.from_address,
-        subscriber_id=payload.subscriber_id,
+        team_inbox_contact_links.ContactResolutionQuery(
+            channel_type=InboxChannelType.email.value,
+            contact_address=normalized_from or payload.from_address,
+            subscriber_id=_coerce_uuid(payload.subscriber_id),
+        ),
     )
 
     thread_message_ids = _extract_message_ids(payload.in_reply_to, payload.references)
@@ -581,7 +586,7 @@ def receive_inbound_email(
             customer_completion_policy_version_id=team_inbox_customer_completion_policy.snapshot_active_policy_id(
                 db
             ),
-            subscriber_id=resolution.subscriber_id,
+            subscriber_id=None,
             channel_type=InboxChannelType.email.value,
             status=InboxConversationStatus.open.value,
             subject=_trim_subject(payload.subject),
@@ -602,11 +607,14 @@ def receive_inbound_email(
         conversation.last_message_at = received_at
         if normalized_from and not conversation.contact_address:
             conversation.contact_address = normalized_from
-        if resolution.subscriber_id and not conversation.subscriber_id:
-            conversation.subscriber_id = resolution.subscriber_id
-        metadata = dict(conversation.metadata_ or {})
-        metadata["contact_resolution"] = resolution.as_metadata()
-        conversation.metadata_ = metadata
+    team_inbox_contact_links.apply_resolved_customer_link(
+        db,
+        team_inbox_contact_links.ApplyResolvedCustomerCommand(
+            conversation_id=conversation.id,
+            resolution=resolution,
+            reason="Inbound email identity resolution",
+        ),
+    )
 
     routing_plan = team_inbox_routing.build_email_team_routing_plan(
         db,
@@ -668,6 +676,30 @@ def receive_inbound_email(
     team_inbox_participants.record_message_participants(
         db, conversation=conversation, message=message
     )
+    if resolution.party_contact_point_id is not None and normalized_from:
+        contact_point = db.get(PartyContactPoint, resolution.party_contact_point_id)
+        customer = (
+            db.get(Subscriber, conversation.subscriber_id)
+            if conversation.subscriber_id is not None
+            else None
+        )
+        if contact_point is not None:
+            relationship = InboxParticipantRelationship.contact
+            if customer is not None and contact_point.party_id == customer.party_id:
+                relationship = InboxParticipantRelationship.customer
+            team_inbox_participants.bind_endpoint_to_contact_point(
+                db,
+                team_inbox_participants.BindEndpointContactPointCommand(
+                    conversation_id=conversation.id,
+                    channel_type=InboxChannelType.email.value,
+                    normalized_endpoint=normalized_from,
+                    provider_account_scope="default",
+                    party_contact_point_id=contact_point.id,
+                    relationship_type=relationship,
+                    source="communications.team_inbox_contact_resolution",
+                    reason="Canonical inbound identity resolved this exact endpoint",
+                ),
+            )
 
     conversation.last_message_at = received_at
     # Same wake rule as the channel path: an inbound email is the reply.
@@ -700,11 +732,11 @@ def receive_inbound_email(
         conversation_id=str(conversation.id),
         message_id=str(message.id),
         duplicate=False,
-        subscriber_id=str(resolution.subscriber_id)
-        if resolution.subscriber_id
+        subscriber_id=str(conversation.subscriber_id)
+        if conversation.subscriber_id
         else None,
         reseller_id=str(resolution.reseller_id) if resolution.reseller_id else None,
-        resolution_status=resolution.status,
+        resolution_status=resolution.status.value,
         continued_from_conversation_id=(
             str(thread_resolution.continued_from_conversation_id)
             if thread_resolution.continued_from_conversation_id is not None

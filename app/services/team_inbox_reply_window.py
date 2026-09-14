@@ -8,8 +8,10 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from uuid import UUID
 
-from sqlalchemy import func
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import Select
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.team_inbox import (
     InboxChannelType,
@@ -20,6 +22,7 @@ from app.models.team_inbox import (
 
 OWNER = "communications.team_inbox_reply_window"
 WINDOW_HOURS = 24
+WINDOW_DURATION = timedelta(hours=WINDOW_HOURS)
 
 
 class ReplyWindowStatus(StrEnum):
@@ -69,6 +72,56 @@ def _message_time() -> object:
     return func.coalesce(InboxMessage.received_at, InboxMessage.created_at)
 
 
+def qualifying_inbound_clause() -> tuple[ColumnElement[bool], ...]:
+    """Return the canonical persisted-message predicate for window evidence."""
+
+    return (
+        InboxMessage.direction == InboxMessageDirection.inbound.value,
+        or_(
+            InboxMessage.metadata_["reply_window_qualifying"].as_boolean().isnot(False),
+            InboxMessage.metadata_["reply_window_qualifying"].is_(None),
+        ),
+    )
+
+
+def latest_qualifying_inbound_subquery():
+    """SQL projection used by list, capacity, and expiry lifecycle owners."""
+
+    return (
+        select(
+            InboxMessage.conversation_id.label("conversation_id"),
+            func.max(_message_time()).label("last_inbound_at"),
+        )
+        .where(*qualifying_inbound_clause())
+        .group_by(InboxMessage.conversation_id)
+        .subquery()
+    )
+
+
+def expiry_cutoff(now: datetime | None = None) -> datetime:
+    return (_aware(now) or datetime.now(UTC)) - WINDOW_DURATION
+
+
+def expired_whatsapp_conversation_ids_query(
+    *, now: datetime | None = None
+) -> Select[tuple[UUID]]:
+    """Return the single SQL worklist definition for expired WhatsApp threads."""
+
+    latest_inbound = latest_qualifying_inbound_subquery()
+    return (
+        select(InboxConversation.id)
+        .join(
+            latest_inbound,
+            latest_inbound.c.conversation_id == InboxConversation.id,
+        )
+        .where(
+            InboxConversation.channel_type == InboxChannelType.whatsapp.value,
+            latest_inbound.c.last_inbound_at.isnot(None),
+            latest_inbound.c.last_inbound_at <= expiry_cutoff(now),
+        )
+    )
+
+
 def coerce_conversation_id(value: str | UUID | None) -> UUID | None:
     if isinstance(value, UUID):
         return value
@@ -96,11 +149,13 @@ def latest_qualifying_inbound_at(
             InboxMessage.metadata_,
         )
         .filter(InboxMessage.conversation_id == conversation_id)
-        .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
+        .filter(*qualifying_inbound_clause())
         .all()
     )
     timestamps = []
     for received_at, created_at, metadata in rows:
+        # The SQL predicate above is the authority. Keep this defensive check
+        # for rows materialized through dialects with weak JSON boolean typing.
         if (
             isinstance(metadata, Mapping)
             and metadata.get("reply_window_qualifying") is False
@@ -152,7 +207,7 @@ def decide_reply_window(
             whatsapp_template_available=template_available,
             unknown=True,
         )
-    expires_at = last_inbound + timedelta(hours=WINDOW_HOURS)
+    expires_at = last_inbound + WINDOW_DURATION
     allowed = server_time < expires_at
     return ReplyWindowDecision(
         channel_type=channel_type,

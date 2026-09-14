@@ -21,6 +21,38 @@ from app.services.settings_spec import resolve_integer
 logger = logging.getLogger(__name__)
 
 
+@celery_app.task(name="app.tasks.team_inbox.expire_whatsapp_service_windows")
+def expire_whatsapp_service_windows(*, limit: int = 200) -> dict[str, int]:
+    """Release routing state after the canonical WhatsApp window closes."""
+
+    with db_session_adapter.owner_command_session() as session:
+        result = team_inbox_maintenance.sweep_expired_whatsapp_windows(
+            session,
+            team_inbox_maintenance.WhatsAppWindowExpirySweepCommand(
+                context=CommandContext.system(
+                    actor="task:team-inbox-whatsapp-window-expiry",
+                    scope="team-inbox:maintenance",
+                    reason="release expired WhatsApp assignment and queue state",
+                ),
+                limit=limit,
+            ),
+        )
+        payload = {
+            "examined": result.examined,
+            "expired_found": result.expired_found,
+            "assignments_released": result.assignments_released,
+            "queues_cancelled": result.queues_cancelled,
+            "already_correct": result.already_correct,
+            "conflicts": result.conflicts,
+            "errors": result.errors,
+        }
+        logger.info(
+            "team inbox WhatsApp window expiry sweep complete",
+            extra={"event": "team_inbox_whatsapp_window_expiry", **payload},
+        )
+        return payload
+
+
 @celery_app.task(name="app.tasks.team_inbox.repair_whatsapp_locations")
 def repair_whatsapp_locations(
     *,

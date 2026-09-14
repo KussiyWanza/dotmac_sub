@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -49,6 +50,10 @@ class InboxConversationContactLinkRequest(BaseModel):
 
     subscriber_id: UUID | None = None
     reseller_id: UUID | None = None
+    identity_kind: Literal["customer", "representative", "reseller"] = "customer"
+    representative_party_id: UUID | None = None
+    representative_name: str | None = Field(default=None, max_length=200)
+    representative_role: str | None = Field(default=None, max_length=100)
     note: str | None = Field(default=None, max_length=500)
 
 
@@ -59,6 +64,9 @@ class InboxConversationContactLinkRead(BaseModel):
     normalized_contact: str
     subscriber_id: UUID | None = None
     reseller_id: UUID | None = None
+    disposition: str
+    party_contact_point_id: UUID | None = None
+    speaking_party_id: UUID | None = None
     previous_link_ids_deactivated: list[UUID] = Field(default_factory=list)
     repaired_conversation_ids: tuple[UUID, ...] = ()
 

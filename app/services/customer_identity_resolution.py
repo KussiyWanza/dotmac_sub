@@ -15,6 +15,16 @@ from app.models.comms import CustomerNotificationEvent
 from app.models.communication_log import CommunicationLog
 from app.models.customer_identity import CustomerIdentityIndex
 from app.models.domain_settings import SettingDomain
+from app.models.party import (
+    Party,
+    PartyContactPoint,
+    PartyContactPointType,
+    PartyContactVerificationStatus,
+    PartyIdentityStatus,
+    PartyRelationship,
+    PartyRelationshipStatus,
+    PartyRelationshipType,
+)
 from app.models.subscriber import Subscriber, SubscriberChannel, SubscriberContact
 from app.services.customer_identity_normalization import (
     IDENTITY_TYPE_EMAIL,
@@ -33,6 +43,7 @@ MATCH_VIA_SUBSCRIBER = "subscriber"
 MATCH_VIA_SUBSCRIBER_CONTACT = "subscriber_contact"
 MATCH_VIA_SUBSCRIBER_CHANNEL = "subscriber_channel"
 MATCH_VIA_HISTORICAL_PARTICIPANT = "historical_participant"
+MATCH_VIA_PARTY_CONTACT_POINT = "party_contact_point"
 
 MATCH_CONFIDENCE_NONE = "NONE"
 MATCH_CONFIDENCE_HIGH = "HIGH"
@@ -44,6 +55,8 @@ SOURCE_SUBSCRIBER_CONTACTS = "subscriber_contacts"
 SOURCE_SUBSCRIBER_CHANNELS = "subscriber_channels"
 SOURCE_COMMUNICATION_LOGS = "communication_logs"
 SOURCE_CUSTOMER_NOTIFICATION_EVENTS = "customer_notification_events"
+SOURCE_PARTY_CONTACT_POINTS = "party_contact_points"
+IDENTITY_TYPE_PROVIDER_SUBJECT = "provider_subject"
 
 AUTOMATION_SUPPRESSION_REASON_IDENTITY_REVIEW = "identity_manual_review_required"
 
@@ -64,6 +77,9 @@ class CustomerIdentityResolution:
     matched_channel_id: UUID | None = None
     source_table: str | None = None
     source_record_id: UUID | None = None
+    matched_party_contact_point_id: UUID | None = None
+    participant_party_id: UUID | None = None
+    candidate_subscriber_ids: tuple[UUID, ...] = ()
     ambiguity_count: int = 0
     match_confidence: str = MATCH_CONFIDENCE_NONE
 
@@ -107,6 +123,17 @@ class CustomerIdentityResolution:
             if self.source_record_id
             else None,
             "matched_record_source": self.source_table,
+            "matched_party_contact_point_id": (
+                str(self.matched_party_contact_point_id)
+                if self.matched_party_contact_point_id
+                else None
+            ),
+            "participant_party_id": (
+                str(self.participant_party_id) if self.participant_party_id else None
+            ),
+            "candidate_subscriber_ids": [
+                str(item) for item in self.candidate_subscriber_ids
+            ],
             "subscriber_id": str(self.subscriber_id) if self.subscriber_id else None,
             "customer_account_id": str(self.customer_account_id)
             if self.customer_account_id
@@ -129,6 +156,52 @@ class _StageMatch:
     match_confidence: str
     matched_contact_id: UUID | None = None
     matched_channel_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerIdentityQuery:
+    identifier: str | None
+    channel_hint: str | None = None
+    provider: str | None = None
+    provider_account_id: str | None = None
+    external_subject_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _IdentityEvidence:
+    subscriber_id: UUID
+    matched_via: str
+    matched_field: str
+    source_table: str
+    source_record_id: UUID
+    match_confidence: str
+    matched_contact_id: UUID | None = None
+    matched_channel_id: UUID | None = None
+    matched_party_contact_point_id: UUID | None = None
+    participant_party_id: UUID | None = None
+
+
+_PROVIDER_SCOPED_CHANNELS = frozenset(
+    {
+        PartyContactPointType.facebook_messenger.value,
+        PartyContactPointType.instagram_dm.value,
+    }
+)
+_ROUTABLE_CONTACT_RELATIONSHIPS = frozenset(
+    {
+        PartyRelationshipType.contact_for.value,
+        PartyRelationshipType.billing_contact_for.value,
+        PartyRelationshipType.technical_contact_for.value,
+        PartyRelationshipType.emergency_contact_for.value,
+    }
+)
+_EVIDENCE_RANK = {
+    MATCH_VIA_SUBSCRIBER: 0,
+    MATCH_VIA_PARTY_CONTACT_POINT: 1,
+    MATCH_VIA_SUBSCRIBER_CONTACT: 2,
+    MATCH_VIA_SUBSCRIBER_CHANNEL: 3,
+    MATCH_VIA_HISTORICAL_PARTICIPANT: 4,
+}
 
 
 def identity_resolution_requires_manual_review(
@@ -325,19 +398,53 @@ def resolve_customer_identity(
     identifier: str | None,
     *,
     channel_hint: str | None = None,
+    provider: str | None = None,
+    provider_account_id: str | None = None,
+    external_subject_id: str | None = None,
 ) -> CustomerIdentityResolution:
-    raw_identifier = str(identifier or "").strip()
+    return resolve_customer_identity_query(
+        db,
+        CustomerIdentityQuery(
+            identifier=identifier,
+            channel_hint=channel_hint,
+            provider=provider,
+            provider_account_id=provider_account_id,
+            external_subject_id=external_subject_id,
+        ),
+    )
+
+
+def resolve_customer_identity_query(
+    db: Session,
+    query: CustomerIdentityQuery,
+) -> CustomerIdentityResolution:
+    """Resolve one canonical Customer identity across every current source.
+
+    Current canonical evidence is aggregated before a decision is returned, so
+    a direct Subscriber value cannot hide a conflicting contact/channel/Party
+    identity. Historical communication evidence remains a final, low-confidence
+    fallback and never outranks current identity facts.
+    """
+
+    raw_identifier = str(query.identifier or "").strip()
     country_code = default_country_code(db)
+    inbound_channel = str(query.channel_hint or "").strip().lower() or None
+    provider_scoped = inbound_channel in _PROVIDER_SCOPED_CHANNELS
     normalized = normalize_identifier(
         raw_identifier,
-        channel_hint,
+        query.channel_hint,
         default_country_code=country_code,
     )
-    inbound_channel = str(channel_hint or "").strip().lower() or None
+    if provider_scoped:
+        normalized = str(query.external_subject_id or raw_identifier).strip() or None
     identity_type = (
-        IDENTITY_TYPE_EMAIL
-        if inbound_channel == IDENTITY_TYPE_EMAIL or "@" in raw_identifier
-        else IDENTITY_TYPE_PHONE
+        IDENTITY_TYPE_PROVIDER_SUBJECT
+        if provider_scoped
+        else (
+            IDENTITY_TYPE_EMAIL
+            if inbound_channel == IDENTITY_TYPE_EMAIL or "@" in raw_identifier
+            else IDENTITY_TYPE_PHONE
+        )
     )
     if not normalized:
         resolution = CustomerIdentityResolution(
@@ -351,157 +458,377 @@ def resolve_customer_identity(
         _log_resolution(resolution)
         return resolution
 
-    if identity_type == IDENTITY_TYPE_EMAIL:
-        resolution = _resolve_email_identity(
-            db,
-            raw_identifier,
-            normalized,
+    evidence = _current_identity_evidence(
+        db,
+        normalized=normalized,
+        identity_type=identity_type,
+        inbound_channel=inbound_channel,
+        country_code=country_code,
+        provider=(query.provider or "").strip() or None,
+        provider_account_id=(query.provider_account_id or "").strip() or None,
+        external_subject_id=(query.external_subject_id or "").strip() or None,
+    )
+    candidate_ids = tuple(sorted({item.subscriber_id for item in evidence}, key=str))
+    if len(candidate_ids) > 1:
+        resolution = CustomerIdentityResolution(
+            raw_identifier=raw_identifier,
+            normalized_identifier=normalized,
+            identity_type=identity_type,
             inbound_channel=inbound_channel,
+            matched=False,
+            ambiguous=True,
+            candidate_subscriber_ids=candidate_ids,
+            ambiguity_count=len(candidate_ids),
+        )
+    elif len(candidate_ids) == 1:
+        candidate_id = candidate_ids[0]
+        selected = min(
+            (item for item in evidence if item.subscriber_id == candidate_id),
+            key=lambda item: (
+                _EVIDENCE_RANK.get(item.matched_via, 99),
+                str(item.source_record_id),
+            ),
+        )
+        resolution = CustomerIdentityResolution(
+            raw_identifier=raw_identifier,
+            normalized_identifier=normalized,
+            identity_type=identity_type,
+            inbound_channel=inbound_channel,
+            matched=True,
+            ambiguous=False,
+            subscriber_id=selected.subscriber_id,
+            customer_account_id=selected.subscriber_id,
+            matched_via=selected.matched_via,
+            matched_field=selected.matched_field,
+            matched_contact_id=selected.matched_contact_id,
+            matched_channel_id=selected.matched_channel_id,
+            source_table=selected.source_table,
+            source_record_id=selected.source_record_id,
+            matched_party_contact_point_id=selected.matched_party_contact_point_id,
+            participant_party_id=selected.participant_party_id,
+            candidate_subscriber_ids=candidate_ids,
+            match_confidence=selected.match_confidence,
+        )
+    elif provider_scoped:
+        resolution = CustomerIdentityResolution(
+            raw_identifier=raw_identifier,
+            normalized_identifier=normalized,
+            identity_type=identity_type,
+            inbound_channel=inbound_channel,
+            matched=False,
+            ambiguous=False,
+        )
+    elif identity_type == IDENTITY_TYPE_EMAIL:
+        resolution = _resolve_historical_identity(
+            raw_identifier=raw_identifier,
+            normalized=normalized,
+            identity_type=identity_type,
+            inbound_channel=inbound_channel,
+            stage=_resolve_historical_email(db, normalized),
         )
     else:
-        resolution = _resolve_phone_identity(
-            db,
-            raw_identifier,
-            normalized,
+        resolution = _resolve_historical_identity(
+            raw_identifier=raw_identifier,
+            normalized=normalized,
+            identity_type=identity_type,
             inbound_channel=inbound_channel,
-            country_code=country_code,
+            stage=_resolve_historical_phone(
+                db,
+                normalized,
+                country_code=country_code,
+            ),
         )
 
     _log_resolution(resolution)
     return resolution
 
 
-def _resolve_email_identity(
-    db: Session,
+def _resolve_historical_identity(
+    *,
     raw_identifier: str,
     normalized: str,
-    *,
+    identity_type: str,
     inbound_channel: str | None,
+    stage: tuple[_StageMatch | None, int],
 ) -> CustomerIdentityResolution:
-    # Authoritative current identities always win. Historical participant linkage
-    # is intentionally evaluated last and stays LOW confidence only.
-    for resolver in (
-        lambda: _resolve_index_stage(
-            db,
-            identity_type=IDENTITY_TYPE_EMAIL,
-            normalized_value=normalized,
-            source_table=SOURCE_SUBSCRIBERS,
-            matched_via=MATCH_VIA_SUBSCRIBER,
-            field_order=("email",),
-        ),
-        lambda: _resolve_live_direct_email(db, normalized),
-        lambda: _resolve_index_stage(
-            db,
-            identity_type=IDENTITY_TYPE_EMAIL,
-            normalized_value=normalized,
-            source_table=SOURCE_SUBSCRIBER_CONTACTS,
-            matched_via=MATCH_VIA_SUBSCRIBER_CONTACT,
-            field_order=("email",),
-        ),
-        lambda: _resolve_live_contact_email(db, normalized),
-        lambda: _resolve_index_stage(
-            db,
-            identity_type=IDENTITY_TYPE_EMAIL,
-            normalized_value=normalized,
-            source_table=SOURCE_SUBSCRIBER_CHANNELS,
-            matched_via=MATCH_VIA_SUBSCRIBER_CHANNEL,
-            field_order=("email",),
-        ),
-        lambda: _resolve_live_channel_email(db, normalized),
-        lambda: _resolve_historical_email(db, normalized),
-    ):
-        resolution = _finalize_stage(
-            raw_identifier,
-            normalized,
-            IDENTITY_TYPE_EMAIL,
-            inbound_channel,
-            resolver(),
-        )
-        if resolution is not None:
-            return resolution
-    return CustomerIdentityResolution(
+    resolved = _finalize_stage(
+        raw_identifier,
+        normalized,
+        identity_type,
+        inbound_channel,
+        stage,
+    )
+    return resolved or CustomerIdentityResolution(
         raw_identifier=raw_identifier,
         normalized_identifier=normalized,
-        identity_type=IDENTITY_TYPE_EMAIL,
+        identity_type=identity_type,
         inbound_channel=inbound_channel,
         matched=False,
         ambiguous=False,
     )
 
 
-def _resolve_phone_identity(
+def _current_identity_evidence(
     db: Session,
-    raw_identifier: str,
-    normalized: str,
     *,
+    normalized: str,
+    identity_type: str,
     inbound_channel: str | None,
     country_code: str,
-) -> CustomerIdentityResolution:
-    # Historical participant linkage must remain the final fallback so it can
-    # never override direct subscriber, linked-contact, or subscriber-channel identities.
-    for resolver in (
-        lambda: _resolve_index_stage(
-            db,
-            identity_type=IDENTITY_TYPE_PHONE,
-            normalized_value=normalized,
-            source_table=SOURCE_SUBSCRIBERS,
-            matched_via=MATCH_VIA_SUBSCRIBER,
-            field_order=("phone",),
-        ),
-        lambda: _resolve_live_direct_phone(
-            db,
-            normalized,
-            country_code=country_code,
-        ),
-        lambda: _resolve_index_stage(
-            db,
-            identity_type=IDENTITY_TYPE_PHONE,
-            normalized_value=normalized,
-            source_table=SOURCE_SUBSCRIBER_CONTACTS,
-            matched_via=MATCH_VIA_SUBSCRIBER_CONTACT,
-            field_order=("phone", "whatsapp"),
-        ),
-        lambda: _resolve_live_contact_phone(
-            db,
-            normalized,
-            country_code=country_code,
-        ),
-        lambda: _resolve_index_stage(
-            db,
-            identity_type=IDENTITY_TYPE_PHONE,
-            normalized_value=normalized,
-            source_table=SOURCE_SUBSCRIBER_CHANNELS,
-            matched_via=MATCH_VIA_SUBSCRIBER_CHANNEL,
-            field_order=("phone", "sms", "whatsapp"),
-        ),
-        lambda: _resolve_live_channel_phone(
-            db,
-            normalized,
-            country_code=country_code,
-        ),
-        lambda: _resolve_historical_phone(
-            db,
-            normalized,
-            country_code=country_code,
-        ),
-    ):
-        resolution = _finalize_stage(
-            raw_identifier,
-            normalized,
-            IDENTITY_TYPE_PHONE,
-            inbound_channel,
-            resolver(),
+    provider: str | None,
+    provider_account_id: str | None,
+    external_subject_id: str | None,
+) -> tuple[_IdentityEvidence, ...]:
+    evidence: list[_IdentityEvidence] = []
+
+    if inbound_channel in _PROVIDER_SCOPED_CHANNELS:
+        if not (provider and provider_account_id and external_subject_id):
+            return ()
+        points = db.scalars(
+            select(PartyContactPoint).where(
+                PartyContactPoint.channel_type == inbound_channel,
+                PartyContactPoint.provider == provider,
+                PartyContactPoint.provider_account_id == provider_account_id,
+                PartyContactPoint.external_subject_id == external_subject_id,
+                PartyContactPoint.is_active.is_(True),
+                PartyContactPoint.verification_status
+                == PartyContactVerificationStatus.verified.value,
+            )
+        ).all()
+        for point in points:
+            evidence.extend(_party_contact_point_evidence(db, point))
+        return _dedupe_evidence(evidence)
+
+    index_rows = db.scalars(
+        select(CustomerIdentityIndex).where(
+            CustomerIdentityIndex.identity_type == identity_type,
+            CustomerIdentityIndex.normalized_value == normalized,
         )
-        if resolution is not None:
-            return resolution
-    return CustomerIdentityResolution(
-        raw_identifier=raw_identifier,
-        normalized_identifier=normalized,
-        identity_type=IDENTITY_TYPE_PHONE,
-        inbound_channel=inbound_channel,
-        matched=False,
-        ambiguous=False,
+    ).all()
+    for row in index_rows:
+        matched_via = {
+            SOURCE_SUBSCRIBERS: MATCH_VIA_SUBSCRIBER,
+            SOURCE_SUBSCRIBER_CONTACTS: MATCH_VIA_SUBSCRIBER_CONTACT,
+            SOURCE_SUBSCRIBER_CHANNELS: MATCH_VIA_SUBSCRIBER_CHANNEL,
+        }.get(row.source_table)
+        if matched_via is None:
+            continue
+        evidence.append(
+            _IdentityEvidence(
+                subscriber_id=row.subscriber_id,
+                matched_via=matched_via,
+                matched_field=row.source_field,
+                source_table=row.source_table,
+                source_record_id=(
+                    row.subscriber_contact_id
+                    or row.subscriber_channel_id
+                    or row.subscriber_id
+                ),
+                match_confidence=_match_confidence_for_index_row(db, row, matched_via),
+                matched_contact_id=row.subscriber_contact_id,
+                matched_channel_id=row.subscriber_channel_id,
+            )
+        )
+
+    subscribers: Sequence[Subscriber]
+    contacts: Sequence[SubscriberContact]
+    channels: Sequence[SubscriberChannel]
+    point_channels: tuple[str, ...]
+    if identity_type == IDENTITY_TYPE_EMAIL:
+        subscribers = db.scalars(
+            select(Subscriber).where(
+                func.lower(func.trim(Subscriber.email)) == normalized
+            )
+        ).all()
+        contacts = db.scalars(
+            select(SubscriberContact).where(
+                func.lower(func.trim(SubscriberContact.email)) == normalized
+            )
+        ).all()
+        channels = db.scalars(
+            select(SubscriberChannel).where(
+                SubscriberChannel.channel_type == IDENTITY_TYPE_EMAIL,
+                func.lower(func.trim(SubscriberChannel.address)) == normalized,
+            )
+        ).all()
+        point_channels = (PartyContactPointType.email.value,)
+    else:
+        subscribers = [
+            row
+            for row in db.scalars(
+                select(Subscriber).where(Subscriber.phone.is_not(None))
+            ).all()
+            if normalize_phone_identifier(row.phone, default_country_code=country_code)
+            == normalized
+        ]
+        contacts = [
+            row
+            for row in db.scalars(
+                select(SubscriberContact).where(
+                    or_(
+                        SubscriberContact.phone.is_not(None),
+                        SubscriberContact.whatsapp.is_not(None),
+                    )
+                )
+            ).all()
+            if normalize_phone_identifier(row.phone, default_country_code=country_code)
+            == normalized
+            or normalize_phone_identifier(
+                row.whatsapp, default_country_code=country_code
+            )
+            == normalized
+        ]
+        channels = [
+            row
+            for row in db.scalars(
+                select(SubscriberChannel).where(
+                    SubscriberChannel.address.is_not(None),
+                    SubscriberChannel.channel_type.in_(
+                        (IDENTITY_TYPE_PHONE, "sms", "whatsapp")
+                    ),
+                )
+            ).all()
+            if normalize_phone_identifier(
+                row.address, default_country_code=country_code
+            )
+            == normalized
+        ]
+        point_channels = (
+            PartyContactPointType.phone.value,
+            PartyContactPointType.sms.value,
+            PartyContactPointType.whatsapp.value,
+        )
+
+    for subscriber in subscribers:
+        evidence.append(
+            _IdentityEvidence(
+                subscriber_id=subscriber.id,
+                matched_via=MATCH_VIA_SUBSCRIBER,
+                matched_field=identity_type,
+                source_table=SOURCE_SUBSCRIBERS,
+                source_record_id=subscriber.id,
+                match_confidence=MATCH_CONFIDENCE_HIGH,
+                participant_party_id=subscriber.party_id,
+            )
+        )
+    for contact in contacts:
+        matched_field = "email"
+        if identity_type == IDENTITY_TYPE_PHONE:
+            matched_field = (
+                "phone"
+                if normalize_phone_identifier(
+                    contact.phone, default_country_code=country_code
+                )
+                == normalized
+                else "whatsapp"
+            )
+        evidence.append(
+            _IdentityEvidence(
+                subscriber_id=contact.subscriber_id,
+                matched_via=MATCH_VIA_SUBSCRIBER_CONTACT,
+                matched_field=matched_field,
+                source_table=SOURCE_SUBSCRIBER_CONTACTS,
+                source_record_id=contact.id,
+                match_confidence=MATCH_CONFIDENCE_MEDIUM,
+                matched_contact_id=contact.id,
+                participant_party_id=contact.person_party_id,
+            )
+        )
+    for channel in channels:
+        channel_value = str(
+            channel.channel_type.value if channel.channel_type else identity_type
+        )
+        evidence.append(
+            _IdentityEvidence(
+                subscriber_id=channel.subscriber_id,
+                matched_via=MATCH_VIA_SUBSCRIBER_CHANNEL,
+                matched_field=channel_value,
+                source_table=SOURCE_SUBSCRIBER_CHANNELS,
+                source_record_id=channel.id,
+                match_confidence=(
+                    MATCH_CONFIDENCE_HIGH
+                    if channel.is_verified
+                    else MATCH_CONFIDENCE_MEDIUM
+                ),
+                matched_channel_id=channel.id,
+            )
+        )
+
+    points = db.scalars(
+        select(PartyContactPoint).where(
+            PartyContactPoint.channel_type.in_(point_channels),
+            PartyContactPoint.is_active.is_(True),
+            PartyContactPoint.verification_status
+            == PartyContactVerificationStatus.verified.value,
+        )
+    ).all()
+    for point in points:
+        candidate_value = (
+            point.normalized_value.casefold()
+            if identity_type == IDENTITY_TYPE_EMAIL
+            else normalize_phone_identifier(
+                point.normalized_value, default_country_code=country_code
+            )
+        )
+        if candidate_value == normalized:
+            evidence.extend(_party_contact_point_evidence(db, point))
+    return _dedupe_evidence(evidence)
+
+
+def _party_contact_point_evidence(
+    db: Session,
+    point: PartyContactPoint,
+) -> tuple[_IdentityEvidence, ...]:
+    party = db.get(Party, point.party_id)
+    if party is None or party.status in {
+        PartyIdentityStatus.merged.value,
+        PartyIdentityStatus.archived.value,
+    }:
+        return ()
+    subscriber_ids = set(
+        db.scalars(select(Subscriber.id).where(Subscriber.party_id == point.party_id))
     )
+    represented_party_ids = set(
+        db.scalars(
+            select(PartyRelationship.object_party_id).where(
+                PartyRelationship.subject_party_id == point.party_id,
+                PartyRelationship.relationship_type.in_(
+                    _ROUTABLE_CONTACT_RELATIONSHIPS
+                ),
+                PartyRelationship.status == PartyRelationshipStatus.active.value,
+            )
+        )
+    )
+    if represented_party_ids:
+        subscriber_ids.update(
+            db.scalars(
+                select(Subscriber.id).where(
+                    Subscriber.party_id.in_(represented_party_ids)
+                )
+            )
+        )
+    return tuple(
+        _IdentityEvidence(
+            subscriber_id=subscriber_id,
+            matched_via=MATCH_VIA_PARTY_CONTACT_POINT,
+            matched_field=point.channel_type,
+            source_table=SOURCE_PARTY_CONTACT_POINTS,
+            source_record_id=point.id,
+            match_confidence=MATCH_CONFIDENCE_HIGH,
+            matched_party_contact_point_id=point.id,
+            participant_party_id=point.party_id,
+        )
+        for subscriber_id in sorted(subscriber_ids, key=str)
+    )
+
+
+def _dedupe_evidence(
+    evidence: Iterable[_IdentityEvidence],
+) -> tuple[_IdentityEvidence, ...]:
+    unique: dict[tuple[UUID, str, UUID], _IdentityEvidence] = {}
+    for item in evidence:
+        unique[(item.subscriber_id, item.source_table, item.source_record_id)] = item
+    return tuple(unique.values())
 
 
 def _finalize_stage(
@@ -545,69 +872,6 @@ def _finalize_stage(
     )
 
 
-def _resolve_index_stage(
-    db: Session,
-    *,
-    identity_type: str,
-    normalized_value: str,
-    source_table: str,
-    matched_via: str,
-    field_order: tuple[str, ...],
-) -> tuple[_StageMatch | None, int]:
-    rows = db.scalars(
-        select(CustomerIdentityIndex).where(
-            CustomerIdentityIndex.identity_type == identity_type,
-            CustomerIdentityIndex.normalized_value == normalized_value,
-            CustomerIdentityIndex.source_table == source_table,
-        )
-    ).all()
-    return _collapse_index_rows(
-        db,
-        rows,
-        matched_via=matched_via,
-        field_order=field_order,
-    )
-
-
-def _collapse_index_rows(
-    db: Session,
-    rows: Sequence[CustomerIdentityIndex],
-    *,
-    matched_via: str,
-    field_order: tuple[str, ...],
-) -> tuple[_StageMatch | None, int]:
-    if not rows:
-        return (None, 0)
-    unique_subscribers = {
-        row.subscriber_id for row in rows if row.subscriber_id is not None
-    }
-    if len(unique_subscribers) > 1:
-        return (None, len(unique_subscribers))
-    field_rank = {field: index for index, field in enumerate(field_order)}
-    row = sorted(
-        rows,
-        key=lambda item: (
-            field_rank.get(item.source_field, len(field_rank)),
-            str(item.subscriber_contact_id or item.subscriber_channel_id or item.id),
-        ),
-    )[0]
-    return (
-        _StageMatch(
-            subscriber_id=row.subscriber_id,
-            matched_via=matched_via,
-            matched_field=row.source_field,
-            source_table=row.source_table,
-            source_record_id=row.subscriber_contact_id
-            or row.subscriber_channel_id
-            or row.subscriber_id,
-            match_confidence=_match_confidence_for_index_row(db, row, matched_via),
-            matched_contact_id=row.subscriber_contact_id,
-            matched_channel_id=row.subscriber_channel_id,
-        ),
-        1,
-    )
-
-
 def _match_confidence_for_index_row(
     db: Session,
     row: CustomerIdentityIndex,
@@ -629,234 +893,6 @@ def _match_confidence_for_index_row(
             else MATCH_CONFIDENCE_MEDIUM
         )
     return MATCH_CONFIDENCE_LOW
-
-
-def _resolve_live_direct_email(
-    db: Session, normalized_value: str
-) -> tuple[_StageMatch | None, int]:
-    rows = db.scalars(
-        select(Subscriber.id).where(func.lower(Subscriber.email) == normalized_value)
-    ).all()
-    return _collapse_subscriber_rows(
-        rows, matched_via=MATCH_VIA_SUBSCRIBER, field="email"
-    )
-
-
-def _resolve_live_direct_phone(
-    db: Session, normalized_value: str, *, country_code: str
-) -> tuple[_StageMatch | None, int]:
-    subscribers = db.scalars(
-        select(Subscriber).where(Subscriber.phone.is_not(None))
-    ).all()
-    rows = [
-        subscriber.id
-        for subscriber in subscribers
-        if normalize_phone_identifier(
-            subscriber.phone, default_country_code=country_code
-        )
-        == normalized_value
-    ]
-    return _collapse_subscriber_rows(
-        rows, matched_via=MATCH_VIA_SUBSCRIBER, field="phone"
-    )
-
-
-def _collapse_subscriber_rows(
-    subscriber_ids: Sequence[UUID],
-    *,
-    matched_via: str,
-    field: str,
-) -> tuple[_StageMatch | None, int]:
-    unique_subscribers = {
-        subscriber_id for subscriber_id in subscriber_ids if subscriber_id
-    }
-    if not unique_subscribers:
-        return (None, 0)
-    if len(unique_subscribers) > 1:
-        return (None, len(unique_subscribers))
-    subscriber_id = next(iter(unique_subscribers))
-    return (
-        _StageMatch(
-            subscriber_id=subscriber_id,
-            matched_via=matched_via,
-            matched_field=field,
-            source_table=SOURCE_SUBSCRIBERS,
-            source_record_id=subscriber_id,
-            match_confidence=MATCH_CONFIDENCE_HIGH,
-        ),
-        1,
-    )
-
-
-def _resolve_live_contact_email(
-    db: Session, normalized_value: str
-) -> tuple[_StageMatch | None, int]:
-    contacts = db.scalars(
-        select(SubscriberContact).where(
-            func.lower(SubscriberContact.email) == normalized_value
-        )
-    ).all()
-    return _collapse_contact_rows(contacts, field_order=("email",))
-
-
-def _resolve_live_contact_phone(
-    db: Session, normalized_value: str, *, country_code: str
-) -> tuple[_StageMatch | None, int]:
-    contacts = db.scalars(
-        select(SubscriberContact).where(
-            or_(
-                SubscriberContact.phone.is_not(None),
-                SubscriberContact.whatsapp.is_not(None),
-            )
-        )
-    ).all()
-    matches = [
-        contact
-        for contact in contacts
-        if normalize_phone_identifier(contact.phone, default_country_code=country_code)
-        == normalized_value
-        or normalize_phone_identifier(
-            contact.whatsapp, default_country_code=country_code
-        )
-        == normalized_value
-    ]
-    return _collapse_contact_rows(
-        matches,
-        field_order=("phone", "whatsapp"),
-        normalized_value=normalized_value,
-        country_code=country_code,
-    )
-
-
-def _collapse_contact_rows(
-    contacts: Sequence[SubscriberContact],
-    *,
-    field_order: tuple[str, ...],
-    normalized_value: str | None = None,
-    country_code: str | None = None,
-) -> tuple[_StageMatch | None, int]:
-    if not contacts:
-        return (None, 0)
-    unique_subscribers = {
-        contact.subscriber_id
-        for contact in contacts
-        if contact.subscriber_id is not None
-    }
-    if len(unique_subscribers) > 1:
-        return (None, len(unique_subscribers))
-    field_rank = {field: index for index, field in enumerate(field_order)}
-
-    def _matched_field(contact: SubscriberContact) -> str:
-        phone_country_code = country_code or default_country_code()
-        if (
-            "phone" in field_order
-            and normalize_phone_identifier(
-                contact.phone, default_country_code=phone_country_code
-            )
-            == normalized_value
-        ):
-            return "phone"
-        if (
-            "whatsapp" in field_order
-            and normalize_phone_identifier(
-                contact.whatsapp, default_country_code=phone_country_code
-            )
-            == normalized_value
-        ):
-            return "whatsapp"
-        return field_order[0]
-
-    contact = sorted(
-        contacts,
-        key=lambda item: (
-            field_rank.get(_matched_field(item), len(field_rank)),
-            str(item.id),
-        ),
-    )[0]
-    return (
-        _StageMatch(
-            subscriber_id=contact.subscriber_id,
-            matched_via=MATCH_VIA_SUBSCRIBER_CONTACT,
-            matched_field=_matched_field(contact),
-            source_table=SOURCE_SUBSCRIBER_CONTACTS,
-            source_record_id=contact.id,
-            match_confidence=MATCH_CONFIDENCE_MEDIUM,
-            matched_contact_id=contact.id,
-        ),
-        1,
-    )
-
-
-def _resolve_live_channel_email(
-    db: Session, normalized_value: str
-) -> tuple[_StageMatch | None, int]:
-    channels = db.scalars(
-        select(SubscriberChannel).where(
-            func.lower(SubscriberChannel.address) == normalized_value
-        )
-    ).all()
-    return _collapse_channel_rows(channels, field_order=("email",))
-
-
-def _resolve_live_channel_phone(
-    db: Session, normalized_value: str, *, country_code: str
-) -> tuple[_StageMatch | None, int]:
-    channels = db.scalars(
-        select(SubscriberChannel).where(SubscriberChannel.address.is_not(None))
-    ).all()
-    matches = [
-        channel
-        for channel in channels
-        if normalize_phone_identifier(
-            channel.address, default_country_code=country_code
-        )
-        == normalized_value
-    ]
-    return _collapse_channel_rows(matches, field_order=("phone", "sms", "whatsapp"))
-
-
-def _collapse_channel_rows(
-    channels: Sequence[SubscriberChannel],
-    *,
-    field_order: tuple[str, ...],
-) -> tuple[_StageMatch | None, int]:
-    if not channels:
-        return (None, 0)
-    unique_subscribers = {
-        channel.subscriber_id
-        for channel in channels
-        if channel.subscriber_id is not None
-    }
-    if len(unique_subscribers) > 1:
-        return (None, len(unique_subscribers))
-    field_rank = {field: index for index, field in enumerate(field_order)}
-    channel = sorted(
-        channels,
-        key=lambda item: (
-            field_rank.get(
-                str(item.channel_type.value if item.channel_type else "address"),
-                len(field_rank),
-            ),
-            str(item.id),
-        ),
-    )[0]
-    matched_field = str(
-        channel.channel_type.value if channel.channel_type else "address"
-    )
-    return (
-        _StageMatch(
-            subscriber_id=channel.subscriber_id,
-            matched_via=MATCH_VIA_SUBSCRIBER_CHANNEL,
-            matched_field=matched_field,
-            source_table=SOURCE_SUBSCRIBER_CHANNELS,
-            source_record_id=channel.id,
-            match_confidence=MATCH_CONFIDENCE_HIGH
-            if channel.is_verified
-            else MATCH_CONFIDENCE_MEDIUM,
-            matched_channel_id=channel.id,
-        ),
-        1,
-    )
 
 
 def _resolve_historical_email(

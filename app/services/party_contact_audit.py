@@ -32,7 +32,7 @@ from app.services.customer_identity_normalization import (
     normalize_email_identifier,
     normalize_phone_identifier,
 )
-from app.services.team_inbox_channel_receive import _normalize_contact
+from app.services.team_inbox_contact_links import normalize_contact_address
 
 _EVIDENCE_COLUMNS = {
     "party_bound_at",
@@ -444,8 +444,10 @@ def _inbox_projection_counts(
             normalized_values = {
                 value
                 for value in (
-                    _normalize_contact(db, link.channel_type, point.normalized_value),
-                    _normalize_contact(
+                    normalize_contact_address(
+                        db, link.channel_type, point.normalized_value
+                    ),
+                    normalize_contact_address(
                         db, link.channel_type, point.external_subject_id
                     ),
                 )

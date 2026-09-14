@@ -12,10 +12,12 @@
 Migration 354 gives a reviewed `SubscriberContact` row an optional Person Party
 binding, then records exactly which canonical relationship and contact points
 represent its legacy fields. It also lets an existing `InboxContactLink` point
-to reviewed canonical reachability without changing how Inbox currently routes
-or resolves a conversation.
+to reviewed canonical reachability. Migration 595 completes the identity-reader
+cutover for Team Inbox resolution while leaving routing and thread admission
+unchanged.
 
-This remains an additive reviewed projection rather than a data backfill.
+The Party schema remains an additive reviewed projection rather than an
+automatic identity backfill.
 Inbox customer-history reads may use an active reviewed contact-point binding
 to group conversations for the exact Party. Existing legacy contact reads,
 Inbox routing and thread admission, account state, subscription state,
@@ -32,7 +34,7 @@ eligibility, verification, and consent remain unchanged.
 | Canonical contact-point value, provider scope, verification, and consent | `party.registry` | Existing Party fact; no legacy flag is copied into it |
 | Legacy contact field to canonical contact-point evidence | `party.registry` | Nullable projection rows; one row per reviewed source field |
 | Inbox channel/normalized-contact target and active-route lifecycle | `communications.team_inbox_routing` | Existing runtime authority remains unchanged |
-| Inbox route to canonical contact point | `communications.team_inbox_contact_resolution` | Nullable reviewed projection; read by customer history, not routing or thread admission |
+| Inbox route to canonical contact point | `communications.team_inbox_contact_resolution` | Nullable reviewed projection; read by customer history and identity resolution, not routing or thread admission |
 | `SubscriberContact.is_authorized` and login/access decisions | Existing customer/auth owners | A relationship or contact point never grants access |
 
 Party code cannot write an Inbox row. Team Inbox validates canonical Party
@@ -120,7 +122,16 @@ target.
 `chat_widget` and `note` have no canonical contact-point mapping in this slice.
 They remain explicit unsupported-channel counts; no opaque value is guessed
 into a person. Binding preserves `subscriber_id`/`reseller_id`, `is_active`,
-`source`, conversation state, and all current resolution behavior.
+`source` and conversation lifecycle state; identity resolution changes only
+through the explicit migration-595 cutover contract below.
+
+Migration `595_team_inbox_provider_identity_scope` adds provider, provider
+account, and external-subject scope to Inbox links. Active Messenger/Instagram
+identity uniqueness is enforced on that tuple, while no constraint limits how
+many identities one Party may own. The same-looking subject under another page
+or business account is a different identity. A unique active provider identity
+cannot be assigned to two unrelated Parties. Legacy unscoped social links stay
+unresolved until reviewed; deployment does not guess their account scope.
 
 ## Read-only audit
 

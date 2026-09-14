@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.ai_intake import AiIntakeConfig
+from app.models.audit import AuditActorType
 from app.models.domain_settings import SettingDomain
 from app.models.lead_intake import (
     LeadIntakeAssessment,
@@ -39,8 +40,13 @@ from app.models.sales import (
     PipelineStage,
 )
 from app.models.service_team import ServiceTeam
+from app.models.subscriber import Subscriber
 from app.models.system_user import SystemUser
-from app.models.team_inbox import InboxConversation, InboxMessage
+from app.models.team_inbox import (
+    InboxConversation,
+    InboxMessage,
+    InboxParticipantRelationship,
+)
 from app.schemas.lead_intake import (
     AiLeadIntakeClassification,
     LeadIntakeSubmission,
@@ -49,6 +55,7 @@ from app.schemas.lead_intake import (
 )
 from app.services import (
     conversation_lead_relationships,
+    team_inbox_contact_links,
     team_inbox_operations,
     team_inbox_participants,
 )
@@ -115,6 +122,11 @@ class TemplateAction(StrEnum):
     update = "update"
     publish = "publish"
     retire = "retire"
+
+
+class SubmitLeadIntakeKind(StrEnum):
+    lead_created = "lead_created"
+    customer_linked = "customer_linked"
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,11 +212,12 @@ class SubmitLeadIntakeCommand:
 class SubmitLeadIntakeOutcome:
     invitation_id: UUID
     conversation_id: UUID
-    lead_id: UUID
-    party_id: UUID
+    lead_id: UUID | None
+    party_id: UUID | None
     thank_you_message: str
     confirmation_message: str
     replayed: bool
+    kind: SubmitLeadIntakeKind = SubmitLeadIntakeKind.lead_created
 
 
 @dataclass(frozen=True, slots=True)
@@ -606,20 +619,28 @@ def _manual_invitation_eligibility(
         return ManualInvitationEligibility(
             False, "Lead intake is only for people not linked to a customer account."
         )
-    if (
-        conversation.channel_type in {"email", "whatsapp"}
-        and conversation.contact_address
-        and verify_customer_identity
-    ):
-        # The Inbox route resolver predates SubscriberContact. Recheck the
-        # canonical identity index so a customer's saved contact person is not
-        # accidentally treated as a new lead.
-        from app.services.customer_identity_resolution import resolve_customer_identity
-
-        identity = resolve_customer_identity(
-            db, conversation.contact_address, channel_hint=conversation.channel_type
+    if conversation.contact_address and verify_customer_identity:
+        provider, provider_account_id, external_subject_id = (
+            team_inbox_contact_links.conversation_provider_identity(db, conversation)
         )
-        if identity.matched or identity.ambiguous:
+        identity = team_inbox_contact_links.resolve_contact_context(
+            db,
+            team_inbox_contact_links.ContactResolutionQuery(
+                channel_type=conversation.channel_type,
+                contact_address=conversation.contact_address,
+                contact_name=str(
+                    (conversation.metadata_ or {}).get("contact_name") or ""
+                )
+                or None,
+                provider=provider,
+                provider_account_id=provider_account_id,
+                external_subject_id=external_subject_id,
+            ),
+        )
+        if identity.status in {
+            team_inbox_contact_links.ContactResolutionStatus.linked_subscriber,
+            team_inbox_contact_links.ContactResolutionStatus.ambiguous,
+        }:
             return ManualInvitationEligibility(
                 False,
                 "This person matches a customer or customer contact and cannot receive a lead form.",
@@ -1163,6 +1184,31 @@ def submit_form(
                 kind="not_found",
             )
         template = invitation.template
+        if (
+            invitation.status == LeadIntakeInvitationStatus.revoked.value
+            and invitation.revoked_reason == "Canonical Customer identity resolved"
+        ):
+            linked_conversation = db.get(InboxConversation, invitation.conversation_id)
+            linked_customer = (
+                db.get(Subscriber, linked_conversation.subscriber_id)
+                if linked_conversation is not None
+                and linked_conversation.subscriber_id is not None
+                else None
+            )
+            if linked_customer is not None:
+                return SubmitLeadIntakeOutcome(
+                    invitation_id=invitation.id,
+                    conversation_id=invitation.conversation_id,
+                    lead_id=None,
+                    party_id=linked_customer.party_id,
+                    thank_you_message=(
+                        "Thank you. We matched this conversation to your existing "
+                        "Customer account; no duplicate Lead was created."
+                    ),
+                    confirmation_message="",
+                    replayed=True,
+                    kind=SubmitLeadIntakeKind.customer_linked,
+                )
         if invitation.status == "completed":
             assert invitation.lead_id and invitation.party_id
             conversation_lead_relationships.link_conversation_lead_participant(
@@ -1200,6 +1246,76 @@ def submit_form(
                 kind="invalid",
                 field="privacy_acknowledged",
             )
+        conversation = db.scalars(
+            select(InboxConversation)
+            .where(
+                InboxConversation.id == invitation.conversation_id,
+                InboxConversation.is_active.is_(True),
+            )
+            .with_for_update()
+        ).one_or_none()
+        if conversation is None:
+            raise _error(
+                "conversation_not_found",
+                "Inbox conversation was not found.",
+                kind="not_found",
+            )
+        if conversation.subscriber_id is None:
+            identity_outcome = (
+                team_inbox_contact_links.resolve_and_link_conversation_customer(
+                    db,
+                    team_inbox_contact_links.ResolveConversationCustomerCommand(
+                        conversation_id=conversation.id,
+                        reason="Lead intake pre-creation canonical identity recheck",
+                    ),
+                )
+            )
+        else:
+            identity_outcome = None
+        if conversation.subscriber_id is not None:
+            customer = db.get(Subscriber, conversation.subscriber_id)
+            invitation.status = LeadIntakeInvitationStatus.revoked.value
+            invitation.revoked_at = now
+            invitation.revoked_reason = "Canonical Customer identity resolved"
+            stage_audit_event(
+                db,
+                action="lead_intake.customer_linked",
+                entity_type="lead_intake_invitation",
+                entity_id=str(invitation.id),
+                actor_type=AuditActorType.service,
+                actor_id=OWNER,
+                request_id=str(command.context.command_id),
+                metadata={
+                    "conversation_id": str(conversation.id),
+                    "customer_id": str(conversation.subscriber_id),
+                    "party_id": (
+                        str(customer.party_id)
+                        if customer is not None and customer.party_id is not None
+                        else None
+                    ),
+                    "matched_via": (
+                        identity_outcome.resolution.matched_via
+                        if identity_outcome is not None
+                        else "existing_conversation_association"
+                    ),
+                    "lead_created": False,
+                },
+            )
+            db.flush()
+            return SubmitLeadIntakeOutcome(
+                invitation_id=invitation.id,
+                conversation_id=conversation.id,
+                lead_id=None,
+                party_id=customer.party_id if customer is not None else None,
+                thank_you_message=(
+                    "Thank you. We matched this conversation to your existing "
+                    "Customer account; no duplicate Lead was created."
+                ),
+                confirmation_message="",
+                replayed=False,
+                kind=SubmitLeadIntakeKind.customer_linked,
+            )
+        conversation = _unknown_conversation(db, invitation.conversation_id)
         address = _validated_address(command)
         party_type = LeadIntakePartyType(template.party_type)
         representative_party_id = None
@@ -1334,14 +1450,21 @@ def submit_form(
             pipeline_id=template.pipeline_id,
             stage_id=template.stage_id,
         )
-        conversation = _unknown_conversation(db, invitation.conversation_id)
         team_inbox_participants.bind_endpoint_to_contact_point(
             db,
-            conversation_id=conversation.id,
-            channel_type=invitation.channel_type,
-            normalized_endpoint=invitation.normalized_endpoint,
-            provider_account_scope=invitation.provider_account_scope,
-            party_contact_point_id=contact_point.id,
+            team_inbox_participants.BindEndpointContactPointCommand(
+                conversation_id=conversation.id,
+                channel_type=invitation.channel_type,
+                normalized_endpoint=invitation.normalized_endpoint,
+                provider_account_scope=invitation.provider_account_scope,
+                party_contact_point_id=contact_point.id,
+                relationship_type=InboxParticipantRelationship.contact,
+                source=OWNER,
+                reason=(
+                    "Customer completed the single-use form issued to this exact "
+                    "endpoint"
+                ),
+            ),
         )
         team_inbox_operations.route_to_service_team(
             db,

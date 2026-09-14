@@ -16,7 +16,10 @@
 {% if contact_context %}
 {% set completion = contact_context.resolution_readiness %}
 {% call ctx_section("Resolution readiness") %}
-    {% if completion.classification.value == 'customer' %}
+    {% if completion.requires_resolution_reason %}
+        <p class="text-xs font-semibold text-rose-700 dark:text-rose-300">WhatsApp window expired · Internal Resolve enabled with a reason</p>
+        <p class="mt-2 text-xs text-slate-500">Customer/profile blockers remain visible as context but do not trap this expired conversation.</p>
+    {% elif completion.classification.value == 'customer' %}
         <p class="text-xs font-semibold {% if completion.can_agent_resolve %}text-emerald-700 dark:text-emerald-300{% else %}text-rose-700 dark:text-rose-300{% endif %}">
             {% if completion.can_agent_resolve %}Customer information complete · Resolve enabled{% else %}Customer information incomplete · Resolve disabled{% endif %}
         </p>
@@ -30,7 +33,7 @@
         <p class="text-xs font-semibold text-emerald-700 dark:text-emerald-300">Lead information is optional · Resolve remains available</p>
     {% else %}
         <p class="text-xs font-semibold text-rose-700 dark:text-rose-300">Identify this conversation as a Customer or Lead before resolving it.</p>
-        <div class="mt-3 grid gap-3 sm:grid-cols-2">
+        <div class="mt-3 grid gap-3 sm:grid-cols-3">
             <form method="post" action="/admin/inbox/{{ contact_context.conversation_id }}/contact-link" class="space-y-2 rounded-lg border border-slate-200 p-3 dark:border-slate-700">
                 {% include "components/forms/csrf_input.html" %}
                 <input type="hidden" name="target_type" value="subscriber">
@@ -42,6 +45,25 @@
                 </label>
                 <p class="text-[11px] text-slate-500">Customer selection only links an existing record. Inbox never creates Customers.</p>
                 <button class="min-h-10 w-full rounded-lg border border-cyan-300 px-3 text-xs font-semibold text-cyan-800 dark:border-cyan-700 dark:text-cyan-200">Link Customer</button>
+            </form>
+            <form method="post" action="/admin/inbox/{{ contact_context.conversation_id }}/contact-link" class="space-y-2 rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+                {% include "components/forms/csrf_input.html" %}
+                <input type="hidden" name="target_type" value="representative">
+                <p class="text-xs font-semibold text-slate-700 dark:text-slate-200">Representative for a Customer</p>
+                <label class="block text-[11px] text-slate-500">Customer
+                    <select name="subscriber_id" required class="mt-1 min-h-10 w-full rounded-lg border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950">
+                        <option value="">Select Customerâ€¦</option>
+                        {% for candidate in contact_link_candidates.subscribers %}<option value="{{ candidate.id }}">{{ candidate.label }}</option>{% endfor %}
+                    </select>
+                </label>
+                <label class="block text-[11px] text-slate-500">Person speaking
+                    <input name="representative_name" required autocomplete="name" class="mt-1 min-h-10 w-full rounded-lg border-slate-300 px-3 text-xs dark:border-slate-700 dark:bg-slate-950">
+                </label>
+                <label class="block text-[11px] text-slate-500">Role (optional)
+                    <input name="representative_role" placeholder="e.g. IT manager" class="mt-1 min-h-10 w-full rounded-lg border-slate-300 px-3 text-xs dark:border-slate-700 dark:bg-slate-950">
+                </label>
+                <p class="text-[11px] text-slate-500">Keeps the speaker's identity separate while linking the conversation to the represented Customer.</p>
+                <button class="min-h-10 w-full rounded-lg border border-cyan-300 px-3 text-xs font-semibold text-cyan-800 dark:border-cyan-700 dark:text-cyan-200">Link representative</button>
             </form>
             <div class="rounded-lg border border-slate-200 p-3 text-xs dark:border-slate-700">
                 <p class="font-semibold text-slate-700 dark:text-slate-200">Lead</p>
@@ -113,6 +135,28 @@
         </dl>
     {% else %}{{ state(contact_context.profile, "No profile data.") }}{% endif %}
 {% endcall %}
+
+{% call ctx_section("Linked identities") %}
+    {% if contact_context.linked_identities.availability.value == 'available' %}
+        <div class="space-y-2">
+            {% for identity in contact_context.linked_identities.items %}
+            <div class="rounded-lg border border-slate-200 p-2 text-xs dark:border-slate-700">
+                <div class="flex items-start justify-between gap-2"><strong>{{ identity.channel_type | replace('_', ' ') | title }}</strong>{% if identity.is_primary %}<span class="text-[10px] font-semibold uppercase tracking-wide text-cyan-700 dark:text-cyan-300">Primary</span>{% endif %}</div>
+                <p class="mt-1 break-all text-slate-700 dark:text-slate-200">{{ identity.label }}</p>
+                {% if identity.provider_label %}<p class="mt-1 text-[11px] text-slate-500">{{ identity.provider_label }}</p>{% endif %}
+            </div>
+            {% endfor %}
+        </div>
+    {% else %}{{ state(contact_context.linked_identities, "No linked communication identities.") }}{% endif %}
+{% endcall %}
+
+{% if contact_context.speaking_parties.availability.value == 'available' %}
+{% call ctx_section("Person speaking") %}
+    {% for speaker in contact_context.speaking_parties.items %}
+    <div class="rounded-lg border border-slate-200 p-2 text-xs dark:border-slate-700"><strong>{{ speaker.display_name }}</strong><span class="mt-1 block text-[11px] text-slate-500">Representative for this Customer</span></div>
+    {% endfor %}
+{% endcall %}
+{% endif %}
 
 {% call ctx_section("Leads") %}
     {% if contact_context.leads.availability.value == 'available' %}

@@ -47,17 +47,17 @@ combined Inbox/Support workspace.
 | Inbound provider facts, deduplication, and identity-collision quarantine | `communications.team_inbox_observations` | Commits one normalized provider observation before consequences and durably quarantines conflicting SMTP candidates |
 | Consequence coordination | `communications.team_inbox_processing` | Locks a committed observation and invokes the relevant participants once |
 | Conversation identity and threading | `communications.team_inbox_threads` | Resolves provider message/thread identity and writes conversations/messages |
-| Contact, subscriber, reseller, and reviewed context | `communications.team_inbox_contact_resolution` | Produces explicit matched, ambiguous, suppressed, or unmatched outcomes and owns reviewed links |
+| Contact, subscriber, reseller, and reviewed context | `communications.team_inbox_contact_resolution` | Aggregates canonical Customer identities, produces explicit matched, ambiguous, suppressed, or unmatched outcomes, persists safe automatic Customer links, and owns reviewed links |
 | Conversation-to-Lead provenance | `communications.conversation_lead_relationships` | Owns the durable, auditable, one-active-Lead-per-conversation relationship |
 | Customer context drawer | `communications.team_inbox_contact_context` | Composes permission-scoped Party, Lead, Ticket, conversation, Project, and Task sections with typed availability |
 | Profile and Lead action resolution | `communications.inbox_lead_actions` | Resolves and coordinates identity-aware actions without owning Party or Lead fields |
 | Customer completion policy | `communications.team_inbox_customer_completion_policy` | Creates immutable Customer-only required-field versions snapshotted by new conversations |
 | Customer resolution readiness and Inbox profile completion | `communications.team_inbox_customer_completion` | Computes the central Customer-only gate and coordinates `customer.canonical_profile_patch` plus `party.registry`; Lead completeness is advisory |
-| Routing, assignment, escalation, and FIFO queue | `communications.team_inbox_routing` | Applies configured team, availability, permission, SLA, durable queue admission, and promotion policy |
+| Routing, assignment, escalation, and FIFO queue | `communications.team_inbox_routing` | Applies configured team, availability, permission, SLA, durable queue admission/promotion, and expired-WhatsApp assignment release policy |
 | Inbox automation | `communications.team_inbox_automation` | Matches Inbox-scoped conversation triggers and coordinates ordered assign, auto-assign, and tag actions |
 | Reply reminders | `communications.team_inbox_reply_reminders` | Owns configured first/repeat due times and queues internal agent notifications until a reply settles the schedule |
 | Agent introductions | `communications.team_inbox_agent_introduction` | Owns per-agent templates and the chat-widget-only first-pickup auto-send decision |
-| Conversation status | `communications.team_inbox_status` | Owns every status transition and its immutable evidence |
+| Conversation status | `communications.team_inbox_status` | Owns every status transition, controlled expired-WhatsApp resolution admission, and immutable evidence |
 | Historical lifecycle reconstruction | `communications.team_inbox_audit_reconstruction` | Applies only reviewed, hash-bound, provenance-graded historical evidence |
 | Lifecycle audit timeline and drift | `communications.team_inbox_audit_projection` | Combines immutable evidence, exposes coverage, and reports current-state drift |
 | Operator read/unread state | `communications.team_inbox_operator_state` | Owns per-person monotonic read cursors and unread repair |
@@ -71,7 +71,7 @@ combined Inbox/Support workspace.
 | List/detail/metrics/actions, media, and location presentation | `communications.team_inbox_projection` | Normalizes filters, sort and pagination, computes KPIs, unread and action eligibility, resolves safe inline-image versus download-only media presentation, and maps validated structured coordinates to Google Maps links |
 | Performance and escalation reports | `communications.team_inbox_metrics` | Owns typed, bounded team and agent cohorts plus the current unresolved escalation projection; aggregates and paginates in the database |
 | Manager AI analysis input | `communications.team_inbox_analysis_projection` | Recomputes scope-authorized selected-conversation, recent-queue, and period facts plus bounded evidence; it never writes Inbox state or lets AI query Inbox rows |
-| Repair jobs | `communications.team_inbox_maintenance` | Rebuilds media worklists, retries failed intents, and applies stale-conversation policy |
+| Repair jobs | `communications.team_inbox_maintenance` | Rebuilds media worklists, retries failed intents, applies stale-conversation policy, and converges expired WhatsApp routing state |
 | Realtime | `communications.team_inbox_realtime` | Publishes best-effort projections only after commit; clients refetch on gaps |
 | SMTP health evidence | `communications.team_inbox_health` | Marks only the exact synthetic Message-ID generated by the runtime |
 | Email/Meta/widget delivery | Transport owners | Verify and normalize envelopes; never own Inbox or Support decisions |
@@ -183,19 +183,52 @@ evidence fails closed as `not_calculated` instead of merging customer records.
 
 An operator-selected Subscriber is carried into the conversation command as an
 explicit identity decision. A reviewed manual contact link also repairs every
-other active, unlinked conversation with the same normalized channel address;
-it never overwrites a different Subscriber relationship. This makes the
-customer conversation-history projection converge without matching names or
-shared addresses in the browser. Before a reviewed link exists, the server may
-narrow an exact normalized phone match with an exact normalized observed name;
-a name mismatch remains ambiguous. Historical rows without reviewed or uniquely
-resolved contact evidence remain unlinked for explicit reconciliation.
+other active, unlinked conversation with the same normalized channel address
+and provider scope; it never overwrites a different Subscriber relationship.
+The same command appends or reuses a verified `PartyContactPoint`, binds the
+observed participant, and records actor, time, method, scope, and evidence in
+the existing `inbox_contact_identity_decided` audit stream. Repeating the same
+decision is idempotent. A different proposed owner or speaking Party is a
+durable review conflict: the existing reviewed owner remains active and the
+identity is never silently moved.
+Ingress first checks reviewed `InboxContactLink` evidence, then aggregates
+current `CustomerIdentityIndex`, direct Subscriber fields, `SubscriberContact`,
+`SubscriberChannel`, and verified `PartyContactPoint` evidence. A unique active
+Customer is written to authoritative `InboxConversation.subscriber_id` with
+audit/provenance evidence. A provider profile/display name is observation only
+and cannot veto a unique normalized phone or email. If several active Customers
+share that value, exact normalized name equality may narrow to one; otherwise
+the result remains ambiguous. Messenger and Instagram subjects resolve only by
+the exact `(channel, provider, provider account, external subject)` tuple and
+are never compared with phone fields. Historical rows without reviewed or
+uniquely resolved contact evidence remain unlinked for explicit reconciliation.
+
+One Party may own any number of non-primary phone, email, WhatsApp, Messenger,
+Instagram, and other supported contact points, including several identities on
+one provider. Uniqueness applies to the active provider-scoped external social
+identity, not to `(Customer, provider)`. A contact Party may retain the actual
+sender endpoint and an active `contact_for` relationship to the represented
+Customer Party; operational conversation resolution does not rewrite the
+representative or the Customer's primary name, phone, or email.
+Identify Contact may create or reuse that representative Person Party and its
+`contact_for` relationship. The provider-scoped endpoint remains owned by the
+representative, while `InboxConversation.subscriber_id` names the represented
+Customer; future messages reuse both facts.
 
 Agent resolution uses the Customer-only completion gate defined in
 `docs/designs/INBOX_CUSTOMER_COMPLETION_GATE.md`. Customer conversations must
 satisfy their immutable snapshotted policy on canonical Customer/Party facts.
 Lead profile gaps never participate in resolution readiness. Direct, bulk, and
 macro resolution all enter the status owner and consume the same verdict.
+
+An expired WhatsApp customer-service window is the one controlled exception to
+that admission rule. The status owner re-evaluates the canonical window on the
+locked conversation and requires a typed resolution reason. Only then may an
+authorized agent or manager resolve an unidentified or incomplete expired
+conversation. This does not change the Customer-completion verdict and cannot
+be used by an active-window or unavailable conversation. Resolution is an
+internal status transition: it creates no assignment, queue admission, outbound
+intent, CSAT request, template, AI session, or customer-service window.
 
 The fiber website uses the same boundary through the signed
 `communications.fiber_inquiry.receive.v1` Integration Platform capability.
@@ -207,6 +240,12 @@ existing Subscriber. No match creates a reusable prospect Party and Lead;
 conflicting, ambiguous, or suppressed matches fail closed by creating the
 conversation without a Subscriber or automatic Party/Lead and setting
 `identity_review_required` for operator review.
+
+Every automatic Lead path rechecks this canonical Customer resolution before
+creation. A unique Customer is linked and no Lead is created; ambiguity remains
+for review and creates no Lead; only a genuine no-match proceeds to the normal
+Party-backed Lead transaction. The Lead-intake owner also repairs an older
+unlinked conversation when the canonical recheck later becomes unique.
 
 Missing provider occurrence times use an explicit stable unknown-time sentinel
 for fingerprinting; `recorded_at` still records admission time. Private raw
@@ -251,8 +290,11 @@ The recovery sweep selects one head cohort per queued team rather than one
 global row batch, so a full team's backlog cannot hide another team's eligible
 head. Resolution, assignment, cancellation, requeue and team transfer settle
 or start the queue lifecycle transactionally. A conversation cannot remain an
-active member of one team's queue while assigned, resolved, or owned by another
-team.
+active member of one team's queue while assigned, resolved, owned by another
+team, or in an expired WhatsApp window. Expiry cancellation preserves the
+queue row and admission generation, records `whatsapp_window_expired` as
+settlement evidence, and cancels pending position and heartbeat delivery
+intents.
 
 Automatic assignment uses `inbox_team_round_robin_cursors`, one durable cursor
 per service team. FIFO chooses the oldest customer first; round robin then
@@ -271,13 +313,21 @@ The default capacity is the `comms.inbox_agent_default_max_concurrent_conversati
 setting (default `10`, allowed range `1..100`) unless
 `InboxAgentPresence.max_concurrent_conversations` supplies the existing
 per-agent override. Administrators edit the default at **Admin → System →
-Settings → Comms**, field **Default active Inbox conversations per agent**;
-the canonical settings writer invalidates the cache on commit and subsequent
-assignment decisions consume the new value immediately. There is currently no
-Admin writer for the per-agent override. Capacity counts active human
+CRM → Inbox → Settings**, field **Maximum active chats per agent**. The routing
+owner validates the registered `1..100` bound, delegates persistence to the
+canonical settings writer, records setting history plus an audit event, and
+invalidates the cache on commit; subsequent assignment decisions consume the
+new value immediately. Increasing the value prompts FIFO promotion after commit.
+Reducing it never ends existing assignments: an agent may temporarily display
+`15/10 assigned` and remains ineligible until active workload falls below 10.
+There is currently no Admin writer for the per-agent override. Capacity counts active human
 assignments on `open`, human-owned `pending`, and `snoozed` conversations while
 ownership remains active. It excludes resolved and AI-owned conversations even
-if legacy drift left an assignment projection behind. Default/actionable,
+if legacy drift left an assignment projection behind. It also excludes
+canonically expired WhatsApp conversations defensively; the lifecycle sweep
+normally ends those assignment rows first. The routing owner exposes this as
+one shared countable-active-assignment predicate used by capacity and active
+work reporting. Default/actionable,
 unassigned, pending-response, needs-response, unread-work, and manager workload
 counts apply the same authoritative exclusion; AI Intake has its own count.
 Explicit takeover uses the same membership, presence, FIFO, and capacity gates.
@@ -425,6 +475,24 @@ reliable qualifying inbound timestamp remain `unavailable` and are not included
 in that filter. Workflow states such as open, pending, snoozed, and resolved
 remain owned only by `communications.team_inbox_status`.
 
+For WhatsApp, the maintenance scheduler consumes this calculated state every
+60 seconds. It selects only conversations with an active assignment or active
+FIFO generation, locks each conversation, and recomputes the reply-window
+decision. If still expired, the routing owner appends one `unassigned` event
+with reason `whatsapp_window_expired`, ends the assignment interval, settles
+the queue generation, and closes its agent reminder. Conversation status and
+Customer/Lead identity are untouched. A qualifying inbound that wins the lock
+race makes the expiry command a no-op; an inbound that follows release reruns
+the existing identity, intake, routing, FIFO, and assignment flow without
+restoring the historical agent.
+
+Normal manual/self assignment, automation, queue admission, FIFO promotion,
+queue-notification delivery preflight, and stale auto-resolution all reject or
+exclude expired WhatsApp conversations. Approved outbound templates, delivery
+or read receipts, staff/AI/system outbound, and queue messages remain
+non-qualifying and cannot reactivate routing. Only a later qualifying customer
+inbound opens the next service window.
+
 Operator-initiated conversations use the same command boundary. The opening
 message retains approved WhatsApp template identity and submitted provider
 variables, and uploaded attachments are staged against the new conversation
@@ -482,6 +550,11 @@ assignment. Escalations are events rather than overwriteable conversation
 metadata. Status and presence JSON histories are compatibility projections and
 are not audit authority.
 
+For a resolution event, `occurred_at` and `actor_person_id` are the
+authoritative `resolved_at` and `resolved_by`. Manual expired-WhatsApp
+resolution additionally records the bounded `resolution_reason` and
+`channel_state_at_resolution='expired'` on that same immutable event.
+
 Native evidence records typed source and reason codes, actor identity when
 known, occurrence and recording time, and a unique source identity. Automatic
 routing additionally preserves the selected assignment outcome; candidate
@@ -509,6 +582,7 @@ queue interval, or assignment ending timestamp. See
 | Manager AI period analysis | Authorized Workqueue scope, Inbox message chronology, immutable status transitions, and immutable routing events | analysis-projection owner | Recompute on each request; the cohort is conversations with a message, status transition, or routing event in the selected half-open UTC period; evidence is bounded and never becomes Inbox truth |
 | Customer context drawer | Exact Party/Subscriber/Lead links plus permission-scoped owner queries | contact-context query owner | Recompute on drawer load; per-section failures remain explicit and retryable |
 | Meta free-form reply-window eligibility | Conversation channel plus ordered qualifying inbound customer messages | reply-window policy owner | Recompute on every send attempt and detail projection; a new qualifying inbound customer message reopens the free-form path |
+| Expired WhatsApp assignment drift | Canonical reply-window projection plus active assignment/FIFO rows | maintenance coordinator invoking routing owner | `python -m scripts.one_off.repair_expired_whatsapp_assignments` is dry-run by default; reviewed `--apply` ends only stale assignments, preserves history, never resolves, and is idempotent |
 | Realtime envelope | Current committed Inbox projection | realtime transport | `rebuild_conversation_projection` republishes a snapshot; clients refetch |
 | Media and failed worklists | Authoritative message/intent metadata | maintenance owner | Idempotent scheduled maintenance commands |
 | Structured location card | Validated latitude/longitude and optional name/address on authoritative message attachment metadata | projection query owner | Recompute on every query; an invalid or legacy coordinate-less location is unavailable and never receives a media-content URL. `communications.team_inbox_maintenance.repair_whatsapp_locations` can restore an explicitly scoped historical message only when a processed `integration.inbox` receipt names that exact message and retains valid structured coordinates |
@@ -595,8 +669,8 @@ stale. Realtime has no replay authority.
   contact resolution, priority, mute, snooze, open, unassigned, and unread. The
   AI handling count and its drill-down use the same unresolved queue cohort.
   Lifecycle, assignment/team, and channel are independent filter dimensions:
-  changing one preserves the others, so combinations such as All + My Team +
-  Email resolve as one intersected owner query.
+  changing one preserves the others, so combinations such as Expired +
+  Unresolved and Expired + Resolved resolve as one intersected owner query.
 - Pagination uses an exact filtered total for active queues and bounded
   next-page evidence for demand-loaded historical cohorts. Conversation
   drill-down URLs preserve the active filters, sort, page size, and page number.
@@ -721,6 +795,13 @@ concurrently built PostgreSQL indexes. The set-based readers are correct before
 and during index creation, so deployment does not require a flag or dual-read
 fallback. Deployment schema verification must require both indexes to be ready
 and valid before the release is accepted.
+
+Migration `595_team_inbox_provider_identity_scope` adds provider/account/
+external-subject columns to reviewed Inbox contact links, replaces the unsafe
+global social-ID uniqueness rule with provider-scoped uniqueness, and prevents
+one active scoped social identity from being attached to unrelated Parties.
+It backfills scope only from already bound canonical contact points. It does
+not run the historical conversation repair command or infer legacy identities.
 
 ## Retired paths
 

@@ -36,7 +36,11 @@ from app.models.team_inbox import (
     InboxMessageDirection,
     InboxStatusTransitionEvent,
 )
-from app.services import service_team_composition, team_inbox_assignment
+from app.services import (
+    service_team_composition,
+    team_inbox_assignment,
+    team_inbox_reply_window,
+)
 
 DEFAULT_PERFORMANCE_WINDOW_DAYS = 30
 MAX_PERFORMANCE_WINDOW_DAYS = 366
@@ -665,9 +669,15 @@ def _team_metrics_by_id(
             InboxConversationAssignment.service_team_id.label("service_team_id"),
             InboxConversationAssignment.assigned_at.label("assigned_at"),
         )
+        .join(
+            InboxConversation,
+            InboxConversation.id == InboxConversationAssignment.conversation_id,
+        )
         .where(
             InboxConversationAssignment.service_team_id.in_(team_ids),
-            InboxConversationAssignment.is_active.is_(True),
+            *team_inbox_assignment.countable_active_assignment_clauses(
+                now=window.observed_at
+            ),
         )
         .subquery("inbox_metric_active_assignment")
     )
@@ -919,7 +929,17 @@ def _agent_metrics_by_key(
             InboxConversationAssignment.service_team_id.label("service_team_id"),
             InboxConversationAssignment.person_id.label("person_id"),
             func.sum(
-                case((InboxConversationAssignment.is_active.is_(True), 1), else_=0)
+                case(
+                    (
+                        and_(
+                            *team_inbox_assignment.countable_active_assignment_clauses(
+                                now=window.observed_at
+                            )
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
             ).label("active_assignment_count"),
             func.count(
                 func.distinct(InboxConversationAssignment.conversation_id)
@@ -1101,9 +1121,13 @@ def escalation_page(
             InboxConversationAssignment.person_id.label("person_id"),
             InboxConversationAssignment.assigned_at.label("assigned_at"),
         )
+        .join(
+            InboxConversation,
+            InboxConversation.id == InboxConversationAssignment.conversation_id,
+        )
         .where(
             InboxConversationAssignment.service_team_id.in_(team_ids),
-            InboxConversationAssignment.is_active.is_(True),
+            *team_inbox_assignment.countable_active_assignment_clauses(now=observed_at),
         )
         .subquery("inbox_escalation_active_assignment")
     )
@@ -1387,7 +1411,12 @@ def _team_performance_by_team(
             links.outerjoin(
                 InboxConversationAssignment,
                 (InboxConversationAssignment.conversation_id == links.c.conversation_id)
-                & (InboxConversationAssignment.is_active.is_(True)),
+                & (InboxConversationAssignment.is_active.is_(True))
+                & ~links.c.conversation_id.in_(
+                    team_inbox_reply_window.expired_whatsapp_conversation_ids_query(
+                        now=now_utc
+                    )
+                ),
             )
         )
         .group_by(links.c.team_id)
@@ -1559,12 +1588,23 @@ def _assignment_values_by_agent(
         ),
         else_=None,
     )
+    observed_at = datetime.now(UTC)
     rows = db.execute(
         select(
             InboxConversationAssignment.service_team_id.label("team_id"),
             InboxConversationAssignment.person_id.label("person_id"),
             func.sum(
-                case((InboxConversationAssignment.is_active.is_(True), 1), else_=0)
+                case(
+                    (
+                        and_(
+                            *team_inbox_assignment.countable_active_assignment_clauses(
+                                now=observed_at
+                            )
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
             ).label("active_assignment_count"),
             func.count(distinct(InboxConversationAssignment.conversation_id)).label(
                 "handled_conversation_count"
@@ -1860,6 +1900,7 @@ def agent_performance_analytics(
     end_at = _as_utc(query.end_at)
     if start_at is None or end_at is None:
         raise InboxAgentPerformanceQueryError("Date bounds must be timezone-aware.")
+    observed_at = datetime.now(UTC)
 
     team_statement = select(ServiceTeam).where(ServiceTeam.is_active.is_(True))
     if query.service_team_id is not None:
@@ -1985,7 +2026,9 @@ def agent_performance_analytics(
             InboxConversation,
             InboxConversation.id == InboxConversationAssignment.conversation_id,
         )
-        .where(InboxConversationAssignment.is_active.is_(True))
+        .where(
+            *team_inbox_assignment.countable_active_assignment_clauses(now=observed_at)
+        )
         .group_by(
             InboxConversationAssignment.service_team_id,
             InboxConversationAssignment.person_id,
@@ -2016,7 +2059,9 @@ def agent_performance_analytics(
                 InboxConversation.id == InboxConversationAssignment.conversation_id,
             )
             .where(
-                InboxConversationAssignment.is_active.is_(True),
+                *team_inbox_assignment.countable_active_assignment_clauses(
+                    now=observed_at
+                ),
                 InboxConversationAssignment.service_team_id == query.service_team_id,
             )
             .group_by(

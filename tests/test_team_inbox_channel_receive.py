@@ -4,7 +4,10 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
 from app.models.ai_intake import AiIntakeSession
+from app.models.party import Party, PartyContactPoint, PartyType
 from app.models.service_team import ServiceTeam, ServiceTeamType
 from app.models.subscriber import Reseller, Subscriber, SubscriberStatus
 from app.models.team_inbox import (
@@ -240,6 +243,85 @@ def test_receive_whatsapp_webhook_normalizes_and_deduplicates(db_session):
     conversation = db_session.get(InboxConversation, first.conversation_id)
     assert conversation.metadata_["contact_name"] == "Amina Customer"
     assert conversation.metadata_["contact_name_source"] == "provider_observation"
+
+
+def test_meta_whatsapp_webhook_links_unique_phone_despite_profile_name(db_session):
+    subscriber = _subscriber(
+        db_session,
+        phone="0803 327 4788",
+        email="canonical@example.com",
+    )
+    subscriber.display_name = "Canonical Customer Name"
+    db_session.commit()
+
+    result = team_inbox_channel_receive.receive_whatsapp_webhook(
+        db_session,
+        provider="meta_cloud_api",
+        payload={
+            "message": {
+                "from": "2348033274788",
+                "text": "Hello from my WhatsApp profile",
+                "id": "wamid-profile-name-regression",
+            },
+            "contact_name": "Completely Different Profile Name",
+            "phone_number_id": "dotmac-wa-business-1",
+        },
+    )
+    db_session.commit()
+
+    conversation = db_session.get(InboxConversation, result.conversation_id)
+    assert result.subscriber_id == str(subscriber.id)
+    assert result.resolution_status == "linked_subscriber"
+    assert conversation.subscriber_id == subscriber.id
+    assert conversation.metadata_["contact_resolution"]["name_tiebreaker_used"] is False
+    assert conversation.metadata_["automatic_customer_link"]["subscriber_id"] == str(
+        subscriber.id
+    )
+
+
+@pytest.mark.parametrize("channel", ["facebook_messenger", "instagram_dm"])
+def test_meta_social_inbound_uses_provider_scoped_identity(db_session, channel):
+    party = Party(party_type=PartyType.person.value, display_name="Social Customer")
+    db_session.add(party)
+    db_session.flush()
+    subscriber = _subscriber(
+        db_session,
+        phone="08035550115",
+        email=f"{channel}@example.com",
+    )
+    subscriber.party_id = party.id
+    db_session.add(
+        PartyContactPoint(
+            party_id=party.id,
+            channel_type=channel,
+            normalized_value="opaque-subject-123",
+            scope_key="business-account-a",
+            provider="meta_social",
+            provider_account_id="business-account-a",
+            external_subject_id="opaque-subject-123",
+            verification_status="verified",
+        )
+    )
+    db_session.commit()
+
+    result = team_inbox_channel_receive.receive_inbound_channel(
+        db_session,
+        team_inbox_channel_receive.InboundChannelPayload(
+            channel_type=channel,
+            contact_address="opaque-subject-123",
+            body="Hello",
+            external_message_id=f"{channel}-message-1",
+            metadata={
+                "provider": "meta_social",
+                "provider_account_scope": "business-account-a",
+            },
+        ),
+    )
+    db_session.commit()
+
+    conversation = db_session.get(InboxConversation, result.conversation_id)
+    assert result.subscriber_id == str(subscriber.id)
+    assert conversation.subscriber_id == subscriber.id
 
 
 def test_recent_ai_context_excludes_private_notes_and_preserves_roles(db_session):

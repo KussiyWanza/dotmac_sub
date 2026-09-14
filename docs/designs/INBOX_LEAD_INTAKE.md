@@ -15,7 +15,8 @@ The owner controls three concerns:
 1. immutable, versioned individual and organization form templates;
 2. sales-specific invitation eligibility, expiry, delivery, and revocation
    after a shared customer-intake handoff;
-3. atomic form conversion into Party, Lead, Inbox participant binding, Sales
+3. a canonical Customer identity recheck immediately before Lead creation; and
+4. atomic form conversion into Party, Lead, Inbox participant binding, Sales
    routing, internal note, audit evidence, and `lead.created` event.
 
 `ai.intake` owns general customer classification, confidence, clarification,
@@ -53,8 +54,9 @@ issued invitation always resolves to the copy and routing policy reviewed at
 issuance. The invitation message must contain `{link}`.
 
 Public links use a cryptographically random token. Only its SHA-256 digest is
-stored. Tokens expire after the configured duration, bounded to 24 hours, and
-completed or revoked tokens are rejected. Public responses are non-cacheable,
+stored. Tokens expire after the configured duration, bounded to 24 hours.
+Completed Lead outcomes and canonical-Customer-link outcomes are idempotent at
+the owner boundary; revoked or expired public forms are unavailable. Public responses are non-cacheable,
 use no-referrer policy, require CSRF validation, reject unknown fields, and are
 rate-limited by a hash of client address and token digest.
 
@@ -70,7 +72,12 @@ geocodes them, requires country `NG`, and normalizes the state or FCT through
 the canonical Nigerian-state normalizer. Submitted identity data is not logged
 or copied into AI assessment rows.
 
-Within one owner command, completion:
+Within one owner command, completion first reruns canonical Inbox Customer
+resolution using the exact provider-scoped endpoint. If one active Customer is
+now known, it writes `InboxConversation.subscriber_id`, revokes the obsolete
+invitation with audit provenance, returns a replayable `customer_linked`
+outcome, and creates no Party or Lead. Ambiguity fails closed and creates no
+Lead. Only a confirmed no-match continues:
 
 - creates a Person Party, or an Organization Party plus representative Person
   and `contact_for` relationship;

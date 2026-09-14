@@ -8,6 +8,7 @@ from fastapi import BackgroundTasks
 from starlette.requests import Request
 
 from app.models.notification import Notification, NotificationStatus
+from app.models.party import Party, PartyType
 from app.models.sales import Lead
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
 from app.models.subscriber import Reseller, Subscriber, SubscriberStatus
@@ -38,6 +39,12 @@ def _request() -> Request:
 
 
 def _subscriber(db_session, *, first_name: str = "Ada") -> Subscriber:
+    party = Party(
+        party_type=PartyType.person.value,
+        display_name=f"{first_name} Nwosu",
+    )
+    db_session.add(party)
+    db_session.flush()
     subscriber = Subscriber(
         first_name=first_name,
         last_name="Nwosu",
@@ -46,6 +53,7 @@ def _subscriber(db_session, *, first_name: str = "Ada") -> Subscriber:
         phone="0803 555 0114",
         status=SubscriberStatus.active,
         is_active=True,
+        party_id=party.id,
     )
     db_session.add(subscriber)
     db_session.flush()
@@ -70,7 +78,14 @@ def _conversation(db_session, *, subject: str = "Ada needs help") -> InboxConver
         subject=subject,
         contact_address="psid-123",
         external_thread_id="facebook_messenger:psid-123",
-        metadata_={"contact_resolution": {"status": "unmatched"}},
+        metadata_={
+            "contact_resolution": {"status": "unmatched"},
+            "provider_identity": {
+                "provider": "meta_social",
+                "provider_account_id": "page-a",
+                "external_subject_id": "psid-123",
+            },
+        },
     )
     db_session.add(conversation)
     db_session.flush()
@@ -162,7 +177,7 @@ def test_admin_contact_link_route_reports_missing_target(db_session):
     assert db_session.query(InboxContactLink).count() == 0
 
 
-def test_admin_merge_contact_route_finds_customer_and_attaches_lead(
+def test_admin_merge_contact_route_links_customer_without_creating_lead(
     db_session, monkeypatch
 ):
     actor_id = uuid.uuid4()
@@ -182,19 +197,15 @@ def test_admin_merge_contact_route_finds_customer_and_attaches_lead(
         db=db_session,
     )
 
-    lead = db_session.query(Lead).one()
     link = db_session.query(InboxContactLink).one()
     db_session.refresh(conversation)
     db_session.refresh(subscriber)
     assert response.status_code == 303
     assert "status=success" in response.headers["location"]
-    assert lead.subscriber_id == subscriber.id
-    assert subscriber.party_id == lead.party_id
+    assert db_session.query(Lead).count() == 0
     assert link.subscriber_id == subscriber.id
     assert conversation.subscriber_id == subscriber.id
-    assert (
-        conversation.metadata_["lead_capture"]["merge"]["target_type"] == "subscriber"
-    )
+    assert conversation.metadata_.get("lead_capture") is None
 
 
 def test_admin_internal_note_route_records_private_message(db_session, monkeypatch):

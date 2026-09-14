@@ -728,3 +728,71 @@ def test_changed_queue_delivery_decision_defers_for_a_fresh_claim(db_session) ->
     assert not db_session.in_transaction()
     db_session.refresh(delivery)
     assert delivery.status is NotificationStatus.queued
+
+
+def test_expired_whatsapp_queue_never_sends_position_or_heartbeat(
+    db_session, monkeypatch
+):
+    sent_bodies: list[str] = []
+
+    def _record_send(_db, *, conversation, body_text, **_kwargs):
+        sent_bodies.append(str(body_text))
+        return InboxReplyResult(
+            kind="queued",
+            conversation_id=str(conversation.id),
+            message_id=str(uuid4()),
+        )
+
+    original_policy = team_inbox_queue_notifications._queue_policy
+
+    def _enabled_policy(db, conversation):
+        policy = original_policy(db, conversation)
+        policy.update(
+            heartbeat_enabled=True,
+            heartbeat_minutes=30,
+            heartbeat="Still queued",
+        )
+        return policy
+
+    monkeypatch.setattr(
+        team_inbox_queue_notifications.team_inbox_outbound,
+        "send_ai_intake_message",
+        _record_send,
+    )
+    monkeypatch.setattr(
+        team_inbox_queue_notifications, "_queue_policy", _enabled_policy
+    )
+    team = _team(db_session)
+    conversation = _conversation(db_session)
+    opened_at = datetime(2026, 8, 12, 10, 0, tzinfo=UTC)
+    db_session.add(
+        InboxMessage(
+            conversation_id=conversation.id,
+            channel_type="whatsapp",
+            direction=InboxMessageDirection.inbound.value,
+            body="Customer inbound",
+            received_at=opened_at,
+            metadata_={"reply_window_qualifying": True},
+        )
+    )
+    queue_conversation_for_team(
+        db_session,
+        conversation=conversation,
+        service_team_id=team.id,
+        now=opened_at,
+    )
+    db_session.commit()
+    sent_bodies.clear()
+
+    result = team_inbox_queue_notifications.sweep_queue_notifications(
+        db_session,
+        team_inbox_queue_notifications.QueueNotificationSweepCommand(
+            context=CommandContext.system(
+                actor="test", scope="team-inbox:routing-command", reason="test"
+            ),
+            now=opened_at + timedelta(hours=25),
+        ),
+    )
+
+    assert result.sent == 0
+    assert sent_bodies == []

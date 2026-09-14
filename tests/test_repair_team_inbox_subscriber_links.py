@@ -34,17 +34,17 @@ def _conversation(db_session, *, email: str) -> InboxConversation:
     return row
 
 
-def test_exact_unique_contact_plan_repairs_all_matching_history(db_session):
+def test_exact_unique_contact_plan_repairs_each_matching_conversation(db_session):
     subscriber = _subscriber(db_session, email="ada@example.com")
     first = _conversation(db_session, email=subscriber.email)
     second = _conversation(db_session, email=subscriber.email)
     db_session.commit()
 
     plan = repair.build_plan(db_session, limit=100)
-    assert len(plan.items) == 1
-    assert plan.items[0].subscriber_id == subscriber.id
+    assert len(plan.items) == 2
+    assert {item.subscriber_id for item in plan.items} == {subscriber.id}
 
-    repaired = repair.apply_plan(
+    result = repair.apply_plan(
         db_session,
         plan=plan,
         expected_digest=plan.digest,
@@ -53,9 +53,13 @@ def test_exact_unique_contact_plan_repairs_all_matching_history(db_session):
         approval_reference="TEST-APPROVAL-1",
     )
 
-    assert set(repaired) == {first.id, second.id}
+    assert result["linked"] == 2
+    assert set(result["repaired_conversation_ids"]) == {str(first.id), str(second.id)}
     assert db_session.get(InboxConversation, first.id).subscriber_id == subscriber.id
     assert db_session.get(InboxConversation, second.id).subscriber_id == subscriber.id
+
+    replay_plan = repair.build_plan(db_session, limit=100)
+    assert replay_plan.items == ()
 
 
 def test_ambiguous_contact_is_not_eligible_for_repair(db_session):
@@ -88,3 +92,27 @@ def test_apply_refuses_a_changed_preview_digest(db_session):
         )
 
     assert db_session.get(InboxConversation, conversation.id).subscriber_id is None
+
+
+def test_apply_never_overwrites_a_customer_link_added_after_preview(db_session):
+    planned = _subscriber(db_session, email="planned@example.com")
+    existing = _subscriber(db_session, email="existing@example.com")
+    conversation = _conversation(db_session, email=planned.email)
+    db_session.commit()
+    plan = repair.build_plan(db_session, limit=100)
+
+    conversation.subscriber_id = existing.id
+    db_session.commit()
+    result = repair.apply_plan(
+        db_session,
+        plan=plan,
+        expected_digest=plan.digest,
+        actor_person_id=uuid4(),
+        reason="Race protection",
+        approval_reference="TEST-APPROVAL-3",
+    )
+
+    assert result["conflicts"] == 1
+    assert (
+        db_session.get(InboxConversation, conversation.id).subscriber_id == existing.id
+    )

@@ -29,6 +29,10 @@ from app.timezone import APP_TIMEZONE_NAME
 
 logger = logging.getLogger(__name__)
 
+INBOX_AGENT_DEFAULT_MAX_CONCURRENT_CONVERSATIONS_KEY = (
+    "inbox_agent_default_max_concurrent_conversations"
+)
+
 
 class SettingStringNormalization(str, Enum):
     """Canonical normalization applied to a declared string setting."""
@@ -4150,13 +4154,13 @@ SETTINGS_SPECS: list[SettingSpec] = [
     ),
     SettingSpec(
         domain=SettingDomain.comms,
-        key="inbox_agent_default_max_concurrent_conversations",
+        key=INBOX_AGENT_DEFAULT_MAX_CONCURRENT_CONVERSATIONS_KEY,
         env_var="INBOX_AGENT_DEFAULT_MAX_CONCURRENT_CONVERSATIONS",
         value_type=SettingValueType.integer,
         default=10,
         min_value=1,
         max_value=100,
-        label="Default active Inbox conversations per agent",
+        label="Maximum active chats per agent",
     ),
     SettingSpec(
         domain=SettingDomain.comms,
