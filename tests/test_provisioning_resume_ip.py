@@ -20,7 +20,7 @@ def test_resume_event_triggers_ip_reprovision(db_session, monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(
         provisioning_service,
-        "ensure_ip_assignments_for_subscription",
+        "ensure_ipv4_assignment_for_subscription",
         lambda db, subscription_id: calls.append(subscription_id),
     )
     event = Event(
@@ -37,7 +37,7 @@ def test_activated_event_still_reprovisions(db_session, monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(
         provisioning_service,
-        "ensure_ip_assignments_for_subscription",
+        "ensure_ipv4_assignment_for_subscription",
         lambda db, subscription_id: calls.append(subscription_id),
     )
     # The activation path does more (radius/NAS); stub those so the test

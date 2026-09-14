@@ -351,7 +351,7 @@ class TicketCommentRead(BaseModel):
     id: UUID
     ticket_id: UUID
     author_person_id: UUID | None
-    author_type: str
+    author_type: TicketCommentAuthorType
     author_system_user_id: UUID | None
     body: str
     is_internal: bool

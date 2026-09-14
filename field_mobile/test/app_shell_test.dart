@@ -195,7 +195,22 @@ void main() {
 
     expect(find.text('DotMac Field'), findsOneWidget);
     expect(find.text('Sign in'), findsOneWidget);
+    expect(find.text('Forgot password?'), findsOneWidget);
     expect(find.byType(NavigationBar), findsNothing);
+  });
+
+  testWidgets('technicians can open password recovery from sign in', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_app(authenticated: false));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Forgot password?'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Forgot your password?'), findsOneWidget);
+    expect(find.text('Send reset link'), findsOneWidget);
+    expect(find.widgetWithText(TextFormField, 'Email address'), findsOneWidget);
   });
 
   testWidgets('technician shell hides CRM search and sales tabs', (

@@ -35,6 +35,7 @@ from app.services import (
     team_inbox_status,
 )
 from app.services.list_query import PageMeta
+from app.services.workqueue.permissions import WorkqueuePrincipal
 from tests.staff_identity_fixtures import add_bound_staff_user
 
 
@@ -1300,13 +1301,21 @@ def test_only_saved_view_owner_can_delete(db_session):
 
 def test_bulk_priority_action_uses_existing_command_owner(db_session):
     conversation_id = _conversation(db_session)
+    actor_id = uuid.uuid4()
 
     outcome = team_inbox_commands.bulk_action(
         db_session,
+        principal=WorkqueuePrincipal(
+            person_id=actor_id,
+            roles=frozenset({"admin"}),
+            scopes=frozenset(),
+            can_view=True,
+            can_act=True,
+        ),
         conversation_ids=[conversation_id],
         action="priority",
         priority=25,
-        actor_person_id=uuid.uuid4(),
+        actor_person_id=actor_id,
     )
 
     conversation = db_session.get(InboxConversation, conversation_id)

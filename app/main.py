@@ -26,6 +26,7 @@ from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from starlette.requests import ClientDisconnect
 from starlette.responses import Response
 
 from app.csrf import (
@@ -1041,9 +1042,14 @@ def _csrf_safe_return_url(request: Request) -> str | None:
 
 
 async def _terminated_request_response(
-    request: Request, method: str, path: str
+    request: Request,
+    method: str,
+    path: str,
+    *,
+    disconnected: bool | None = None,
 ) -> Response:
-    disconnected = await request.is_disconnected()
+    if disconnected is None:
+        disconnected = await request.is_disconnected()
     logger.info(
         "No response returned from downstream app; request terminated (%s): %s %s",
         "client_disconnected" if disconnected else "reload_or_shutdown",
@@ -1328,7 +1334,15 @@ async def csrf_middleware(request: Request, call_next):
                 or "multipart/form-data" in content_type
             ):
                 # Read body and check token
-                body = await request.body()
+                try:
+                    body = await request.body()
+                except ClientDisconnect:
+                    return await _terminated_request_response(
+                        request,
+                        method,
+                        path,
+                        disconnected=True,
+                    )
 
                 # Parse form data to get CSRF token
                 from urllib.parse import parse_qs

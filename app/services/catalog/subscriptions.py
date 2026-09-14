@@ -296,41 +296,6 @@ def _select_nas_for_subscriber(db: Session, subscriber_id: str):
     return None
 
 
-def _auto_generate_pppoe(
-    db: Session,
-    subscription: Subscription,
-) -> None:
-    """Auto-generate PPPoE credentials for newly activated subscriptions."""
-    from app.models.catalog import AccessCredential
-    from app.services.pppoe_credentials import auto_generate_pppoe_credential
-
-    profile_id = subscription.radius_profile_id
-    auto_generate_pppoe_credential(
-        db,
-        str(subscription.subscriber_id),
-        radius_profile_id=str(profile_id) if profile_id else None,
-        subscription_id=str(subscription.id),
-    )
-    active_credential = (
-        db.query(AccessCredential)
-        .filter(
-            AccessCredential.subscriber_id == subscription.subscriber_id,
-            AccessCredential.subscription_id == subscription.id,
-            AccessCredential.is_active.is_(True),
-        )
-        .first()
-    )
-    if active_credential is None:
-        raise RuntimeError(
-            f"PPPoE credential is required before activating subscription {subscription.id}."
-        )
-    # Keep subscription.login in sync with the credential actually bound. The
-    # canonical and sequence-fallback paths can yield different usernames, and
-    # a staged login may have become unavailable before activation. The exact
-    # credential identity wins over stale create-form intent.
-    subscription.login = active_credential.username
-
-
 def _resolve_offer_radius_profile_id(db: Session, offer_id: str | None):
     if not offer_id:
         return None
@@ -1135,7 +1100,6 @@ class Subscriptions(ListResponseMixin):
                     ),
                     evidence_effective_at=creation_evidence_at,
                 )
-                _auto_generate_pppoe(db, subscription)
             compute_account_status(db, str(payload.subscriber_id))
             if commit:
                 db.commit()

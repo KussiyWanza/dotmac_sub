@@ -38,9 +38,11 @@ checks, audit evidence, and readiness refresh.
 - Conflicting identity evidence is ambiguous; no identity is unresolved.
 - A reviewed contact link always outranks newly observed display data.
 - An active conversation-to-Lead link contributes its recorded Party to the
-  structural identity comparison. A Customer and Lead for the same Party stay
-  classified as Customer; different Parties are ambiguous and resolution
-  fails closed.
+  structural identity comparison. When Customer and active Lead relationships
+  name the same Party, the explicit Lead relationship selects Lead context for
+  that conversation; Customer identity remains intact. Different Parties are
+  ambiguous and resolution fails closed. A Subscriber relationship without an
+  explicit Lead context remains Customer context.
 - Without a reviewed link, an observed name may narrow an exact normalized
   phone match only by exact normalized Customer-name equality. A mismatch is
   ambiguous and requires the agent to choose an existing Customer or a Lead.
@@ -66,6 +68,14 @@ status owner asks the completion owner for one authoritative verdict:
   complete on the canonical Customer/Party profile.
 - Lead: profile completeness is advisory and never blocks resolution.
 - Unresolved or ambiguous: identification must be completed before resolution.
+
+WhatsApp expiry is a controlled channel-state exception, not a new identity
+classification. An expired, unresolved thread may be internally resolved by an
+authorized operator without assignment and with an explicit resolution reason,
+even when the identity is unresolved or a Customer profile is incomplete. This
+exception exists because normal free-form follow-up is unavailable; it does not
+change the Customer completion policy for an active window, create a Customer
+or Lead, or make expiry itself a resolution event.
 
 A reviewed representative association takes the classification of its selected
 subject while the exact participant remains classified as the representative.

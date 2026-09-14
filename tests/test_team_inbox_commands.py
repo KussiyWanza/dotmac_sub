@@ -17,6 +17,7 @@ from app.models.team_inbox import (
     InboxRoutingEvent,
 )
 from app.services import team_inbox_commands, team_inbox_outbound
+from app.services.workqueue.permissions import WorkqueuePrincipal
 from tests.staff_identity_fixtures import add_bound_staff_user
 
 
@@ -30,6 +31,16 @@ def _conversation(db_session, *, contact_address: str | None = "ada@example.com"
     db_session.add(conversation)
     db_session.flush()
     return conversation
+
+
+def _admin_principal(actor_id: uuid.UUID) -> WorkqueuePrincipal:
+    return WorkqueuePrincipal(
+        person_id=actor_id,
+        roles=frozenset({"admin"}),
+        scopes=frozenset(),
+        can_view=True,
+        can_act=True,
+    )
 
 
 def _eligible_actor(
@@ -72,12 +83,14 @@ def test_status_command_owns_history_and_no_op_behavior(db_session):
 
     changed = team_inbox_commands.update_status(
         db_session,
+        principal=_admin_principal(actor_id),
         conversation_id=conversation_id,
         status_value=InboxConversationStatus.pending.value,
         actor_person_id=actor_id,
     )
     unchanged = team_inbox_commands.update_status(
         db_session,
+        principal=_admin_principal(actor_id),
         conversation_id=conversation_id,
         status_value=InboxConversationStatus.pending.value,
         actor_person_id=actor_id,
@@ -96,6 +109,49 @@ def test_status_command_owns_history_and_no_op_behavior(db_session):
             "source": "admin_inbox_status_action",
         }
     ]
+
+
+def test_status_command_rejects_cross_team_actor(db_session):
+    target_team = ServiceTeam(
+        name=f"Target Team {uuid.uuid4().hex[:8]}",
+        team_type=ServiceTeamType.support.value,
+    )
+    actor_team = ServiceTeam(
+        name=f"Actor Team {uuid.uuid4().hex[:8]}",
+        team_type=ServiceTeamType.support.value,
+    )
+    db_session.add_all([target_team, actor_team])
+    db_session.flush()
+    conversation = _conversation(db_session)
+    conversation.primary_service_team_id = target_team.id
+    user, person = add_bound_staff_user(db_session)
+    db_session.add(
+        ServiceTeamMember(
+            team_id=actor_team.id,
+            person_id=person.id,
+            is_active=True,
+        )
+    )
+    db_session.flush()
+    principal = WorkqueuePrincipal(
+        person_id=user.id,
+        roles=frozenset({"agent"}),
+        scopes=frozenset(),
+        can_view=True,
+        can_act=True,
+    )
+
+    with pytest.raises(
+        team_inbox_commands.InboxCommandError,
+        match="outside your permitted Team Inbox scope",
+    ):
+        team_inbox_commands.update_status(
+            db_session,
+            principal=principal,
+            conversation_id=conversation.id,
+            status_value=InboxConversationStatus.pending.value,
+            actor_person_id=user.id,
+        )
 
 
 def test_rejected_reply_rolls_back_the_command_transaction(monkeypatch, db_session):

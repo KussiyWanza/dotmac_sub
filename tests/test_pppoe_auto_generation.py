@@ -14,8 +14,10 @@ from app.schemas.catalog import SubscriptionCreate, SubscriptionUpdate
 from app.services import catalog as catalog_service
 from app.services.pppoe_credentials import (
     SEQUENCE_KEY,
+    EnsurePppoeCredentialCommand,
+    PppoeCredentialError,
     _generate_random_password,
-    auto_generate_pppoe_credential,
+    ensure_pppoe_credential,
 )
 
 
@@ -60,14 +62,36 @@ def _seed_pppoe_settings(
     db.commit()
 
 
+def _ensure_credential(
+    db,
+    subscriber_id: str,
+    *,
+    radius_profile_id: str | None = None,
+    subscription_id: str | None = None,
+) -> AccessCredential:
+    outcome = ensure_pppoe_credential(
+        db,
+        EnsurePppoeCredentialCommand(
+            subscriber_id=uuid.UUID(subscriber_id),
+            radius_profile_id=uuid.UUID(radius_profile_id)
+            if radius_profile_id
+            else None,
+            subscription_id=uuid.UUID(subscription_id) if subscription_id else None,
+        ),
+    )
+    credential = db.get(AccessCredential, outcome.credential_id)
+    assert credential is not None
+    return credential
+
+
 class TestAutoGeneratePppoeCredential:
-    """Tests for auto_generate_pppoe_credential."""
+    """Tests for the typed PPPoE credential owner."""
 
     def test_generates_credential(self, db_session, subscriber):
         """Creates AccessCredential with correct username."""
         _seed_pppoe_settings(db_session, start=25915)
         _set_subscriber_number(db_session, subscriber, "SUB-025915")
-        result = auto_generate_pppoe_credential(db_session, str(subscriber.id))
+        result = _ensure_credential(db_session, str(subscriber.id))
 
         assert result is not None
         assert result.username == "10025915"
@@ -95,12 +119,12 @@ class TestAutoGeneratePppoeCredential:
         db_session.add_all([first, second])
         db_session.flush()
 
-        first_credential = auto_generate_pppoe_credential(
+        first_credential = _ensure_credential(
             db_session,
             str(subscriber.id),
             subscription_id=str(first.id),
         )
-        second_credential = auto_generate_pppoe_credential(
+        second_credential = _ensure_credential(
             db_session,
             str(subscriber.id),
             subscription_id=str(second.id),
@@ -112,8 +136,8 @@ class TestAutoGeneratePppoeCredential:
         assert first_credential.subscription_id == first.id
         assert second_credential.subscription_id == second.id
 
-    def test_skips_when_credential_exists(self, db_session, subscriber):
-        """When subscriber already has active credential, skips."""
+    def test_reuses_when_credential_exists(self, db_session, subscriber):
+        """When the subscriber already has an active credential, reuse it."""
         _seed_pppoe_settings(db_session, start=1000)
         _set_subscriber_number(db_session, subscriber, "SUB-001000")
 
@@ -127,8 +151,8 @@ class TestAutoGeneratePppoeCredential:
         db_session.add(existing)
         db_session.commit()
 
-        result = auto_generate_pppoe_credential(db_session, str(subscriber.id))
-        assert result is None
+        result = _ensure_credential(db_session, str(subscriber.id))
+        assert result.id == existing.id
 
     def test_generates_when_only_inactive_credential_exists(
         self, db_session, subscriber
@@ -146,7 +170,7 @@ class TestAutoGeneratePppoeCredential:
         db_session.add(inactive)
         db_session.commit()
 
-        result = auto_generate_pppoe_credential(db_session, str(subscriber.id))
+        result = _ensure_credential(db_session, str(subscriber.id))
         assert result is not None
         assert result.username == "10005000"
 
@@ -171,8 +195,8 @@ class TestAutoGeneratePppoeCredential:
         db_session.add_all([sub1, sub2])
         db_session.commit()
 
-        cred1 = auto_generate_pppoe_credential(db_session, str(sub1.id))
-        cred2 = auto_generate_pppoe_credential(db_session, str(sub2.id))
+        cred1 = _ensure_credential(db_session, str(sub1.id))
+        cred2 = _ensure_credential(db_session, str(sub2.id))
 
         assert cred1 is not None
         assert cred2 is not None
@@ -183,7 +207,7 @@ class TestAutoGeneratePppoeCredential:
         """Generated password is stored encrypted or with plain: prefix."""
         _seed_pppoe_settings(db_session, start=1)
         _set_subscriber_number(db_session, subscriber, "SUB-000001")
-        result = auto_generate_pppoe_credential(db_session, str(subscriber.id))
+        result = _ensure_credential(db_session, str(subscriber.id))
 
         assert result is not None
         # Without CREDENTIAL_ENCRYPTION_KEY, falls back to plain: prefix
@@ -201,7 +225,7 @@ class TestAutoGeneratePppoeCredential:
         db_session.commit()
         db_session.refresh(profile)
 
-        result = auto_generate_pppoe_credential(
+        result = _ensure_credential(
             db_session,
             str(subscriber.id),
             radius_profile_id=str(profile.id),
@@ -220,7 +244,7 @@ class TestAutoGeneratePppoeCredential:
         _seed_pppoe_settings(db_session, prefix="SEQ", padding=5, start=1)
         _set_subscriber_number(db_session, subscriber, "100000127")
 
-        result = auto_generate_pppoe_credential(db_session, str(subscriber.id))
+        result = _ensure_credential(db_session, str(subscriber.id))
 
         assert result is not None
         # Sequential fallback (seeded prefix), not the canonical 10<canonical_id>.
@@ -248,8 +272,8 @@ class TestAutoGeneratePppoeCredential:
         )
         db_session.commit()
 
-        with pytest.raises(ValueError, match="already used"):
-            auto_generate_pppoe_credential(db_session, str(subscriber.id))
+        with pytest.raises(PppoeCredentialError, match="already assigned"):
+            _ensure_credential(db_session, str(subscriber.id))
 
     def test_active_subscription_creation_fails_when_pppoe_conflicts(
         self,
@@ -279,7 +303,7 @@ class TestAutoGeneratePppoeCredential:
         db_session.commit()
         subscriber_id = subscriber.id
 
-        with pytest.raises(ValueError, match="already used"):
+        with pytest.raises(PppoeCredentialError, match="already assigned"):
             catalog_service.subscriptions.create(
                 db_session,
                 SubscriptionCreate(
@@ -467,7 +491,7 @@ class TestDeprecatedPppoeSequence:
         db_session.add(seq)
         db_session.commit()
 
-        result = auto_generate_pppoe_credential(db_session, str(subscriber.id))
+        result = _ensure_credential(db_session, str(subscriber.id))
         assert result is not None
         assert result.username == "10025915"
 

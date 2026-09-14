@@ -1188,6 +1188,23 @@ def activate_subscription(
             else f"activation:{subscription.id}"
         ),
     )
+    # The credential is a mandatory activation invariant, not a create-form
+    # side effect. Ensuring it here covers every pending -> active caller and
+    # keeps the status transition, exact service binding, and login projection
+    # in one transaction.
+    from app.services.pppoe_credentials import (
+        EnsurePppoeCredentialCommand,
+        ensure_pppoe_credential,
+    )
+
+    ensure_pppoe_credential(
+        db,
+        EnsurePppoeCredentialCommand(
+            subscriber_id=subscription.subscriber_id,
+            subscription_id=subscription.id,
+            radius_profile_id=subscription.radius_profile_id,
+        ),
+    )
     # Make active the final staged mutation. The anchor writer locks through a
     # query, and SQLAlchemy may autoflush before that query; setting active
     # earlier could hit the database invariant while the anchor was still NULL.

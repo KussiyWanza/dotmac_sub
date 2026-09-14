@@ -2,6 +2,8 @@
          data-attendance-state="{{ attendance.state.value if attendance else '' }}"
          data-attendance-date="{{ attendance.attendance_date if attendance else '' }}"
          data-attendance-can-check-in="{% if attendance and 'check_in' in attendance.allowed_actions %}true{% else %}false{% endif %}"
+         data-attendance-error-code="{{ attendance_error_code or '' }}"
+         data-attendance-retryable="{% if attendance_retryable %}true{% else %}false{% endif %}"
          aria-label="Attendance"
          class="flex min-h-11 max-w-full items-center gap-3 rounded-xl border border-slate-200/60 bg-white px-3 py-2 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
     <div class="min-w-0 flex-1">

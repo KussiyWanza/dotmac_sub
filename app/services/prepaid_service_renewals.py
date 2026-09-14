@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, NoReturn
 from uuid import UUID
 
 from sqlalchemy import case, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType
@@ -32,6 +33,8 @@ from app.models.billing import (
     InvoiceStatus,
     LedgerCategory,
     LedgerEntry,
+    LedgerEntryType,
+    LedgerSource,
     Payment,
     PaymentAllocation,
     PaymentSettlement,
@@ -70,6 +73,8 @@ from app.models.service_extension import (
 from app.schemas.audit import AuditEventCreate
 from app.schemas.billing import (
     AccountAdjustmentPreviewRequest,
+    AccountAdjustmentReversalConfirm,
+    AccountAdjustmentReversalPreviewRequest,
     InvoiceCreate,
     SystemInvoiceLineCreate,
 )
@@ -79,12 +84,16 @@ from app.services.account_lifecycle import (
     stage_subscription_billing_anchor,
 )
 from app.services.audit import AuditEvents
-from app.services.billing._common import lock_account
+from app.services.billing._common import get_account_credit_balance, lock_account
 from app.services.billing.adjustments import (
     AccountAdjustmentError,
     AccountAdjustmentOrigin,
     PreviewAccountAdjustmentQuery,
+    PreviewAccountAdjustmentReversalQuery,
+    ReverseAccountAdjustmentCommand,
     preview_account_adjustment,
+    preview_account_adjustment_reversal,
+    stage_account_adjustment_reversal_for_renewal_owner,
 )
 from app.services.billing.cadence import BillingCadence, service_period
 from app.services.billing.invoices import (
@@ -96,6 +105,7 @@ from app.services.billing.invoices import (
 from app.services.billing_tax_resolution import resolve_subscription_taxes
 from app.services.common import coerce_uuid, round_money
 from app.services.domain_errors import DomainError
+from app.services.locking import lock_for_update
 from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
@@ -131,6 +141,17 @@ _EXECUTE_REVIEWED_COMMAND = OwnerCommandDefinition(
     concern=_REVIEWED_RENEWAL_CONCERN,
     name="execute_reviewed_prepaid_service_renewal",
 )
+_LEGACY_TAX_CORRECTION_CONCERN = (
+    "reviewed legacy prepaid renewal tax-invoice correction"
+)
+_LEGACY_TAX_CORRECTION_COMMAND = OwnerCommandDefinition(
+    owner=_OWNER,
+    concern=_LEGACY_TAX_CORRECTION_CONCERN,
+    name="correct_legacy_prepaid_renewal_tax_invoice",
+)
+_LEGACY_TAX_CORRECTION_SCOPE = "prepaid:legacy-renewal-tax-invoice-correction"
+_LEGACY_TAX_CORRECTION_AUTH_SCOPE = "billing:ledger:write"
+_LEGACY_TAX_CORRECTION_METADATA_KEY = "legacy_renewal_tax_invoice_correction"
 PREPAID_SERVICE_RENEWAL_ELIGIBLE_STATUSES = frozenset(
     {
         SubscriptionStatus.active,
@@ -425,6 +446,87 @@ class PrepaidMonthlyChargeDetail:
     billing_cycle: BillingCycle
     tax_rate_id: UUID | None
     tax_application: TaxApplication
+
+
+class LegacyRenewalTaxInvoiceCorrectionDisposition(enum.StrEnum):
+    """Closed preview outcomes for one historical base-only renewal."""
+
+    exact_base_only_legacy_renewal = "exact_base_only_legacy_renewal"
+    already_corrected = "already_corrected"
+    manual_review = "manual_review"
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyRenewalTaxInvoiceCorrectionQuery:
+    """Expected evidence and Finance-approved amounts for one correction."""
+
+    account_id: UUID
+    subscription_id: UUID
+    adjustment_id: UUID
+    entitlement_id: UUID
+    expected_invoice_total: Decimal
+    expected_remaining_credit: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyRenewalTaxInvoiceCorrectionPreview:
+    """Fingerprint-bound proof of the exact proposed documentary correction."""
+
+    account_id: UUID
+    subscription_id: UUID
+    adjustment_id: UUID
+    entitlement_id: UUID
+    disposition: LegacyRenewalTaxInvoiceCorrectionDisposition
+    period_start: datetime | None
+    period_end: datetime | None
+    currency: str
+    original_debit: Decimal
+    subtotal: Decimal
+    tax_total: Decimal
+    tax_rate_id: UUID | None
+    tax_application: TaxApplication
+    invoice_total: Decimal
+    credit_before: Decimal
+    credit_after: Decimal
+    reversal_preview_fingerprint: str | None
+    reason: str
+    fingerprint: str
+    existing_invoice_id: UUID | None = None
+
+    @property
+    def actionable(self) -> bool:
+        return (
+            self.disposition
+            is LegacyRenewalTaxInvoiceCorrectionDisposition.exact_base_only_legacy_renewal
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CorrectLegacyRenewalTaxInvoiceCommand:
+    """Execute one reviewed correction only while its preview remains exact."""
+
+    context: CommandContext
+    query: LegacyRenewalTaxInvoiceCorrectionQuery
+    expected_preview_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyRenewalTaxInvoiceCorrectionResult:
+    """Exact financial and entitlement evidence committed by the correction."""
+
+    invoice_id: UUID
+    invoice_number: str
+    invoice_line_id: UUID
+    replacement_entitlement_id: UUID
+    replaced_entitlement_id: UUID
+    adjustment_id: UUID
+    reversal_ledger_entry_id: UUID
+    payment_allocation_ids: tuple[UUID, ...]
+    invoice_total: Decimal
+    tax_total: Decimal
+    remaining_credit: Decimal
+    preview_fingerprint: str
+    replayed: bool
 
 
 def resolve_prepaid_monthly_charge_detail(
@@ -2069,6 +2171,7 @@ def _settle_exact_payment_fundable_renewal(
         preview_payment_funding_for_owner,
     )
 
+    decision_at = _utc(decision_at)
     try:
         Invoices.issue_draft_for_owner(
             db,
@@ -2337,6 +2440,871 @@ def _execute_reviewed_prepaid_service_renewal(
         outcome=outcome,
         restored_service_count=restored,
     )
+
+
+def _legacy_tax_correction_fingerprint(
+    *,
+    query: LegacyRenewalTaxInvoiceCorrectionQuery,
+    disposition: LegacyRenewalTaxInvoiceCorrectionDisposition,
+    period_start: datetime | None,
+    period_end: datetime | None,
+    currency: str,
+    original_debit: Decimal,
+    subtotal: Decimal,
+    tax_total: Decimal,
+    tax_rate_id: UUID | None,
+    tax_application: TaxApplication,
+    invoice_total: Decimal,
+    credit_before: Decimal,
+    credit_after: Decimal,
+    reversal_preview_fingerprint: str | None,
+    existing_invoice_id: UUID | None,
+    reason: str,
+) -> str:
+    values = (
+        str(query.account_id),
+        str(query.subscription_id),
+        str(query.adjustment_id),
+        str(query.entitlement_id),
+        str(round_money(query.expected_invoice_total)),
+        str(round_money(query.expected_remaining_credit)),
+        disposition.value,
+        period_start.isoformat() if period_start else "",
+        period_end.isoformat() if period_end else "",
+        currency,
+        str(round_money(original_debit)),
+        str(round_money(subtotal)),
+        str(round_money(tax_total)),
+        str(tax_rate_id or ""),
+        tax_application.value,
+        str(round_money(invoice_total)),
+        str(round_money(credit_before)),
+        str(round_money(credit_after)),
+        reversal_preview_fingerprint or "",
+        str(existing_invoice_id or ""),
+        reason,
+    )
+    return hashlib.sha256("|".join(values).encode("utf-8")).hexdigest()
+
+
+def _legacy_tax_correction_actor(
+    context: CommandContext,
+) -> tuple[AuditActorType, str]:
+    """Require attributable Finance-operator evidence, including on replay."""
+
+    if context.scope != _LEGACY_TAX_CORRECTION_AUTH_SCOPE:
+        _error(
+            "invalid_command_context",
+            "Legacy renewal tax correction requires ledger-write authorization.",
+            field="scope",
+        )
+    actor_type_value, separator, actor_id_value = context.actor.partition(":")
+    try:
+        actor_type = AuditActorType(actor_type_value)
+        actor_id = UUID(actor_id_value.strip())
+    except (ValueError, AttributeError) as exc:
+        raise PrepaidServiceRenewalError(
+            code="financial.prepaid_service_renewals.invalid_command_context",
+            message=(
+                "Legacy renewal tax correction requires a user:<uuid> actor identity."
+            ),
+            details={"field": "actor"},
+        ) from exc
+    if not separator or actor_type is not AuditActorType.user:
+        _error(
+            "invalid_command_context",
+            "Legacy renewal tax correction requires a user:<uuid> actor identity.",
+            field="actor",
+        )
+    return actor_type, str(actor_id)
+
+
+def _legacy_tax_correction_preview(
+    *,
+    query: LegacyRenewalTaxInvoiceCorrectionQuery,
+    disposition: LegacyRenewalTaxInvoiceCorrectionDisposition,
+    reason: str,
+    period_start: datetime | None = None,
+    period_end: datetime | None = None,
+    currency: str = "NGN",
+    original_debit: Decimal = Decimal("0.00"),
+    subtotal: Decimal = Decimal("0.00"),
+    tax_total: Decimal = Decimal("0.00"),
+    tax_rate_id: UUID | None = None,
+    tax_application: TaxApplication = TaxApplication.exempt,
+    invoice_total: Decimal = Decimal("0.00"),
+    credit_before: Decimal = Decimal("0.00"),
+    credit_after: Decimal = Decimal("0.00"),
+    reversal_preview_fingerprint: str | None = None,
+    existing_invoice_id: UUID | None = None,
+    fingerprint_override: str | None = None,
+) -> LegacyRenewalTaxInvoiceCorrectionPreview:
+    fingerprint = fingerprint_override or _legacy_tax_correction_fingerprint(
+        query=query,
+        disposition=disposition,
+        period_start=period_start,
+        period_end=period_end,
+        currency=currency,
+        original_debit=original_debit,
+        subtotal=subtotal,
+        tax_total=tax_total,
+        tax_rate_id=tax_rate_id,
+        tax_application=tax_application,
+        invoice_total=invoice_total,
+        credit_before=credit_before,
+        credit_after=credit_after,
+        reversal_preview_fingerprint=reversal_preview_fingerprint,
+        existing_invoice_id=existing_invoice_id,
+        reason=reason,
+    )
+    return LegacyRenewalTaxInvoiceCorrectionPreview(
+        account_id=query.account_id,
+        subscription_id=query.subscription_id,
+        adjustment_id=query.adjustment_id,
+        entitlement_id=query.entitlement_id,
+        disposition=disposition,
+        period_start=period_start,
+        period_end=period_end,
+        currency=currency,
+        original_debit=round_money(original_debit),
+        subtotal=round_money(subtotal),
+        tax_total=round_money(tax_total),
+        tax_rate_id=tax_rate_id,
+        tax_application=tax_application,
+        invoice_total=round_money(invoice_total),
+        credit_before=round_money(credit_before),
+        credit_after=round_money(credit_after),
+        reversal_preview_fingerprint=reversal_preview_fingerprint,
+        reason=reason,
+        fingerprint=fingerprint,
+        existing_invoice_id=existing_invoice_id,
+    )
+
+
+def _existing_legacy_tax_correction_invoice(
+    db: Session,
+    query: LegacyRenewalTaxInvoiceCorrectionQuery,
+) -> tuple[Invoice, InvoiceLine, ServiceEntitlement, dict[str, object]] | None:
+    rows = db.execute(
+        select(Invoice, InvoiceLine)
+        .join(InvoiceLine, InvoiceLine.invoice_id == Invoice.id)
+        .where(
+            Invoice.account_id == query.account_id,
+            InvoiceLine.subscription_id == query.subscription_id,
+            InvoiceLine.is_active.is_(True),
+        )
+        .order_by(Invoice.created_at, Invoice.id)
+    ).all()
+    for invoice, line in rows:
+        metadata = dict(invoice.metadata_ or {}).get(
+            _LEGACY_TAX_CORRECTION_METADATA_KEY
+        )
+        if not isinstance(metadata, dict):
+            continue
+        if metadata.get("adjustment_id") != str(query.adjustment_id) or metadata.get(
+            "replaced_entitlement_id"
+        ) != str(query.entitlement_id):
+            continue
+        entitlement = db.scalar(
+            select(ServiceEntitlement).where(
+                ServiceEntitlement.source_invoice_line_id == line.id,
+                ServiceEntitlement.status == ServiceEntitlementStatus.active,
+            )
+        )
+        if entitlement is None:
+            _error(
+                "legacy_tax_correction_drift",
+                "Corrected invoice has no active replacement entitlement.",
+                invoice_id=str(invoice.id),
+            )
+        return invoice, line, entitlement, metadata
+    return None
+
+
+def preview_legacy_prepaid_renewal_tax_invoice_correction(
+    db: Session,
+    query: LegacyRenewalTaxInvoiceCorrectionQuery,
+) -> LegacyRenewalTaxInvoiceCorrectionPreview:
+    """Prove one base-only legacy renewal can become a taxed paid invoice."""
+
+    existing = _existing_legacy_tax_correction_invoice(db, query)
+    if existing is not None:
+        invoice, line, _entitlement, metadata = existing
+        fingerprint = str(metadata.get("preview_fingerprint") or "")
+        if (
+            invoice.status is not InvoiceStatus.paid
+            or round_money(invoice.balance_due) != Decimal("0.00")
+            or round_money(invoice.total) != round_money(query.expected_invoice_total)
+            or len(fingerprint) != 64
+        ):
+            _error(
+                "legacy_tax_correction_drift",
+                "Corrected historical renewal invoice evidence has drifted.",
+                invoice_id=str(invoice.id),
+            )
+        currency = (invoice.currency or "NGN").upper()
+        return _legacy_tax_correction_preview(
+            query=query,
+            disposition=LegacyRenewalTaxInvoiceCorrectionDisposition.already_corrected,
+            reason="invoice carries exact legacy renewal tax-correction evidence",
+            period_start=(
+                _utc(invoice.billing_period_start)
+                if invoice.billing_period_start is not None
+                else None
+            ),
+            period_end=(
+                _utc(invoice.billing_period_end)
+                if invoice.billing_period_end is not None
+                else None
+            ),
+            currency=currency,
+            subtotal=invoice.subtotal,
+            tax_total=invoice.tax_total,
+            tax_rate_id=line.tax_rate_id,
+            tax_application=line.tax_application,
+            invoice_total=invoice.total,
+            credit_after=get_account_credit_balance(
+                db, str(query.account_id), currency=currency
+            ),
+            existing_invoice_id=invoice.id,
+            fingerprint_override=fingerprint,
+        )
+
+    subscription = db.get(Subscription, query.subscription_id)
+    adjustment = db.get(AccountAdjustment, query.adjustment_id)
+    entitlement = db.get(ServiceEntitlement, query.entitlement_id)
+    ledger_entry = (
+        db.get(LedgerEntry, adjustment.ledger_entry_id)
+        if adjustment is not None
+        else None
+    )
+    if (
+        subscription is None
+        or adjustment is None
+        or entitlement is None
+        or ledger_entry is None
+        or subscription.subscriber_id != query.account_id
+        or subscription.billing_mode is not BillingMode.prepaid
+        or subscription.status not in PREPAID_SERVICE_RENEWAL_ELIGIBLE_STATUSES
+        or adjustment.account_id != query.account_id
+        or adjustment.category is not LedgerCategory.internet_service
+        or adjustment.origin != _ORIGIN.value
+        or adjustment.reversed_at is not None
+        or adjustment.reversal_ledger_entry_id is not None
+        or ledger_entry.account_id != query.account_id
+        or ledger_entry.id != adjustment.ledger_entry_id
+        or ledger_entry.entry_type is not LedgerEntryType.debit
+        or ledger_entry.source is not LedgerSource.adjustment
+        or ledger_entry.category is not LedgerCategory.internet_service
+        or not ledger_entry.is_active
+        or not ledger_entry.affects_customer_position
+        or ledger_entry.reversal_of_entry_id is not None
+        or ledger_entry.invoice_id is not None
+        or ledger_entry.payment_id is not None
+        or entitlement.account_id != query.account_id
+        or entitlement.subscription_id != query.subscription_id
+        or entitlement.status is not ServiceEntitlementStatus.active
+        or entitlement.source_ledger_entry_id != ledger_entry.id
+        or entitlement.source_invoice_id is not None
+        or entitlement.source_invoice_line_id is not None
+        or entitlement.source_billing_grant_id is not None
+        or _utc(entitlement.ends_at) <= _utc(entitlement.starts_at)
+        or subscription.next_billing_at is None
+        or _utc(subscription.next_billing_at) != _utc(entitlement.ends_at)
+        or adjustment.origin_ref
+        != _origin_ref(
+            subscription.id,
+            _utc(entitlement.starts_at),
+            _utc(entitlement.ends_at),
+        )
+        or round_money(entitlement.amount_funded) != round_money(adjustment.amount)
+        or round_money(ledger_entry.amount) != round_money(adjustment.amount)
+        or round_money(adjustment.prepaid_funding_before)
+        - round_money(adjustment.prepaid_funding_after)
+        != round_money(adjustment.amount)
+        or round_money(adjustment.prepaid_funding_after) < Decimal("0.00")
+        or entitlement.currency.upper() != adjustment.currency.upper()
+        or (ledger_entry.currency or "NGN").upper() != adjustment.currency.upper()
+    ):
+        return _legacy_tax_correction_preview(
+            query=query,
+            disposition=LegacyRenewalTaxInvoiceCorrectionDisposition.manual_review,
+            reason="selected records are not one exact active legacy renewal chain",
+        )
+
+    period_start = _utc(entitlement.starts_at)
+    period_end = _utc(entitlement.ends_at)
+    charge = resolve_prepaid_monthly_charge_detail(db, subscription, period_start)
+    credit_before = round_money(
+        get_account_credit_balance(
+            db,
+            str(query.account_id),
+            currency=adjustment.currency.upper(),
+        )
+    )
+    expected_total = round_money(query.expected_invoice_total)
+    expected_remaining = round_money(query.expected_remaining_credit)
+    if (
+        charge is None
+        or charge.currency != adjustment.currency.upper()
+        or charge.tax_application is not TaxApplication.exclusive
+        or charge.tax_rate_id is None
+        or charge.tax_total <= Decimal("0.00")
+        or round_money(charge.unit_price) != round_money(adjustment.amount)
+        or round_money(charge.subtotal) != round_money(adjustment.amount)
+        or charge.total != expected_total
+        or expected_remaining < Decimal("0.00")
+        or round_money(adjustment.prepaid_funding_after) != credit_before
+        or credit_before != round_money(charge.tax_total + expected_remaining)
+    ):
+        return _legacy_tax_correction_preview(
+            query=query,
+            disposition=LegacyRenewalTaxInvoiceCorrectionDisposition.manual_review,
+            reason=(
+                "current contract tax or approved balance does not exactly match "
+                "the base-only legacy renewal"
+            ),
+            period_start=period_start,
+            period_end=period_end,
+            currency=adjustment.currency.upper(),
+            original_debit=adjustment.amount,
+            subtotal=charge.subtotal if charge is not None else Decimal("0.00"),
+            tax_total=charge.tax_total if charge is not None else Decimal("0.00"),
+            tax_rate_id=charge.tax_rate_id if charge is not None else None,
+            tax_application=(
+                charge.tax_application if charge is not None else TaxApplication.exempt
+            ),
+            invoice_total=charge.total if charge is not None else Decimal("0.00"),
+            credit_before=credit_before,
+            credit_after=expected_remaining,
+        )
+
+    competing_invoice_id = db.scalar(
+        select(Invoice.id)
+        .join(InvoiceLine, InvoiceLine.invoice_id == Invoice.id)
+        .where(
+            Invoice.account_id == query.account_id,
+            Invoice.is_active.is_(True),
+            Invoice.status.notin_({InvoiceStatus.void, InvoiceStatus.written_off}),
+            InvoiceLine.subscription_id == query.subscription_id,
+            InvoiceLine.is_active.is_(True),
+            InvoiceLine.amount > Decimal("0.00"),
+            or_(
+                Invoice.billing_period_start.is_(None),
+                Invoice.billing_period_end.is_(None),
+                (
+                    (Invoice.billing_period_start < period_end)
+                    & (Invoice.billing_period_end > period_start)
+                ),
+            ),
+        )
+        .limit(1)
+    )
+    if competing_invoice_id is not None:
+        return _legacy_tax_correction_preview(
+            query=query,
+            disposition=LegacyRenewalTaxInvoiceCorrectionDisposition.manual_review,
+            reason="a competing invoice already overlaps the legacy renewal period",
+            period_start=period_start,
+            period_end=period_end,
+            currency=charge.currency,
+            original_debit=adjustment.amount,
+            subtotal=charge.subtotal,
+            tax_total=charge.tax_total,
+            tax_rate_id=charge.tax_rate_id,
+            tax_application=charge.tax_application,
+            invoice_total=charge.total,
+            credit_before=credit_before,
+            credit_after=expected_remaining,
+            existing_invoice_id=competing_invoice_id,
+        )
+
+    reversal = preview_account_adjustment_reversal(
+        db,
+        PreviewAccountAdjustmentReversalQuery(
+            adjustment_id=adjustment.id,
+            request=AccountAdjustmentReversalPreviewRequest(
+                reason=(
+                    "Replace base-only legacy prepaid renewal with the approved "
+                    "tax-inclusive paid invoice"
+                )
+            ),
+        ),
+    )
+    if (
+        reversal.prepaid_funding_before != credit_before
+        or reversal.prepaid_funding_after
+        != round_money(expected_total + expected_remaining)
+    ):
+        return _legacy_tax_correction_preview(
+            query=query,
+            disposition=LegacyRenewalTaxInvoiceCorrectionDisposition.manual_review,
+            reason="adjustment reversal does not restore the exact invoice funding",
+            period_start=period_start,
+            period_end=period_end,
+            currency=charge.currency,
+            original_debit=adjustment.amount,
+            subtotal=charge.subtotal,
+            tax_total=charge.tax_total,
+            tax_rate_id=charge.tax_rate_id,
+            tax_application=charge.tax_application,
+            invoice_total=charge.total,
+            credit_before=credit_before,
+            credit_after=expected_remaining,
+            reversal_preview_fingerprint=reversal.fingerprint,
+        )
+
+    return _legacy_tax_correction_preview(
+        query=query,
+        disposition=(
+            LegacyRenewalTaxInvoiceCorrectionDisposition.exact_base_only_legacy_renewal
+        ),
+        reason=(
+            "one atomic correction can reverse the base-only debit and settle "
+            "the exact tax-inclusive renewal invoice"
+        ),
+        period_start=period_start,
+        period_end=period_end,
+        currency=charge.currency,
+        original_debit=adjustment.amount,
+        subtotal=charge.subtotal,
+        tax_total=charge.tax_total,
+        tax_rate_id=charge.tax_rate_id,
+        tax_application=charge.tax_application,
+        invoice_total=charge.total,
+        credit_before=credit_before,
+        credit_after=expected_remaining,
+        reversal_preview_fingerprint=reversal.fingerprint,
+    )
+
+
+def _legacy_tax_correction_result(
+    db: Session,
+    *,
+    invoice: Invoice,
+    query: LegacyRenewalTaxInvoiceCorrectionQuery,
+    preview_fingerprint: str,
+    replayed: bool,
+) -> LegacyRenewalTaxInvoiceCorrectionResult:
+    line = db.scalar(
+        select(InvoiceLine).where(
+            InvoiceLine.invoice_id == invoice.id,
+            InvoiceLine.subscription_id == query.subscription_id,
+            InvoiceLine.is_active.is_(True),
+        )
+    )
+    replacement = (
+        db.scalar(
+            select(ServiceEntitlement).where(
+                ServiceEntitlement.source_invoice_line_id == line.id,
+                ServiceEntitlement.status == ServiceEntitlementStatus.active,
+            )
+        )
+        if line is not None
+        else None
+    )
+    replaced = db.get(ServiceEntitlement, query.entitlement_id)
+    adjustment = db.get(AccountAdjustment, query.adjustment_id)
+    allocations = tuple(
+        db.scalars(
+            select(PaymentAllocation)
+            .where(
+                PaymentAllocation.invoice_id == invoice.id,
+                PaymentAllocation.is_active.is_(True),
+            )
+            .order_by(PaymentAllocation.id)
+        ).all()
+    )
+    remaining = round_money(
+        get_account_credit_balance(
+            db, str(query.account_id), currency=(invoice.currency or "NGN").upper()
+        )
+    )
+    invoice_number = (invoice.invoice_number or "").strip()
+    reversal_ledger_entry_id = (
+        adjustment.reversal_ledger_entry_id if adjustment is not None else None
+    )
+    if (
+        line is None
+        or replacement is None
+        or replaced is None
+        or replaced.status is not ServiceEntitlementStatus.reversed
+        or adjustment is None
+        or adjustment.reversed_at is None
+        or reversal_ledger_entry_id is None
+        or not invoice_number
+        or invoice.status is not InvoiceStatus.paid
+        or round_money(invoice.balance_due) != Decimal("0.00")
+        or round_money(invoice.total) != round_money(query.expected_invoice_total)
+        or remaining != round_money(query.expected_remaining_credit)
+        or round_money(
+            sum((allocation.amount for allocation in allocations), Decimal("0.00"))
+        )
+        != round_money(invoice.total)
+    ):
+        _error(
+            "legacy_tax_correction_incomplete",
+            "Legacy renewal tax-invoice correction did not close exactly.",
+            invoice_id=str(invoice.id),
+        )
+    return LegacyRenewalTaxInvoiceCorrectionResult(
+        invoice_id=invoice.id,
+        invoice_number=invoice_number,
+        invoice_line_id=line.id,
+        replacement_entitlement_id=replacement.id,
+        replaced_entitlement_id=replaced.id,
+        adjustment_id=adjustment.id,
+        reversal_ledger_entry_id=reversal_ledger_entry_id,
+        payment_allocation_ids=tuple(allocation.id for allocation in allocations),
+        invoice_total=round_money(invoice.total),
+        tax_total=round_money(invoice.tax_total),
+        remaining_credit=remaining,
+        preview_fingerprint=preview_fingerprint,
+        replayed=replayed,
+    )
+
+
+def correct_legacy_prepaid_renewal_tax_invoice(
+    db: Session,
+    command: CorrectLegacyRenewalTaxInvoiceCommand,
+) -> LegacyRenewalTaxInvoiceCorrectionResult:
+    """Atomically replace one base-only legacy renewal with its taxed invoice."""
+
+    def operation() -> LegacyRenewalTaxInvoiceCorrectionResult:
+        key = (command.context.idempotency_key or "").strip()
+        if not key or len(key) > 120:
+            _error(
+                "missing_idempotency_key",
+                "Legacy renewal tax correction requires a bounded idempotency key.",
+            )
+        expected = command.expected_preview_fingerprint.strip().lower()
+        if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
+            _error(
+                "invalid_preview_fingerprint",
+                "Legacy renewal tax correction requires a SHA-256 preview.",
+            )
+        actor_type, actor_id = _legacy_tax_correction_actor(command.context)
+
+        lock_account(db, str(command.query.account_id))
+        reservation = db.scalar(
+            select(IdempotencyKey)
+            .where(
+                IdempotencyKey.scope == _LEGACY_TAX_CORRECTION_SCOPE,
+                IdempotencyKey.key == key,
+            )
+            .with_for_update()
+        )
+        if reservation is not None:
+            if (
+                reservation.account_id != command.query.account_id
+                or not reservation.ref_id
+            ):
+                _error(
+                    "idempotency_conflict",
+                    "Legacy renewal tax-correction key belongs to other evidence.",
+                )
+            try:
+                invoice_id = UUID(reservation.ref_id)
+            except ValueError:
+                _error(
+                    "legacy_tax_correction_incomplete",
+                    "Correction reservation contains an invalid invoice identity.",
+                )
+            invoice = db.get(Invoice, invoice_id)
+            if invoice is None:
+                _error(
+                    "legacy_tax_correction_incomplete",
+                    "Correction reservation points to a missing invoice.",
+                )
+            metadata = dict(invoice.metadata_ or {}).get(
+                _LEGACY_TAX_CORRECTION_METADATA_KEY
+            )
+            if (
+                not isinstance(metadata, dict)
+                or metadata.get("preview_fingerprint") != expected
+            ):
+                _error(
+                    "idempotency_conflict",
+                    "Legacy renewal tax-correction key was reused with other evidence.",
+                )
+            return _legacy_tax_correction_result(
+                db,
+                invoice=invoice,
+                query=command.query,
+                preview_fingerprint=expected,
+                replayed=True,
+            )
+
+        subscription = lock_for_update(db, Subscription, command.query.subscription_id)
+        adjustment = lock_for_update(db, AccountAdjustment, command.query.adjustment_id)
+        entitlement = lock_for_update(
+            db, ServiceEntitlement, command.query.entitlement_id
+        )
+        if subscription is None or adjustment is None or entitlement is None:
+            _error(
+                "legacy_tax_correction_not_found",
+                "Selected subscription or legacy renewal evidence was not found.",
+            )
+
+        current = preview_legacy_prepaid_renewal_tax_invoice_correction(
+            db, command.query
+        )
+        if current.fingerprint != expected:
+            _error(
+                "stale_preview",
+                "Legacy renewal tax-correction evidence changed; preview again.",
+            )
+        if (
+            not current.actionable
+            or current.period_start is None
+            or current.period_end is None
+            or current.reversal_preview_fingerprint is None
+        ):
+            _error(
+                "legacy_tax_correction_not_actionable",
+                "Legacy renewal requires additional review.",
+                disposition=current.disposition.value,
+                reason=current.reason,
+            )
+
+        reservation = IdempotencyKey(
+            scope=_LEGACY_TAX_CORRECTION_SCOPE,
+            key=key,
+            account_id=current.account_id,
+        )
+        db.add(reservation)
+        db.flush()
+
+        reversal = stage_account_adjustment_reversal_for_renewal_owner(
+            db,
+            ReverseAccountAdjustmentCommand(
+                context=command.context,
+                adjustment_id=adjustment.id,
+                confirmation=AccountAdjustmentReversalConfirm(
+                    reason=(
+                        "Replace base-only legacy prepaid renewal with the approved "
+                        "tax-inclusive paid invoice"
+                    ),
+                    preview_fingerprint=current.reversal_preview_fingerprint,
+                    idempotency_key=key,
+                ),
+            ),
+        )
+
+        entitlement.status = ServiceEntitlementStatus.reversed
+        entitlement.metadata_ = {
+            **(entitlement.metadata_ or {}),
+            "revoked_reason": "replaced_by_tax_inclusive_paid_invoice",
+            "tax_correction_preview_fingerprint": current.fingerprint,
+        }
+        db.flush()
+
+        charge = resolve_prepaid_monthly_charge_detail(
+            db, subscription, current.period_start
+        )
+        if (
+            charge is None
+            or charge.unit_price != current.subtotal
+            or charge.subtotal != current.subtotal
+            or charge.tax_total != current.tax_total
+            or charge.tax_rate_id != current.tax_rate_id
+            or charge.tax_application is not current.tax_application
+            or charge.total != current.invoice_total
+        ):
+            _error(
+                "stale_preview",
+                "Contract tax changed after the correction preview.",
+            )
+        origin_ref = _origin_ref(
+            subscription.id, current.period_start, current.period_end
+        )
+        local_start = current.period_start.astimezone(APP_TIMEZONE).date()
+        local_end = current.period_end.astimezone(APP_TIMEZONE).date()
+        try:
+            invoice = Invoices.stage_system_invoice_for_owner(
+                db,
+                InvoiceCreate(
+                    account_id=current.account_id,
+                    status=InvoiceStatus.draft,
+                    currency=current.currency,
+                    subtotal=current.subtotal,
+                    tax_total=current.tax_total,
+                    total=current.invoice_total,
+                    balance_due=current.invoice_total,
+                    billing_period_start=current.period_start,
+                    billing_period_end=current.period_end,
+                    memo=(
+                        "Reviewed correction of legacy prepaid renewal "
+                        f"{local_start.isoformat()} - {local_end.isoformat()}"
+                    ),
+                ),
+                reason="legacy_prepaid_renewal_tax_invoice_correction",
+            )
+            line = InvoiceLines.stage_system_line_for_owner(
+                db,
+                SystemInvoiceLineCreate(
+                    invoice_id=invoice.id,
+                    subscription_id=subscription.id,
+                    description=(
+                        f"{subscription.offer.name if subscription.offer else 'Service'} "
+                        f"({local_start.isoformat()} - {local_end.isoformat()})"
+                    ),
+                    quantity=Decimal("1.000"),
+                    unit_price=charge.unit_price,
+                    amount=charge.unit_price,
+                    tax_rate_id=charge.tax_rate_id,
+                    tax_application=charge.tax_application,
+                    metadata_={
+                        "kind": "base_subscription",
+                        "billing_period_start": current.period_start.isoformat(),
+                        "billing_period_end": current.period_end.isoformat(),
+                        "renewal_preview_fingerprint": current.fingerprint,
+                        "renewal_idempotency_key": _idempotency_key(origin_ref),
+                        "renewal_evidence_ref": command.context.reason,
+                        "renewal_funding_before": str(
+                            reversal.preview.prepaid_funding_after
+                        ),
+                        "renewal_funding_after": str(current.credit_after),
+                        "renewal_account_id": str(current.account_id),
+                        "renewal_subscription_id": str(subscription.id),
+                        "renewal_amount": str(current.invoice_total),
+                        "renewal_currency": current.currency,
+                        "legacy_adjustment_id": str(adjustment.id),
+                        "replaced_entitlement_id": str(entitlement.id),
+                    },
+                    billing_line_key=_renewal_billing_line_key(origin_ref),
+                ),
+                reason="legacy_prepaid_renewal_tax_invoice_correction",
+            )
+        except InvoiceOwnerError as exc:
+            _error(
+                "invoice_rejected",
+                "Invoice owner rejected the legacy renewal tax correction.",
+                participant_error=exc.code,
+            )
+
+        invoice.metadata_ = {
+            **(invoice.metadata_ or {}),
+            "renewal_period_authoritative": True,
+            "renewal_totals_authoritative": True,
+            _LEGACY_TAX_CORRECTION_METADATA_KEY: {
+                "adjustment_id": str(adjustment.id),
+                "replaced_entitlement_id": str(entitlement.id),
+                "reversal_ledger_entry_id": str(reversal.ledger_entry.id),
+                "preview_fingerprint": current.fingerprint,
+                "actor": command.context.actor,
+                "reason": command.context.reason,
+            },
+        }
+        db.flush()
+        _settle_exact_payment_fundable_renewal(
+            db,
+            invoice=invoice,
+            decision_at=adjustment.created_at,
+        )
+        project_prepaid_billing_anchor_for_invoice(
+            db,
+            invoice,
+            evidence_ref=f"legacy-renewal-tax-correction:{invoice.id}",
+            authority=BillingAnchorAuthority.reviewed_reconciliation,
+        )
+        evidence = _invoice_backed_renewal_evidence(
+            db,
+            subscription=subscription,
+            starts_at=current.period_start,
+            ends_at=current.period_end,
+            amount=current.invoice_total,
+            currency=current.currency,
+            origin_ref=origin_ref,
+        )
+        if evidence is None or evidence.line.id != line.id:
+            _error(
+                "legacy_tax_correction_incomplete",
+                "Corrected paid invoice did not produce exact renewal evidence.",
+            )
+        reservation.ref_id = str(invoice.id)
+        AuditEvents.stage(
+            db,
+            AuditEventCreate(
+                actor_type=actor_type,
+                actor_id=actor_id,
+                action="correct_legacy_prepaid_renewal_tax_invoice",
+                entity_type="invoice",
+                entity_id=str(invoice.id),
+                request_id=str(command.context.correlation_id),
+                metadata_={
+                    "owner": _OWNER,
+                    "account_id": str(current.account_id),
+                    "subscription_id": str(subscription.id),
+                    "adjustment_id": str(adjustment.id),
+                    "replaced_entitlement_id": str(entitlement.id),
+                    "replacement_entitlement_id": str(evidence.entitlement.id),
+                    "reversal_ledger_entry_id": str(reversal.ledger_entry.id),
+                    "payment_allocation_ids": [
+                        str(allocation_id)
+                        for allocation_id in evidence.payment_allocation_ids
+                    ],
+                    "subtotal": str(current.subtotal),
+                    "tax_total": str(current.tax_total),
+                    "invoice_total": str(current.invoice_total),
+                    "credit_before": str(current.credit_before),
+                    "credit_after": str(current.credit_after),
+                    "preview_fingerprint": current.fingerprint,
+                    "scope": command.context.scope,
+                    "reason": command.context.reason,
+                },
+            ),
+        )
+        from app.services.events.dispatcher import emit_event
+        from app.services.events.types import EventType
+
+        emit_event(
+            db,
+            EventType.prepaid_service_renewal_document_corrected,
+            {
+                "schema_version": 2,
+                "account_id": str(current.account_id),
+                "subscription_id": str(subscription.id),
+                "invoice_id": str(invoice.id),
+                "adjustment_id": str(adjustment.id),
+                "replaced_entitlement_id": str(entitlement.id),
+                "replacement_entitlement_id": str(evidence.entitlement.id),
+                "reversal_ledger_entry_id": str(reversal.ledger_entry.id),
+                "period_start": current.period_start.isoformat(),
+                "period_end": current.period_end.isoformat(),
+                "invoice_total": str(current.invoice_total),
+                "tax_total": str(current.tax_total),
+                "remaining_credit": str(current.credit_after),
+                "preview_fingerprint": current.fingerprint,
+            },
+            actor=command.context.actor,
+            account_id=current.account_id,
+            subscription_id=subscription.id,
+            invoice_id=invoice.id,
+        )
+        db.flush()
+        return _legacy_tax_correction_result(
+            db,
+            invoice=invoice,
+            query=command.query,
+            preview_fingerprint=current.fingerprint,
+            replayed=False,
+        )
+
+    try:
+        return execute_owner_command(
+            db,
+            definition=_LEGACY_TAX_CORRECTION_COMMAND,
+            context=command.context,
+            operation=operation,
+        )
+    except IntegrityError as exc:
+        raise PrepaidServiceRenewalError(
+            code="financial.prepaid_service_renewals.legacy_tax_correction_write_conflict",
+            message="Legacy renewal correction conflicted with another command; retry.",
+            details={"account_id": str(command.query.account_id)},
+            retryable=True,
+        ) from exc
 
 
 def _stage_prepaid_consumption_posting(
@@ -4280,12 +5248,17 @@ __all__ = [
     "STALE_BILLING_ANCHOR_REPAIR_SCOPE",
     "BillingAnchorAuthority",
     "BillingAnchorProjection",
+    "CorrectLegacyRenewalTaxInvoiceCommand",
     "EvaluatePrepaidServiceAfterSettlementCommand",
     "ExecuteReviewedPrepaidServiceRenewalCommand",
     "FundingChangeEvaluation",
     "FundingChangeEvaluationDisposition",
     "FundingChangeRenewalDisposition",
     "FundingChangeRenewalResult",
+    "LegacyRenewalTaxInvoiceCorrectionDisposition",
+    "LegacyRenewalTaxInvoiceCorrectionPreview",
+    "LegacyRenewalTaxInvoiceCorrectionQuery",
+    "LegacyRenewalTaxInvoiceCorrectionResult",
     "PREPAID_SERVICE_RENEWAL_ELIGIBLE_STATUSES",
     "PREPAID_RENEWAL_ISOLATABLE_ERRORS",
     "PrepaidFundingSubscriptionDecision",
@@ -4309,11 +5282,13 @@ __all__ = [
     "apply_due_prepaid_service_after_funding_change",
     "apply_stale_prepaid_billing_anchor_repair",
     "confirm_prepaid_service_renewal",
+    "correct_legacy_prepaid_renewal_tax_invoice",
     "evaluate_prepaid_service_after_settlement",
     "execute_due_prepaid_service_renewals",
     "execute_reviewed_prepaid_service_renewal",
     "execute_prepaid_service_after_settlement",
     "preview_prepaid_service_renewal",
+    "preview_legacy_prepaid_renewal_tax_invoice_correction",
     "preview_prepaid_recurring_charge",
     "preview_stale_prepaid_billing_anchor_repair",
     "project_prepaid_billing_anchor_for_invoice",

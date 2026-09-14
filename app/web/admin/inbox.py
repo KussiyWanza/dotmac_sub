@@ -65,6 +65,7 @@ from app.services import (
     team_inbox_read,
     team_inbox_read_state,
     team_inbox_routing,
+    team_inbox_status,
 )
 from app.services import email as email_service
 from app.services import (
@@ -133,6 +134,13 @@ def _request_permission_keys(request: Request, db: Session) -> frozenset[str]:
     if "admin" not in set(auth.get("roles") or ()) and not auth.get("principal_id"):
         return frozenset()
     return load_permission_keys(auth, db)
+
+
+def _workqueue_principal(request: Request, db: Session):
+    auth = getattr(request.state, "auth", None)
+    if not isinstance(auth, dict):
+        raise HTTPException(status_code=403, detail="Inbox authorization is required.")
+    return principal_from_auth(db, auth)
 
 
 def _json_object_list(value: str | None) -> tuple[dict[str, object], ...]:
@@ -263,13 +271,11 @@ def _ctx(request: Request, db: Session) -> dict:
 
 def _resolution_readiness(
     db: Session, conversation_id: UUID | str
-) -> team_inbox_customer_completion.InboxCustomerResolutionReadiness | None:
+) -> team_inbox_status.InboxResolutionReadiness | None:
     resolved_id = coerce_uuid(conversation_id)
     if resolved_id is None:
         return None
-    return team_inbox_customer_completion.resolution_readiness_for_conversation(
-        db, resolved_id
-    )
+    return team_inbox_status.resolution_readiness_for_conversation(db, resolved_id)
 
 
 def _manager_ai_scope(request: Request, db: Session):
@@ -2493,12 +2499,14 @@ def team_inbox_bulk_action(
     service_team_id: str | None = Form(default=None),
     assigned_person_id: str | None = Form(default=None),
     auto_assign: bool = Form(default=True),
+    resolution_reason: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
     _prepare_mutation(db)
     try:
         outcome = team_inbox_commands.bulk_action(
             db,
+            principal=_workqueue_principal(request, db),
             conversation_ids=conversation_ids,
             action=action,
             status_value=status_value,
@@ -2508,6 +2516,7 @@ def team_inbox_bulk_action(
             assigned_person_id=assigned_person_id,
             auto_assign=auto_assign,
             actor_person_id=_actor_id_from_request(request),
+            resolution_reason=_query_text(resolution_reason),
         )
     except ai_conversation_ownership.AiConversationOwnedError as exc:
         return _domain_conflict_response(exc)
@@ -3125,15 +3134,18 @@ def team_inbox_status_action(
     conversation_id: UUID,
     request: Request,
     status_value: str = Form(...),
+    resolution_reason: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
     _prepare_mutation(db)
     try:
         outcome = team_inbox_commands.update_status(
             db,
+            principal=_workqueue_principal(request, db),
             conversation_id=conversation_id,
             status_value=status_value,
             actor_person_id=_actor_id_from_request(request),
+            resolution_reason=_query_text(resolution_reason),
         )
     except team_inbox_commands.ConversationNotFoundError:
         return RedirectResponse(

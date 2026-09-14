@@ -35,19 +35,29 @@ from app.services.ai.engine import AIEngineError, intelligence_engine
 
 # A report shaped exactly like ticket_sla_reports.summary() returns.
 _REPORT = {
-    "total_clocks": 120,
-    "total_breaches": 18,
-    "breach_rate": 0.15,
-    "by_status": [{"key": "breached", "total": 18, "breached": 18, "breach_rate": 1.0}],
+    "generated_at": "2026-09-14T12:00:00+00:00",
+    "total_open_tickets": 120,
+    "total_currently_breaching": 18,
+    "current_breach_rate": 0.15,
+    "by_status": [
+        {
+            "key": "open",
+            "label": "open",
+            "open_tickets": 18,
+            "currently_breaching": 18,
+            "breach_rate": 1.0,
+        }
+    ],
     "by_service_team": [
         {
             "key": "unassigned_team",
             "label": "Unassigned Team",
-            "total": 40,
-            "breached": 12,
+            "open_tickets": 40,
+            "currently_breaching": 12,
             "breach_rate": 0.3,
         }
     ],
+    "by_region": [],
     "by_assignee": [],
 }
 
@@ -193,7 +203,7 @@ def test_the_report_the_caller_supplies_is_what_reaches_the_model(db_session):
     _advise(db_session, _spec(), gateway)
 
     assert gateway.prompt is not None
-    assert '"total_breaches": 18' in gateway.prompt
+    assert '"total_currently_breaching": 18' in gateway.prompt
     assert "Unassigned Team" in gateway.prompt
 
 

@@ -351,3 +351,10 @@
         radial-gradient(at 100% 100%, color-mix(in srgb, var(--color-accent-600) 8%, transparent) 0px, transparent 50%),
         var(--surface-secondary);
 }
+
+/* Keep Leaflet's internal z-index scale inside the map widget. Without this
+   stacking context, map panes and controls (up to z-index: 1000) can paint
+   above application dialogs. */
+.leaflet-container {
+    isolation: isolate;
+}

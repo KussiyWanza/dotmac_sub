@@ -134,7 +134,6 @@ app.services.nin_verifications
 app.services.numbering
 app.services.olt_observed_state_adapter
 app.services.operational_escalation_delivery
-app.services.pppoe_credentials
 app.services.provisioning_helpers
 app.services.provisioning_step_executors
 app.services.push

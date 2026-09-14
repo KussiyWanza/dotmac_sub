@@ -668,6 +668,11 @@ def receive_inbound_email(
     team_inbox_participants.record_message_participants(
         db, conversation=conversation, message=message
     )
+    team_inbox_channel_receive.bind_resolved_party_participant(
+        db,
+        conversation=conversation,
+        resolution=resolution,
+    )
 
     conversation.last_message_at = received_at
     # Same wake rule as the channel path: an inbound email is the reply.

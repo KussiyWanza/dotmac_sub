@@ -176,9 +176,15 @@ def test_bulk_escalate_assigns_conversations_to_available_agent(
     monkeypatch.setattr(
         web_admin_service, "get_actor_id", lambda request: str(actor_id)
     )
+    request = _request()
+    request.state.auth = {
+        "principal_id": str(actor_id),
+        "principal_type": "system_user",
+        "roles": {"admin"},
+    }
 
     response = inbox_web.team_inbox_bulk_action(
-        _request(),
+        request,
         conversation_ids=[str(conversation.id)],
         action="escalate",
         status_value=None,

@@ -45,6 +45,19 @@ _MESSAGES = {
     "expense_line_amount_invalid": "An expense line amount must be greater than zero.",
     "expense_date_invalid": "ERP rejected an invalid expense date.",
     "expense_draft_validation_failed": "ERP rejected the expense draft validation; inspect ERP logs using the request ID.",
+    "employee_not_linked": "ERP has no employee mapping for this Selfcare account.",
+    "employee_mapping_ambiguous": "ERP has more than one employee mapping for this Selfcare account.",
+    "employee_inactive": "ERP reports that this employee is inactive.",
+    "attendance_disabled": "ERP reports that Selfcare attendance is disabled for this employee.",
+    "authorization_failed": "ERP rejected the attendance authorization context.",
+    "overnight_shift_not_supported": "ERP does not support Selfcare attendance for overnight shifts yet.",
+    "outside_geofence": "ERP rejected the attendance location.",
+    "invalid_location": "ERP rejected the attendance location payload.",
+    "location_required": "ERP requires a location for this attendance operation.",
+    "already_checked_in": "ERP reports that this employee is already checked in.",
+    "already_checked_out": "ERP reports that this employee is already checked out.",
+    "check_in_required": "ERP requires check-in before this attendance operation.",
+    "attendance_unavailable": "ERP attendance is temporarily unavailable.",
 }
 
 

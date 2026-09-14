@@ -10,6 +10,11 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.session import SessionTransaction
 
+from app.services.db_error_observability import (
+    DatabaseTransactionOwner,
+    clear_database_transaction_owner,
+    set_database_transaction_owner,
+)
 from app.services.operator_tenant import apply_operator_tenant_transaction_scope
 
 logger = logging.getLogger(__name__)
@@ -29,6 +34,21 @@ def _observe_transaction_span(duration_seconds: float, *, slow: bool) -> None:
     DATABASE_TRANSACTION_SPANS.observe(duration_seconds)
     if slow:
         DATABASE_TRANSACTION_SPANS_SLOW.inc()
+
+
+def _celery_task_identity() -> tuple[str | None, str | None]:
+    try:
+        from celery import current_task
+
+        task_name = getattr(current_task, "name", None)
+        task_request = getattr(current_task, "request", None)
+        task_id = getattr(task_request, "id", None)
+        return (
+            str(task_name) if task_name else None,
+            str(task_id) if task_id else None,
+        )
+    except Exception:
+        return None, None
 
 
 def install_session_hooks() -> None:
@@ -139,9 +159,23 @@ def _start_root_transaction_span(
         request_id = get_request_id() or None
     except Exception:
         pass
+    started = monotonic()
+    task_name, task_id = _celery_task_identity()
+    set_database_transaction_owner(
+        _connection,
+        DatabaseTransactionOwner(
+            started_at=started,
+            request_id=request_id,
+            task_name=task_name,
+            task_id=task_id,
+        ),
+    )
     session.info[_ROOT_TRANSACTION_SPAN_KEY] = {
-        "started": monotonic(),
+        "started": started,
         "request_id": request_id,
+        "task_name": task_name,
+        "task_id": task_id,
+        "connection_info": _connection.info,
     }
 
 
@@ -155,6 +189,9 @@ def _finish_root_transaction_span(
     span = session.info.pop(_ROOT_TRANSACTION_SPAN_KEY, None)
     if not isinstance(span, dict):
         return
+    connection_info = span.get("connection_info")
+    if isinstance(connection_info, dict):
+        clear_database_transaction_owner(connection_info)
     started = span.get("started")
     if not isinstance(started, (int, float)):
         return
@@ -168,6 +205,8 @@ def _finish_root_transaction_span(
         extra={
             "duration_seconds": round(duration, 3),
             "request_id": span.get("request_id"),
+            "task_name": span.get("task_name"),
+            "task_id": span.get("task_id"),
             "session_id": id(session),
         },
     )

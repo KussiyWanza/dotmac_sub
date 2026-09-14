@@ -58,7 +58,9 @@ DOMAIN = DomainSOT(
                 "operationally-current customer-health cohort policy lives in "
                 "subscription_lifecycle_policy: a disabled or stopped service is "
                 "historical only after its explicit end instant has passed. This "
-                "read classification never transitions lifecycle state."
+                "read classification never transitions lifecycle state. Pending-to-active "
+                "transitions invoke the typed PPPoE credential participant before the "
+                "active status and activation event are staged."
             ),
         ),
         SOTService(
@@ -239,12 +241,211 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="access.pppoe_credentials",
+            module="app.services.pppoe_credentials",
+            owns=(
+                "canonical PPPoE access credential identity and secret",
+                "subscription PPPoE login projection",
+            ),
+            depends_on=(
+                "access.subscription_lifecycle",
+                "control.settings_spec",
+                "customer.accounts",
+                "events.dispatcher",
+                "secrets.credential_crypto",
+                "service_intent.catalog_policy",
+            ),
+            notes=(
+                "This typed, flush-only participant ensures one active credential for "
+                "an exact subscriber and optional subscription. Activation invokes it "
+                "before staging active status, so missing credentials fail closed and "
+                "subscription.login always follows the bound credential. Secrets never "
+                "leave the owner outcome or enter events and logs."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="canonical PPPoE access credential identity and secret",
+                        role=OwnerRole.AUTHORITATIVE_RECORD,
+                        input_names=(
+                            "canonical subscriber identity",
+                            "canonical subscription lifecycle state",
+                            "catalog-linked target RADIUS profile",
+                            "PPPoE credential generation settings",
+                            "credential encryption policy",
+                            "typed PPPoE credential command",
+                        ),
+                        canonical_writer="access.pppoe_credentials",
+                    ),
+                    ConcernContract(
+                        name="subscription PPPoE login projection",
+                        role=OwnerRole.PROJECTION_WRITER,
+                        input_names=(
+                            "canonical PPPoE credential record",
+                            "canonical subscription lifecycle state",
+                        ),
+                        canonical_writer="access.pppoe_credentials",
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="canonical subscriber identity",
+                        owner="customer.accounts",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Locked Subscriber identity and canonical subscriber number",
+                    ),
+                    AuthorityInput(
+                        name="canonical subscription lifecycle state",
+                        owner="access.subscription_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Locked Subscription identity, subscriber, status, and profile",
+                    ),
+                    AuthorityInput(
+                        name="catalog-linked target RADIUS profile",
+                        owner="service_intent.catalog_policy",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="Optional active RadiusProfile selected for the subscription",
+                    ),
+                    AuthorityInput(
+                        name="PPPoE credential generation settings",
+                        owner="control.settings_spec",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="Typed username sequence and password-length settings",
+                    ),
+                    AuthorityInput(
+                        name="credential encryption policy",
+                        owner="secrets.credential_crypto",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="Application credential encryption boundary",
+                    ),
+                    AuthorityInput(
+                        name="typed PPPoE credential command",
+                        owner="access.pppoe_credentials",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "Exact subscriber, optional subscription, and optional profile "
+                            "UUIDs admitted by the coordinating owner"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical PPPoE credential record",
+                        owner="access.pppoe_credentials",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "The active AccessCredential row bound to the exact subscriber "
+                            "and service"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.PARTICIPANT,
+                    boundary=(
+                        "The lifecycle, catalog, or provisioning coordinator owns "
+                        "completion; this participant locks, stages, and flushes only."
+                    ),
+                    locking=(
+                        "Lock the target subscription and existing exact or legacy active "
+                        "credential before reuse, binding, or creation."
+                    ),
+                    idempotency=(
+                        "An existing exact active credential is reused without rotating its "
+                        "secret; one legacy unbound credential is deterministically bound."
+                    ),
+                    retries=(
+                        "Retry only through the coordinating command; identity, profile, "
+                        "and username ambiguity fail closed."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "access.pppoe_credentials.radius_profile_unavailable",
+                        "access.pppoe_credentials.subscriber_missing",
+                        "access.pppoe_credentials.subscriber_mismatch",
+                        "access.pppoe_credentials.subscription_missing",
+                        "access.pppoe_credentials.username_conflict",
+                        "access.pppoe_credentials.username_unavailable",
+                    ),
+                    mapping_owner="subscription lifecycle and provisioning adapters",
+                    fail_closed_on=(
+                        "missing subscriber or missing or mismatched subscription",
+                        "missing or inactive RADIUS profile",
+                        "unavailable or conflicting username",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=("access_credential.ensured",),
+                    schema_version=1,
+                    delivery_owner="events.dispatcher",
+                    compatibility=(
+                        "Version 1 contains credential, subscriber, service, profile, "
+                        "and disposition identifiers only; username and secret are omitted."
+                    ),
+                    replay=(
+                        "Exact unchanged credentials emit no second event; coordinating "
+                        "command idempotency prevents duplicate mutation events."
+                    ),
+                ),
+                projections=(
+                    ProjectionContract(
+                        name="subscription PPPoE login projection",
+                        input_names=(
+                            "canonical PPPoE credential record",
+                            "canonical subscription lifecycle state",
+                        ),
+                        writer="access.pppoe_credentials",
+                        freshness="Updated in the credential participant transaction",
+                        stale_behavior="Activation fails before active status is staged",
+                        drift_signal=(
+                            "Subscription.login differs from the exact active bound "
+                            "AccessCredential.username"
+                        ),
+                        rebuild_operation=(
+                            "Replay EnsurePppoeCredentialCommand for the exact service"
+                        ),
+                        repair_owner="access.pppoe_credentials",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.SHADOWING,
+                    new_owner="access.pppoe_credentials",
+                    old_owner=(
+                        "generic AccessCredential CRUD and external credential import "
+                        "paths outside subscription activation"
+                    ),
+                    verification=(
+                        "Focused lifecycle and credential tests prove exact binding, "
+                        "idempotent reuse, login projection, and fail-closed activation."
+                    ),
+                    cutover_gate=(
+                        "All subscription activation, catalog, and sales provisioning "
+                        "callers use EnsurePppoeCredentialCommand."
+                    ),
+                    fallback_retirement=(
+                        "The untyped auto_generate_pppoe_credential boundary and "
+                        "create-form activation fallback are removed in this slice; "
+                        "remaining generic credential CRUD and import writers require a "
+                        "separate reviewed credential-lifecycle migration."
+                    ),
+                ),
+                steward="network access",
+                design_refs=(
+                    "docs/designs/PROVISIONING_LIFECYCLE_SOT.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_pppoe_auto_generation.py",
+                    "tests/test_web_catalog_subscriptions.py",
+                    "tests/architecture/test_pppoe_activation_boundary.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="access.credential_binding",
             module="app.services.access_credential_binding",
             owns=("access credential subscription and RADIUS-profile binding",),
             depends_on=(
                 "access.subscription_lifecycle",
-                "access.radius_projection",
+                "access.pppoe_credentials",
                 "service_intent.catalog_policy",
                 "events.dispatcher",
             ),
@@ -272,7 +473,7 @@ DOMAIN = DomainSOT(
                 authoritative_inputs=(
                     AuthorityInput(
                         name="canonical subscriber access credential",
-                        owner="access.radius_projection",
+                        owner="access.pppoe_credentials",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source=(
                             "Active AccessCredential identity, subscriber, username, "

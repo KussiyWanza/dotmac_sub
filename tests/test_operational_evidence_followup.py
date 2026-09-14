@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from app.poller.mikrotik_poller import DevicePool, MikroTikConnection
-from app.services import operational_checks
+from app.services import db_error_observability, operational_checks
 from app.services.db_error_observability import statement_fingerprint
 from app.services.payment_reconciliation import TopupReconciliationBacklog
 from app.services.web_network_ont_actions import device_actions
@@ -120,6 +120,39 @@ def test_database_statement_correlation_is_stable_and_redacted():
     assert first == second
     assert first is not None
     assert "email" not in first
+
+
+def test_idle_transaction_pool_invalidation_records_transaction_owner(
+    monkeypatch,
+    caplog,
+):
+    owner = db_error_observability.DatabaseTransactionOwner(
+        started_at=10.0,
+        request_id=None,
+        task_name="app.tasks.billing.reconcile",
+        task_id="task-123",
+    )
+    connection_record = SimpleNamespace(
+        info={db_error_observability._CONNECTION_OWNER_KEY: owner}
+    )
+    monkeypatch.setattr(db_error_observability, "monotonic", lambda: 75.5)
+
+    with caplog.at_level("ERROR"):
+        db_error_observability._handle_pool_invalidate(
+            None,
+            connection_record,
+            RuntimeError("terminating connection due to idle-in-transaction timeout"),
+        )
+
+    record = next(
+        item
+        for item in caplog.records
+        if item.message == "database_pool_connection_invalidated"
+    )
+    assert record.category == "idle_transaction_timeout"
+    assert record.task_name == "app.tasks.billing.reconcile"
+    assert record.task_id == "task-123"
+    assert record.transaction_age_seconds == 65.5
 
 
 def _topup_reconciliation_backlog(

@@ -17,12 +17,14 @@ Subcommands::
     poetry run python -m scripts.billing.billing_target_shadow advance-collections --obligation <id>
     poetry run python -m scripts.billing.billing_target_shadow funding-status --order <id>
     poetry run python -m scripts.billing.billing_target_shadow pending-erp-exports [--limit 50]
+    poetry run python -m scripts.billing.billing_target_shadow preview-legacy-renewal-tax-invoice-correction --account <id> --subscription <id> --adjustment <id> --entitlement <id> --expected-invoice-total <amount> --expected-remaining-credit <amount>
+    poetry run python -m scripts.billing.billing_target_shadow correct-legacy-renewal-tax-invoice --account <id> --subscription <id> --adjustment <id> --entitlement <id> --expected-invoice-total <amount> --expected-remaining-credit <amount> --preview-fingerprint <sha256> --actor user:<id> --reason <approval-ref> --idempotency-key <key>
 
-Everything stays shadow except the deliberately separate
-``activate-subledger-authority`` command. That command can create the one
-irreversible authority record only from an exact zero-blocker parity run with
-separate operator and finance approvals. No other command in this adapter can
-promote authority.
+Preview commands are read-only. Explicit capture, correction, execution, and
+authority-activation commands make only their documented owner-controlled
+changes. In particular, the legacy-renewal correction requires exact selected
+records, Finance-approved amounts, an attributable user, and the matching
+read-only preview fingerprint; it cannot run during deployment or as a batch.
 """
 
 from __future__ import annotations
@@ -32,7 +34,10 @@ import json
 import sys
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 from uuid import UUID
+
+from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.models.billing_contract import BillingObligation
@@ -56,18 +61,24 @@ from app.services.owner_commands import CommandContext
 from app.services.runtime_durable_timers import fire_due_timers
 from app.services.sales_order_funding import SalesOrderFunding
 
+if TYPE_CHECKING:
+    from app.services.prepaid_service_renewals import (
+        LegacyRenewalTaxInvoiceCorrectionQuery,
+    )
+
 
 def _context(
     reason: str,
     *,
     idempotency_key: str | None = None,
     actor: str = "operator:billing_target_shadow",
+    scope: str = "billing-target-shadow",
 ) -> CommandContext:
     from uuid import uuid4
 
     return CommandContext.system(
         actor=actor,
-        scope="billing-target-shadow",
+        scope=scope,
         reason=reason,
         idempotency_key=idempotency_key or f"billing-target-shadow:{uuid4()}",
     )
@@ -595,6 +606,103 @@ def _cmd_execute_reviewed_prepaid_service_renewal(db, args) -> int:
     return 0
 
 
+def _legacy_renewal_tax_correction_query(
+    args: argparse.Namespace,
+) -> LegacyRenewalTaxInvoiceCorrectionQuery:
+    from app.services.prepaid_service_renewals import (
+        LegacyRenewalTaxInvoiceCorrectionQuery,
+    )
+
+    return LegacyRenewalTaxInvoiceCorrectionQuery(
+        account_id=UUID(args.account),
+        subscription_id=UUID(args.subscription),
+        adjustment_id=UUID(args.adjustment),
+        entitlement_id=UUID(args.entitlement),
+        expected_invoice_total=Decimal(args.expected_invoice_total),
+        expected_remaining_credit=Decimal(args.expected_remaining_credit),
+    )
+
+
+def _cmd_preview_legacy_renewal_tax_invoice_correction(
+    db: Session, args: argparse.Namespace
+) -> int:
+    from app.services.prepaid_service_renewals import (
+        preview_legacy_prepaid_renewal_tax_invoice_correction,
+    )
+
+    result = preview_legacy_prepaid_renewal_tax_invoice_correction(
+        db, _legacy_renewal_tax_correction_query(args)
+    )
+    _emit(
+        {
+            "account_id": result.account_id,
+            "subscription_id": result.subscription_id,
+            "adjustment_id": result.adjustment_id,
+            "entitlement_id": result.entitlement_id,
+            "disposition": result.disposition,
+            "actionable": result.actionable,
+            "period_start": result.period_start,
+            "period_end": result.period_end,
+            "currency": result.currency,
+            "original_debit": result.original_debit,
+            "subtotal": result.subtotal,
+            "tax_total": result.tax_total,
+            "tax_rate_id": result.tax_rate_id,
+            "tax_application": result.tax_application,
+            "invoice_total": result.invoice_total,
+            "credit_before": result.credit_before,
+            "credit_after": result.credit_after,
+            "reversal_preview_fingerprint": result.reversal_preview_fingerprint,
+            "existing_invoice_id": result.existing_invoice_id,
+            "reason": result.reason,
+            "preview_fingerprint": result.fingerprint,
+            "financial_state_changed": False,
+        }
+    )
+    return 0
+
+
+def _cmd_correct_legacy_renewal_tax_invoice(
+    db: Session, args: argparse.Namespace
+) -> int:
+    from app.services.prepaid_service_renewals import (
+        CorrectLegacyRenewalTaxInvoiceCommand,
+        correct_legacy_prepaid_renewal_tax_invoice,
+    )
+
+    result = correct_legacy_prepaid_renewal_tax_invoice(
+        db,
+        CorrectLegacyRenewalTaxInvoiceCommand(
+            context=_context(
+                args.reason,
+                idempotency_key=args.idempotency_key,
+                actor=args.actor,
+                scope="billing:ledger:write",
+            ),
+            query=_legacy_renewal_tax_correction_query(args),
+            expected_preview_fingerprint=args.preview_fingerprint,
+        ),
+    )
+    _emit(
+        {
+            "invoice_id": result.invoice_id,
+            "invoice_number": result.invoice_number,
+            "invoice_line_id": result.invoice_line_id,
+            "replacement_entitlement_id": result.replacement_entitlement_id,
+            "replaced_entitlement_id": result.replaced_entitlement_id,
+            "adjustment_id": result.adjustment_id,
+            "reversal_ledger_entry_id": result.reversal_ledger_entry_id,
+            "payment_allocation_ids": result.payment_allocation_ids,
+            "invoice_total": result.invoice_total,
+            "tax_total": result.tax_total,
+            "remaining_credit": result.remaining_credit,
+            "preview_fingerprint": result.preview_fingerprint,
+            "replayed": result.replayed,
+        }
+    )
+    return 0
+
+
 def _cmd_approve_verification(db, args) -> int:
     method = (
         BillingShadowVerification.approve_finance
@@ -1071,6 +1179,39 @@ def main() -> int:
     p.add_argument("--actor", required=True)
     p.add_argument("--idempotency-key", required=True)
     p.set_defaults(func=_cmd_execute_reviewed_prepaid_service_renewal)
+
+    p = sub.add_parser(
+        "preview-legacy-renewal-tax-invoice-correction",
+        help=(
+            "preview replacement of one base-only legacy renewal with its exact "
+            "tax-inclusive paid invoice"
+        ),
+    )
+    p.add_argument("--account", required=True)
+    p.add_argument("--subscription", required=True)
+    p.add_argument("--adjustment", required=True)
+    p.add_argument("--entitlement", required=True)
+    p.add_argument("--expected-invoice-total", required=True)
+    p.add_argument("--expected-remaining-credit", required=True)
+    p.set_defaults(func=_cmd_preview_legacy_renewal_tax_invoice_correction)
+
+    p = sub.add_parser(
+        "correct-legacy-renewal-tax-invoice",
+        help=(
+            "atomically replace one approved base-only renewal with a paid tax invoice"
+        ),
+    )
+    p.add_argument("--account", required=True)
+    p.add_argument("--subscription", required=True)
+    p.add_argument("--adjustment", required=True)
+    p.add_argument("--entitlement", required=True)
+    p.add_argument("--expected-invoice-total", required=True)
+    p.add_argument("--expected-remaining-credit", required=True)
+    p.add_argument("--preview-fingerprint", required=True)
+    p.add_argument("--actor", required=True)
+    p.add_argument("--reason", required=True)
+    p.add_argument("--idempotency-key", required=True)
+    p.set_defaults(func=_cmd_correct_legacy_renewal_tax_invoice)
 
     p = sub.add_parser(
         "approve-verification",

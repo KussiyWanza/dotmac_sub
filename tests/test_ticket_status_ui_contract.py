@@ -22,6 +22,19 @@ def test_support_templates_consume_shared_status_presentation() -> None:
     assert "status_presentation_badge" in reseller_list
 
 
+def test_customer_support_list_has_mobile_projection_and_inline_file_errors() -> None:
+    customer_list = _read("templates/customer/support/index.html")
+    customer_new = _read("templates/customer/support/new.html")
+    customer_detail = _read("templates/customer/support/detail.html")
+
+    assert "md:hidden" in customer_list
+    assert "hidden overflow-x-auto md:block" in customer_list
+    assert 'data-attachment-error aria-live="polite"' in customer_new
+    assert 'data-attachment-error aria-live="polite"' in customer_detail
+    assert "alert(`" not in customer_new
+    assert "alert(`" not in customer_detail
+
+
 def test_support_status_color_configuration_is_retired() -> None:
     settings_service = _read("app/services/support_ticket_settings.py")
     settings_route = _read("app/web/admin/system.py")

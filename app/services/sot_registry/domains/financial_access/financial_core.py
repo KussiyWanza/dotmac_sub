@@ -182,7 +182,8 @@ SERVICES: tuple[SOTService, ...] = (
                     "Public debit and reversal commands enter one "
                     "manifest-verified owner transaction. Explicit nested "
                     "staging collaborators flush only inside approved plan-"
-                    "change, add-on, or renewal coordinator transactions."
+                    "change, add-on, renewal, or reviewed legacy-renewal "
+                    "tax-invoice correction coordinator transactions."
                 ),
                 locking=(
                     "Debit confirmation locks the Subscriber account before "
@@ -217,6 +218,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "financial.account_adjustments.invalid_command_context",
                     "financial.account_adjustments.nested_owner_command",
                     "financial.account_adjustments.nested_transaction_completion",
+                    "financial.account_adjustments.participant_owner_required",
                 ),
                 mapping_owner="API and enclosing financial coordinator adapters",
                 retryable_codes=("financial.account_adjustments.write_conflict",),

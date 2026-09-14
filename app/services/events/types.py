@@ -60,6 +60,7 @@ class EventType(enum.Enum):
     subscription_suspension_warning = "subscription.suspension_warning"
     subscription_deleted = "subscription.deleted"
     subscription_correction_applied = "subscription.correction_applied"
+    access_credential_ensured = "access_credential.ensured"
     access_credential_binding_changed = "access_credential.binding_changed"
 
     # Billing - Invoice events (4)
@@ -71,6 +72,7 @@ class EventType(enum.Enum):
     invoice_discount_changed = "invoice.discount_changed"
     invoice_discount_removed = "invoice.discount_removed"
     invoice_discount_inherited = "invoice.discount_inherited"
+    invoice_tax_correction_completed = "invoice.tax_correction_completed"
 
     # Billing - Payment events (5)
     payment_received = "payment.received"
@@ -107,6 +109,9 @@ class EventType(enum.Enum):
     oauth_token_refresh_failed = "oauth_token.refresh_failed"
     account_credit_deposited = "account_credit.deposited"
     prepaid_service_renewed = "prepaid_service.renewed"
+    prepaid_service_renewal_document_corrected = (
+        "prepaid_service.renewal_document_corrected"
+    )
     subscription_billing_treatment_changed = "subscription_billing_treatment.changed"
     subscription_service_granted = "subscription_service.granted"
     billing_shadow_delivery_recorded = "billing.shadow_delivery.recorded"

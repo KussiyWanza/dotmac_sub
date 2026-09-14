@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
+from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -64,3 +66,39 @@ def test_native_quote_read_still_uses_native_owner(db_session, monkeypatch):
     assert payload["total"] == 0
     native.assert_called_once()
     historical.assert_not_called()
+
+
+def test_quotes_template_surfaces_approved_deposit_payment_action():
+    from app.web.customer import quotes
+
+    quote_id = uuid4()
+    html = quotes.templates.env.get_template("customer/quotes/index.html").render(
+        request=SimpleNamespace(state=SimpleNamespace(csrf_token="test-csrf-token")),
+        customer={"email": "customer@example.com"},
+        active_page="quotes",
+        quote_read_state="current",
+        quotes={
+            "quotes": [
+                {
+                    "id": str(quote_id),
+                    "status": "sent",
+                    "currency": "NGN",
+                    "total": "100000.00",
+                    "deposit_amount": "50000.00",
+                    "deposit_paid": False,
+                    "payment_review_status": "approved",
+                    "payment_review_message": "Payment approved.",
+                    "can_pay_deposit": True,
+                    "estimate_provisional": False,
+                    "address": "12 Fibre Close",
+                    "feasibility": {"coverage": "covered"},
+                    "line_items": [],
+                    "project_id": None,
+                }
+            ],
+            "total": 1,
+        },
+    )
+
+    assert f'/portal/quotes/{quote_id}/pay"' in html
+    assert "Pay deposit" in html

@@ -61,6 +61,38 @@ period-selection policy. Reviewed missed-period execution uses the operator-
 approved fingerprint and now produces the same paid-invoice evidence as a normal
 funded renewal.
 
+## Reviewed legacy tax-invoice correction
+
+Finance may require an invoice for a historical period that already has a
+base-only `AccountAdjustment` debit and an adjustment-backed entitlement. That
+case is not a missed renewal: creating another normal renewal would duplicate
+the service and customer-position debit.
+
+The correction owner accepts an explicit account, subscription, adjustment,
+entitlement, expected tax-inclusive invoice total, and expected remaining
+credit. Its read-only preview proves that they form one exact active legacy
+renewal chain, that the current canonical exclusive-tax treatment produces the
+approved total, that no invoice competes for the period, and that reversing the
+old debit restores exactly enough payment-backed credit to settle the invoice.
+Any mismatch returns `manual_review` and changes nothing.
+
+The fingerprint-bound command then locks the account and selected records and,
+in one owner transaction:
+
+1. reverses the exact historical adjustment through its registered participant;
+2. marks only the linked legacy entitlement as replaced;
+3. creates and issues one canonical tax-inclusive invoice and base line;
+4. fully settles that invoice from the restored and retained payment credit;
+5. creates the replacement invoice-backed entitlement for the identical period;
+6. recomputes the paid-through anchor from exact coverage; and
+7. records the operator audit and
+   `prepaid_service.renewal_document_corrected` event.
+
+The invoice metadata preserves the adjustment, replaced entitlement, reversal,
+preview, actor, and approval-reference evidence. Replay returns the same
+invoice. There is no customer-specific branch, raw SQL repair, balance override,
+or second service period.
+
 ## Verification and rollout
 
 Behavior tests prove fully funded creation and settlement, insufficient-funding
@@ -69,6 +101,8 @@ idempotent replay, transaction rollback, balance correctness, and the renewed
 event contract. Architecture tests prohibit the direct adjustment writer from
 returning to the renewal confirmation path.
 
-Deployment mutates no historical customer data. Existing gaps are reconciled
-after deployment through the fingerprint-reviewed missed-renewal command, one
-customer period at a time.
+Deployment mutates no historical customer data. A genuinely missing period is
+reconciled through the reviewed missed-renewal command. A period that already
+has an invoice-less adjustment-backed renewal uses the separate reviewed legacy
+tax-invoice correction runbook, one explicitly approved account period at a
+time.

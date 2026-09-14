@@ -18,6 +18,7 @@ from app.services import (
     conversation_lead_relationships,
     inbox_lead_actions,
     team_inbox_contact_context,
+    team_inbox_contact_links,
     team_inbox_customer_completion,
 )
 from app.services.owner_commands import (
@@ -294,6 +295,15 @@ def test_drawer_source_contains_no_customer_placeholder_values():
 
 def test_unmatched_conversation_resolves_new_prospect_without_creating(db_session):
     conversation = _conversation(db_session, address=f"new-{uuid4()}@example.com")
+    unrelated = Subscriber(
+        first_name="Recent",
+        last_name="Unrelated",
+        email=f"unrelated-{uuid4()}@example.com",
+        phone="+2348099999999",
+        is_active=True,
+    )
+    db_session.add(unrelated)
+    db_session.commit()
 
     action = inbox_lead_actions.resolve_action(
         db_session,
@@ -306,12 +316,96 @@ def test_unmatched_conversation_resolves_new_prospect_without_creating(db_sessio
         action.action_type
         is inbox_lead_actions.InboxResolvedActionType.create_party_and_lead
     )
+    assert action.label == "Create Lead"
+    assert action.identity_label == conversation.contact_address
     assert action.destination == (
         f"/admin/sales/leads/new?inbox_conversation_id={conversation.id}"
     )
     assert (
         conversation_lead_relationships.active_link(db_session, conversation.id) is None
     )
+
+
+def test_duplicate_exact_email_owners_require_identity_review(db_session):
+    endpoint = f"collision-{uuid4()}@example.com"
+    conversation = _conversation(db_session, address=endpoint)
+    for name in ("Candidate One", "Candidate Two"):
+        party = Party(party_type=PartyType.person.value, display_name=name)
+        db_session.add(party)
+        db_session.flush()
+        db_session.add(
+            PartyContactPoint(
+                party_id=party.id,
+                channel_type="email",
+                normalized_value=endpoint,
+                display_value=endpoint,
+                is_active=True,
+            )
+        )
+    db_session.commit()
+
+    evidence = team_inbox_contact_links.conversation_identity_evidence(
+        db_session, conversation
+    )
+    action = inbox_lead_actions.resolve_action(
+        db_session,
+        conversation_id=conversation.id,
+        intent=inbox_lead_actions.InboxActionIntent.lead,
+        permissions=PERMISSIONS,
+    )
+
+    assert (
+        evidence.disposition
+        is team_inbox_contact_links.IdentityEvidenceDisposition.ambiguous_match
+    )
+    assert len(evidence.authoritative_party_ids) == 2
+    assert (
+        action.action_type
+        is inbox_lead_actions.InboxResolvedActionType.identity_review_required
+    )
+
+
+def test_social_subject_identity_is_scoped_to_provider_account(db_session):
+    subject = f"ig-subject-{uuid4()}"
+    expected_party = None
+    for account_id, name in (("account-a", "Account A"), ("account-b", "Account B")):
+        party = Party(party_type=PartyType.person.value, display_name=name)
+        db_session.add(party)
+        db_session.flush()
+        db_session.add(
+            PartyContactPoint(
+                party_id=party.id,
+                channel_type="instagram_dm",
+                normalized_value=subject,
+                display_value=subject,
+                scope_key=f"meta_social:{account_id}",
+                provider="meta_social",
+                provider_account_id=account_id,
+                external_subject_id=subject,
+                is_active=True,
+            )
+        )
+        if account_id == "account-b":
+            expected_party = party
+    db_session.commit()
+
+    evidence = team_inbox_contact_links.endpoint_identity_evidence(
+        db_session,
+        team_inbox_contact_links.ObservedInboundIdentity(
+            channel_type="instagram_dm",
+            normalized_endpoint=subject,
+            provider="meta_social",
+            provider_account_id="account-b",
+            external_subject_id=subject,
+        ),
+    )
+
+    assert (
+        evidence.disposition
+        is team_inbox_contact_links.IdentityEvidenceDisposition.exact_match
+    )
+    assert expected_party is not None
+    assert evidence.exact_party_id == expected_party.id
 
 
 def test_exact_party_lead_is_reused_and_durably_linked(db_session):

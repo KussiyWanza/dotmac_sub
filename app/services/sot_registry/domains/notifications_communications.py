@@ -2648,6 +2648,8 @@ DOMAIN = DomainSOT(
                 "bounded trusted support customer-identity projection",
                 "conversation-aware lazy Customer link-option projection",
                 "conversation-scoped representative customer association resolution",
+                "exact provider-scoped Party identity evidence",
+                "Inbox-origin Lead endpoint identity repair",
             ),
             depends_on=(
                 "party.registry",
@@ -2677,6 +2679,14 @@ DOMAIN = DomainSOT(
                     (
                         "conversation-scoped representative customer association resolution",
                         OwnerRole.RESOLVER,
+                    ),
+                    (
+                        "exact provider-scoped Party identity evidence",
+                        OwnerRole.RESOLVER,
+                    ),
+                    (
+                        "Inbox-origin Lead endpoint identity repair",
+                        OwnerRole.RECONCILER,
                     ),
                 ),
                 inputs=(
@@ -2773,6 +2783,7 @@ DOMAIN = DomainSOT(
                 "current agent presence state and freshness",
                 "agent presence transitions",
                 "immutable agent presence transition evidence",
+                "expired WhatsApp assignment and FIFO release",
             ),
             depends_on=(
                 "ai.intake",
@@ -2782,6 +2793,7 @@ DOMAIN = DomainSOT(
                 "operations.sla_escalation",
                 "auth.permission_gate",
                 "control.settings_spec",
+                "communications.team_inbox_reply_window",
             ),
             contract=_team_inbox_contract(
                 service_name="communications.team_inbox_routing",
@@ -2827,6 +2839,10 @@ DOMAIN = DomainSOT(
                     (
                         "immutable agent presence transition evidence",
                         OwnerRole.AUTHORITATIVE_RECORD,
+                    ),
+                    (
+                        "expired WhatsApp assignment and FIFO release",
+                        OwnerRole.COMMAND_WRITER,
                     ),
                 ),
                 inputs=(
@@ -2907,6 +2923,15 @@ DOMAIN = DomainSOT(
                         source=(
                             "Comms default active-conversation capacity and the "
                             "existing per-agent presence override."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="WhatsApp service-window state",
+                        owner="communications.team_inbox_reply_window",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "Canonical latest qualifying customer inbound and expiry "
+                            "cutoff used by assignment, FIFO, release, and capacity."
                         ),
                     ),
                 ),
@@ -3108,10 +3133,14 @@ DOMAIN = DomainSOT(
         SOTService(
             name="communications.team_inbox_status",
             module="app.services.team_inbox_status",
-            owns=("conversation status transitions and immutable evidence",),
+            owns=(
+                "conversation status transitions and immutable evidence",
+                "audited expired conversation resolution",
+            ),
             depends_on=(
                 "communications.team_inbox_threads",
                 "communications.team_inbox_customer_completion",
+                "communications.team_inbox_reply_window",
                 "auth.permission_gate",
             ),
             contract=_team_inbox_contract(
@@ -3119,6 +3148,10 @@ DOMAIN = DomainSOT(
                 concerns=(
                     (
                         "conversation status transitions and immutable evidence",
+                        OwnerRole.COMMAND_WRITER,
+                    ),
+                    (
+                        "audited expired conversation resolution",
                         OwnerRole.COMMAND_WRITER,
                     ),
                 ),
@@ -3140,6 +3173,15 @@ DOMAIN = DomainSOT(
                         owner="communications.team_inbox_customer_completion",
                         kind=AuthorityKind.DERIVED_PROJECTION,
                         source="Transaction-current Customer-only ActionReadiness verdict for agent resolution.",
+                    ),
+                    AuthorityInput(
+                        name="Meta channel resolution state",
+                        owner="communications.team_inbox_reply_window",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "Transaction-current active, expired, unavailable, or "
+                            "not-applicable channel state."
+                        ),
                     ),
                 ),
                 transaction_mode=TransactionMode.PARTICIPANT,
@@ -3255,6 +3297,7 @@ DOMAIN = DomainSOT(
             owns=("reviewed Team Inbox historical audit reconstruction",),
             depends_on=(
                 "communications.team_inbox_routing",
+                "communications.team_inbox_reply_window",
                 "communications.team_inbox_status",
             ),
             contract=_team_inbox_contract(
@@ -4381,13 +4424,17 @@ DOMAIN = DomainSOT(
         SOTService(
             name="communications.team_inbox_maintenance",
             module="app.services.team_inbox_maintenance",
-            owns=("scheduled Inbox projection maintenance and repair",),
+            owns=(
+                "scheduled Inbox projection maintenance and repair",
+                "WhatsApp expiry routing-state convergence",
+            ),
             depends_on=(
                 "ai.intake",
                 "communications.team_inbox_threads",
                 "communications.team_inbox_outbound_intents",
                 "communications.team_inbox_projection",
                 "communications.team_inbox_routing",
+                "communications.team_inbox_reply_window",
                 "integration.inbox",
                 "integration.runtime",
             ),
@@ -4396,6 +4443,10 @@ DOMAIN = DomainSOT(
                 concerns=(
                     (
                         "scheduled Inbox projection maintenance and repair",
+                        OwnerRole.RECONCILER,
+                    ),
+                    (
+                        "WhatsApp expiry routing-state convergence",
                         OwnerRole.RECONCILER,
                     ),
                 ),
@@ -4440,6 +4491,15 @@ DOMAIN = DomainSOT(
                         source=(
                             "Active destination team, strict FIFO head, agent "
                             "presence, capacity, assignment, and durable queue state."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="WhatsApp expiry worklist",
+                        owner="communications.team_inbox_reply_window",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "The canonical latest qualifying customer inbound SQL "
+                            "projection and rollout-bounded expiry cutoff."
                         ),
                     ),
                     AuthorityInput(

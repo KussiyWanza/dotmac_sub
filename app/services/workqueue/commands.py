@@ -462,6 +462,7 @@ def _apply_action(
         elif command.item_kind is ItemKind.conversation:
             outcome = team_inbox_commands.update_status(
                 db,
+                principal=command.principal,
                 conversation_id=command.item_id,
                 status_value=InboxConversationStatus.resolved.value,
                 actor_person_id=command.principal.person_id,

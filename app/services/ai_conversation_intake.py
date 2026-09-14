@@ -68,6 +68,7 @@ from app.services import (
     ai_intake,
     ai_intake_conversation_engine,
     ai_intake_graph,
+    team_inbox_customer_completion,
     team_inbox_operations,
     team_inbox_routing,
     team_inbox_status,
@@ -101,6 +102,7 @@ SUPPORTED_CONVERSATIONAL_CHANNELS = frozenset(
         InboxChannelType.chat_widget.value,
     }
 )
+LEAD_IDENTITY_REQUIRED_INTENTS = frozenset({"new_connection", "coverage_request"})
 logger = logging.getLogger(__name__)
 SUPPORTED_CONVERSATION_ENGINE_MODES = frozenset(
     {
@@ -4198,7 +4200,28 @@ def _process_one_session(
             engine_handoff_state = decision.state
             engine_handoff_state.escalation_reason = "response_delivery_failed"
             engine_handoff_state.handoff_status = "requested"
-        if decision.action == "resolved":
+        identity_readiness = (
+            team_inbox_customer_completion.resolution_readiness(db, conversation)
+            if decision.action == "resolved"
+            and decision.state.current_intent in LEAD_IDENTITY_REQUIRED_INTENTS
+            else None
+        )
+        lead_identity_required = (
+            identity_readiness is not None
+            and identity_readiness.classification
+            is not team_inbox_customer_completion.InboxIdentityClassification.lead
+        )
+        if lead_identity_required:
+            metadata["ai_intake_engine_action"] = "handoff"
+            metadata["ai_intake_engine_reason"] = "lead_identity_required"
+            metadata["ai_intake_status"] = "escalated"
+            metadata["ai_intake_escalation_reason"] = "lead_identity_required"
+            inbound.metadata_ = metadata
+            engine_forced_handoff = True
+            engine_handoff_state = decision.state
+            engine_handoff_state.escalation_reason = "lead_identity_required"
+            engine_handoff_state.handoff_status = "requested"
+        elif decision.action == "resolved":
             resolution_metadata = ai_message_metadata(
                 session=session,
                 version=version,
