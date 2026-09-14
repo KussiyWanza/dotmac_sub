@@ -562,6 +562,21 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         ),
     ),
     _guide(
+        "ticket-sla-report",
+        "Support",
+        "Review current ticket SLA workload",
+        "Support leads, managers",
+        "Identify currently open tickets that are already breaching their SLA.",
+        ("/admin/reports/ticket-sla",),
+        "Read each total and breakdown as currently breaching divided by currently open tickets.",
+        "Select a service team or region to open the matching not-closed ticket queue; any selected report dates remain created-date filters on that queue.",
+        "Use Historical SLA Starts and the breach queue only as historical evidence, not as the current open workload.",
+        notes=(
+            "Closed, canceled, and merged tickets do not contribute to the current-open breakdowns.",
+            "Unassigned Region means the open ticket has no region value; open the drilldown to review and repair its ticket data.",
+        ),
+    ),
+    _guide(
         "ncc-complaints-report",
         "Reports",
         "Export NCC complaints",

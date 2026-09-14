@@ -230,6 +230,18 @@ def test_support_ticket_guidance_separates_editing_from_assignment() -> None:
     assert "assignment details" in content
 
 
+def test_ticket_sla_report_guidance_explains_current_scope_and_drilldowns() -> None:
+    guide = guidance_for_path("/admin/reports/ticket-sla")
+
+    assert guide is not None
+    assert guide.id == "ticket-sla-report"
+    content = " ".join((*guide.steps, *guide.notes)).lower()
+    assert "currently breaching divided by currently open" in content
+    assert "matching not-closed ticket queue" in content
+    assert "closed, canceled, and merged tickets do not contribute" in content
+    assert "unassigned region" in content
+
+
 def test_support_csat_report_guidance_is_route_specific() -> None:
     guide = guidance_for_path("/admin/reports/support-csat")
 

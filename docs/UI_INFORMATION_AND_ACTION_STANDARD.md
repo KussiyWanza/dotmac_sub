@@ -553,6 +553,32 @@ implementation.
   clearly identified as reassurance, use different copy from a position
   update, and never repeat the current position.
 
+## Ticket SLA Current Operations Page Contract
+
+- Audience and task: support leaders identify the live not-closed workload and
+  the tickets currently breaching SLA by status, service team, and region.
+- Authority: `ui.ticket_sla_report` owns the typed read projection;
+  `support.ticket_lifecycle` owns current Ticket status and assignments,
+  `support.ticket_sla_clock` owns current clock/breach facts, and
+  `operations.service_team_lifecycle` owns team identity. Routes and templates
+  only transport and render those outcomes.
+- Metric semantics: every summary and breakdown renders **currently breaching /
+  currently open**. Currently open means the canonical not-closed Ticket scope;
+  currently breaching means a distinct not-closed Ticket with a current
+  `breached` SLA clock. A completed clock or historical `breached_at` value does
+  not make a closed or canceled Ticket currently breaching.
+- Date semantics: optional date bounds select Tickets by `created_at`, then the
+  report evaluates their current state. The page states this explicitly.
+- Drill-down: team and region links preserve the date bounds and add the
+  canonical `not_closed` Ticket-list scope, so the destination count reconciles
+  with the card denominator.
+- Historical evidence: breach-record queues, CSV, and clock-start trends remain
+  available but are explicitly labelled as historical or record-oriented; they
+  are never presented as the live workload.
+- Freshness and states: the projection is calculated on demand and stamped with
+  its generation time. Empty, unavailable, current, and historical scopes remain
+  distinct, and no cached or estimated count substitutes for a failed read.
+
 ## Agent Performance Analytics Page Contract
 
 - Audience and task: CX/support leaders compare agent workload, resolution, and
