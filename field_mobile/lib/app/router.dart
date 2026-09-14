@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../core/api/token_store.dart' show LoginMode;
 import '../core/deeplink/oidc_redirect.dart';
 import '../features/auth/auth_state.dart';
+import '../features/auth/forgot_password_screen.dart';
 import '../features/auth/login_screen.dart';
 import '../features/auth/mfa_screen.dart';
 import '../features/auth/oidc_callback_coordinator.dart';
@@ -53,15 +54,18 @@ GoRouter buildRouter(Ref ref) {
       }
       final atRestore = state.matchedLocation == '/restore';
       final atLogin = state.matchedLocation == '/login';
+      final atForgotPassword = state.matchedLocation == '/forgot-password';
       final atMfa = state.matchedLocation == '/mfa';
       final atUpgrade = state.matchedLocation == '/upgrade';
       return switch (auth) {
         RestoringSession() => atRestore ? null : '/restore',
-        Unauthenticated() => atLogin ? null : '/login',
+        Unauthenticated() => (atLogin || atForgotPassword) ? null : '/login',
         AwaitingMfa() => atMfa ? null : '/mfa',
         UpgradeRequired() => atUpgrade ? null : '/upgrade',
         Authenticated() =>
-          (atRestore || atLogin || atMfa || atUpgrade) ? '/today' : null,
+          (atRestore || atLogin || atForgotPassword || atMfa || atUpgrade)
+              ? '/today'
+              : null,
       };
     },
     routes: [
@@ -74,6 +78,15 @@ GoRouter buildRouter(Ref ref) {
       ),
       GoRoute(path: '/restore', builder: (_, _) => const _RestoreScreen()),
       GoRoute(path: '/login', builder: (_, _) => const LoginScreen()),
+      GoRoute(
+        path: '/forgot-password',
+        builder: (_, state) {
+          final initialEmail = state.extra;
+          return ForgotPasswordScreen(
+            initialEmail: initialEmail is String ? initialEmail : null,
+          );
+        },
+      ),
       GoRoute(path: '/mfa', builder: (_, _) => const MfaScreen()),
       GoRoute(
         path: '/upgrade',
