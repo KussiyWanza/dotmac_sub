@@ -93,6 +93,32 @@ def test_expense_validation_code_is_preserved_without_provider_message():
 
 
 @pytest.mark.parametrize(
+    "status,code",
+    [
+        (404, "employee_not_linked"),
+        (409, "employee_mapping_ambiguous"),
+        (403, "employee_inactive"),
+        (403, "attendance_disabled"),
+        (403, "authorization_failed"),
+        (409, "overnight_shift_not_supported"),
+    ],
+)
+def test_attendance_code_is_preserved_without_provider_message(status, code):
+    diagnostic = safe_diagnostic(
+        status=status,
+        body={
+            "detail": {
+                "code": code,
+                "message": "private employee evidence",
+            }
+        },
+    )
+
+    assert diagnostic.code == code
+    assert "private employee evidence" not in diagnostic.model_dump_json()
+
+
+@pytest.mark.parametrize(
     "status,error_type",
     [
         (401, DotMacERPAuthError),
