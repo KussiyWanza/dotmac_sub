@@ -1337,6 +1337,77 @@ def _bind_reviewed_participant(
         raise ContactLinkError(str(exc)) from exc
 
 
+def _speaking_party_conflict_result(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    contact_link: InboxContactLink,
+    existing_point: PartyContactPoint,
+    command: ReviewConversationContactCommand,
+    selected_subscriber_id: UUID | None,
+    provider: str | None,
+    provider_account_id: str | None,
+    external_subject_id: str | None,
+    normalized_contact: str,
+    proposed_speaking_party_id: UUID | None,
+) -> ContactLinkResult:
+    now = datetime.now(UTC)
+    metadata = dict(conversation.metadata_ or {})
+    metadata["identity_review_conflict"] = {
+        "status": "review_required",
+        "observed_at": now.isoformat(),
+        "existing_contact_link_id": str(contact_link.id),
+        "existing_speaking_party_id": str(existing_point.party_id),
+        "proposed_speaking_party_id": (
+            str(proposed_speaking_party_id) if proposed_speaking_party_id else None
+        ),
+        "proposed_identity_kind": command.identity_kind.value,
+        "provider": provider,
+        "provider_account_id": provider_account_id,
+    }
+    conversation.metadata_ = metadata
+    stage_audit_event(
+        db,
+        action="inbox_contact_identity_decided",
+        entity_type="inbox_conversation",
+        entity_id=str(conversation.id),
+        actor_type=(
+            AuditActorType.user
+            if command.actor_person_id is not None
+            else AuditActorType.service
+        ),
+        actor_id=str(command.actor_person_id) if command.actor_person_id else OWNER,
+        metadata={
+            "decision_source": "reviewed_inbox_selection",
+            "resolution_status": "speaking_party_conflict",
+            "selected_customer_id": (
+                str(selected_subscriber_id) if selected_subscriber_id else None
+            ),
+            "existing_speaking_party_id": str(existing_point.party_id),
+            "proposed_speaking_party_id": (
+                str(proposed_speaking_party_id) if proposed_speaking_party_id else None
+            ),
+            "proposed_identity_kind": command.identity_kind.value,
+            "provider": provider,
+            "provider_account_id": provider_account_id,
+            "external_subject_id": external_subject_id,
+        },
+    )
+    db.flush()
+    return ContactLinkResult(
+        disposition=ReviewedContactLinkDisposition.conflict,
+        contact_link_id=contact_link.id,
+        channel_type=conversation.channel_type,
+        normalized_contact=normalized_contact,
+        subscriber_id=contact_link.subscriber_id,
+        reseller_id=contact_link.reseller_id,
+        party_contact_point_id=contact_link.party_contact_point_id,
+        speaking_party_id=existing_point.party_id,
+        previous_link_ids_deactivated=(),
+        repaired_conversation_ids=(),
+    )
+
+
 def link_conversation_contact(
     db: Session,
     command: ReviewConversationContactCommand,
@@ -1482,13 +1553,47 @@ def link_conversation_contact(
             )
         target_party_id = reseller.party_id
     assert target_party_id is not None
+    contact_link = links[0] if links else None
+    existing_point = (
+        db.get(PartyContactPoint, contact_link.party_contact_point_id)
+        if contact_link is not None and contact_link.party_contact_point_id is not None
+        else None
+    )
     speaking_party = db.get(Party, target_party_id)
     relationship_type = InboxParticipantRelationship.customer
     if command.identity_kind is ReviewedContactIdentityKind.representative:
+        representative_party_id = command.representative_party_id
+        if existing_point is not None:
+            assert contact_link is not None
+            existing_speaker = db.get(Party, existing_point.party_id)
+            proposed_name = normalize_customer_name(command.representative_name)
+            existing_name = normalize_customer_name(
+                existing_speaker.display_name if existing_speaker is not None else None
+            )
+            same_reviewed_speaker = (
+                representative_party_id == existing_point.party_id
+                if representative_party_id is not None
+                else bool(proposed_name and proposed_name == existing_name)
+            )
+            if not same_reviewed_speaker:
+                return _speaking_party_conflict_result(
+                    db,
+                    conversation=conversation,
+                    contact_link=contact_link,
+                    existing_point=existing_point,
+                    command=command,
+                    selected_subscriber_id=selected_subscriber_id,
+                    provider=provider,
+                    provider_account_id=provider_account_id,
+                    external_subject_id=external_subject_id,
+                    normalized_contact=normalized_contact,
+                    proposed_speaking_party_id=representative_party_id,
+                )
+            representative_party_id = existing_point.party_id
         speaking_party = _reviewed_representative_party(
             db,
             customer_party_id=target_party_id,
-            representative_party_id=command.representative_party_id,
+            representative_party_id=representative_party_id,
             representative_name=command.representative_name,
             representative_role=command.representative_role,
             actor_person_id=command.actor_person_id,
@@ -1497,60 +1602,21 @@ def link_conversation_contact(
     if speaking_party is None:
         raise ContactLinkError("The selected contact has no canonical Party identity.")
 
-    contact_link = links[0] if links else None
-    if contact_link is not None and contact_link.party_contact_point_id is not None:
-        existing_point = db.get(PartyContactPoint, contact_link.party_contact_point_id)
-        if existing_point is not None and existing_point.party_id != speaking_party.id:
-            metadata = dict(conversation.metadata_ or {})
-            metadata["identity_review_conflict"] = {
-                "status": "review_required",
-                "observed_at": now.isoformat(),
-                "existing_contact_link_id": str(contact_link.id),
-                "existing_speaking_party_id": str(existing_point.party_id),
-                "proposed_speaking_party_id": str(speaking_party.id),
-                "provider": provider,
-                "provider_account_id": provider_account_id,
-            }
-            conversation.metadata_ = metadata
-            stage_audit_event(
-                db,
-                action="inbox_contact_identity_decided",
-                entity_type="inbox_conversation",
-                entity_id=str(conversation.id),
-                actor_type=(
-                    AuditActorType.user
-                    if command.actor_person_id is not None
-                    else AuditActorType.service
-                ),
-                actor_id=(
-                    str(command.actor_person_id) if command.actor_person_id else OWNER
-                ),
-                metadata={
-                    "decision_source": "reviewed_inbox_selection",
-                    "resolution_status": "speaking_party_conflict",
-                    "selected_customer_id": (
-                        str(selected_subscriber_id) if selected_subscriber_id else None
-                    ),
-                    "existing_speaking_party_id": str(existing_point.party_id),
-                    "proposed_speaking_party_id": str(speaking_party.id),
-                    "provider": provider,
-                    "provider_account_id": provider_account_id,
-                    "external_subject_id": external_subject_id,
-                },
-            )
-            db.flush()
-            return ContactLinkResult(
-                disposition=ReviewedContactLinkDisposition.conflict,
-                contact_link_id=contact_link.id,
-                channel_type=conversation.channel_type,
-                normalized_contact=normalized_contact,
-                subscriber_id=contact_link.subscriber_id,
-                reseller_id=contact_link.reseller_id,
-                party_contact_point_id=contact_link.party_contact_point_id,
-                speaking_party_id=existing_point.party_id,
-                previous_link_ids_deactivated=(),
-                repaired_conversation_ids=(),
-            )
+    if existing_point is not None and existing_point.party_id != speaking_party.id:
+        assert contact_link is not None
+        return _speaking_party_conflict_result(
+            db,
+            conversation=conversation,
+            contact_link=contact_link,
+            existing_point=existing_point,
+            command=command,
+            selected_subscriber_id=selected_subscriber_id,
+            provider=provider,
+            provider_account_id=provider_account_id,
+            external_subject_id=external_subject_id,
+            normalized_contact=normalized_contact,
+            proposed_speaking_party_id=speaking_party.id,
+        )
 
     point_outcome = _manual_contact_point(
         db,

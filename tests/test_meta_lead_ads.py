@@ -91,16 +91,23 @@ def test_verified_meta_receipt_captures_party_first_lead(db_session):
 
     outcome = meta_lead_ads.capture_meta_lead(
         db_session,
-        receipt_id=receipt.id,
-        observation=MetaLeadObservation(
-            leadgen_id="leadgen-42",
-            created_at="2026-09-01T10:00:00Z",
-            page_id="page-1",
-            form_id="form-1",
-            campaign_id="campaign-1",
-            fields=(
-                MetaLeadField(name="full_name", values=("Meta Prospect",)),
-                MetaLeadField(name="email", values=("meta@example.test",)),
+        meta_lead_ads.CaptureMetaLeadCommand(
+            context=CommandContext.system(
+                actor="test",
+                scope=meta_lead_ads.META_LEAD_CAPTURE_SCOPE,
+                reason="Capture unmatched Meta Lead fixture",
+            ),
+            receipt_id=receipt.id,
+            observation=MetaLeadObservation(
+                leadgen_id="leadgen-42",
+                created_at="2026-09-01T10:00:00Z",
+                page_id="page-1",
+                form_id="form-1",
+                campaign_id="campaign-1",
+                fields=(
+                    MetaLeadField(name="full_name", values=("Meta Prospect",)),
+                    MetaLeadField(name="email", values=("meta@example.test",)),
+                ),
             ),
         ),
     )
@@ -116,6 +123,71 @@ def test_verified_meta_receipt_captures_party_first_lead(db_session):
         .one()
     )
     assert origin.source_interaction_id == "leadgen-42"
+
+
+def test_verified_meta_lead_links_existing_customer_without_duplicate_lead(
+    db_session, subscriber
+):
+    installation = _configure_meta_leads(db_session)
+    binding = next(
+        item
+        for item in installation.capability_bindings
+        if item.capability_id == META_LEAD_CAPTURE_CAPABILITY
+    )
+    customer_party = party_service.create_party(
+        db_session,
+        party_type=PartyType.person,
+        display_name="Existing Meta Customer",
+    )
+    party_service.add_contact_point(
+        db_session,
+        party_id=customer_party.id,
+        channel_type=PartyContactPointType.email,
+        normalized_value="existing-meta@example.test",
+        display_value="existing-meta@example.test",
+        verification_status=PartyContactVerificationStatus.verified,
+    )
+    subscriber.party_id = customer_party.id
+    subscriber.party_bound_at = subscriber.created_at
+    subscriber.party_binding_source = "test"
+    subscriber.party_binding_reason = "Reviewed existing Meta Customer"
+    receipt, _claimed = integration_inbox.receive_and_claim_verified(
+        db_session,
+        capability_binding_id=binding.id,
+        provider_event_id="leadgen-existing-customer",
+        event_type="meta.leadgen.webhook.v1",
+        payload={"leadgen_id": "leadgen-existing-customer", "page_id": "page-1"},
+    )
+
+    outcome = meta_lead_ads.capture_meta_lead(
+        db_session,
+        meta_lead_ads.CaptureMetaLeadCommand(
+            context=CommandContext.system(
+                actor="test",
+                scope=meta_lead_ads.META_LEAD_CAPTURE_SCOPE,
+                reason="Reject duplicate Meta Lead for existing Customer",
+            ),
+            receipt_id=receipt.id,
+            observation=MetaLeadObservation(
+                leadgen_id="leadgen-existing-customer",
+                created_at="2026-09-01T10:00:00Z",
+                page_id="page-1",
+                form_id="form-1",
+                fields=(
+                    MetaLeadField(name="full_name", values=("Different Profile Name",)),
+                    MetaLeadField(name="email", values=("existing-meta@example.test",)),
+                ),
+            ),
+        ),
+    )
+
+    assert outcome.kind is meta_lead_ads.MetaLeadCaptureKind.customer_matched
+    assert outcome.subscriber_id == subscriber.id
+    assert outcome.lead_id is None
+    assert db_session.query(Lead).count() == 0
+    db_session.refresh(receipt)
+    assert receipt.state == "processed"
+    assert receipt.consequence_json["subscriber_id"] == str(subscriber.id)
 
 
 def test_customer_match_is_review_only_and_uses_verified_party_contact(

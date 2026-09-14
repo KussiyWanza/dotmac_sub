@@ -365,8 +365,11 @@ def _linked_identities(
             label = display or point.normalized_value
         provider_label = None
         if point.provider or point.provider_account_id:
-            provider_label = " / ".join(
-                value for value in (point.provider, point.provider_account_id) if value
+            provider_name = str(point.provider or "Provider").replace("_", " ").title()
+            provider_label = (
+                f"{provider_name} / scoped account"
+                if point.provider_account_id
+                else provider_name
             )
         items.append(
             LinkedIdentitySummary(

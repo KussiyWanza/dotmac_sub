@@ -28,8 +28,13 @@ from app.schemas.sales import (
     LeadContactObservation,
     LeadOriginCaptureCreate,
 )
+from app.services.customer_identity_resolution import (
+    CustomerIdentityQuery,
+    resolve_customer_identity_query,
+)
 from app.services.domain_errors import DomainError
 from app.services.events import EventType, emit_event
+from app.services.integrations import inbox as integration_inbox
 from app.services.integrations.meta_social_contracts import MetaLeadObservation
 from app.services.owner_commands import (
     CommandContext,
@@ -39,6 +44,7 @@ from app.services.owner_commands import (
 from app.services.sales.capture import LeadCaptureResult, capture_verified_receipt
 
 META_LEAD_MATCH_SCOPE = "sales:reconcile-meta-lead-customer-match"
+META_LEAD_CAPTURE_SCOPE = "sales:capture-meta-lead"
 _RECONCILE_MATCH = OwnerCommandDefinition(
     owner="sales.meta_lead_customer_match",
     concern="Meta Lead customer-match projection",
@@ -54,6 +60,12 @@ class MetaLeadMatchStatus(StrEnum):
     unavailable = "unavailable"
 
 
+class MetaLeadCaptureKind(StrEnum):
+    lead_created = "lead_created"
+    customer_matched = "customer_matched"
+    customer_ambiguous = "customer_ambiguous"
+
+
 class MetaLeadAdsError(DomainError):
     """Stable failure at the Meta-specific lead admission boundary."""
 
@@ -67,8 +79,10 @@ class MetaLeadCustomerMatch:
 
 @dataclass(frozen=True, slots=True)
 class MetaLeadCaptureOutcome:
-    lead_id: UUID
-    party_id: UUID
+    kind: MetaLeadCaptureKind
+    lead_id: UUID | None
+    party_id: UUID | None
+    subscriber_id: UUID | None
     replayed: bool
     customer_match: MetaLeadCustomerMatch
 
@@ -77,6 +91,13 @@ class MetaLeadCaptureOutcome:
 class ReconcileMetaLeadMatchCommand:
     context: CommandContext
     lead_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureMetaLeadCommand:
+    context: CommandContext
+    receipt_id: UUID
+    observation: MetaLeadObservation
 
 
 def _error(suffix: str, message: str, **details: object) -> MetaLeadAdsError:
@@ -160,6 +181,53 @@ def _capture_request(observation: MetaLeadObservation) -> LeadCaptureRequest:
         region=region,
         address=address,
         notes=None,
+    )
+
+
+def _pre_capture_customer_match(
+    db: Session, observation: MetaLeadObservation
+) -> MetaLeadCustomerMatch:
+    fields = _field_values(observation)
+    identifiers = (
+        ("email", _first(fields, "email")),
+        ("phone", _first(fields, "phone_number", "phone")),
+    )
+    candidate_ids: set[UUID] = set()
+    evidence: list[tuple[str, str, str]] = []
+    ambiguous = False
+    for channel, identifier in identifiers:
+        if not identifier:
+            continue
+        resolution = resolve_customer_identity_query(
+            db,
+            CustomerIdentityQuery(identifier=identifier, channel_hint=channel),
+        )
+        candidate_ids.update(resolution.candidate_subscriber_ids)
+        ambiguous = ambiguous or resolution.requires_manual_review
+        if resolution.matched and not resolution.allows_sensitive_automation:
+            ambiguous = True
+        evidence.append(
+            (
+                channel,
+                resolution.status,
+                str(resolution.source_record_id or ""),
+            )
+        )
+    ordered = tuple(sorted(candidate_ids, key=str))
+    status = (
+        MetaLeadMatchStatus.ambiguous
+        if ambiguous or len(ordered) > 1
+        else MetaLeadMatchStatus.single_candidate
+        if len(ordered) == 1
+        else MetaLeadMatchStatus.unmatched
+    )
+    fingerprint = hashlib.sha256(
+        json.dumps(sorted(evidence), separators=(",", ":")).encode()
+    ).hexdigest()
+    return MetaLeadCustomerMatch(
+        status=status,
+        subscriber_ids=ordered,
+        evidence_fingerprint=fingerprint,
     )
 
 
@@ -258,15 +326,63 @@ def reconcile_customer_match(
 
 def capture_meta_lead(
     db: Session,
-    *,
-    receipt_id: UUID,
-    observation: MetaLeadObservation,
+    command: CaptureMetaLeadCommand,
 ) -> MetaLeadCaptureOutcome:
+    if command.context.scope != META_LEAD_CAPTURE_SCOPE:
+        raise _error("scope_invalid", "Meta Lead capture requires its own scope.")
+    receipt_id = command.receipt_id
+    observation = command.observation
+    pre_capture_match = _pre_capture_customer_match(db, observation)
+    if pre_capture_match.status in {
+        MetaLeadMatchStatus.single_candidate,
+        MetaLeadMatchStatus.ambiguous,
+    }:
+        subscriber_id = (
+            pre_capture_match.subscriber_ids[0]
+            if pre_capture_match.status is MetaLeadMatchStatus.single_candidate
+            else None
+        )
+        subscriber = db.get(Subscriber, subscriber_id) if subscriber_id else None
+        receipt = integration_inbox.get_receipt(db, receipt_id=receipt_id)
+        kind = (
+            MetaLeadCaptureKind.customer_matched
+            if subscriber_id is not None
+            else MetaLeadCaptureKind.customer_ambiguous
+        )
+        consequence = {
+            "kind": kind.value,
+            "lead_id": None,
+            "party_id": (
+                str(subscriber.party_id)
+                if subscriber is not None and subscriber.party_id is not None
+                else None
+            ),
+            "subscriber_id": str(subscriber_id) if subscriber_id else None,
+            "replayed": False,
+            "customer_match": pre_capture_match.status.value,
+            "customer_candidate_ids": [
+                str(value) for value in pre_capture_match.subscriber_ids
+            ],
+            "evidence_fingerprint": pre_capture_match.evidence_fingerprint,
+        }
+        integration_inbox.complete_consequence(
+            db,
+            receipt=receipt,
+            consequence=consequence,
+        )
+        return MetaLeadCaptureOutcome(
+            kind=kind,
+            lead_id=None,
+            party_id=subscriber.party_id if subscriber is not None else None,
+            subscriber_id=subscriber_id,
+            replayed=False,
+            customer_match=pre_capture_match,
+        )
     result: LeadCaptureResult = capture_verified_receipt(
         db,
         receipt_id=receipt_id,
         payload=_capture_request(observation),
-        actor_id="integration.meta_lead_ads",
+        actor_id=command.context.actor,
     )
     lead_id = result.lead.id
     party_id = result.party_id
@@ -296,8 +412,10 @@ def capture_meta_lead(
             evidence_fingerprint="",
         )
     return MetaLeadCaptureOutcome(
+        kind=MetaLeadCaptureKind.lead_created,
         lead_id=lead_id,
         party_id=party_id,
+        subscriber_id=None,
         replayed=replayed,
         customer_match=match,
     )

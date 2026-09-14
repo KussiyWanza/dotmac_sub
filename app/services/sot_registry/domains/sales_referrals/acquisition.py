@@ -256,15 +256,33 @@ SERVICES: tuple[SOTService, ...] = (
     SOTService(
         name="sales.meta_lead_customer_match",
         module="app.services.sales.meta_lead_ads",
-        owns=("Meta Lead customer-match projection",),
-        depends_on=("customer.accounts", "party.registry", "sales.capture"),
+        owns=(
+            "pre-capture Meta Lead canonical Customer decision",
+            "Meta Lead customer-match projection",
+        ),
+        depends_on=(
+            "customer.accounts",
+            "customer.identity_scope",
+            "party.registry",
+            "sales.capture",
+        ),
         notes=(
-            "Lead Ads contact observations may suggest existing customers but never "
-            "silently merge identity. Only active verified Party contact points are "
-            "eligible evidence; ambiguous candidates remain review-only."
+            "Lead Ads phone/email observations are resolved before capture through "
+            "the canonical Customer identity service. One Customer prevents Lead "
+            "creation; ambiguity also fails closed. Historical captured Leads retain "
+            "the separately rebuildable review-only match projection."
         ),
         contract=ServiceContract(
             concerns=(
+                ConcernContract(
+                    name="pre-capture Meta Lead canonical Customer decision",
+                    role=OwnerRole.APPLICATION_COORDINATOR,
+                    input_names=(
+                        "verified Meta Lead contact observations",
+                        "canonical Customer identity decision",
+                    ),
+                    canonical_writer="sales.meta_lead_customer_match",
+                ),
                 ConcernContract(
                     name="Meta Lead customer-match projection",
                     role=OwnerRole.PROJECTION_WRITER,
@@ -276,6 +294,18 @@ SERVICES: tuple[SOTService, ...] = (
                 ),
             ),
             authoritative_inputs=(
+                AuthorityInput(
+                    name="verified Meta Lead contact observations",
+                    owner="integration.inbox",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="Signature-verified Meta Lead form fields and provider receipt identity.",
+                ),
+                AuthorityInput(
+                    name="canonical Customer identity decision",
+                    owner="customer.identity_scope",
+                    kind=AuthorityKind.DERIVED_PROJECTION,
+                    source="Unique, ambiguous, or unmatched normalized phone/email resolution across canonical Customer identity sources.",
+                ),
                 AuthorityInput(
                     name="captured Meta Lead contact observations",
                     owner="sales.capture",
@@ -290,11 +320,11 @@ SERVICES: tuple[SOTService, ...] = (
                 ),
             ),
             transaction=TransactionContract(
-                mode=TransactionMode.OWNER_MANAGED,
-                boundary="One owner command locks the Lead and writes only its match projection.",
-                locking="Locks the exact Lead; customer identity remains read-only.",
-                idempotency="The same current verified contacts produce the same ordered candidates and fingerprint.",
-                retries="A complete retry rebuilds the projection from current authoritative contacts.",
+                mode=TransactionMode.COORDINATOR_MANAGED,
+                boundary="Pre-capture resolution chooses exactly one consequence owner: receipt-only Customer/ambiguity completion or Party-first Lead capture; historical projection rebuild remains an owner command.",
+                locking="The selected consequence owner locks the exact receipt or historical Lead; canonical Customer identity remains read-only.",
+                idempotency="The provider Lead ID is the receipt identity; replay returns its stored Customer/ambiguity/Lead consequence without duplication.",
+                retries="A claimed receipt reruns canonical resolution before any Lead creation; historical projection rebuilds from current contact facts.",
             ),
             errors=ErrorContract(
                 domain_codes=(
@@ -306,7 +336,10 @@ SERVICES: tuple[SOTService, ...] = (
                     "sales.meta_lead_ads.lead_party_missing",
                 ),
                 mapping_owner="Meta Lead Ads webhook and reconciliation adapters",
-                fail_closed_on=("missing Lead Party or unverified/ambiguous identity",),
+                fail_closed_on=(
+                    "ambiguous pre-capture Customer identity",
+                    "missing historical Lead Party",
+                ),
             ),
             projections=(
                 ProjectionContract(
@@ -316,7 +349,7 @@ SERVICES: tuple[SOTService, ...] = (
                         "verified customer contact identity",
                     ),
                     writer="sales.meta_lead_customer_match",
-                    freshness="Rebuilt after capture and on explicit reconciliation.",
+                    freshness="Rebuilt for historical captured Leads on explicit reconciliation.",
                     stale_behavior="A stale or unavailable result remains review-only and grants no identity.",
                     drift_signal="Stored candidate fingerprint differs from current verified contact evidence.",
                     rebuild_operation="Reconcile the exact Lead from current Party contact facts.",
@@ -333,7 +366,7 @@ SERVICES: tuple[SOTService, ...] = (
             migration=MigrationContract(
                 state=AuthorityMigrationState.NATIVE,
                 new_owner="sales.meta_lead_customer_match",
-                verification="Focused matching, ambiguity, and rebuild tests.",
+                verification="Focused pre-capture Customer, ambiguity, no-duplicate Lead, historical matching, and rebuild tests.",
             ),
             steward="sales operations",
             design_refs=(

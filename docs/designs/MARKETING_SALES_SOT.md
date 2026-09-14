@@ -19,13 +19,19 @@ the immutable source-interaction identity; campaign, ad set, ad, form, and
 capture time remain attribution evidence. Raw Meta payloads do not become a
 second Lead record.
 
-`sales.meta_lead_customer_match` owns the rebuildable customer-match projection.
-It compares captured email and phone observations only with active, verified
-Party contact points on active Party-bound customer accounts. A single match is
-a review candidate, not an identity merge, but it is sufficient to report the
-customer lifecycle stage back to Meta. Several matches remain ambiguous and no
-match remains unmatched. Name equality, an unverified contact, or a legacy
-Subscriber contact column can never attach the Lead to a customer.
+Before Party/Lead capture, `sales.meta_lead_customer_match` uses the canonical
+Customer identity resolver across current Subscriber, SubscriberContact,
+SubscriberChannel, CustomerIdentityIndex, and verified Party contact-point
+evidence. One unique active Customer completes the receipt as
+`customer_matched` without creating a duplicate Lead. Several plausible
+Customers complete it as `customer_ambiguous` for review and also create no
+Lead. Only a genuine no-match enters the Party-first `sales.capture` owner.
+Provider profile-name equality is not identity evidence and cannot veto or
+create an exact phone/email decision.
+
+The same service retains the rebuildable match projection for historical Meta
+Leads created under the earlier contract. That projection remains review-only
+and never silently merges an already-created Lead Party into a Customer Party.
 
 When Sales commits `lead.account_converted`, or the match projection finds one
 exact verified active customer, `integration.meta_lead_conversion` sends one

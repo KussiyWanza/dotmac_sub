@@ -26,7 +26,8 @@ from app.services.integrations.meta_social_capability import (
     require_binding,
 )
 from app.services.integrations.meta_social_contracts import MetaSocialChannel
-from app.services.sales.meta_lead_ads import capture_meta_lead
+from app.services.owner_commands import CommandContext
+from app.services.sales import meta_lead_ads
 
 router = APIRouter(prefix="/webhooks/meta", tags=["meta-inbox-webhook"])
 SIGNATURE_HEADER = "X-Hub-Signature-256"
@@ -441,15 +442,31 @@ async def receive_meta_inbox_webhook(
                 )
                 if observation is None:
                     raise RuntimeError("Meta Lead details are temporarily unavailable")
-                outcome = capture_meta_lead(
+                outcome = meta_lead_ads.capture_meta_lead(
                     db,
-                    receipt_id=lead_receipt.id,
-                    observation=observation,
+                    meta_lead_ads.CaptureMetaLeadCommand(
+                        context=CommandContext.system(
+                            actor="integration.meta_lead_ads",
+                            scope=meta_lead_ads.META_LEAD_CAPTURE_SCOPE,
+                            reason="Resolve Customer identity before Meta Lead capture",
+                            idempotency_key=f"meta-lead-capture:{lead_receipt.id}",
+                        ),
+                        receipt_id=lead_receipt.id,
+                        observation=observation,
+                    ),
                 )
                 lead_results.append(
                     {
-                        "lead_id": str(outcome.lead_id),
-                        "party_id": str(outcome.party_id),
+                        "kind": outcome.kind.value,
+                        "lead_id": str(outcome.lead_id) if outcome.lead_id else None,
+                        "party_id": (
+                            str(outcome.party_id) if outcome.party_id else None
+                        ),
+                        "subscriber_id": (
+                            str(outcome.subscriber_id)
+                            if outcome.subscriber_id
+                            else None
+                        ),
                         "replayed": outcome.replayed,
                         "customer_match": outcome.customer_match.status.value,
                     }

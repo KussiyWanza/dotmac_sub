@@ -314,6 +314,39 @@ def test_reviewed_representative_identity_remains_separate_and_reusable(db_sessi
     assert relationship.object_party_id == subscriber.party_id
 
 
+def test_representative_identity_conflict_does_not_create_an_orphan_party(db_session):
+    subscriber = _subscriber(db_session, email="represented-conflict@example.com")
+    conversation = _conversation(db_session, contact="representative-conflict")
+    first = team_inbox_contact_links.link_conversation_contact(
+        db_session,
+        team_inbox_contact_links.ReviewConversationContactCommand(
+            conversation_id=conversation.id,
+            identity_kind=(
+                team_inbox_contact_links.ReviewedContactIdentityKind.representative
+            ),
+            subscriber_id=subscriber.id,
+            representative_name="Chinedu Okoro",
+        ),
+    )
+    party_count = db_session.query(Party).count()
+
+    conflict = team_inbox_contact_links.link_conversation_contact(
+        db_session,
+        team_inbox_contact_links.ReviewConversationContactCommand(
+            conversation_id=conversation.id,
+            identity_kind=(
+                team_inbox_contact_links.ReviewedContactIdentityKind.representative
+            ),
+            subscriber_id=subscriber.id,
+            representative_name="A Different Person",
+        ),
+    )
+
+    assert conflict.disposition.value == "conflict"
+    assert conflict.contact_link_id == first.contact_link_id
+    assert db_session.query(Party).count() == party_count
+
+
 def test_support_api_links_inbox_conversation_contact(db_session):
     subscriber = _subscriber(db_session)
     conversation = _conversation(db_session)
