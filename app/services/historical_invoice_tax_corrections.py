@@ -1003,7 +1003,7 @@ def _correct_historical_invoice_tax(
         ),
         reason="historical_invoice_tax_correction_replacement",
     )
-    db.refresh(replacement)
+    replacement = Invoices.recalculate_totals_for_owner(db, replacement.id)
     if (
         round_money(replacement.subtotal) != current.source_subtotal
         or round_money(replacement.tax_total) != current.tax_amount

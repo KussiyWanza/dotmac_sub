@@ -8,7 +8,7 @@ from enum import StrEnum
 from functools import partial
 from uuid import UUID
 
-from sqlalchemy import and_, false, or_, select, text
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -661,20 +661,16 @@ def observed_inbound_identity(
         )
     if provider_account_id == "default":
         provider_account_id = None
-    provider_scoped = bool(
-        conversation.channel_type in _PROVIDER_SCOPED_IDENTITY_CHANNELS
-        and provider
-        and provider_account_id
-    )
-    if not provider_scoped:
-        provider = None
-        provider_account_id = None
     return ObservedInboundIdentity(
         channel_type=conversation.channel_type,
         normalized_endpoint=normalized_endpoint,
         provider=provider,
         provider_account_id=provider_account_id,
-        external_subject_id=(normalized_endpoint if provider_scoped else None),
+        external_subject_id=(
+            normalized_endpoint
+            if conversation.channel_type in _PROVIDER_SCOPED_IDENTITY_CHANNELS
+            else None
+        ),
     )
 
 
@@ -1430,7 +1426,13 @@ def scoped_contact_link_clauses(
             and identity.provider_account_id
             and identity.external_subject_id
         ):
-            clauses.append(false())
+            clauses.extend(
+                (
+                    InboxContactLink.provider.is_(None),
+                    InboxContactLink.provider_account_id.is_(None),
+                    InboxContactLink.external_subject_id.is_(None),
+                )
+            )
         else:
             clauses.extend(
                 (
@@ -1561,12 +1563,22 @@ def link_conversation_contact(
 
     contact_link = active_link if same_target else None
     if contact_link is None:
+        provider_scoped = bool(
+            identity.channel_type in _PROVIDER_SCOPED_IDENTITY_CHANNELS
+            and identity.provider
+            and identity.provider_account_id
+            and identity.external_subject_id
+        )
         contact_link = InboxContactLink(
             channel_type=conversation.channel_type,
             normalized_contact=normalized_contact,
-            provider=identity.provider,
-            provider_account_id=identity.provider_account_id,
-            external_subject_id=identity.external_subject_id,
+            provider=identity.provider if provider_scoped else None,
+            provider_account_id=(
+                identity.provider_account_id if provider_scoped else None
+            ),
+            external_subject_id=(
+                identity.external_subject_id if provider_scoped else None
+            ),
             subscriber_id=subscriber.id if subscriber is not None else None,
             reseller_id=reseller.id if reseller is not None else None,
             linked_by_person_id=command.actor_person_id,

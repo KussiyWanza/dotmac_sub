@@ -1913,6 +1913,21 @@ class Invoices(ListResponseMixin):
             ) from exc
 
     @staticmethod
+    def recalculate_totals_for_owner(db: Session, invoice_id: UUID) -> Invoice:
+        """Rebuild one staged invoice summary inside its owner's transaction."""
+
+        invoice = lock_for_update(db, Invoice, invoice_id)
+        if invoice is None:
+            raise InvoiceOwnerError(
+                code="financial.invoice.invoice_not_found",
+                message="Invoice was not found.",
+                details={"invoice_id": str(invoice_id)},
+            )
+        _recalculate_invoice_totals(db, invoice)
+        db.flush()
+        return invoice
+
+    @staticmethod
     def issue_draft_system(
         db: Session,
         invoice_id: str,

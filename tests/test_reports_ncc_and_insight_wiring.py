@@ -12,7 +12,7 @@ from app.models.ai_insight import AIInsight
 from app.models.domain_settings import DomainSetting, SettingDomain, SettingValueType
 from app.models.ncc_reporting import NccWeeklyReportRun, NccWeeklyReportRunStatus
 from app.models.support import Ticket
-from app.services import control_registry, ncc_report_email
+from app.services import control_registry, ncc_report_email, ticket_sla_reports
 from app.services.ai import engine as ai_engine
 from app.services.owner_commands import CommandContext
 from app.web.admin import reports as reports_web
@@ -39,6 +39,25 @@ def _request():
         query_params={},
         url=SimpleNamespace(path="/admin/reports"),
         state=SimpleNamespace(csrf_token="test-csrf-token"),
+    )
+
+
+def _ticket_sla_summary(
+    *, total_open_tickets: int, total_currently_breaching: int
+) -> ticket_sla_reports.TicketSlaSummary:
+    return ticket_sla_reports.TicketSlaSummary(
+        generated_at=datetime(2026, 9, 14, tzinfo=UTC),
+        total_open_tickets=total_open_tickets,
+        total_currently_breaching=total_currently_breaching,
+        current_breach_rate=(
+            total_currently_breaching / total_open_tickets
+            if total_open_tickets
+            else 0.0
+        ),
+        by_status=(),
+        by_service_team=(),
+        by_region=(),
+        by_assignee=(),
     )
 
 
@@ -332,11 +351,10 @@ def test_insight_route_generates_and_renders(db_session, monkeypatch):
         patch.object(
             reports_web.ticket_sla_reports_service,
             "summary",
-            lambda *, db, query: {
-                "total_clocks": 40,
-                "total_breaches": 12,
-                "breach_rate": 0.3,
-            },
+            lambda *, db, query: _ticket_sla_summary(
+                total_open_tickets=40,
+                total_currently_breaching=12,
+            ),
         ),
     ):
         resp = reports_web.reports_generate_insight(
@@ -353,11 +371,10 @@ def test_insight_route_degrades_gracefully_when_disabled(db_session, monkeypatch
     with patch.object(
         reports_web.ticket_sla_reports_service,
         "summary",
-        lambda *, db, query: {
-            "total_clocks": 0,
-            "total_breaches": 0,
-            "breach_rate": 0.0,
-        },
+        lambda *, db, query: _ticket_sla_summary(
+            total_open_tickets=0,
+            total_currently_breaching=0,
+        ),
     ):
         resp = reports_web.reports_generate_insight(
             _request(), "ticket_sla_advisor", db=db_session
