@@ -33,6 +33,29 @@ class LoginFailure extends LoginResult {
   final String message;
 }
 
+/// Typed mobile request for the canonical credential-recovery owner.
+final class PasswordRecoveryRequest {
+  const PasswordRecoveryRequest({required this.email});
+
+  final String email;
+}
+
+sealed class PasswordRecoveryResult {
+  const PasswordRecoveryResult();
+}
+
+final class PasswordRecoveryAccepted extends PasswordRecoveryResult {
+  const PasswordRecoveryAccepted(this.message);
+
+  final String message;
+}
+
+final class PasswordRecoveryFailure extends PasswordRecoveryResult {
+  const PasswordRecoveryFailure(this.message);
+
+  final String message;
+}
+
 class AppConfig {
   const AppConfig({
     required this.minAppVersion,
@@ -118,6 +141,24 @@ class AuthRepository {
       return await _handleTokens(response.data as Map, mode);
     } on DioException catch (error) {
       return LoginFailure(_message(error));
+    }
+  }
+
+  Future<PasswordRecoveryResult> requestPasswordRecovery(
+    PasswordRecoveryRequest request,
+  ) async {
+    try {
+      final response = await client.dio.post(
+        '/api/v1/auth/forgot-password',
+        data: {'email': request.email},
+      );
+      final data = response.data as Map;
+      return PasswordRecoveryAccepted(
+        data['message'] as String? ??
+            'If the email exists, a reset link has been sent',
+      );
+    } on DioException catch (error) {
+      return PasswordRecoveryFailure(_message(error));
     }
   }
 

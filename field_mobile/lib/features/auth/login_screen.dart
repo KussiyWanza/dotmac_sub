@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../core/api/token_store.dart';
 import 'auth_state.dart';
@@ -176,7 +177,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                 : const Icon(Icons.login),
                             label: Text(_busy ? 'Signing in...' : 'Sign in'),
                           ),
-                          const SizedBox(height: 18),
+                          const SizedBox(height: 8),
+                          TextButton(
+                            onPressed: _busy
+                                ? null
+                                : () => context.push(
+                                    '/forgot-password',
+                                    extra: _username.text.trim(),
+                                  ),
+                            child: const Text('Forgot password?'),
+                          ),
+                          const SizedBox(height: 10),
                           Text(
                             'Use your DotMac field account. MFA may be required after password sign-in.',
                             style: textTheme.bodySmall?.copyWith(
