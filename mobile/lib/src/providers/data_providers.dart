@@ -589,12 +589,6 @@ final ticketProvider = FutureProvider.autoDispose.family<Ticket, String>((
   return ref.watch(supportRepositoryProvider).ticket(id);
 });
 
-final ticketCommentsProvider = FutureProvider.autoDispose
-    .family<Page<TicketComment>, String>((ref, ticketId) async {
-  cacheFor(ref);
-  return ref.watch(supportRepositoryProvider).comments(ticketId);
-});
-
 final quotesProvider = FutureProvider.autoDispose<QuotesPage>((ref) async {
   cacheFor(ref);
   return ref.watch(quotesRepositoryProvider).quotes();

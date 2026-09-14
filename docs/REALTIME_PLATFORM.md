@@ -82,11 +82,46 @@ and WebSocket notification publishers use `realtime:v1:`. Architecture tests
 keep services independent of the WebSocket package and prevent the legacy
 prefix from returning.
 
+## Support ticket comment invalidations
+
+`support.ticket_lifecycle` alone decides when a customer-visible Ticket comment
+projection changed. After the owning comment create, edit, delete, or visibility
+command commits, it may publish `support_ticket_comment_changed` to the
+server-assigned `principal:{subscriber_id}` topic. Internal comments never
+publish. A transition between internal and public does publish because the
+authoritative customer projection must add or remove the comment. A bulk
+comment command emits at most one coalesced invalidation.
+
+The version 1 `data` value is the typed, identifier-only hint:
+
+```json
+{
+  "ticket_id": "uuid",
+  "change": "comment_created|comment_updated|comment_deleted|comment_visibility_changed",
+  "comment_id": "uuid-or-null"
+}
+```
+
+It never contains a comment body, attachment, author identity, or subscriber
+identity. The subscriber identity is used only to derive the server-owned
+principal topic. Delivery failure is isolated after commit and cannot reject or
+roll back the saved comment.
+
+Authenticated mobile clients connect to `/ws/inbox` with the existing
+`dotmac-auth` WebSocket subprotocol and the current access token. They do not
+send a subscription request for this event. A matching Ticket invalidation,
+connection acknowledgement, reconnect, or app resume triggers one coalesced
+read of the authoritative `/me/support/tickets/{id}/comments` resource. The
+socket payload is never rendered as comment content. Manual refresh and
+post-action reconciliation may additionally reload the Ticket header.
+
 ## First supported surfaces
 
 - Team inbox and chat-widget conversation events over WebSocket.
 - Network operation status hints over WebSocket.
 - Workqueue invalidations over server-scoped WebSocket and SSE endpoints.
 - Principal/staff notification hints over WebSocket.
+- Customer-visible Support Ticket comment invalidations over the authenticated,
+  server-scoped principal WebSocket topic.
 - Bandwidth observations remain source-owned SSE with their established
   payload contract.

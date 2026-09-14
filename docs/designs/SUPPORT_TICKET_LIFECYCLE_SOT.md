@@ -280,6 +280,26 @@ future push/WebSocket signals are observation triggers only; clients reconcile
 from the authoritative Support comment query before changing the displayed
 timeline.
 
+The lifecycle owner also owns the customer-visible comment invalidation
+decision. A successfully committed public comment create, edit, or delete emits
+an identifier-only `support_ticket_comment_changed` hint through
+`runtime.realtime_projection`; a public-to-internal or internal-to-public
+transition emits the same class of invalidation. An internal comment that stays
+internal emits nothing. Bulk creation emits at most one hint. The payload is
+limited to Ticket UUID, typed change, and optional comment UUID; it excludes
+body, attachments, author identity, and subscriber identity. The subscriber is
+used only to select the server-assigned principal topic.
+
+The realtime transport is best-effort, at-most-once, and non-authoritative. It
+is registered with `run_after_commit`, so rollback publishes nothing and Redis
+failure cannot affect the Ticket command. Mobile clients never select the
+principal topic and never render the hint. They reconcile only the authoritative
+customer comment query for a matching Ticket. A connection acknowledgement,
+reconnect, or app resume is also a comments catch-up boundary. Manual refresh
+and completed reply/resolution actions continue to reconcile both the Ticket
+header and comments. No periodic Ticket-comment REST poll is part of this
+contract.
+
 CRM ticket import is retired as an authority. Any residual retry or historical
 observation is provenance-only and is forced internal; it cannot publish
 narrative into the customer portal.
