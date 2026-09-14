@@ -11,6 +11,29 @@ from scripts.architecture import crm_web_retirement
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_reseller_ticket_reads_use_only_the_native_projection() -> None:
+    web_source = (PROJECT_ROOT / "app/services/web_reseller_routes.py").read_text(
+        encoding="utf-8"
+    )
+    dashboard = web_source.split("def reseller_dashboard", 1)[1].split(
+        "def reseller_accounts", 1
+    )[0]
+    account_tickets = web_source.split("def reseller_account_tickets", 1)[1].split(
+        "def reseller_fiber_map", 1
+    )[0]
+    api_source = (PROJECT_ROOT / "app/api/reseller.py").read_text(encoding="utf-8")
+    api_dashboard = api_source.split("def my_reseller_dashboard", 1)[1].split(
+        "@router.get", 1
+    )[0]
+    api_tickets = api_source.split("def my_reseller_account_tickets", 1)[1].split(
+        "@router.post", 1
+    )[0]
+
+    for projection in (dashboard, account_tickets, api_dashboard, api_tickets):
+        assert "crm_portal" not in projection
+        assert "capability_client" not in projection
+
+
 def test_crm_web_retirement_ledger_is_complete_and_valid() -> None:
     ledger = crm_web_retirement.load_ledger()
 
