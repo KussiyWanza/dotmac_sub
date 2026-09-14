@@ -861,9 +861,9 @@ def build_manager_dashboard_projection(
             InboxConversation,
             InboxConversation.id == InboxConversationAssignment.conversation_id,
         )
-        .filter(InboxConversationAssignment.is_active.is_(True))
-        .filter(InboxConversation.is_active.is_(True))
-        .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
+        .filter(
+            *team_inbox_assignment.countable_active_assignment_clauses(now=observed_at)
+        )
         .all()
     )
     chat_counts = Counter(row.person_id for row in active_assignments)
@@ -1326,6 +1326,11 @@ def get_conversation_projection(
     )
     outbound_unsupported = timeline.channel_type == InboxChannelType.website_fiber.value
     reply_window = _reply_window_projection(db, conversation_id, timeline)
+    expired_whatsapp = (
+        timeline.channel_type == InboxChannelType.whatsapp.value
+        and reply_window.status
+        == team_inbox_reply_window.ReplyWindowStatus.expired.value
+    )
     provider_window_blocks = (
         timeline.channel_type in team_inbox_reply_window.META_FREE_FORM_CHANNELS
         and not reply_window.free_form_allowed
@@ -1379,6 +1384,7 @@ def get_conversation_projection(
             waiting_for_customer=ownership.waiting_for_customer,
             can_take_over=bool(
                 ownership.can_take_over
+                and not expired_whatsapp
                 and actor_person_id is not None
                 and has_takeover_permissions
                 and takeover_team_options
@@ -1393,7 +1399,9 @@ def get_conversation_projection(
             and not outbound_unsupported
             and not provider_window_blocks,
             can_private_note=not ownership.ai_owned and not is_resolved,
-            can_assign=not ownership.ai_owned and not is_resolved,
+            can_assign=(
+                not ownership.ai_owned and not is_resolved and not expired_whatsapp
+            ),
             can_change_status=not ownership.ai_owned,
             can_create_ticket=not ownership.ai_owned and not is_resolved,
             can_run_macro=not ownership.ai_owned and not is_resolved,

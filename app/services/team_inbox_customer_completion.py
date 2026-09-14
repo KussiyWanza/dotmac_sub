@@ -280,8 +280,9 @@ def classification(
     evidence = conversation_lead_relationships.relationship_evidence(db, conversation)
     if evidence.identity_conflict or evidence.lead_party_mismatch:
         return InboxIdentityClassification.ambiguous
-    if conversation.subscriber_id is not None:
-        return InboxIdentityClassification.customer
+    # The active conversation-to-Lead relationship is the explicit context for
+    # this conversation. A Party may also be a Customer without turning a new
+    # sales opportunity into a Customer-support completion workflow.
     if evidence.active_lead_id is not None:
         return InboxIdentityClassification.lead
     completed_lead_id = db.scalar(
@@ -295,6 +296,8 @@ def classification(
     )
     if completed_lead_id is not None:
         return InboxIdentityClassification.lead
+    if conversation.subscriber_id is not None:
+        return InboxIdentityClassification.customer
     party_ids = evidence.authoritative_party_ids
     if len(party_ids) > 1:
         return InboxIdentityClassification.ambiguous
