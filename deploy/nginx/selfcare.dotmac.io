@@ -60,6 +60,23 @@ server {
         proxy_read_timeout 1h;
     }
 
+    # Reject stale cached clients before they reach the application.
+    location = /auth/session/refresh {
+        if ($request_method != POST) {
+            return 405;
+        }
+        proxy_pass http://127.0.0.1:8001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+
     # All other requests → app
     location / {
         proxy_pass http://127.0.0.1:8001;

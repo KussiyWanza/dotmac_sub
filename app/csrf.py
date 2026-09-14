@@ -51,6 +51,13 @@ def set_csrf_cookie(
     )
 
 
+def renew_csrf_cookie(response: Response, request: Request) -> None:
+    """Extend the CSRF cookie alongside a successful browser-session renewal."""
+    token = request.cookies.get(CSRF_COOKIE_NAME)
+    if token:
+        set_csrf_cookie(response, token, request)
+
+
 def validate_csrf_token(request: Request) -> bool:
     """
     Validate CSRF token using double-submit cookie pattern.

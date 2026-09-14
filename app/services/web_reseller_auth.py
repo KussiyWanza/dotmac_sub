@@ -9,6 +9,7 @@ from fastapi.responses import RedirectResponse, Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.csrf import renew_csrf_cookie
 from app.models.auth import AuthProvider, UserCredential
 from app.models.subscriber import ResellerUser, Subscriber
 from app.services import auth_flow as auth_flow_service
@@ -335,7 +336,7 @@ def reseller_refresh(request: Request):
     finally:
         db.close()
 
-    response = Response(status_code=204)
+    response = Response(status_code=204, headers={"Cache-Control": "no-store"})
     response.set_cookie(
         key=reseller_portal.SESSION_COOKIE_NAME,
         value=session_token,
@@ -344,4 +345,5 @@ def reseller_refresh(request: Request):
         samesite="lax",
         max_age=max_age,
     )
+    renew_csrf_cookie(response, request)
     return response

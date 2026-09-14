@@ -67,10 +67,15 @@ function broadcastChannelClass() {
     };
 }
 
-function fakeWindow({ storage, channelClass, fetch }) {
+function fakeWindow({
+    storage,
+    channelClass,
+    fetch,
+    csrfToken = 'csrf-test-token',
+}) {
     const listeners = new Map();
     const documentListeners = new Map();
-    return {
+    const win = {
         Date,
         URL,
         crypto: { randomUUID: () => `tab-${Math.random()}` },
@@ -78,10 +83,15 @@ function fakeWindow({ storage, channelClass, fetch }) {
         BroadcastChannel: channelClass,
         navigator: {},
         fetch,
+        getCsrfToken: () => csrfToken,
+        reloadCount: 0,
         location: {
             href: 'https://oss.example.test/admin/dashboard',
             pathname: '/admin/dashboard',
             search: '',
+            reload() {
+                win.reloadCount += 1;
+            },
         },
         addEventListener(type, listener) {
             if (!listeners.has(type)) {
@@ -114,6 +124,7 @@ function fakeWindow({ storage, channelClass, fetch }) {
             },
         },
     };
+    return win;
 }
 
 test('session refresh is shared by tabs instead of duplicated', async () => {
@@ -272,4 +283,63 @@ test('an HTMX request waits when renewal is due', async () => {
     assert.equal(fetchCount, 1);
     assert.equal(issued, true);
     browserCoordinator.close();
+});
+
+test('missing CSRF token reloads without sending or retrying refresh', async () => {
+    const win = fakeWindow({
+        storage: sharedStorage(),
+        channelClass: broadcastChannelClass(),
+        csrfToken: '',
+        fetch: async () => {
+            throw new Error('refresh request must not be sent without CSRF');
+        },
+    });
+    const coordinator = sessionRefresh.createSessionRefreshCoordinator(
+        win,
+        { refreshUrl: '/auth/session/refresh', loginUrl: '/auth/login' },
+    );
+
+    const result = await coordinator.refreshSession();
+
+    assert.equal(result.status, 403);
+    assert.equal(result.terminal, true);
+    assert.equal(win.reloadCount, 1);
+    assert.equal(
+        sessionRefresh._internal.shouldRetryRefreshResult(result),
+        false,
+    );
+    coordinator.close();
+});
+
+test('CSRF rejection reloads and is terminal', async () => {
+    let fetchCount = 0;
+    const win = fakeWindow({
+        storage: sharedStorage(),
+        channelClass: broadcastChannelClass(),
+        fetch: async (_url, options) => {
+            fetchCount += 1;
+            assert.equal(options.headers['X-CSRF-Token'], 'csrf-test-token');
+            return {
+                status: 403,
+                redirected: false,
+                url: 'https://oss.example.test/auth/session/refresh',
+                headers: { get: () => null },
+            };
+        },
+    });
+    const coordinator = sessionRefresh.createSessionRefreshCoordinator(
+        win,
+        { refreshUrl: '/auth/session/refresh', loginUrl: '/auth/login' },
+    );
+
+    const result = await coordinator.refreshSession();
+
+    assert.equal(fetchCount, 1);
+    assert.equal(result.terminal, true);
+    assert.equal(win.reloadCount, 1);
+    assert.equal(
+        sessionRefresh._internal.shouldRetryRefreshResult(result),
+        false,
+    );
+    coordinator.close();
 });
