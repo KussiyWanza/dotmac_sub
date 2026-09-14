@@ -4,7 +4,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
 from starlette.responses import Response
 
 from app.csrf import CSRF_COOKIE_NAME
@@ -83,6 +83,41 @@ def test_csrf_middleware_returns_204_for_actual_disconnect(monkeypatch):
     response = _run_async(csrf_middleware(request, call_next))
 
     assert response.status_code == 204
+
+
+def test_csrf_middleware_returns_204_when_client_disconnects_during_body_read(
+    caplog,
+):
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/admin/support/tickets/ticket-id/comment",
+        "raw_path": b"/admin/support/tickets/ticket-id/comment",
+        "query_string": b"",
+        "headers": [
+            (b"content-type", b"application/x-www-form-urlencoded"),
+            (b"cookie", f"{CSRF_COOKIE_NAME}=expected".encode()),
+        ],
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 80),
+    }
+
+    async def receive():
+        raise ClientDisconnect
+
+    request = Request(scope, receive)
+
+    async def call_next(_request: Request) -> Response:
+        raise AssertionError("a disconnected request must not reach downstream")
+
+    response = _run_async(csrf_middleware(request, call_next))
+
+    assert response.status_code == 204
+    assert "client_disconnected" in caplog.text
+    assert any(record.levelname == "INFO" for record in caplog.records)
 
 
 def test_view_as_readonly_middleware_returns_204_when_no_response(monkeypatch):
