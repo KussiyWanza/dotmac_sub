@@ -1106,9 +1106,12 @@ def reports_technician_export(
 
 
 def _ticket_sla_drilldown_url(
-    item: dict[str, object], *, field: str, date_from: str | None, date_to: str | None
+    *,
+    key: str,
+    field: Literal["service_team_id", "region"],
+    date_from: str | None,
+    date_to: str | None,
 ) -> str:
-    key = str(item["key"])
     is_unassigned = key.startswith("unassigned_")
     conditions: list[dict[str, object]] = [
         {
@@ -1133,8 +1136,11 @@ def _ticket_sla_drilldown_url(
                 "value": f"{date_to}T23:59:59.999999+00:00",
             }
         )
-    return "/admin/support/tickets?filters=" + quote_plus(
-        json.dumps({"and": conditions}, separators=(",", ":"))
+    return "/admin/support/tickets?" + urlencode(
+        {
+            "status": "not_closed",
+            "filters": json.dumps({"and": conditions}, separators=(",", ":")),
+        }
     )
 
 
@@ -1155,15 +1161,31 @@ def reports_ticket_sla(
 
     start_at = _parse_date_start(date_from)
     end_at = _parse_date_end(date_to)
-    report_summary = ticket_sla_reports_service.summary(db, start_at, end_at)
-    for item in report_summary["by_service_team"]:
-        item["drilldown_url"] = _ticket_sla_drilldown_url(
-            item, field="service_team_id", date_from=date_from, date_to=date_to
+    report_summary = ticket_sla_reports_service.summary(
+        db=db,
+        query=ticket_sla_reports_service.TicketSlaSummaryQuery(
+            start_at=start_at,
+            end_at=end_at,
+        ),
+    )
+    team_drilldown_urls = {
+        item.key: _ticket_sla_drilldown_url(
+            key=item.key,
+            field="service_team_id",
+            date_from=date_from,
+            date_to=date_to,
         )
-    for item in report_summary["by_region"]:
-        item["drilldown_url"] = _ticket_sla_drilldown_url(
-            item, field="region", date_from=date_from, date_to=date_to
+        for item in report_summary.by_service_team
+    }
+    region_drilldown_urls = {
+        item.key: _ticket_sla_drilldown_url(
+            key=item.key,
+            field="region",
+            date_from=date_from,
+            date_to=date_to,
         )
+        for item in report_summary.by_region
+    }
     violation_page = ticket_sla_reports_service.violation_page(
         db,
         query=ticket_sla_reports_service.TicketSlaViolationPageQuery(
@@ -1184,6 +1206,8 @@ def reports_ticket_sla(
         "date_to": date_to or "",
         "open_only": open_only,
         "summary": report_summary,
+        "team_drilldown_urls": team_drilldown_urls,
+        "region_drilldown_urls": region_drilldown_urls,
         "trend": ticket_sla_reports_service.trend_daily(db, start_at, end_at),
         "violations": violation_page.rows,
         "violation_page": violation_page,
@@ -3471,14 +3495,20 @@ _REPORT_ADVISORS: dict[str, str] = {
 
 def _fetch_report_for_advisor(
     db: Session, advisor_key: str, date_from: str | None, date_to: str | None
-) -> tuple[dict, str, str | None]:
+) -> tuple[dict[str, object], str, str | None]:
     """Fetch the owned projection an advisor reads. Returns
     (report, entity_type, entity_id)."""
     if advisor_key == "ticket_sla_advisor":
         start_at = _parse_date_start(date_from)
         end_at = _parse_date_end(date_to)
-        report = ticket_sla_reports_service.summary(db, start_at, end_at)
-        return report, "report:ticket_sla", None
+        report = ticket_sla_reports_service.summary(
+            db=db,
+            query=ticket_sla_reports_service.TicketSlaSummaryQuery(
+                start_at=start_at,
+                end_at=end_at,
+            ),
+        )
+        return report.as_serializable(), "report:ticket_sla", None
     raise KeyError(advisor_key)
 
 

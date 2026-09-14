@@ -237,6 +237,11 @@ Add:
 - SLA breach rate by team/person/region
 - outage ticket deflection rate
 
+The Ticket SLA operations dashboard treats this as a live backlog measure:
+regional, team, assignee, and status rates are distinct currently breached
+Tickets divided by canonical not-closed Tickets. Historical breach records and
+clock-start trends remain separate evidence and must be labelled as historical.
+
 ### Infrastructure Dependency SLO
 
 `runtime.infrastructure_health` owns the dependency probes and their status

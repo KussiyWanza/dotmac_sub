@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.models.service_team import ServiceTeam, ServiceTeamType
-from app.models.support import Ticket
+from app.models.support import Ticket, TicketStatus
 from app.models.system_user import SystemUser
 from app.models.ticket_workflow import (
     SlaBreach,
@@ -33,6 +33,19 @@ def test_ticket_sla_queue_is_compact_without_horizontal_scrolling() -> None:
     assert "violation_page.per_page" in queue
 
 
+def test_ticket_sla_dashboard_names_current_metric_scope() -> None:
+    template = Path("templates/admin/reports/ticket_sla.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "currently breaching / currently open" in template
+    assert "summary.total_open_tickets" in template
+    assert "summary.total_currently_breaching" in template
+    assert "summary.current_breach_rate" in template
+    assert "item.currently_breaching }} / {{ item.open_tickets" in template
+    assert "closed_breached" not in template
+
+
 def _policy(db_session) -> SlaPolicy:
     policy = SlaPolicy(
         name="Ticket Resolution SLA",
@@ -57,15 +70,33 @@ def test_ticket_sla_report_summary_aggregates_breakdowns(db_session):
 
     ticket_ok = Ticket(
         title="Ticket OK",
+        status=TicketStatus.open.value,
+        region="gudu",
         service_team_id=team.id,
         assigned_to_person_id=assignee.id,
     )
     ticket_bad = Ticket(
         title="Ticket Bad",
+        status=TicketStatus.waiting_on_customer.value,
+        region="gudu",
         service_team_id=team.id,
         assigned_to_person_id=assignee.id,
     )
-    db_session.add_all([ticket_ok, ticket_bad])
+    ticket_closed = Ticket(
+        title="Historical closed breach",
+        status=TicketStatus.closed.value,
+        region="gudu",
+        service_team_id=team.id,
+        assigned_to_person_id=assignee.id,
+    )
+    ticket_canceled = Ticket(
+        title="Canceled ticket",
+        status=TicketStatus.canceled.value,
+        region="gudu",
+        service_team_id=team.id,
+        assigned_to_person_id=assignee.id,
+    )
+    db_session.add_all([ticket_ok, ticket_bad, ticket_closed, ticket_canceled])
     db_session.flush()
 
     policy = _policy(db_session)
@@ -89,33 +120,50 @@ def test_ticket_sla_report_summary_aggregates_breakdowns(db_session):
                 due_at=now - timedelta(hours=1),
                 breached_at=now - timedelta(minutes=30),
             ),
+            SlaClock(
+                policy_id=policy.id,
+                entity_type=WorkflowEntityType.ticket.value,
+                entity_id=ticket_closed.id,
+                status=SlaClockStatus.completed.value,
+                started_at=now - timedelta(days=2),
+                due_at=now - timedelta(days=1),
+                breached_at=now - timedelta(days=1),
+                completed_at=now - timedelta(hours=12),
+            ),
         ]
     )
     db_session.commit()
 
-    summary = ticket_sla_reports.summary(db_session)
+    summary = ticket_sla_reports.summary(
+        db_session,
+        query=ticket_sla_reports.TicketSlaSummaryQuery(),
+    )
 
-    assert summary["total_clocks"] == 2
-    assert summary["total_breaches"] == 1
-    assert summary["breach_rate"] == 0.5
-    by_status = {item["key"]: item for item in summary["by_status"]}
-    assert by_status[SlaClockStatus.running.value]["total"] == 1
-    assert by_status[SlaClockStatus.breached.value]["breached"] == 1
-    by_team = {item["key"]: item for item in summary["by_service_team"]}
-    assert by_team[str(team.id)]["total"] == 2
-    assert by_team[str(team.id)]["breached"] == 1
-    assert by_team[str(team.id)]["label"] == "SLA Team"
-    by_region = {item["key"]: item for item in summary["by_region"]}
-    assert by_region["unassigned_region"]["total"] == 2
-    assert by_region["unassigned_region"]["breached"] == 1
-    assert by_region["unassigned_region"]["breach_rate"] == 0.5
-    assert summary["total_tickets"] == 2
-    assert summary["total_breached_tickets"] == 1
-    assert summary["ticket_breach_rate"] == 0.5
-    by_assignee = {item["key"]: item for item in summary["by_assignee"]}
-    assert by_assignee[str(assignee.id)]["total"] == 2
-    assert by_assignee[str(assignee.id)]["breached"] == 1
-    assert by_assignee[str(assignee.id)]["label"] == "SLA Agent"
+    assert summary.total_open_tickets == 2
+    assert summary.total_currently_breaching == 1
+    assert summary.current_breach_rate == 0.5
+    by_status = {item.key: item for item in summary.by_status}
+    assert by_status[TicketStatus.open.value].open_tickets == 1
+    assert by_status[TicketStatus.open.value].currently_breaching == 0
+    waiting = by_status[TicketStatus.waiting_on_customer.value]
+    assert waiting.open_tickets == 1
+    assert waiting.currently_breaching == 1
+    by_team = {item.key: item for item in summary.by_service_team}
+    assert by_team[str(team.id)].open_tickets == 2
+    assert by_team[str(team.id)].currently_breaching == 1
+    assert by_team[str(team.id)].label == "SLA Team"
+    by_region = {item.key: item for item in summary.by_region}
+    assert by_region["gudu"].open_tickets == 2
+    assert by_region["gudu"].currently_breaching == 1
+    assert by_region["gudu"].breach_rate == 0.5
+    by_assignee = {item.key: item for item in summary.by_assignee}
+    assert by_assignee[str(assignee.id)].open_tickets == 2
+    assert by_assignee[str(assignee.id)].currently_breaching == 1
+    assert by_assignee[str(assignee.id)].label == "SLA Agent"
+    serialized = summary.as_serializable()
+    assert serialized["total_open_tickets"] == 2
+    assert serialized["total_currently_breaching"] == 1
+    assert "total_breaches" not in serialized
 
 
 def test_ticket_sla_report_trend_daily_honors_date_window(db_session):
