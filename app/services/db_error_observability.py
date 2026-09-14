@@ -11,10 +11,13 @@ import hashlib
 import logging
 import re
 import traceback
+from collections.abc import MutableMapping
+from dataclasses import dataclass
+from time import monotonic
 from typing import Any
 
 from sqlalchemy import event
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,28 @@ _IDENTIFIER_RE = re.compile(
     re.IGNORECASE,
 )
 _INSTALLED_KEY = "_dotmac_db_error_observability_installed"
+_CONNECTION_OWNER_KEY = "_dotmac_database_transaction_owner"
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseTransactionOwner:
+    started_at: float
+    request_id: str | None
+    task_name: str | None
+    task_id: str | None
+
+
+def set_database_transaction_owner(
+    connection: Connection,
+    owner: DatabaseTransactionOwner,
+) -> None:
+    connection.info[_CONNECTION_OWNER_KEY] = owner
+
+
+def clear_database_transaction_owner(
+    connection_info: MutableMapping[str, object],
+) -> None:
+    connection_info.pop(_CONNECTION_OWNER_KEY, None)
 
 
 def statement_fingerprint(statement: object) -> str | None:
@@ -111,8 +136,44 @@ def _handle_error(context: Any) -> None:
     )
 
 
+def _handle_pool_invalidate(
+    _dbapi_connection: Any,
+    connection_record: Any,
+    exception: BaseException | None,
+) -> None:
+    if exception is None:
+        return
+    code = _error_code(exception)
+    category = _category(exception, code)
+    if category != "idle_transaction_timeout":
+        return
+    owner = getattr(connection_record, "info", {}).get(_CONNECTION_OWNER_KEY)
+    if not isinstance(owner, DatabaseTransactionOwner):
+        owner = DatabaseTransactionOwner(
+            started_at=monotonic(),
+            request_id=None,
+            task_name=None,
+            task_id=None,
+        )
+    logger.error(
+        "database_pool_connection_invalidated",
+        extra={
+            "category": category,
+            "db_error_code": code,
+            "request_id": owner.request_id,
+            "task_name": owner.task_name,
+            "task_id": owner.task_id,
+            "transaction_age_seconds": round(
+                max(0.0, monotonic() - owner.started_at),
+                3,
+            ),
+        },
+    )
+
+
 def install_db_error_observability(engine: Engine) -> None:
     if getattr(engine, _INSTALLED_KEY, False):
         return
     event.listen(engine, "handle_error", _handle_error)
+    event.listen(engine.pool, "invalidate", _handle_pool_invalidate)
     setattr(engine, _INSTALLED_KEY, True)
