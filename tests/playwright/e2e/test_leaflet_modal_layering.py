@@ -3,32 +3,21 @@
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import Page, sync_playwright
+from playwright.async_api import async_playwright
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
-@pytest.fixture()
-def layering_page() -> Page:
-    playwright = sync_playwright().start()
-    browser = playwright.chromium.launch(
-        headless=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage"],
-    )
-    page = browser.new_page(viewport={"width": 900, "height": 700})
-    try:
-        yield page
-    finally:
-        browser.close()
-        playwright.stop()
-
-
-def test_biodata_dialog_paints_above_leaflet_panes_and_controls(
-    layering_page: Page,
-) -> None:
-    page = layering_page
-    page.set_content(
-        """
+@pytest.mark.asyncio
+async def test_biodata_dialog_paints_above_leaflet_panes_and_controls() -> None:
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        page = await browser.new_page(viewport={"width": 900, "height": 700})
+        await page.set_content(
+            """
         <div id="biodata-dialog"
              class="fixed inset-0 z-50 flex items-center justify-center"
              role="dialog" aria-modal="true"
@@ -46,13 +35,17 @@ def test_biodata_dialog_paints_above_leaflet_panes_and_controls(
           </div>
         </div>
         """
-    )
-    page.add_style_tag(path=str(PROJECT_ROOT / "static/css/main.css"))
-    page.add_style_tag(path=str(PROJECT_ROOT / "static/css/design-system.css"))
-    page.add_style_tag(path=str(PROJECT_ROOT / "static/vendor/leaflet/leaflet.css"))
+        )
+        await page.add_style_tag(path=str(PROJECT_ROOT / "static/css/main.css"))
+        await page.add_style_tag(
+            path=str(PROJECT_ROOT / "static/css/design-system.css")
+        )
+        await page.add_style_tag(
+            path=str(PROJECT_ROOT / "static/vendor/leaflet/leaflet.css")
+        )
 
-    result = page.evaluate(
-        """() => {
+        result = await page.evaluate(
+            """() => {
           const map = document.querySelector('.leaflet-container');
           const box = document.querySelector('[data-map-control]').getBoundingClientRect();
           const topElement = document.elementFromPoint(
@@ -64,6 +57,7 @@ def test_biodata_dialog_paints_above_leaflet_panes_and_controls(
             topLayerIsDialog: Boolean(topElement.closest('[role="dialog"]')),
           };
         }"""
-    )
+        )
+        await browser.close()
 
     assert result == {"mapIsolation": "isolate", "topLayerIsDialog": True}
