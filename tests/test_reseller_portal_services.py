@@ -111,6 +111,68 @@ def test_initials_last_name_only():
     assert result == "S"
 
 
+def test_native_reseller_ticket_projection_uses_support_records(
+    db_session,
+    reseller_account,
+):
+    from app.models.support import Ticket, TicketStatus
+
+    db_session.add_all(
+        [
+            Ticket(
+                subscriber_id=reseller_account.id,
+                customer_account_id=reseller_account.id,
+                number="TCK-NATIVE-1",
+                title="Open native ticket",
+                status=TicketStatus.open.value,
+                priority="high",
+            ),
+            Ticket(
+                subscriber_id=reseller_account.id,
+                customer_account_id=reseller_account.id,
+                number="TCK-NATIVE-2",
+                title="Closed native ticket",
+                status=TicketStatus.closed.value,
+                priority="normal",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    assert (
+        reseller_portal.native_open_ticket_count(
+            db_session,
+            query=reseller_portal.ResellerTicketCountQuery(
+                reseller_id=reseller_account.reseller_id,
+                account_ids=(reseller_account.id,),
+            ),
+        ).value
+        == 1
+    )
+    summaries = reseller_portal.native_account_ticket_summaries(
+        db_session,
+        query=reseller_portal.ResellerAccountTicketsQuery(
+            reseller_id=reseller_account.reseller_id,
+            account_id=reseller_account.id,
+        ),
+    )
+    assert {item.ticket_number for item in summaries} == {
+        "TCK-NATIVE-1",
+        "TCK-NATIVE-2",
+    }
+    assert all(item.status_presentation for item in summaries)
+    assert (
+        reseller_portal.native_account_ticket_summaries(
+            db_session,
+            query=reseller_portal.ResellerAccountTicketsQuery(
+                reseller_id=uuid.uuid4(),
+                account_id=reseller_account.id,
+            ),
+        )
+        == ()
+    )
+
+
 def test_initials_empty_names():
     """Test _initials with empty names returns default."""
     person = MagicMock()

@@ -1370,6 +1370,152 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="customer.reseller_ticket_projection",
+            module="app.services.reseller_portal",
+            owns=("reseller-scoped native support ticket count and list projection",),
+            depends_on=(
+                "customer.identity_scope",
+                "support.ticket_lifecycle",
+                "ui.status_presentation",
+            ),
+            notes=(
+                "Dashboard and account-ticket reads enforce reseller ownership "
+                "and project native Support records without a retired CRM fallback."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name=(
+                            "reseller-scoped native support ticket count and list "
+                            "projection"
+                        ),
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "canonical reseller account scope",
+                            "canonical native support ticket facts",
+                            "support-ticket semantic presentation",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="canonical reseller account scope",
+                        owner="customer.identity_scope",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "canonical Reseller ownership of active Subscriber "
+                            "accounts, checked for every requested account"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical native support ticket facts",
+                        owner="support.ticket_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "committed native Ticket identity, subscriber scope, "
+                            "lifecycle status, priority, title, and timestamps"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="support-ticket semantic presentation",
+                        owner="ui.status_presentation",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "typed support-ticket status label, semantic tone, "
+                            "and icon projection"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary=(
+                        "Reseller web and API adapters own the session; this query "
+                        "reads committed ownership and Ticket evidence without writes "
+                        "or transaction completion."
+                    ),
+                    locking=(
+                        "No read locks. Each requested account is admitted only after "
+                        "canonical reseller ownership is resolved."
+                    ),
+                    idempotency=(
+                        "The same reseller scope and committed Ticket evidence produce "
+                        "the same count and ordered summaries."
+                    ),
+                    retries=(
+                        "Transient database reads may be retried; missing or foreign "
+                        "account scope deterministically produces no ticket rows."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(),
+                    mapping_owner="reseller web and API adapters",
+                    fail_closed_on=(
+                        "missing or foreign reseller account ownership",
+                        "unknown support-ticket status presentation",
+                    ),
+                ),
+                projections=(
+                    ProjectionContract(
+                        name=(
+                            "reseller-scoped native support ticket count and list "
+                            "projection"
+                        ),
+                        input_names=(
+                            "canonical reseller account scope",
+                            "canonical native support ticket facts",
+                            "support-ticket semantic presentation",
+                        ),
+                        writer="customer.reseller_ticket_projection",
+                        freshness="rebuilt from committed source evidence on every query",
+                        stale_behavior=(
+                            "foreign scope returns no rows; database failures remain "
+                            "visible and never fall back to retired CRM data"
+                        ),
+                        drift_signal=(
+                            "reseller output contains a Ticket outside canonical "
+                            "account ownership or any reseller path queries "
+                            "crm.ticket_observation.v1"
+                        ),
+                        rebuild_operation=(
+                            "native_open_ticket_count and "
+                            "native_account_ticket_summaries recompute the view"
+                        ),
+                        repair_owner="customer.reseller_ticket_projection",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.COMPLETE,
+                    old_owner=(
+                        "retired crm.ticket_observation.v1 reseller dashboard and "
+                        "account-ticket projection"
+                    ),
+                    new_owner="customer.reseller_ticket_projection",
+                    verification=(
+                        "native projection behavior and architecture tests prevent "
+                        "reseller CRM ticket reads from returning"
+                    ),
+                    cutover_gate=(
+                        "All reseller dashboard counts and account ticket lists read "
+                        "canonical native Support records."
+                    ),
+                    fallback_retirement=(
+                        "Reseller web and API adapters contain no CRM ticket imports, "
+                        "capability calls, availability flags, or fallback paths."
+                    ),
+                ),
+                steward="customer support operations",
+                design_refs=(
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                ),
+                test_refs=(
+                    "tests/test_reseller_portal_services.py",
+                    "tests/test_api_reseller_self_scoped.py",
+                    "tests/architecture/test_reseller_ticket_projection.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="customer.reseller_status_actions",
             module="app.services.reseller_portal",
             owns=(
