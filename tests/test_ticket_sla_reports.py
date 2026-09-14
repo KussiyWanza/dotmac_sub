@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4
 
 from app.models.service_team import ServiceTeam, ServiceTeamType
 from app.models.support import Ticket, TicketStatus
@@ -15,6 +17,8 @@ from app.models.ticket_workflow import (
     WorkflowEntityType,
 )
 from app.services import ticket_sla_reports
+from app.services.dynamic_filters import FilterCondition, parse_filter_payload
+from app.web.admin import reports as reports_web
 
 
 def test_ticket_sla_queue_is_compact_without_horizontal_scrolling() -> None:
@@ -44,6 +48,39 @@ def test_ticket_sla_dashboard_names_current_metric_scope() -> None:
     assert "summary.current_breach_rate" in template
     assert "item.currently_breaching }} / {{ item.open_tickets" in template
     assert "closed_breached" not in template
+
+
+def test_ticket_sla_drilldowns_use_the_ticket_list_filter_contract() -> None:
+    team_id = str(uuid4())
+    team_url = reports_web._ticket_sla_drilldown_url(
+        key=team_id,
+        field="service_team_id",
+        date_from="2026-09-01",
+        date_to="2026-09-14",
+    )
+    team_query = parse_qs(urlsplit(team_url).query)
+
+    assert team_query["status"] == ["not_closed"]
+    assert parse_filter_payload(
+        team_query["filters"][0], default_doctype="Ticket"
+    ).and_filters == [
+        FilterCondition("Ticket", "service_team_id", "=", team_id),
+        FilterCondition("Ticket", "created_at", ">=", "2026-09-01T00:00:00+00:00"),
+        FilterCondition(
+            "Ticket", "created_at", "<=", "2026-09-14T23:59:59.999999+00:00"
+        ),
+    ]
+
+    unassigned_url = reports_web._ticket_sla_drilldown_url(
+        key="unassigned_region",
+        field="region",
+        date_from=None,
+        date_to=None,
+    )
+    unassigned_query = parse_qs(urlsplit(unassigned_url).query)
+    assert parse_filter_payload(
+        unassigned_query["filters"][0], default_doctype="Ticket"
+    ).and_filters == [FilterCondition("Ticket", "region", "is", None)]
 
 
 def _policy(db_session) -> SlaPolicy:

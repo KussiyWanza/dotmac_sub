@@ -1113,28 +1113,19 @@ def _ticket_sla_drilldown_url(
     date_to: str | None,
 ) -> str:
     is_unassigned = key.startswith("unassigned_")
-    conditions: list[dict[str, object]] = [
-        {
-            "field": field,
-            "operator": "is" if is_unassigned else "=",
-            "value": None if is_unassigned else key,
-        }
+    conditions: list[tuple[str, str, str, str | None]] = [
+        (
+            "Ticket",
+            field,
+            "is" if is_unassigned else "=",
+            None if is_unassigned else key,
+        )
     ]
     if date_from:
-        conditions.append(
-            {
-                "field": "created_at",
-                "operator": ">=",
-                "value": f"{date_from}T00:00:00+00:00",
-            }
-        )
+        conditions.append(("Ticket", "created_at", ">=", f"{date_from}T00:00:00+00:00"))
     if date_to:
         conditions.append(
-            {
-                "field": "created_at",
-                "operator": "<=",
-                "value": f"{date_to}T23:59:59.999999+00:00",
-            }
+            ("Ticket", "created_at", "<=", f"{date_to}T23:59:59.999999+00:00")
         )
     return "/admin/support/tickets?" + urlencode(
         {
