@@ -1017,6 +1017,9 @@ Edit the owning domain shard and regenerate; do not hand-edit these rows.
 | `operations.vendor_as_built_review_confirmation` | staff as-built review stale-preview verification | `policy` | authenticated staff as-built review context ← `auth.permission_gate`<br>canonical staff as-built review preview ← `operations.vendor_project_workspace`<br>capability signing envelope ← `auth.token_signing` | `coordinator_managed` | `complete` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_as_built_review.py`<br>`tests/architecture/test_vendor_project_workspace_boundary.py` |
 | `operations.vendor_as_built_review_confirmation` | staff as-built review idempotency and replay result | `application_coordinator` | authenticated staff as-built review context ← `auth.permission_gate`<br>canonical staff as-built review preview ← `operations.vendor_project_workspace`<br>capability signing envelope ← `auth.token_signing`<br>canonical staff as-built review replay record ← `operations.vendor_as_built_review_confirmation` | `coordinator_managed` | `complete` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_as_built_review.py`<br>`tests/architecture/test_vendor_project_workspace_boundary.py` |
 | `compliance.ncc_complaints_reporting` | NCC complaints report projection | `resolver` | typed NCC report query ← `compliance.ncc_complaints_reporting`<br>native support ticket facts and operational provenance ← `support.ticket_lifecycle`<br>native subscriber facts ← `customer.accounts`<br>NCC filing vocabulary ← `external:ncc` | `read_only` | `cut_over` | regulatory compliance | `docs/designs/NCC_WEEKLY_REPORT_DELIVERY.md`<br>`docs/designs/CRM_REPORT_DATA_FLOW_GUIDE.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_ncc_complaints_report.py`<br>`tests/test_ncc_workbook.py` |
+| `control.settings_form_updates` | atomic administrative setting form updates | `command_writer` | authenticated settings administrator ← `auth.permission_gate`<br>normalized declared setting batch ← `control.settings_spec`<br>canonical domain setting rows ← `control.domain_settings` | `owner_managed` | `complete` | platform operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/runbooks/ADMIN_SYSTEM_SETTINGS_ATOMICITY.md`<br>`tests/test_web_system_settings_forms.py`<br>`tests/architecture/test_settings_form_update_boundary.py` |
+| `auth.customer_login_identity` | customer local-login identity resolution | `resolver` | canonical customer contact and active state ← `customer.accounts`<br>canonical customer lifecycle state ← `access.subscription_lifecycle`<br>canonical customer local credential state ← `auth.customer_credential_enrollment` | `read_only` | `complete` | platform security | `docs/designs/IDENTITY_EMAIL_DECOUPLING.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_customer_login_identity.py`<br>`tests/test_auth_flow.py`<br>`tests/test_web_customer_auth.py`<br>`tests/architecture/test_customer_login_identity_boundary.py` |
+| `auth.customer_login_identity` | ambiguous customer email login refusal | `policy` | canonical customer contact and active state ← `customer.accounts`<br>canonical customer lifecycle state ← `access.subscription_lifecycle`<br>canonical customer local credential state ← `auth.customer_credential_enrollment` | `read_only` | `complete` | platform security | `docs/designs/IDENTITY_EMAIL_DECOUPLING.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_customer_login_identity.py`<br>`tests/test_auth_flow.py`<br>`tests/test_web_customer_auth.py`<br>`tests/architecture/test_customer_login_identity_boundary.py` |
 | `auth.subscriber_assignments` | subscriber role and direct-permission assignments | `command_writer` | authorized subscriber assignment principal ← `auth.permission_gate`<br>active role and permission catalog ← `auth.rbac_catalog`<br>canonical subscriber assignment state ← `auth.subscriber_assignments` | `owner_managed` | `complete` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_subscriber_assignments.py`<br>`tests/architecture/test_subscriber_assignment_boundary.py` |
 | `auth.rbac_catalog` | role catalog and role-permission policy | `command_writer` | authorized RBAC catalog principal ← `auth.permission_gate`<br>canonical role and role-permission catalog ← `auth.rbac_catalog`<br>system-user role grant references ← `auth.system_user_assignments`<br>subscriber role grant references ← `auth.subscriber_assignments` | `owner_managed` | `shadowing` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PLATFORM_ADOPTION_LEDGER.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_rbac_catalog_owner.py`<br>`tests/test_roles_r1_kernel_identity.py`<br>`tests/test_roles_r1_migration.py`<br>`tests/integration/test_roles_r1_migration.py`<br>`tests/architecture/test_rbac_catalog_boundary.py` |
 | `auth.rbac_catalog` | permission catalog | `command_writer` | authorized RBAC catalog principal ← `auth.permission_gate`<br>canonical permission catalog ← `auth.rbac_catalog`<br>system-user permission grant references ← `auth.system_user_assignments`<br>subscriber permission grant references ← `auth.subscriber_assignments` | `owner_managed` | `shadowing` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PLATFORM_ADOPTION_LEDGER.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_rbac_catalog_owner.py`<br>`tests/test_roles_r1_kernel_identity.py`<br>`tests/test_roles_r1_migration.py`<br>`tests/integration/test_roles_r1_migration.py`<br>`tests/architecture/test_rbac_catalog_boundary.py` |
@@ -5145,13 +5148,16 @@ Feature controls:
 
 1. `control.module_manager`: owns product module enablement.
 2. `control.domain_settings`: owns stored setting mutation.
-3. `control.settings_spec`: owns setting schema, coercion, and defaults;
+3. `control.settings_form_updates`: validates one complete administrative form
+   submission and commits all setting rows plus value-free audit evidence in one
+   owner transaction; failures leave the submitted batch unchanged.
+4. `control.settings_spec`: owns setting schema, coercion, and defaults;
    environment values seed stored settings at bootstrap.
-4. `control.settings_bootstrap`: materializes startup defaults and notification
+5. `control.settings_bootstrap`: materializes startup defaults and notification
    templates through `control.domain_settings`; it does not own runtime policy.
-5. `control.feature_registry`: composes module and canonical feature decisions,
+6. `control.feature_registry`: composes module and canonical feature decisions,
    keeps safety gates separate, and validates canonical override requests.
-6. `control.effective_state`: is the read-only admin projection implemented by
+7. `control.effective_state`: is the read-only admin projection implemented by
    `app/services/web_control_plane.py`. It reports the decision and provenance
    from each owner; it is never a mutation path or a second policy resolver.
 
@@ -5252,7 +5258,18 @@ Authorization:
 5. `auth.token_signing`: owns configured JWT key/algorithm resolution and the
    cryptographic envelope for typed capability tokens. Calling domains own
    purpose, claims, duration, and consequences.
-6. `auth.staff_provisioning`: coordinates ERP HR and administrative staff
+6. `auth.customer_login_identity`: owns the read-only customer login identity
+   decision. Stored local credential usernames remain canonical. A customer
+   contact email is accepted only when it identifies exactly one customer
+   record that is active and not disabled or canceled, and exactly one active
+   local credential with a portal password. Shared email and multiple active
+   credential evidence fail closed and ask for the customer number. The
+   resolver reads committed customer, lifecycle, and credential state on every
+   attempt; authentication adapters retain password, lockout, MFA, session, and
+   rate-limit handling. Repeating the query on the same committed snapshot is
+   its rebuild path, and an adapter bypass is the drift signal guarded by
+   architecture tests.
+7. `auth.staff_provisioning`: coordinates ERP HR and administrative staff
    lifecycle commands and
    is the canonical writer for `SystemUser` identity, the matching local
    credential username, credential recovery preparation, and activation state.
@@ -5265,7 +5282,7 @@ Authorization:
    `StaffInviteHandler` creates one communication intent per event; the worker
    revalidates the exact active principal and mints the short-lived password
    capability immediately before transport.
-7. `auth.reseller_onboarding`: coordinates administrative reseller record and
+8. `auth.reseller_onboarding`: coordinates administrative reseller record and
    portal-principal creation. Canonical reseller/subscriber initialization,
    credential bootstrap, reseller link, assignment-owner grants, audit, and
    versioned events commit atomically. Its event consequence persists only the
@@ -5273,7 +5290,7 @@ Authorization:
    binding before minting the short-lived reset capability in memory. The
    legacy subscriber-backed mode remains an explicit feature-gated principal
    representation, not a parallel transaction or delivery path.
-8. `auth.credential_recovery`: owns public and exact-principal password recovery
+9. `auth.credential_recovery`: owns public and exact-principal password recovery
    request policy, purpose-bound reset claims and lifetime, durable delivery
    intent, and the credential transition. Request events and notifications
    persist identifiers, an email digest, and safe redirect context but never an
@@ -5284,7 +5301,7 @@ Authorization:
    evidence. The completion-event projection handler is the one idempotent repair
    path for auth-cache invalidation and customer/reseller portal-session
    revocation. API and web adapters own transport error mapping.
-9. `auth.customer_credential_enrollment`: owns purpose-bound local credential
+10. `auth.customer_credential_enrollment`: owns purpose-bound local credential
    enrollment for referral-created customer accounts and the atomic
    Subscriber-email verification consequence. It creates no placeholder
    credential and owns no Party or subscription lifecycle state. It submits a

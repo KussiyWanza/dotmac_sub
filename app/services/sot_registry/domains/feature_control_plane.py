@@ -3,7 +3,19 @@
 from __future__ import annotations
 
 from app.services.sot_manifest import (
+    AuthorityInput,
+    AuthorityKind,
+    AuthorityMigrationState,
+    ConcernContract,
+    ErrorContract,
+    EventContract,
+    MigrationContract,
+    OwnerRole,
+    ServiceContract,
     SOTService,
+    TransactionContract,
+    TransactionMode,
+    owner_command_boundary_error_codes,
 )
 from app.services.sot_registry.model import DomainSOT
 
@@ -36,6 +48,137 @@ DOMAIN = DomainSOT(
             name="control.domain_settings",
             module="app.services.domain_settings",
             owns=("domain setting persistence", "setting update validation"),
+        ),
+        SOTService(
+            name="control.settings_form_updates",
+            module="app.services.domain_settings",
+            owns=("atomic administrative setting form updates",),
+            depends_on=(
+                "auth.permission_gate",
+                "control.domain_settings",
+                "control.settings_spec",
+                "observability.audit_log",
+            ),
+            notes=(
+                "The web form validates its complete submitted batch through the "
+                "registered setting specification before this owner stages every "
+                "row and one value-free audit record in a single transaction."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="atomic administrative setting form updates",
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=(
+                            "authenticated settings administrator",
+                            "normalized declared setting batch",
+                            "canonical domain setting rows",
+                        ),
+                        canonical_writer="control.settings_form_updates",
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="authenticated settings administrator",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "system:settings:write permission and typed CommandContext"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="normalized declared setting batch",
+                        owner="control.settings_spec",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "complete form batch normalized against registered "
+                            "types, defaults, bounds, allowed values, and secrecy"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical domain setting rows",
+                        owner="control.domain_settings",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="active database-authoritative domain setting rows",
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.OWNER_MANAGED,
+                    boundary=(
+                        "One apply_admin_settings_form_updates command enters "
+                        "execute_owner_command once and commits every setting and "
+                        "its audit evidence together."
+                    ),
+                    locking=(
+                        "The database setting identity constraint arbitrates "
+                        "concurrent inserts; the owner transaction isolates the "
+                        "complete submitted batch."
+                    ),
+                    idempotency=(
+                        "Repeated absolute setting values converge on the same rows; "
+                        "the command id and request id identify each attempt."
+                    ),
+                    retries=(
+                        "Validation failures are terminal form errors; unexpected "
+                        "persistence failures roll back the full batch for an "
+                        "explicit operator retry."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "control.settings_form_updates.invalid_scope",
+                        "control.settings_form_updates.invalid_update",
+                        *owner_command_boundary_error_codes(
+                            "control.settings_form_updates"
+                        ),
+                    ),
+                    mapping_owner="admin system-settings web adapter",
+                    fail_closed_on=(
+                        "ambiguous or undeclared setting identity",
+                        "invalid setting value or relationship",
+                        "incomplete persistence batch",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=("control.settings_form_updated",),
+                    schema_version=1,
+                    delivery_owner="observability.audit_log",
+                    compatibility=(
+                        "Version 1 records only setting identities and batch count; "
+                        "setting values and secret material are excluded."
+                    ),
+                    replay=(
+                        "Canonical domain setting rows reconstruct current state; "
+                        "the immutable audit record preserves change provenance."
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.COMPLETE,
+                    old_owner="admin settings form per-setting commit loop",
+                    new_owner="control.settings_form_updates",
+                    verification=(
+                        "focused blank, bounds, atomic rollback, secret, route, "
+                        "and architecture tests"
+                    ),
+                    cutover_gate=(
+                        "the admin form calls only the staged batch owner for setting "
+                        "persistence"
+                    ),
+                    fallback_retirement=(
+                        "the form no longer calls the legacy committing "
+                        "upsert_by_key method"
+                    ),
+                ),
+                steward="platform operations",
+                design_refs=(
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/runbooks/ADMIN_SYSTEM_SETTINGS_ATOMICITY.md",
+                ),
+                test_refs=(
+                    "tests/test_web_system_settings_forms.py",
+                    "tests/architecture/test_settings_form_update_boundary.py",
+                ),
+            ),
         ),
         SOTService(
             name="control.settings_spec",
