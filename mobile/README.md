@@ -154,6 +154,19 @@ The Usage tab is driven primarily by RADIUS **accounting sessions** (download/
 upload octets) — this ISP meters via RADIUS, not quota buckets, so quota cards
 only appear when present.
 
+### Ticket conversations
+
+The ticket detail timeline renders the API-owned comment `author_type` instead
+of inferring the sender from layout or identifiers: customer replies appear as
+**You**, staff replies as **Support Team**, and system/unknown authors remain
+visibly distinct. Internal staff notes are never rendered.
+
+Pull-to-refresh and the ticket refresh action reload the comments and ticket
+header from the authoritative `/me/support` reads. Successful reply and
+resolution actions request the same refresh. The ticket screen does not use the
+separate Team Inbox chat WebSocket; realtime delivery would require a
+Support-owned signal followed by reconciliation from these authoritative reads.
+
 `accountIdProvider` (`Me.id` = the subscriber id) is still used where the caller's
 id is needed explicitly (e.g. creating a ticket). No staff scopes required.
 

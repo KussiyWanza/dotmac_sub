@@ -142,10 +142,31 @@ class Ticket {
       );
 }
 
+/// Closed sender vocabulary from the support comment API.
+///
+/// [unknown] is a compatibility state for an older or newer server value. It
+/// stays visibly distinct in the UI instead of silently presenting an
+/// unrecognised sender as either the customer or Support.
+enum TicketCommentAuthorType {
+  customer,
+  staff,
+  system,
+  unknown;
+
+  factory TicketCommentAuthorType.fromJson(Object? value) =>
+      switch (value?.toString().trim().toLowerCase()) {
+        'customer' => TicketCommentAuthorType.customer,
+        'staff' => TicketCommentAuthorType.staff,
+        'system' => TicketCommentAuthorType.system,
+        _ => TicketCommentAuthorType.unknown,
+      };
+}
+
 class TicketComment {
   TicketComment({
     required this.id,
     required this.ticketId,
+    required this.authorType,
     required this.body,
     this.isInternal = false,
     this.attachments = const [],
@@ -154,6 +175,7 @@ class TicketComment {
 
   final String id;
   final String ticketId;
+  final TicketCommentAuthorType authorType;
   final String body;
   final bool isInternal;
   final List<TicketAttachment> attachments;
@@ -162,6 +184,7 @@ class TicketComment {
   factory TicketComment.fromJson(Map<String, dynamic> json) => TicketComment(
         id: json['id'].toString(),
         ticketId: json['ticket_id'].toString(),
+        authorType: TicketCommentAuthorType.fromJson(json['author_type']),
         body: json['body'] as String? ?? '',
         isInternal: json['is_internal'] as bool? ?? false,
         attachments: _toAttachments(json['attachments']),
