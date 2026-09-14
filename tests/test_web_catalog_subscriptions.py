@@ -723,6 +723,17 @@ def test_subscription_create_activates_through_canonical_lifecycle(
     db_session.refresh(created)
     assert created.status == SubscriptionStatus.active
     assert created.start_at is not None
+    credential = (
+        db_session.query(AccessCredential)
+        .filter(
+            AccessCredential.subscriber_id == subscriber.id,
+            AccessCredential.subscription_id == created.id,
+            AccessCredential.is_active.is_(True),
+        )
+        .one()
+    )
+    assert created.login == credential.username
+    assert credential.secret_hash
     assert result["redirect_url"].endswith(f"/{subscriber.id}#subscriptions")
 
 

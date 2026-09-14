@@ -93,7 +93,7 @@ def test_activation_request_projects_then_confirms_exact_order(
     handler = ProvisioningHandler()
     monkeypatch.setattr(
         "app.services.events.handlers.provisioning.provisioning_service."
-        "ensure_ip_assignments_for_subscription",
+        "ensure_ipv4_assignment_for_subscription",
         lambda db, subscription_id: calls.append(("ip", subscription_id)),
     )
     monkeypatch.setattr(
@@ -138,7 +138,7 @@ def test_confirmed_subscription_event_does_not_repeat_network_projection(
     calls = []
     monkeypatch.setattr(
         "app.services.events.handlers.provisioning.provisioning_service."
-        "ensure_ip_assignments_for_subscription",
+        "ensure_ipv4_assignment_for_subscription",
         lambda *args: calls.append(args),
     )
     event = Event(

@@ -60,6 +60,7 @@ class EventType(enum.Enum):
     subscription_suspension_warning = "subscription.suspension_warning"
     subscription_deleted = "subscription.deleted"
     subscription_correction_applied = "subscription.correction_applied"
+    access_credential_ensured = "access_credential.ensured"
     access_credential_binding_changed = "access_credential.binding_changed"
 
     # Billing - Invoice events (4)
