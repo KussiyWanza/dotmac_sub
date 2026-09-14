@@ -107,6 +107,9 @@ class EventType(enum.Enum):
     oauth_token_refresh_failed = "oauth_token.refresh_failed"
     account_credit_deposited = "account_credit.deposited"
     prepaid_service_renewed = "prepaid_service.renewed"
+    prepaid_service_renewal_document_corrected = (
+        "prepaid_service.renewal_document_corrected"
+    )
     subscription_billing_treatment_changed = "subscription_billing_treatment.changed"
     subscription_service_granted = "subscription_service.granted"
     billing_shadow_delivery_recorded = "billing.shadow_delivery.recorded"
