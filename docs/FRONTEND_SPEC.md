@@ -277,7 +277,7 @@ def dashboard_stats(request: Request, db: Session = Depends(get_db)):
 |-------|----------|---------|
 | `{% block breadcrumbs %}` | Top nav bar, left | Navigation path |
 | `{% block page_header %}` | Above content | Title, subtitle, icon, action buttons |
-| `{% block workflow_guidance %}` | Above page content | Contextual workflow help; override when a page uses its own accessible disclosure |
+| `{% block workflow_guidance %}` | Beside the main page title | Contextual workflow help attached by the shared Admin layout |
 | `{% block content %}` | Main area | Page-specific content |
 | `{% block content_container_class %}` | Wrapper | Override container classes |
 

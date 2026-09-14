@@ -1094,7 +1094,27 @@ def _reanchor_paid_prepaid_invoice_if_lapsed(
     period after they have already been suspended or otherwise lapsed. When a
     payment fully settles that renewal invoice, move the covered period to the
     payment date and advance the subscription from there.
+
+    A document owner that has ALREADY computed this invoice's period as
+    authoritative (``invoice.metadata_["renewal_period_authoritative"]`` —
+    set by ``financial.prepaid_service_renewals`` on a canonical renewal
+    invoice it constructs itself, in the same transaction that settles it)
+    skips this re-derivation entirely. This is a structural fix, not a
+    coincidence: before it existed, this function and the renewal owner each
+    independently computed "what period does this payment cover" from
+    ``resolve_prepaid_settlement_period``, and those two computations could
+    disagree whenever the payment this function locates via
+    ``_latest_successful_invoice_payment`` differs from the payment/event
+    that actually triggered the renewal (a real possibility whenever an
+    account has more than one available payment-backed credit source) — see
+    the funding-consequence single-owner decision record. One formula
+    computing a fact and a second formula silently overwriting it is exactly
+    the class of defect this guard removes.
     """
+    if isinstance(invoice.metadata_, dict) and invoice.metadata_.get(
+        "renewal_period_authoritative"
+    ):
+        return False
     if invoice.status != InvoiceStatus.paid:
         return False
     if invoice.billing_period_start is None or invoice.billing_period_end is None:
@@ -4007,6 +4027,7 @@ def _payment_allocation_fingerprint(
     payment_unallocated_before: Decimal,
     account_credit_before: Decimal,
     receivable_before: Decimal,
+    funding_position_at: datetime | None,
 ) -> str:
     encoded = json.dumps(
         {
@@ -4020,6 +4041,11 @@ def _payment_allocation_fingerprint(
             "payment_unallocated_before": f"{payment_unallocated_before:.2f}",
             "account_credit_before": f"{account_credit_before:.2f}",
             "receivable_before": f"{receivable_before:.2f}",
+            "funding_position_at": (
+                funding_position_at.isoformat()
+                if funding_position_at is not None
+                else None
+            ),
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -4187,6 +4213,8 @@ class PaymentAllocationReconciliationExceptions:
 def _build_payment_allocation_preview(
     db: Session,
     payload: PaymentAllocationPreviewRequest,
+    *,
+    funding_position_at: datetime | None = None,
 ) -> PaymentAllocationPreview:
     payment = get_by_id(db, Payment, payload.payment_id)
     if not payment:
@@ -4261,7 +4289,10 @@ def _build_payment_allocation_preview(
             detail="Allocation exceeds this payment's unallocated credit",
         )
     account_credit_before = get_spendable_account_credit_balance(
-        db, str(payment.account_id), currency=payment.currency
+        db,
+        str(payment.account_id),
+        currency=payment.currency,
+        after=funding_position_at,
     )
     if amount > account_credit_before:
         raise HTTPException(
@@ -4280,6 +4311,7 @@ def _build_payment_allocation_preview(
         payment_unallocated_before=payment_unallocated_before,
         account_credit_before=account_credit_before,
         receivable_before=receivable_before,
+        funding_position_at=funding_position_at,
     )
     return PaymentAllocationPreview(
         payment_id=payment.id,
@@ -4319,6 +4351,35 @@ class PaymentAllocations(ListResponseMixin):
     @staticmethod
     def available_amount(db: Session, payment_id: str) -> Decimal:
         """Return owner-derived settled credit still eligible for allocation."""
+
+        return PaymentAllocations._available_amount(
+            db,
+            payment_id,
+            funding_position_at=None,
+        )
+
+    @staticmethod
+    def available_amount_at_reviewed_boundary_for_owner(
+        db: Session,
+        payment_id: str,
+        *,
+        funding_position_at: datetime | None,
+    ) -> Decimal:
+        """Return allocatable credit within one reviewed opening boundary."""
+
+        return PaymentAllocations._available_amount(
+            db,
+            payment_id,
+            funding_position_at=funding_position_at,
+        )
+
+    @staticmethod
+    def _available_amount(
+        db: Session,
+        payment_id: str,
+        *,
+        funding_position_at: datetime | None,
+    ) -> Decimal:
         payment = get_by_id(db, Payment, payment_id)
         if (
             payment is None
@@ -4332,7 +4393,10 @@ class PaymentAllocations(ListResponseMixin):
             return Decimal("0.00")
         payment_available = _payment_unallocated_credit_remaining(db, payment)
         account_available = get_spendable_account_credit_balance(
-            db, str(payment.account_id), currency=payment.currency
+            db,
+            str(payment.account_id),
+            currency=payment.currency,
+            after=funding_position_at,
         )
         return max(
             Decimal("0.00"),
@@ -4345,6 +4409,21 @@ class PaymentAllocations(ListResponseMixin):
         payload: PaymentAllocationPreviewRequest,
     ) -> PaymentAllocationPreview:
         return _build_payment_allocation_preview(db, payload)
+
+    @staticmethod
+    def preview_at_reviewed_boundary_for_owner(
+        db: Session,
+        payload: PaymentAllocationPreviewRequest,
+        *,
+        funding_position_at: datetime | None,
+    ) -> PaymentAllocationPreview:
+        """Preview an allocation using its coordinator's reviewed boundary."""
+
+        return _build_payment_allocation_preview(
+            db,
+            payload,
+            funding_position_at=funding_position_at,
+        )
 
     @staticmethod
     def _replay(
@@ -4394,6 +4473,23 @@ class PaymentAllocations(ListResponseMixin):
         )
 
     @staticmethod
+    def stage_confirm_at_reviewed_boundary_for_owner(
+        db: Session,
+        payload: PaymentAllocationConfirm,
+        *,
+        funding_position_at: datetime | None,
+    ) -> PaymentAllocationResult:
+        """Stage a boundary-scoped allocation without ending the transaction."""
+
+        return PaymentAllocations._confirm(
+            db,
+            payload,
+            complete_transaction=False,
+            finalization_mode=PaymentAllocationFinalizationMode.standard,
+            funding_position_at=funding_position_at,
+        )
+
+    @staticmethod
     def stage_confirm_reviewed_document_correction(
         db: Session,
         payload: PaymentAllocationConfirm,
@@ -4432,6 +4528,7 @@ class PaymentAllocations(ListResponseMixin):
         *,
         complete_transaction: bool,
         finalization_mode: PaymentAllocationFinalizationMode,
+        funding_position_at: datetime | None = None,
     ) -> PaymentAllocationResult:
         key = _normalize_payment_allocation_key(payload.idempotency_key)
         replay = PaymentAllocations._replay(
@@ -4459,7 +4556,11 @@ class PaymentAllocations(ListResponseMixin):
             invoice_id=payload.invoice_id,
             amount=payload.amount,
         )
-        preview = _build_payment_allocation_preview(db, preview_request)
+        preview = _build_payment_allocation_preview(
+            db,
+            preview_request,
+            funding_position_at=funding_position_at,
+        )
         if preview.fingerprint != payload.preview_fingerprint:
             raise HTTPException(
                 status_code=409,

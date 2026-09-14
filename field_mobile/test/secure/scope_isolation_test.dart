@@ -42,6 +42,7 @@ void main() {
         directory: Directory(p.join(root.path, 'evidence')),
         cipher: cipher,
         scopeKey: scope.key,
+        work: shared.work,
       ),
     );
   }

@@ -31,7 +31,7 @@ from app.services import (
     party,
 )
 from app.services import (
-    subscriber as subscriber_service,
+    customer_canonical_profile_patch as canonical_profile_patch,
 )
 from app.services.action_readiness import (
     ActionableBlocker,
@@ -40,7 +40,7 @@ from app.services.action_readiness import (
     NextAction,
     ReadinessState,
 )
-from app.services.audit_adapter import stage_audit_event
+from app.services.audit_adapter import AuditActor, stage_audit_event
 from app.services.customer_identity_normalization import (
     is_placeholder_customer_name,
     normalize_email_identifier,
@@ -277,9 +277,12 @@ def _canonical_values(
 def classification(
     db: Session, conversation: InboxConversation
 ) -> InboxIdentityClassification:
+    evidence = conversation_lead_relationships.relationship_evidence(db, conversation)
+    if evidence.identity_conflict or evidence.lead_party_mismatch:
+        return InboxIdentityClassification.ambiguous
     if conversation.subscriber_id is not None:
         return InboxIdentityClassification.customer
-    if conversation_lead_relationships.active_link(db, conversation.id) is not None:
+    if evidence.active_lead_id is not None:
         return InboxIdentityClassification.lead
     completed_lead_id = db.scalar(
         select(LeadIntakeInvitation.lead_id)
@@ -292,7 +295,7 @@ def classification(
     )
     if completed_lead_id is not None:
         return InboxIdentityClassification.lead
-    party_ids = conversation_lead_relationships.exact_party_ids(db, conversation)
+    party_ids = evidence.authoritative_party_ids
     if len(party_ids) > 1:
         return InboxIdentityClassification.ambiguous
     return InboxIdentityClassification.unresolved
@@ -312,6 +315,17 @@ def canonical_customer_values(
         db.get(Party, subscriber.party_id) if subscriber.party_id is not None else None
     )
     return _canonical_values(db, subscriber, canonical_party)
+
+
+def resolution_readiness_for_conversation(
+    db: Session, conversation_id: UUID
+) -> InboxCustomerResolutionReadiness | None:
+    """Resolve readiness without making the UI adapter a model reader."""
+
+    conversation = db.get(InboxConversation, conversation_id)
+    if conversation is None:
+        return None
+    return resolution_readiness(db, conversation)
 
 
 def resolution_readiness(
@@ -425,7 +439,7 @@ def resolution_readiness(
                 key="complete_customer_profile",
                 label="Complete customer information",
                 owner=OWNER,
-                url=f"/admin/crm/inbox/conversations/{conversation.id}",
+                url=f"/admin/inbox?c={conversation.id}",
             ),
         )
         if blockers
@@ -604,20 +618,20 @@ def complete_customer_profile(
             if len(nin) != 11 or not nin.isdigit():
                 raise _error("invalid_nin", "NIN must contain exactly 11 digits.")
         account_fields = frozenset(
-            subscriber_service.CanonicalCustomerProfileField(field.value)
+            canonical_profile_patch.CanonicalCustomerProfileField(field.value)
             for field in proposed
             if field is not CustomerProfileField.whatsapp
         )
         if account_fields:
             try:
-                subscriber = subscriber_service.apply_canonical_customer_profile_patch(
+                subscriber = canonical_profile_patch.apply_canonical_customer_profile_patch(
                     db,
-                    subscriber_service.ApplyCanonicalCustomerProfilePatch(
+                    canonical_profile_patch.ApplyCanonicalCustomerProfilePatch(
                         subscriber_id=subscriber.id,
                         submitted_fields=account_fields,
                         source=command.decision_source,
                         actor_id=command.actor_person_id,
-                        values=subscriber_service.CanonicalCustomerProfileValues(
+                        values=canonical_profile_patch.CanonicalCustomerProfileValues(
                             name=proposed.get(CustomerProfileField.name),
                             phone=proposed.get(CustomerProfileField.phone),
                             address=proposed.get(CustomerProfileField.address),
@@ -633,7 +647,7 @@ def complete_customer_profile(
                         ),
                     ),
                 ).subscriber
-            except subscriber_service.CanonicalCustomerProfilePatchError as exc:
+            except canonical_profile_patch.CanonicalCustomerProfilePatchError as exc:
                 raise _error(
                     "canonical_customer_update_rejected",
                     exc.message,
@@ -751,16 +765,20 @@ def complete_customer_profile(
             for field, value in proposed.items()
             if before[field] != value
         )
+        audit_actor = AuditActor(
+            actor_type=command.actor_type,
+            actor_id=(
+                str(command.actor_person_id)
+                if command.actor_person_id
+                else command.context.actor
+            ),
+        )
         stage_audit_event(
             db,
             action="inbox_customer_profile.saved",
             entity_type="inbox_conversation",
             entity_id=str(conversation.id),
-            actor_type=command.actor_type,
-            actor_id=(
-                str(command.actor_person_id) if command.actor_person_id else None
-            ),
-            actor_party_id=canonical_party.id if canonical_party else None,
+            actor=audit_actor,
             metadata={
                 "decision_source": command.decision_source,
                 "customer_id": str(subscriber.id),
@@ -776,11 +794,7 @@ def complete_customer_profile(
                 action="inbox_customer_profile.changed",
                 entity_type="subscriber",
                 entity_id=str(subscriber.id),
-                actor_type=command.actor_type,
-                actor_id=(
-                    str(command.actor_person_id) if command.actor_person_id else None
-                ),
-                actor_party_id=canonical_party.id if canonical_party else None,
+                actor=audit_actor,
                 metadata={
                     "decision_source": command.decision_source,
                     "conversation_id": str(conversation.id),

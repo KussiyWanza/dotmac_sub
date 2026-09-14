@@ -27,7 +27,9 @@ SERVICES: tuple[SOTService, ...] = (
         notes=(
             "Current PON identity ambiguity is scoped to active PonPort rows. "
             "Inactive rows remain historical evidence and do not compete with "
-            "an active port for assignment authority."
+            "an active port for assignment authority. CPE-to-GenieACS consumers "
+            "must likewise enumerate candidates and carry a typed resolved, "
+            "ambiguous, or unresolved verdict; only resolved carries a target."
         ),
     ),
     SOTService(

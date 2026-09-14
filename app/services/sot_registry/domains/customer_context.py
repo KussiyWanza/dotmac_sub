@@ -47,7 +47,7 @@ DOMAIN = DomainSOT(
         ),
         SOTService(
             name="customer.canonical_profile_patch",
-            module="app.services.subscriber",
+            module="app.services.customer_canonical_profile_patch",
             owns=("typed transaction-neutral canonical Customer profile patches",),
             depends_on=(
                 "customer.accounts",
@@ -953,6 +953,10 @@ DOMAIN = DomainSOT(
                 "Paid prepaid subscription invoices are non-AR documents but "
                 "become exact customer-position service debits only when fully "
                 "paid and backed by exact active settlement applications. "
+                "When final paid status crosses a reviewed opening boundary, "
+                "settlement applications recorded through that boundary are "
+                "already absorbed by the opening and are excluded from the "
+                "post-opening consumption debit. "
                 "An exact direct-renewal adjustment and entitlement for the same "
                 "account, subscription, period, amount, and currency takes "
                 "precedence so a later documentary invoice cannot debit twice. "
@@ -1053,7 +1057,9 @@ DOMAIN = DomainSOT(
                             "active fully paid positive Invoice with an active exact "
                             "prepaid Subscription line whose total is fully backed by "
                             "active PaymentAllocation and/or CreditNoteApplication "
-                            "evidence, plus paid time, period, total, and currency"
+                            "evidence, application record times relative to any "
+                            "reviewed opening, plus paid time, period, total, and "
+                            "currency"
                         ),
                     ),
                     AuthorityInput(
@@ -1127,7 +1133,8 @@ DOMAIN = DomainSOT(
                         drift_signal=(
                             "scalar and bounded-cohort results differ, or a paid prepaid "
                             "invoice total remains in spendable funding without an exact "
-                            "direct-renewal precedence match"
+                            "direct-renewal precedence match, or a pre-opening settlement "
+                            "application is debited again after the opening"
                         ),
                         rebuild_operation=(
                             "list_customer_financial_events and "
@@ -2429,6 +2436,181 @@ DOMAIN = DomainSOT(
                 "owner. It enforces the default-off controls before "
                 "delegating adjudication and ledger writes to location "
                 "verification; it never writes Subscriber columns."
+            ),
+        ),
+        SOTService(
+            name="customer.portal_location_commands",
+            module="app.services.customer_portal_location_commands",
+            owns=(
+                "customer portal service-address and pin update coordination",
+                "customer portal location confirmation coordination",
+                "customer portal location-prompt snooze coordination",
+            ),
+            depends_on=(
+                "customer.accounts",
+                "customer.location_capture",
+                "gis.spatial_sync",
+                "events.dispatcher",
+                "observability.audit_log",
+            ),
+            notes=(
+                "Customer portal mutation adapters release their read transaction "
+                "and invoke this typed coordinator. It owns the atomic command "
+                "boundary while canonical address, spatial, capture-ledger, and "
+                "prompt-state facts remain with their declared domain owners."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name=(
+                            "customer portal service-address and pin update coordination"
+                        ),
+                        role=OwnerRole.APPLICATION_COORDINATOR,
+                        input_names=(
+                            "authenticated customer location command evidence",
+                            "canonical Subscriber account and service address",
+                            "canonical service-address spatial projection",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="customer portal location confirmation coordination",
+                        role=OwnerRole.APPLICATION_COORDINATOR,
+                        input_names=(
+                            "authenticated customer location command evidence",
+                            "canonical Subscriber account and service address",
+                            "location capture and verification protocol",
+                        ),
+                    ),
+                    ConcernContract(
+                        name=("customer portal location-prompt snooze coordination"),
+                        role=OwnerRole.APPLICATION_COORDINATOR,
+                        input_names=(
+                            "authenticated customer location command evidence",
+                            "canonical Subscriber account and service address",
+                            "location capture and verification protocol",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="authenticated customer location command evidence",
+                        owner="customer.portal_location_commands",
+                        kind=AuthorityKind.OBSERVATION,
+                        source=(
+                            "typed command context and customer-scoped location "
+                            "input admitted by the portal adapter"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical Subscriber account and service address",
+                        owner="customer.accounts",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "the authenticated Subscriber and its canonical service "
+                            "Address"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical service-address spatial projection",
+                        owner="gis.spatial_sync",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "Address latitude, longitude, geometry, and GeoLocation "
+                            "projection maintained by the spatial owner"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="location capture and verification protocol",
+                        owner="customer.location_capture",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "default-off capture controls, adjudicated capture ledger, "
+                            "and customer prompt-snooze state"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.COORDINATOR_MANAGED,
+                    boundary=(
+                        "Each public command enters execute_owner_command exactly once "
+                        "on a transaction-free portal session and commits address, "
+                        "spatial, capture, audit, and event evidence atomically."
+                    ),
+                    locking=(
+                        "The coordinator locks the target Subscriber before calling "
+                        "transaction-neutral address, capture, or snooze participants."
+                    ),
+                    idempotency=(
+                        "Address updates converge on one service Address; portal "
+                        "confirmation and snooze submissions use one command identity "
+                        "per deliberate customer action and are not transport-retried."
+                    ),
+                    retries=(
+                        "The portal does not automatically retry commands; a customer "
+                        "may explicitly resubmit after a mapped failure."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        *owner_command_boundary_error_codes(
+                            "customer.portal_location_commands"
+                        ),
+                        "customer.portal_location_commands.invalid_scope",
+                        "customer.portal_location_commands.subscriber_not_found",
+                        "customer.portal_location_commands.capture_disabled",
+                    ),
+                    mapping_owner="customer portal location HTTP adapter",
+                    fail_closed_on=(
+                        "wrong command scope",
+                        "missing Subscriber",
+                        "disabled location-capture control",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=(
+                        "subscriber.service_location_updated.v1",
+                        "subscriber.location_confirmed.v1",
+                        "subscriber.location_prompt_snoozed.v1",
+                    ),
+                    schema_version=1,
+                    delivery_owner="events.dispatcher",
+                    compatibility=(
+                        "Version 1 carries canonical identifiers, bounded location "
+                        "outcomes, and command provenance without customer address text."
+                    ),
+                    replay=(
+                        "Service-address updates converge by target identity; capture "
+                        "and snooze events replay consequences from their durable event "
+                        "identity without repeating the command."
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.COMPLETE,
+                    old_owner="customer portal route-level transaction completion",
+                    new_owner="customer.portal_location_commands",
+                    verification=(
+                        "Portal location behavior tests and the adapter transaction "
+                        "ownership architecture guard"
+                    ),
+                    cutover_gate=(
+                        "Every customer portal location mutation delegates to a typed "
+                        "coordinator on a transaction-free session"
+                    ),
+                    fallback_retirement=(
+                        "Direct commit and rollback operations were removed from the "
+                        "customer location adapter"
+                    ),
+                ),
+                steward="customer experience platform",
+                design_refs=(
+                    "docs/designs/SUBSCRIBER_SERVICE_LOCATION_SOT.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/CODING_STANDARD.md",
+                ),
+                test_refs=(
+                    "tests/test_customer_location_page.py",
+                    "tests/architecture/test_adapter_transaction_ownership.py",
+                ),
             ),
         ),
         SOTService(

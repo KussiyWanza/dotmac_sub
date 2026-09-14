@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dotmac_field/app/app.dart';
 import 'package:dotmac_field/core/api/token_store.dart';
 import 'package:dotmac_field/core/location/map_coordinates.dart';
@@ -6,6 +8,8 @@ import 'package:dotmac_field/core/offline/database.dart';
 import 'package:dotmac_field/features/attendance/attendance_models.dart';
 import 'package:dotmac_field/features/attendance/attendance_repository.dart';
 import 'package:dotmac_field/features/auth/auth_state.dart';
+import 'package:dotmac_field/features/expenses/expense_models.dart';
+import 'package:dotmac_field/features/expenses/expenses_providers.dart';
 import 'package:dotmac_field/features/jobs/job_models.dart';
 import 'package:dotmac_field/features/jobs/jobs_providers.dart';
 import 'package:dotmac_field/features/location/location_cadence.dart';
@@ -97,7 +101,9 @@ Widget _app({
   LocationPingService? locationPingService,
   AuthController Function() controller = _AuthedController.new,
   ManagerProfile? managerProfile,
+  Future<ManagerProfile?> Function()? managerProfileLoader,
   List<ManagerJob> managerJobs = const [],
+  List<ExpenseRequest> managerExpenses = const [],
   Future<JobList> Function()? jobsLoader,
   AttendanceRepositoryContract? attendanceRepository,
   AttendanceLocationSource? attendanceLocationSource,
@@ -118,7 +124,9 @@ Widget _app({
           attendanceLocationSource ?? _ReadyAttendanceLocation(),
         ),
         ...extra,
-        managerProfileProvider.overrideWith((ref) async => managerProfile),
+        managerProfileProvider.overrideWith(
+          (ref) => managerProfileLoader?.call() ?? Future.value(managerProfile),
+        ),
         managerSummaryProvider.overrideWith(
           (ref) async => const ManagerSummary(
             techniciansTotal: 3,
@@ -133,7 +141,21 @@ Widget _app({
           (ref) async => const <ManagerTechnician>[],
         ),
         managerJobsProvider.overrideWith((ref) async => managerJobs),
-        managerExpensesProvider.overrideWith((ref) async => const []),
+        managerExpensesProvider.overrideWith((ref) async => managerExpenses),
+        expenseRequestsProvider.overrideWith(
+          (ref) async => ExpenseRequestHistory(
+            totalCount: 1,
+            items: [
+              ExpenseRequest.fromJson({
+                'id': 'manager-expense-1',
+                'status': 'submitted',
+                'purpose': 'Manager site transport',
+                'currency': 'NGN',
+                'total_amount': '2500.00',
+              }),
+            ],
+          ),
+        ),
         meProvider.overrideWith(
           (ref) async => const MeSummary(
             name: 'Chidi Tech',
@@ -247,7 +269,9 @@ void main() {
     expect(find.text('Sales'), findsNothing);
   });
 
-  testWidgets('manager shell shows dispatch and approval tabs', (tester) async {
+  testWidgets('manager shell shows expense queues and history details', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       _app(
         managerProfile: const ManagerProfile(
@@ -278,6 +302,39 @@ void main() {
             assignedToLabel: 'Ada Technician',
           ),
         ],
+        managerExpenses: [
+          ExpenseRequest.fromJson({
+            'id': 'expense-pending-1',
+            'number': 'EXP-0001',
+            'status': 'submitted',
+            'purpose': 'Pending site transport',
+            'requested_by_name': 'Ada Technician',
+            'total_amount': '2500.00',
+          }),
+          ExpenseRequest.fromJson({
+            'id': 'expense-history-1',
+            'number': 'EXP-0002',
+            'status': 'approved',
+            'purpose': 'Approved site transport',
+            'requested_by_name': 'Ada Technician',
+            'selected_approver_name': 'Amaka Manager',
+            'work_order_id': 'WO-1024',
+            'currency': 'NGN',
+            'total_amount': '7500.00',
+            'expense_claim_number': 'ERP-EXP-42',
+            'expense_claim_status': 'approved',
+            'payment_status': 'queued',
+            'items': [
+              {
+                'id': 'line-1',
+                'category_code': 'TRANSPORT',
+                'category_name': 'Transport',
+                'description': 'Taxi to site',
+                'amount': '7500.00',
+              },
+            ],
+          }),
+        ],
       ),
     );
     await tester.pumpAndSettle();
@@ -287,8 +344,8 @@ void main() {
     expect(find.text('Dashboard'), findsOneWidget);
     expect(find.text('Team'), findsWidgets);
     expect(find.text('Dispatch'), findsOneWidget);
-    expect(find.text('Approvals'), findsWidgets);
-    expect(find.text('Materials'), findsNothing);
+    expect(find.text('Materials'), findsOneWidget);
+    expect(find.text('Expenses'), findsOneWidget);
     expect(find.text('Sales'), findsNothing);
 
     await tester.tap(find.text('Dispatch'));
@@ -301,6 +358,91 @@ void main() {
     expect(find.text('Repair customer drop'), findsOneWidget);
     expect(find.text('Assigned to Ada Technician'), findsOneWidget);
     expect(find.text('Unassign'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(NavigationDestination, 'Expenses'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('My request'), findsOneWidget);
+    expect(find.text('Pending'), findsOneWidget);
+    expect(find.text('Pending approvals (1)'), findsOneWidget);
+    expect(find.text('History'), findsOneWidget);
+    expect(find.text('Pending site transport'), findsOneWidget);
+
+    await tester.tap(find.text('History'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('History (1)'), findsOneWidget);
+    expect(find.text('Approved site transport'), findsOneWidget);
+
+    await tester.tap(find.text('Approved site transport'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Expense details'), findsOneWidget);
+    expect(find.text('ERP-EXP-42'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Taxi to site'), 300);
+    expect(find.text('Taxi to site'), findsOneWidget);
+
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('My request'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('My expense requests (1)'), findsOneWidget);
+    expect(find.text('Manager site transport'), findsOneWidget);
+  });
+
+  testWidgets('manager materials appear after capability loads', (
+    tester,
+  ) async {
+    final profile = Completer<ManagerProfile?>();
+    await tester.pumpWidget(_app(managerProfileLoader: () => profile.future));
+    await tester.pump();
+
+    expect(find.byType(NavigationBar), findsOneWidget);
+    expect(find.text('Materials'), findsNothing);
+
+    profile.complete(
+      const ManagerProfile(
+        name: 'Manager',
+        roles: ['field_manager'],
+        permissions: ['operations:expense_request:read'],
+        isManager: true,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Operations dashboard'), findsOneWidget);
+    expect(find.text('Materials'), findsOneWidget);
+  });
+
+  testWidgets('manager retains requester materials history', (tester) async {
+    ManagerProfile? profile;
+    await tester.pumpWidget(_app(managerProfileLoader: () async => profile));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Materials'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.widgetWithText(AppBar, 'Materials'), findsOneWidget);
+
+    profile = const ManagerProfile(
+      name: 'Manager',
+      roles: ['field_manager'],
+      permissions: ['operations:expense_request:read'],
+      isManager: true,
+    );
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(NavigationBar)),
+    );
+    container.invalidate(managerProfileProvider);
+    // The materials screen can retain active progress indicators while its
+    // repository-backed providers are unresolved, so use bounded pumps here.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(find.widgetWithText(AppBar, 'Materials'), findsOneWidget);
+    expect(find.text('Materials'), findsWidgets);
   });
 
   testWidgets('manager shell hides team map without dispatch read', (

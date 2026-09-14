@@ -154,6 +154,22 @@ def test_customer_intake_has_one_non_email_inbound_adapter_and_no_side_effect_po
     assert forbidden_calls == set()
 
 
+def test_ai_intake_keeps_strict_classifier_and_natural_default_clarification():
+    schema = source_text(APP / "schemas" / "ai_intake.py")
+    owner = source_text(SERVICES / "ai_intake.py")
+
+    assert "class AiProviderClassification(BaseModel):" in schema
+    assert 'model_config = ConfigDict(extra="forbid")' in schema
+    assert (
+        "GENERIC_FOLLOW_UP_QUESTION,"
+        not in schema.split("DEFAULT_CLARIFICATION_QUESTIONS = (", 1)[1].split(")", 1)[
+            0
+        ]
+    )
+    assert 'if "deepseek" not in provider_key:' in owner
+    assert "_normalize_provider_classification(" in owner
+
+
 def test_ai_services_do_not_import_support_identity_or_network_models():
     """AI consumes owner DTOs; it never becomes a customer/network reader."""
     forbidden = {"Subscriber", "RadiusActiveSession", "OntUnit"}

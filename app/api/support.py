@@ -111,6 +111,7 @@ def list_tickets(
     ticket_type: str | None = Query(default=None),
     priority: str | None = Query(default=None),
     channel: str | None = Query(default=None),
+    service_team_id: str | None = Query(default=None),
     assigned_to_person_id: str | None = Query(default=None),
     created_by_person_id: str | None = Query(default=None),
     project_manager_person_id: str | None = Query(default=None),
@@ -138,6 +139,7 @@ def list_tickets(
         ticket_type=ticket_type,
         priority=priority,
         channel=channel,
+        service_team_id=(service_team_id if isinstance(service_team_id, str) else None),
         assigned_to_person_id=assigned_to_person_id,
         created_by_person_id=created_by_person_id,
         project_manager_person_id=project_manager_person_id,
@@ -610,6 +612,7 @@ def link_inbox_conversation_contact(
         speaking_party_id=result.speaking_party_id,
         previous_link_ids_deactivated=list(result.previous_link_ids_deactivated),
         repaired_conversation_ids=result.repaired_conversation_ids,
+        replayed=result.replayed,
     )
 
 

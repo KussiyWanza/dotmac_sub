@@ -1,12 +1,27 @@
-"""WiFi and LAN-related CPE device actions."""
+"""WiFi and LAN-related CPE device actions.
+
+WiFi SSID/password changes for the CPE-detail admin page do NOT write to
+GenieACS directly. The web adapter resolves an exact admission scope and this
+module delegates a sparse patch to ``configure_cpe_wifi`` -- the
+``network.ont_service_configuration`` owner. The owner locks and revalidates
+the full CPE/TR-069/ONT/assignment chain before staging a durable revision, so
+concurrent changes compose and an identity relink cannot redirect a stale
+request. See ``app/web/admin/network_cpes.py`` for the route permissions and
+object-scope authorization.
+
+LAN port toggling is unaffected by this change and still writes to GenieACS
+directly via ``set_and_verify``.
+"""
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+import uuid
 
 from sqlalchemy.orm import Session
 
+from app.db import finish_read_transaction
+from app.services.domain_errors import DomainError
 from app.services.genieacs_client import GenieACSError
 from app.services.network.ont_action_common import (
     ActionResult,
@@ -15,26 +30,15 @@ from app.services.network.ont_action_common import (
     get_cpe_client_or_error,
     set_and_verify,
 )
+from app.services.network.ont_service_configuration import (
+    ConfigureCpeWifiCommand,
+    CpeWifiAdmissionScope,
+    CpeWifiConfigurationChange,
+    configure_cpe_wifi,
+)
+from app.services.owner_commands import CommandContext
 
 logger = logging.getLogger(__name__)
-
-# TR-069 parameter suffixes by data model root
-_WIFI_SSID_PATHS = {
-    "Device": "WiFi.SSID.1.SSID",
-    "InternetGatewayDevice": "LANDevice.1.WLANConfiguration.1.SSID",
-}
-
-_WIFI_PSK_PATHS = {
-    "Device": [
-        "WiFi.AccessPoint.1.Security.KeyPassphrase",
-        "WiFi.AccessPoint.1.Security.PreSharedKey.1.PreSharedKey",
-    ],
-    "InternetGatewayDevice": [
-        "LANDevice.1.WLANConfiguration.1.PreSharedKey.1.KeyPassphrase",
-        "LANDevice.1.WLANConfiguration.1.KeyPassphrase",
-        "LANDevice.1.WLANConfiguration.1.PreSharedKey.1.PreSharedKey",
-    ],
-}
 
 _LAN_PORT_PATHS = {
     "Device": "Ethernet.Interface.{port}.Enable",
@@ -42,114 +46,137 @@ _LAN_PORT_PATHS = {
 }
 
 
-def _request_runtime_refresh(client: Any, device_id: str, root: str) -> None:
-    """Best-effort refresh so UI snapshots catch up after a config push."""
-    refresh = getattr(client, "refresh_object", None)
-    if not callable(refresh):
-        return
+def _parse_cpe_uuid(cpe_id: str) -> uuid.UUID | None:
     try:
-        refresh(device_id, f"{root}.")
-    except Exception:
-        logger.debug(
-            "Runtime refresh request failed for device %s after WiFi update",
-            device_id,
-            exc_info=True,
-        )
+        return uuid.UUID(str(cpe_id))
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
-def _set_first_supported_path(
-    client: Any,
-    device_id: str,
-    root: str,
-    candidate_paths: list[str],
-    value: str,
-) -> dict[str, object]:
-    """Try candidate password parameter paths until one SPV task is accepted.
-
-    CPEs commonly mask or omit WiFi password values on readback, so this write
-    intentionally skips readback comparison to avoid false failures.
-    """
-    last_error: Exception | None = None
-    for candidate in candidate_paths:
-        params = build_tr069_params(root, {candidate: value})
-        try:
-            result = set_and_verify(client, device_id, params, expected={})
-        except GenieACSError as exc:
-            last_error = exc
-            logger.debug(
-                "TR-069 password path %s rejected on CPE %s: %s",
-                f"{root}.{candidate}",
-                device_id,
-                exc,
-            )
-            continue
-        _request_runtime_refresh(client, device_id, root)
-        return result
-    if last_error is not None:
-        raise last_error
-    raise GenieACSError("No WiFi parameter paths configured.")
-
-
-def set_wifi_ssid(db: Session, cpe_id: str, ssid: str) -> ActionResult:
-    """Set WiFi SSID on CPE device via TR-069."""
+def set_wifi_ssid(
+    db: Session,
+    cpe_id: str,
+    ssid: str,
+    *,
+    admission_scope: CpeWifiAdmissionScope,
+    context: CommandContext,
+    permission_granted: bool,
+    object_scope_granted: bool,
+) -> ActionResult:
+    """Queue a WiFi SSID change on the ONT behind this CPE via its owner."""
     if not ssid or len(ssid) > 32:
         return ActionResult(success=False, message="SSID must be 1-32 characters.")
 
-    resolved, error = get_cpe_client_or_error(db, cpe_id)
-    if error:
-        return error
-    if resolved is None:
-        return ActionResult(success=False, message="CPE device resolution failed.")
-    cpe, client, device_id = resolved
-    root = detect_data_model_root(db, cpe, client, device_id)
-    params = build_tr069_params(root, {_WIFI_SSID_PATHS[root]: ssid})
+    cpe_uuid = _parse_cpe_uuid(cpe_id)
+    if cpe_uuid is None:
+        return ActionResult(
+            success=False,
+            message="Invalid CPE identifier.",
+            error_code="network.ont_service_configuration.cpe_device_not_found",
+        )
+    if admission_scope.cpe_device_id != cpe_uuid:
+        return ActionResult(
+            success=False,
+            message="The CPE admission identity changed; refresh and retry.",
+            error_code="network.ont_service_configuration.cpe_identity_changed",
+        )
+    finish_read_transaction(db)
+
     try:
-        result = set_and_verify(client, device_id, params)
-        _request_runtime_refresh(client, device_id, root)
-        logger.info("WiFi SSID set on CPE %s to '%s'", cpe.serial_number, ssid)
-        return ActionResult(
-            success=True,
-            message=f"WiFi SSID updated to '{ssid}' on {cpe.serial_number}.",
-            data=result,
+        outcome = configure_cpe_wifi(
+            db,
+            ConfigureCpeWifiCommand(
+                context=context,
+                cpe_device_id=cpe_uuid,
+                expected_tr069_device_id=admission_scope.tr069_device_id,
+                expected_ont_unit_id=admission_scope.ont_unit_id,
+                expected_assignment_id=admission_scope.assignment_id,
+                permission_granted=permission_granted,
+                object_scope_granted=object_scope_granted,
+                change=CpeWifiConfigurationChange(ssid=ssid),
+            ),
         )
-    except GenieACSError as exc:
-        logger.error("Set WiFi SSID failed for CPE %s: %s", cpe.serial_number, exc)
-        return ActionResult(success=False, message=f"Failed to set SSID: {exc}")
+    except DomainError as exc:
+        return ActionResult(success=False, message=exc.message, error_code=exc.code)
+
+    logger.info(
+        "WiFi SSID change queued for CPE %s via ONT %s (operation %s)",
+        cpe_id,
+        admission_scope.ont_unit_id,
+        outcome.operation_id,
+    )
+    return ActionResult(
+        success=True,
+        message=f"WiFi SSID update queued: {outcome.message}",
+        data={
+            "operation_id": str(outcome.operation_id),
+            "ont_unit_id": str(admission_scope.ont_unit_id),
+        },
+    )
 
 
-def set_wifi_password(db: Session, cpe_id: str, password: str) -> ActionResult:
-    """Set WiFi password on CPE device via TR-069."""
-    if not password or len(password) < 8:
+def set_wifi_password(
+    db: Session,
+    cpe_id: str,
+    password: str,
+    *,
+    admission_scope: CpeWifiAdmissionScope,
+    context: CommandContext,
+    permission_granted: bool,
+    object_scope_granted: bool,
+) -> ActionResult:
+    """Queue a WiFi password change on the ONT behind this CPE via its owner."""
+    if not 8 <= len(password) <= 63:
         return ActionResult(
-            success=False, message="WiFi password must be at least 8 characters."
+            success=False, message="WiFi password must be 8-63 characters."
         )
 
-    resolved, error = get_cpe_client_or_error(db, cpe_id)
-    if error:
-        return error
-    if resolved is None:
-        return ActionResult(success=False, message="CPE device resolution failed.")
-    cpe, client, device_id = resolved
-    root = detect_data_model_root(db, cpe, client, device_id)
+    cpe_uuid = _parse_cpe_uuid(cpe_id)
+    if cpe_uuid is None:
+        return ActionResult(
+            success=False,
+            message="Invalid CPE identifier.",
+            error_code="network.ont_service_configuration.cpe_device_not_found",
+        )
+    if admission_scope.cpe_device_id != cpe_uuid:
+        return ActionResult(
+            success=False,
+            message="The CPE admission identity changed; refresh and retry.",
+            error_code="network.ont_service_configuration.cpe_identity_changed",
+        )
+    finish_read_transaction(db)
+
     try:
-        result = _set_first_supported_path(
-            client,
-            device_id,
-            root,
-            _WIFI_PSK_PATHS[root],
-            password,
+        outcome = configure_cpe_wifi(
+            db,
+            ConfigureCpeWifiCommand(
+                context=context,
+                cpe_device_id=cpe_uuid,
+                expected_tr069_device_id=admission_scope.tr069_device_id,
+                expected_ont_unit_id=admission_scope.ont_unit_id,
+                expected_assignment_id=admission_scope.assignment_id,
+                permission_granted=permission_granted,
+                object_scope_granted=object_scope_granted,
+                change=CpeWifiConfigurationChange(password=password),
+            ),
         )
-        logger.info("WiFi password set on CPE %s", cpe.serial_number)
-        return ActionResult(
-            success=True,
-            message=f"WiFi password updated on {cpe.serial_number}.",
-            data=result,
-        )
-    except GenieACSError as exc:
-        logger.error("Set WiFi password failed for CPE %s: %s", cpe.serial_number, exc)
-        return ActionResult(
-            success=False, message=f"Failed to set WiFi password: {exc}"
-        )
+    except DomainError as exc:
+        return ActionResult(success=False, message=exc.message, error_code=exc.code)
+
+    logger.info(
+        "WiFi password change queued for CPE %s via ONT %s (operation %s)",
+        cpe_id,
+        admission_scope.ont_unit_id,
+        outcome.operation_id,
+    )
+    return ActionResult(
+        success=True,
+        message=f"WiFi password update queued: {outcome.message}",
+        data={
+            "operation_id": str(outcome.operation_id),
+            "ont_unit_id": str(admission_scope.ont_unit_id),
+        },
+    )
 
 
 def toggle_lan_port(db: Session, cpe_id: str, port: int, enabled: bool) -> ActionResult:

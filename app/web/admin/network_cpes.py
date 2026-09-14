@@ -327,7 +327,14 @@ def _cpe_action_response(
 
     if not isinstance(result, ActionResult):
         raise TypeError("Expected ActionResult from CPE action handler")
-    status_code = 200 if result.success else 502
+    if result.success:
+        status_code = 200
+    elif result.error_code and result.error_code.endswith(
+        ("permission_denied", "cpe_scope_denied")
+    ):
+        status_code = 403
+    else:
+        status_code = 502
     headers = {
         # HTTP header values must be latin-1 encodable; ensure_ascii keeps the
         # JSON payload header-safe while preserving the original response body.
@@ -357,8 +364,11 @@ def _cpe_action_response(
         )
         response.headers.update(headers)
         return response
+    body: dict[str, object] = {"success": result.success, "message": result.message}
+    if result.error_code:
+        body["error_code"] = result.error_code
     return JSONResponse(
-        {"success": result.success, "message": result.message},
+        body,
         status_code=status_code,
         headers=headers,
     )
@@ -428,30 +438,48 @@ def cpe_refresh(
 
 @router.post(
     "/cpes/{cpe_id}/wifi-ssid",
-    dependencies=[Depends(require_permission("network:cpe:write"))],
+    dependencies=[
+        Depends(require_permission("network:cpe:write")),
+        Depends(require_permission("network:ont:write")),
+    ],
     response_model=None,
 )
 def cpe_wifi_ssid(
     request: Request, cpe_id: str, ssid: str = "", db: Session = Depends(get_db)
 ) -> JSONResponse | HTMLResponse:
-    """Set WiFi SSID on CPE device via TR-069."""
-    result = web_network_cpe_actions_service.execute_wifi_ssid(db, cpe_id, ssid=ssid)
+    """Queue a WiFi SSID change on the ONT behind this CPE.
+
+    Delegates to ``network.ont_service_configuration`` (the same owner the
+    ONT Configure tab and customer self-care WiFi flow use) instead of
+    writing to GenieACS directly; requires ``network:ont:write`` because that
+    owner enforces its own admission scope.
+    """
+    result = web_network_cpe_actions_service.execute_wifi_ssid_from_request(
+        db, cpe_id, ssid=ssid, request=request
+    )
     return _cpe_action_response(result, request=request, db=db, cpe_id=cpe_id)
 
 
 @router.post(
     "/cpes/{cpe_id}/wifi-password",
-    dependencies=[Depends(require_permission("network:cpe:write"))],
+    dependencies=[
+        Depends(require_permission("network:cpe:write")),
+        Depends(require_permission("network:ont:write")),
+    ],
     response_model=None,
 )
 def cpe_wifi_password(
     request: Request, cpe_id: str, db: Session = Depends(get_db)
 ) -> JSONResponse | HTMLResponse:
-    """Set WiFi password on CPE device via TR-069."""
+    """Queue a WiFi password change on the ONT behind this CPE.
+
+    See ``cpe_wifi_ssid`` above for why this delegates to
+    ``network.ont_service_configuration`` and requires ``network:ont:write``.
+    """
     form = parse_form_data_sync(request)
     password = str(form.get("password") or "")
-    result = web_network_cpe_actions_service.execute_wifi_password(
-        db, cpe_id, password=password
+    result = web_network_cpe_actions_service.execute_wifi_password_from_request(
+        db, cpe_id, password=password, request=request
     )
     return _cpe_action_response(result, request=request, db=db, cpe_id=cpe_id)
 

@@ -45,7 +45,36 @@ BASELINE = Path("tests/architecture/session_construction_baseline.txt")
 #: `sessionmaker`, mirroring the file's existing test fixture pattern.
 #: +2 from tests/integration/test_auth_session_refresh_concurrency.py: the
 #: setup/verification factory and two concurrent owner-command sessions.
-TEST_FIXTURE_BASELINE_TOTAL = 119
+#: +1 from tests/integration/test_tr069_active_cpe_identity_concurrency.py:
+#: a concurrent-write proof for migration 595_active_cpe_identity's new
+#: partial unique index (two sessions racing to activate the same
+#: cpe_device_id), reviewed test-fixture authorship for the CPE identity
+#: cardinality program.
+#: +1 from tests/integration/test_prepaid_funding_trigger_execution_rollback.py:
+#: a real-Postgres two-connection proof that a forced failure in the
+#: funding-consequence owner's own transaction rolls back only that
+#: transaction, following the established two-real-connection pattern.
+#: +2 from tests/integration/test_prepaid_renewal_nightly_isolation.py: two
+#: real-Postgres tests (ambiguous-account isolation, unclassified-failure
+#: abort) each with their own `sessionmaker`, driving the single-owner
+#: funding-consequence fix through the real nightly entry point.
+#: +1 from tests/integration/test_prepaid_account_lock_compatibility.py: a
+#: deterministic two-session PostgreSQL proof that account-writer
+#: serialization remains compatible with the prepaid review item's subscriber
+#: foreign key.
+#: +1 from tests/integration/test_prepaid_renewal_nightly_isolation.py: the
+#: teardown session that relinquishes the test-created global authority-cutover
+#: marker after independently committed nightly-owner transactions.
+#: +2 from tests/test_eg8145v5_wifi_capability_migration.py: isolated in-memory
+#: migration rehearsals for repairing and seeding the model capability each own
+#: the disposable engine that Alembic Operations executes against.
+#: +1 from tests/test_erp_staff_talk_mapping_permission_migration.py: one
+#: isolated in-memory rehearsal proves the permission migration is idempotent
+#: and reversible without sharing state with the application test database.
+#: +1 from tests/integration/test_team_inbox_contact_link_concurrency.py: one
+#: two-session PostgreSQL proof that simultaneous reviewed endpoint links
+#: converge on the single active contact route enforced by the partial index.
+TEST_FIXTURE_BASELINE_TOTAL = 129
 
 
 def _baseline() -> dict[str, int]:

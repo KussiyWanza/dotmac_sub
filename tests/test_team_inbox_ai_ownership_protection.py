@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -17,6 +18,7 @@ from app.models.team_inbox import (
     InboxConversation,
     InboxConversationAssignment,
     InboxConversationQueueEntry,
+    InboxConversationTeam,
     InboxMessage,
     InboxMessageDirection,
     InboxQueueEntryStatus,
@@ -77,19 +79,22 @@ def _owned_conversation(db_session, *, state: str = "collecting_intent"):
     return conversation, session, team, user
 
 
-@pytest.mark.parametrize("refusal", ["not_member", "offline"])
-def test_takeover_respects_routing_gate_and_preserves_ai_on_refusal(
-    db_session, refusal: str
+@pytest.mark.parametrize(
+    "ordinary_assignment_block",
+    ["not_member", "offline", "capacity", "existing_owner"],
+)
+def test_takeover_bypasses_ordinary_assignment_eligibility(
+    db_session, ordinary_assignment_block: str
 ) -> None:
     conversation, session, team, user = _owned_conversation(db_session)
-    if refusal == "not_member":
+    if ordinary_assignment_block == "not_member":
         member = (
             db_session.query(ServiceTeamMember)
             .filter(ServiceTeamMember.team_id == team.id)
             .one()
         )
         db_session.delete(member)
-    else:
+    elif ordinary_assignment_block == "offline":
         presence = (
             db_session.query(InboxAgentPresence)
             .filter(InboxAgentPresence.person_id == user.id)
@@ -97,22 +102,148 @@ def test_takeover_respects_routing_gate_and_preserves_ai_on_refusal(
         )
         presence.status = "offline"
         presence.manual_override_status = "offline"
+    elif ordinary_assignment_block == "capacity":
+        presence = (
+            db_session.query(InboxAgentPresence)
+            .filter(InboxAgentPresence.person_id == user.id)
+            .one()
+        )
+        presence.max_concurrent_conversations = 1
+        other_conversation = InboxConversation(
+            channel_type="email",
+            subject="Existing human assignment",
+            primary_service_team_id=team.id,
+        )
+        db_session.add(other_conversation)
+        db_session.flush()
+        db_session.add(
+            InboxConversationAssignment(
+                conversation_id=other_conversation.id,
+                service_team_id=team.id,
+                person_id=user.id,
+                is_active=True,
+            )
+        )
+    else:
+        existing_owner, _person = add_bound_staff_user(db_session)
+        db_session.add(
+            InboxConversationAssignment(
+                conversation_id=conversation.id,
+                service_team_id=team.id,
+                person_id=existing_owner.id,
+                is_active=True,
+            )
+        )
     db_session.commit()
     command = _takeover_command(conversation, session, team, user.id)
     session_id = session.id
-    prior_state = session.state
     db_session.commit()
 
-    with pytest.raises(ai_conversation_ownership.AiTakeoverConflictError):
-        team_inbox_commands.take_over_conversation(db_session, command)
+    outcome = team_inbox_commands.take_over_conversation(db_session, command)
 
+    assert outcome.assigned_person_id == user.id
+    assert outcome.service_team_id == team.id
     db_session.expire_all()
-    assert db_session.get(AiIntakeSession, session_id).state == prior_state
+    assert db_session.get(AiIntakeSession, session_id).state == "stopped_human_takeover"
     assert (
         db_session.query(InboxConversationAssignment)
         .filter(InboxConversationAssignment.conversation_id == command.conversation_id)
+        .filter(InboxConversationAssignment.is_active.is_(True))
         .count()
-    ) == 0
+    ) == 1
+
+
+def test_takeover_uses_the_only_active_conversation_team_when_primary_is_empty(
+    db_session,
+) -> None:
+    conversation, session, team, user = _owned_conversation(db_session)
+    conversation.primary_service_team_id = None
+    db_session.add(
+        InboxConversationTeam(
+            conversation_id=conversation.id,
+            service_team_id=team.id,
+            role="participant",
+            source="routing_rule",
+            is_active=True,
+        )
+    )
+    db_session.commit()
+    command = replace(
+        _takeover_command(conversation, session, team, user.id),
+        service_team_id=None,
+    )
+
+    outcome = team_inbox_commands.take_over_conversation(db_session, command)
+
+    assert outcome.service_team_id == team.id
+    assert outcome.assigned_person_id == user.id
+
+
+def test_takeover_bypasses_fifo_order(db_session) -> None:
+    conversation, session, team, user = _owned_conversation(db_session)
+    older_conversation = InboxConversation(
+        channel_type="email",
+        subject="Older queued conversation",
+        primary_service_team_id=team.id,
+    )
+    db_session.add(older_conversation)
+    db_session.flush()
+    db_session.add_all(
+        (
+            InboxConversationQueueEntry(
+                conversation_id=older_conversation.id,
+                service_team_id=team.id,
+                queue_position=1,
+                status=InboxQueueEntryStatus.queued.value,
+            ),
+            InboxConversationQueueEntry(
+                conversation_id=conversation.id,
+                service_team_id=team.id,
+                queue_position=2,
+                status=InboxQueueEntryStatus.queued.value,
+            ),
+        )
+    )
+    db_session.commit()
+
+    outcome = team_inbox_commands.take_over_conversation(
+        db_session,
+        _takeover_command(conversation, session, team, user.id),
+    )
+
+    assert outcome.assigned_person_id == user.id
+    target_entry = (
+        db_session.query(InboxConversationQueueEntry)
+        .filter(InboxConversationQueueEntry.conversation_id == conversation.id)
+        .one()
+    )
+    assert target_entry.status == InboxQueueEntryStatus.promoted.value
+
+
+def test_takeover_projection_requires_team_selection_when_primary_is_empty(
+    db_session,
+) -> None:
+    conversation, _session, _team, user = _owned_conversation(db_session)
+    conversation.primary_service_team_id = None
+    db_session.add(
+        ServiceTeam(name=f"Second takeover team {uuid4()}", team_type="support")
+    )
+    db_session.commit()
+
+    projection = team_inbox_projection.get_conversation_projection(
+        db_session,
+        conversation_id=conversation.id,
+        actor_person_id=user.id,
+        actor_permission_keys=TAKEOVER_PERMISSIONS,
+        include_contact_candidates=False,
+        include_catalogue_options=False,
+    )
+
+    assert projection is not None
+    assert projection.action_eligibility.can_take_over is True
+    assert projection.action_eligibility.takeover_team_id is None
+    assert projection.action_eligibility.takeover_needs_team_select is True
+    assert len(projection.action_eligibility.takeover_team_options) >= 2
 
 
 def _takeover_command(
@@ -443,6 +574,9 @@ def test_actionable_views_counts_and_controls_exclude_ai_owned(db_session):
     assert eligibility.control_owner == "ai"
     assert eligibility.ai_session_id == session.id
     assert eligibility.can_take_over is True
+    assert eligibility.takeover_team_id == team.id
+    assert eligibility.takeover_team_options[0].id == team.id
+    assert eligibility.takeover_needs_team_select is False
     assert eligibility.can_reply is False
     assert eligibility.can_private_note is False
     assert eligibility.can_assign is False

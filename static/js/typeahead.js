@@ -8,6 +8,8 @@
         var results = container.querySelector("[data-typeahead-results]");
         var clearButton = container.querySelector("[data-typeahead-clear]");
         var url = container.getAttribute("data-typeahead-url");
+        var initialUrl = container.getAttribute("data-typeahead-initial-url");
+        var initialEmptyMessage = container.getAttribute("data-typeahead-initial-empty");
         var minChars = parseInt(container.getAttribute("data-typeahead-min") || "2", 10);
         var limit = parseInt(container.getAttribute("data-typeahead-limit") || "8", 10);
         var validateSelection = container.getAttribute("data-typeahead-validate-selection") === "true";
@@ -20,6 +22,8 @@
         var lastQuery = "";
         var activeRequestId = 0;
         var activeController = null;
+        var initialItems = null;
+        var initialLoading = false;
 
         function pluralLabel() {
             var explicitLabel = container.getAttribute("data-typeahead-label");
@@ -63,6 +67,10 @@
             if (opts.retry) {
                 row.className += " hover:bg-slate-50 dark:hover:bg-slate-700";
                 row.addEventListener("click", function () {
+                    if (opts.retryHandler) {
+                        opts.retryHandler();
+                        return;
+                    }
                     var query = input.value.trim();
                     if (query.length >= minChars) {
                         fetchResults(query);
@@ -80,6 +88,7 @@
                 activeController.abort();
                 activeController = null;
             }
+            initialLoading = false;
         }
 
         function updateHiddenValue(value) {
@@ -90,9 +99,9 @@
             syncClearButton();
         }
 
-        function renderResults(items) {
+        function renderResults(items, emptyMessage) {
             if (!items || !items.length) {
-                renderMessage("No " + pluralLabel() + " found.");
+                renderMessage(emptyMessage || ("No " + pluralLabel() + " found."));
                 return;
             }
             var menu = createMenu();
@@ -174,6 +183,75 @@
                 });
         }
 
+        function fetchInitialResults() {
+            if (!initialUrl || input.value.trim() || hidden.value.trim()) {
+                return;
+            }
+            if (initialItems !== null) {
+                renderResults(initialItems, initialEmptyMessage);
+                return;
+            }
+            if (initialLoading) {
+                return;
+            }
+            abortActiveRequest();
+            activeController = typeof AbortController !== "undefined" ? new AbortController() : null;
+            var controller = activeController;
+            activeRequestId += 1;
+            var requestId = activeRequestId;
+            var didTimeout = false;
+            var timeout = controller
+                ? window.setTimeout(function () {
+                    didTimeout = true;
+                    controller.abort();
+                }, 10000)
+                : null;
+            initialLoading = true;
+            renderMessage("Loading likely " + pluralLabel() + "...");
+            fetch(initialUrl, controller ? { signal: controller.signal } : {})
+                .then(function (response) {
+                    if (!response.ok) {
+                        throw new Error("initial typeahead request failed");
+                    }
+                    return response.json();
+                })
+                .then(function (data) {
+                    if (timeout) {
+                        window.clearTimeout(timeout);
+                    }
+                    initialLoading = false;
+                    if (requestId !== activeRequestId) {
+                        return;
+                    }
+                    if (activeController === controller) {
+                        activeController = null;
+                    }
+                    initialItems = (data && data.items) || [];
+                    renderResults(initialItems, initialEmptyMessage);
+                })
+                .catch(function (error) {
+                    if (timeout) {
+                        window.clearTimeout(timeout);
+                    }
+                    initialLoading = false;
+                    if (requestId !== activeRequestId) {
+                        return;
+                    }
+                    if (error && error.name === "AbortError" && !didTimeout) {
+                        return;
+                    }
+                    if (activeController === controller) {
+                        activeController = null;
+                    }
+                    renderMessage("Could not load likely " + pluralLabel() + ". Try again.", {
+                        retry: true,
+                        retryHandler: fetchInitialResults
+                    });
+                });
+        }
+
+        input.addEventListener("focus", fetchInitialResults);
+
         input.addEventListener("input", function () {
             var query = input.value.trim();
             updateHiddenValue("");
@@ -187,7 +265,15 @@
                 activeRequestId += 1;
                 clearResults();
                 lastQuery = query;
+                if (!query) {
+                    fetchInitialResults();
+                }
                 return;
+            }
+            if (initialUrl) {
+                abortActiveRequest();
+                activeRequestId += 1;
+                clearResults();
             }
             timer = window.setTimeout(function () {
                 if (query !== lastQuery) {
@@ -211,6 +297,7 @@
                 clearResults();
                 syncClearButton();
                 input.focus();
+                fetchInitialResults();
                 container.dispatchEvent(new CustomEvent("typeahead:cleared", {
                     bubbles: true,
                     detail: { input: input, hidden: hidden }

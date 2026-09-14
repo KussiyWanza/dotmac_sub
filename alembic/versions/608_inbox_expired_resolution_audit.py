@@ -1,7 +1,7 @@
 """Add explicit expired-conversation resolution audit evidence.
 
-Revision ID: 596_inbox_expired_resolution_audit
-Revises: 595_team_inbox_provider_identity_scope
+Revision ID: 608_inbox_expired_resolution_audit
+Revises: 607_team_inbox_provider_identity_scope
 Create Date: 2026-09-14
 """
 
@@ -11,8 +11,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "596_inbox_expired_resolution_audit"
-down_revision = "595_team_inbox_provider_identity_scope"
+revision = "608_inbox_expired_resolution_audit"
+down_revision = "607_team_inbox_provider_identity_scope"
 branch_labels = None
 depends_on = None
 

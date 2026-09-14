@@ -46,6 +46,10 @@ from app.services.customer_network_path import (
     project_subscription_network_path,
 )
 from app.services.device_operational_status import annotate_operational_status
+from app.services.network.cpe_assignment_drift import (
+    LiveDeviceAssignmentDrift,
+    find_live_devices_without_active_assignment,
+)
 from app.services.network.ont_status import resolve_effective_ont_status
 from app.services.network_graph import (
     NetworkGraphEdge,
@@ -1787,6 +1791,7 @@ class NetworkCoverage:
     gap_counts: tuple[tuple[str, int], ...]
     by_medium: tuple[MediumCoverage, ...]
     metrics: tuple[CoverageMetric, ...]
+    assignment_drift: LiveDeviceAssignmentDrift
 
     @property
     def coverage_percent(self) -> float | None:
@@ -1830,6 +1835,22 @@ def build_network_coverage(db: Session) -> NetworkCoverage:
     )
 
     metrics: list[CoverageMetric] = []
+
+    assignment_drift = find_live_devices_without_active_assignment(db)
+    metrics.append(
+        CoverageMetric(
+            key="live_devices_without_assignment",
+            label="Live CPE/ONTs without an active assignment",
+            count=assignment_drift.total_count,
+            presentation=coverage_metric_presentation(assignment_drift.total_count),
+            detail=(
+                f"blocking RADIUS evidence: {assignment_drift.blocking_count}; "
+                f"advisory ACS evidence: {assignment_drift.advisory_count}"
+            ),
+            href="#live-devices-without-assignment",
+            href_permission="monitoring:read",
+        )
+    )
 
     subscription_gaps = total - complete
     metrics.append(
@@ -1935,6 +1956,7 @@ def build_network_coverage(db: Session) -> NetworkCoverage:
         gap_counts=tuple(sorted(gap_counter.items())),
         by_medium=by_medium,
         metrics=tuple(metrics),
+        assignment_drift=assignment_drift,
     )
 
 

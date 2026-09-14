@@ -15,6 +15,9 @@ def test_tr069_external_identity_indexes_present():
     assert "uq_tr069_cpe_devices_active_genieacs_device_id" in _index_names(
         Tr069CpeDevice.__table__
     )
+    assert "uq_tr069_cpe_devices_active_cpe_device_id" in _index_names(
+        Tr069CpeDevice.__table__
+    )
 
 
 def test_splynx_identity_indexes_present():

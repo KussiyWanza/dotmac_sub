@@ -42,6 +42,9 @@
 
     <form method="post" action="{{ action_url }}"
           x-data='quoteAuthoringForm({{ quote_form["items"]|tojson }}, {{ suggestions|tojson }}, {{ tax_rates|tojson }}, {{ quote_form.tax_rate_id|tojson }}, {{ quote_form.manual_tax_total|tojson }}, {{ quote_form.initial_subtotal|default("0.00")|tojson }}, {{ quote_form.discount_type|tojson }}, {{ quote_form.discount_value|tojson }})'
+          x-init="captureInitialEditState($el)"
+          @input="clearAcceptanceError()"
+          @change="clearAcceptanceError()"
           @submit="handleSubmit($event)"
           class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
         {% include "components/forms/csrf_input.html" %}
@@ -141,6 +144,11 @@
                             <option value="{{ value }}" {% if quote_form.status == value %}selected{% endif %}>{{ value|replace('_', ' ')|title }}</option>
                             {% endfor %}
                         </select>
+                        {% if is_editing %}
+                        <p x-show="acceptanceError" x-cloak x-ref="acceptanceError" tabindex="-1"
+                           role="alert" aria-live="assertive" x-text="acceptanceError"
+                           class="mt-1.5 text-sm font-medium text-red-700 focus:outline-none dark:text-red-300"></p>
+                        {% endif %}
                     </div>
                     <div>
                         <label for="quote-currency" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Currency</label>
@@ -400,6 +408,8 @@ window.quoteAuthoringForm = function(initialRows, suggestionRows, taxRateRows, s
     });
     return {
         submitting: false,
+        initialEditState: '',
+        acceptanceError: '',
         rows: (initialRows && initialRows.length ? initialRows : [emptyRow()]).map(normalizeRow),
         suggestions: suggestionRows || [],
         taxRates: taxRateRows || [],
@@ -658,6 +668,19 @@ window.quoteAuthoringForm = function(initialRows, suggestionRows, taxRateRows, s
         recalculate() {
             if (this.taxRateId) this.manualTaxTotal = this.configuredTaxTotal.toFixed(2);
         },
+        editState(form) {
+            return JSON.stringify(
+                Array.from(new FormData(form).entries())
+                    .filter(([name]) => name !== '_csrf_token' && name !== 'status')
+                    .map(([name, value]) => [name, String(value)])
+            );
+        },
+        captureInitialEditState(form) {
+            {% if is_editing %}this.initialEditState = this.editState(form);{% endif %}
+        },
+        clearAcceptanceError() {
+            this.acceptanceError = '';
+        },
         handleSubmit(event) {
             if (this.submitting) { event.preventDefault(); return; }
             {% if not is_editing %}
@@ -669,6 +692,17 @@ window.quoteAuthoringForm = function(initialRows, suggestionRows, taxRateRows, s
                     : document.getElementById('quote-lead-search');
                 target.setCustomValidity('Select a Lead or Customer from the search results.');
                 target.reportValidity();
+                return;
+            }
+            {% endif %}
+            {% if is_editing %}
+            const statusInput = event.target.elements.namedItem('status');
+            if (statusInput && statusInput.value === 'accepted' &&
+                    this.editState(event.target) !== this.initialEditState) {
+                event.preventDefault();
+                this.submitting = false;
+                this.acceptanceError = 'Save the quote changes first, then accept it.';
+                this.$nextTick(() => this.$refs.acceptanceError.focus());
                 return;
             }
             {% endif %}

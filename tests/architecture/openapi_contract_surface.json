@@ -4234,6 +4234,17 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/field/expense-requests/form-context": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": null,
+   "responses": {
+    "200": "c657f5409177",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/field/expense-requests/vendors": {
    "params": [
     "header:authorization",
@@ -4558,6 +4569,30 @@
    "request": null,
    "responses": {
     "200": "4b475834c8b9",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/field/manager/expenses/deliveries/{event_id}/recovery-preview": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:event_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "e4fd08410238",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/field/manager/expenses/payment-deliveries/{event_id}/recovery-preview": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:event_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "d31d46d100e6",
     "422": "a11c9d9b2af8"
    }
   },
@@ -10413,6 +10448,7 @@
     "query:priority",
     "query:project_manager_person_id",
     "query:search",
+    "query:service_team_id",
     "query:site_coordinator_person_id",
     "query:status",
     "query:subscriber_id",
@@ -14610,6 +14646,17 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/field/expense-requests/payment-destination/verify": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "abd33f3f3d26",
+   "responses": {
+    "200": "600fe80be6d6",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/field/expense-requests/receipts": {
    "params": [
     "header:authorization",
@@ -14634,6 +14681,7 @@
   },
   "POST /api/v1/field/expense-requests/{expense_request_id}/cancel": {
    "params": [
+    "header:X-Request-ID",
     "header:authorization",
     "header:x-api-key",
     "path:expense_request_id!"
@@ -14841,6 +14889,32 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/field/manager/expenses/deliveries/{event_id}/recover": {
+   "params": [
+    "header:X-Request-ID",
+    "header:authorization",
+    "header:x-api-key",
+    "path:event_id!"
+   ],
+   "request": "bbdf8f1c80ce",
+   "responses": {
+    "200": "66744477f332",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/field/manager/expenses/payment-deliveries/{event_id}/recover": {
+   "params": [
+    "header:X-Request-ID",
+    "header:authorization",
+    "header:x-api-key",
+    "path:event_id!"
+   ],
+   "request": "3be457dd9378",
+   "responses": {
+    "200": "258ed99a961f",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/field/manager/expenses/{expense_request_id}/approve": {
    "params": [
     "header:X-Request-ID",
@@ -15021,6 +15095,18 @@
    "request": "595c666aaaf7",
    "responses": {
     "201": "2ce612d842fb",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/field/material-requests/{material_request_id}/cancel": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:material_request_id!"
+   ],
+   "request": "ae81e61e5427",
+   "responses": {
+    "200": "2ce612d842fb",
     "422": "a11c9d9b2af8"
    }
   },
@@ -17973,6 +18059,19 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/staff-accounts/{user_id}/nextcloud-talk/disable": {
+   "params": [
+    "header:Idempotency-Key",
+    "header:authorization",
+    "header:x-api-key",
+    "path:user_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "2096ff3b53e7",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/subscriber-custom-fields": {
    "params": [
     "header:authorization",
@@ -19134,6 +19233,19 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "PUT /api/v1/staff-accounts/{user_id}/nextcloud-talk": {
+   "params": [
+    "header:Idempotency-Key",
+    "header:authorization",
+    "header:x-api-key",
+    "path:user_id!"
+   ],
+   "request": "605c4b2465e6",
+   "responses": {
+    "200": "0e21bc5b4b9f",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "PUT /api/v1/staff-accounts/{user_id}/roles": {
    "params": [
     "header:Idempotency-Key",
@@ -19183,7 +19295,7 @@
   "AddressRead": "807d40aea82e",
   "AddressType": "5e189902233b",
   "AddressUpdate": "f9f6114113e3",
-  "AiIntakeConfigMetadata": "cfac9698536d",
+  "AiIntakeConfigMetadata": "cb61954c9b6e",
   "AiIntakeConfigRead": "3e871d475e00",
   "AiIntakeConfigUpsert": "526098afff43",
   "AiIntakeDepartmentMapping": "16e83ce18e10",
@@ -19460,6 +19572,8 @@
   "EtaUpdateCreate": "3b90f58a7082",
   "EtaUpdateRead": "daaf62739ccf",
   "ExecutionMethod": "44ddf7e0d39d",
+  "ExistingStaffAccountPolicy": "0c283b6aefa0",
+  "ExpenseRequestStatus": "afa9c66cd8ca",
   "ExternalEntityType": "a15467b5560e",
   "ExternalReferenceCreate": "e15ea6e3a712",
   "ExternalReferenceRead": "8b43fcf317fd",
@@ -19521,14 +19635,26 @@
   "FieldEquipmentRecord": "7c7bcf16d5ae",
   "FieldEquipmentReturnRequest": "80e3640552d3",
   "FieldExpenseApprovalRead": "64ecf6941a17",
+  "FieldExpenseApproverRead": "b302644dd976",
+  "FieldExpenseBankRead": "580ea29aafbe",
   "FieldExpenseCategoryRead": "c8edfa89ab4d",
+  "FieldExpenseDestinationRead": "29f660b85843",
+  "FieldExpenseDestinationVerify": "8d5426dc5450",
+  "FieldExpenseFormContextRead": "0071f146bfb9",
   "FieldExpensePaymentRead": "0b8340a83012",
-  "FieldExpenseRejectionRead": "a51a36ad03c8",
+  "FieldExpensePaymentRecoveryPreviewRead": "9a017d2973eb",
+  "FieldExpensePaymentRecoveryRead": "29d373ba518f",
+  "FieldExpensePaymentRecoveryRequest": "2754d308c379",
+  "FieldExpenseProfileDestinationRead": "6dcef13f513e",
+  "FieldExpenseRecoveryPreviewRead": "85ed7567c69d",
+  "FieldExpenseRecoveryRead": "84483e229efc",
+  "FieldExpenseRecoveryRequest": "aab4d7570997",
+  "FieldExpenseRejectionRead": "41e6ae96c94b",
   "FieldExpenseRequestCreate": "4a21a0cb3712",
   "FieldExpenseRequestItemCreate": "3b23aa8d5a6d",
   "FieldExpenseRequestItemRead": "515094e4452b",
-  "FieldExpenseRequestRead": "6125ac8eb73f",
-  "FieldExpenseRequestSubmit": "e8a7e3d6ec5a",
+  "FieldExpenseRequestRead": "f6681091e1da",
+  "FieldExpenseRequestSubmit": "60c02371fc62",
   "FieldExpenseVendorRead": "fd8c5d96e664",
   "FieldFiberCustomerTraceRead": "77b4750e8e06",
   "FieldFiberOntLiveRead": "b56481e9b334",
@@ -19577,10 +19703,11 @@
   "FieldMaterialConsumeItem": "911c9370f480",
   "FieldMaterialConsumeRequest": "83119748b137",
   "FieldMaterialRead": "b3ca3b51848b",
+  "FieldMaterialRequestCancel": "00daeee69caa",
   "FieldMaterialRequestCreate": "beb591240e6a",
   "FieldMaterialRequestItemCreate": "04759e76cb22",
   "FieldMaterialRequestItemRead": "1e218709f934",
-  "FieldMaterialRequestRead": "e962f5239169",
+  "FieldMaterialRequestRead": "881af457f920",
   "FieldMaterialRequestSubmit": "0bac3c573aa7",
   "FieldMeResponse": "92ccd05b3f23",
   "FieldMovementRead": "e6afbc3e60fc",
@@ -19656,7 +19783,7 @@
   "IPv6AddressRead": "d14ab909bf1f",
   "IPv6AddressUpdate": "c13ce5267072",
   "InboxAgentPerformanceRead": "6a8463944e15",
-  "InboxConversationContactLinkRead": "bb228be5e29a",
+  "InboxConversationContactLinkRead": "aedc114d3f1b",
   "InboxConversationContactLinkRequest": "f407043f0c43",
   "InboxConversationEscalateRequest": "616991a12b83",
   "InboxConversationEscalationRead": "504bf3a61754",
@@ -20252,7 +20379,7 @@
   "ProjectItem": "df3035be834b",
   "ProjectKanbanMove": "7578fb10fb86",
   "ProjectPriority": "81159a031246",
-  "ProjectRead": "8b9f6a8ed70b",
+  "ProjectRead": "810c5f428667",
   "ProjectStage": "0f50e77c4ccb",
   "ProjectStageState": "acffacb745a6",
   "ProjectStatus": "39abcda05ebd",
@@ -20261,9 +20388,10 @@
   "ProjectTaskDependencyInput": "3514e0577001",
   "ProjectTaskDependencyType": "a6d396625734",
   "ProjectTaskPriority": "d00b9c84024a",
-  "ProjectTaskRead": "444ab8fc494d",
+  "ProjectTaskRead": "413dd18b54b1",
   "ProjectTaskStatus": "07b9f5d6fe08",
   "ProjectTaskStatusTransition": "62828b3ad076",
+  "ProjectTaskTemplatePlanState": "70ae24942255",
   "ProjectTaskUpdate": "be5ae31b8297",
   "ProjectType": "a29853f91876",
   "ProjectUpdate": "53c319e44d41",
@@ -20440,9 +20568,12 @@
   "SplitterPortUpdate": "199be4a28b22",
   "SplitterRead": "462df98254d1",
   "SplitterUpdate": "fc09a009fc39",
-  "StaffAccountCreate": "b6432e3a2f81",
+  "StaffAccountCreate": "b04ecddd0616",
   "StaffAccountErpDepartmentRead": "8428a34c2b00",
   "StaffAccountErpDepartmentUpdate": "d0e389a1811d",
+  "StaffAccountNextcloudTalkDisableRead": "f89c96b313ed",
+  "StaffAccountNextcloudTalkRead": "b524fd4ee44a",
+  "StaffAccountNextcloudTalkUpdate": "d5a64a378c94",
   "StaffAccountRead": "cebf0aa826aa",
   "StaffAccountRolesUpdate": "cea929707cae",
   "StateKind": "c193abe43198",

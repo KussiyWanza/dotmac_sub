@@ -255,6 +255,7 @@ SUPPORT_TICKET_LIST_DEFINITION = ListDefinition(
         ListFieldDefinition("status", "Status", filterable=True, sortable=True),
         ListFieldDefinition("ticket_type", "Ticket type", filterable=True),
         ListFieldDefinition("region", "Region", filterable=True),
+        ListFieldDefinition("service_team_id", "Service team", filterable=True),
         ListFieldDefinition("assigned_to_me", "Assigned to me", filterable=True),
         ListFieldDefinition(
             "project_manager_person_id", "Project manager", filterable=True
@@ -333,6 +334,7 @@ def build_ticket_list_query(
     site_coordinator_person_id: str | None,
     subscriber_id: str | None,
     filters: str | None,
+    service_team_id: str | None = None,
     sort_by: str | None = None,
     sort_dir: SortDirection | str | None = None,
     page: int = 1,
@@ -352,6 +354,9 @@ def build_ticket_list_query(
             "ticket_type": str(ticket_type or "").strip() or None,
             "region": support_ticket_region_projection.normalize_region_value(region)
             or None,
+            "service_team_id": _normalize_ticket_uuid_filter(
+                service_team_id, "service_team_id"
+            ),
             "assigned_to_me": "true" if assigned_to_me else None,
             "project_manager_person_id": _normalize_ticket_uuid_filter(
                 project_manager_person_id, "project_manager_person_id"
@@ -528,6 +533,7 @@ def _ticket_scope_count(
         status_scope=_ticket_status_scope(status),
         ticket_type=list_query.filter_value("ticket_type"),
         region=list_query.filter_value("region"),
+        service_team_id=list_query.filter_value("service_team_id"),
         assigned_to_audience=assigned_to_audience,
         project_manager_person_id=list_query.filter_value("project_manager_person_id"),
         site_coordinator_person_id=list_query.filter_value(
@@ -1366,6 +1372,7 @@ def build_tickets_list_context(
     status: str | None = None,
     ticket_type: str | None = None,
     region: str | None = None,
+    service_team_id: str | None = None,
     assigned_to_me: bool = False,
     actor_id: str | None = None,
     project_manager_person_id: str | None = None,
@@ -1384,6 +1391,7 @@ def build_tickets_list_context(
             status=status,
             ticket_type=ticket_type,
             region=region,
+            service_team_id=service_team_id,
             assigned_to_me=assigned_to_me,
             project_manager_person_id=project_manager_person_id,
             site_coordinator_person_id=site_coordinator_person_id,
@@ -1424,6 +1432,7 @@ def build_tickets_list_context(
         status_scope=_ticket_status_scope(effective_query.filter_value("status")),
         ticket_type=effective_query.filter_value("ticket_type"),
         region=effective_query.filter_value("region"),
+        service_team_id=effective_query.filter_value("service_team_id"),
         assigned_to_audience=assigned_to_audience,
         project_manager_person_id=effective_query.filter_value(
             "project_manager_person_id"
@@ -1484,6 +1493,7 @@ def build_tickets_list_context(
         "status": effective_query.filter_value("status") or "",
         "ticket_type": effective_query.filter_value("ticket_type") or "",
         "region": effective_query.filter_value("region") or "",
+        "service_team_id": effective_query.filter_value("service_team_id") or "",
         "assigned_to_me": effective_query.filter_value("assigned_to_me") == "true",
         "project_manager_person_id": effective_query.filter_value(
             "project_manager_person_id"
@@ -1523,6 +1533,7 @@ def build_tickets_list_context(
         "all_priorities": priority_options,
         "ticket_type_options": support_service.ticket_types(db),
         "region_options": support_service.regions(db),
+        "service_team_options": service_team_options(db),
         "staff_options": staff,
         "staff_lookup": _label_lookup(staff),
         "subscriber_options": subscribers,
@@ -1559,6 +1570,7 @@ def list_tickets_for_scope(
         status_scope=_ticket_status_scope(list_query.filter_value("status")),
         ticket_type=list_query.filter_value("ticket_type"),
         region=list_query.filter_value("region"),
+        service_team_id=list_query.filter_value("service_team_id"),
         assigned_to_audience=assigned_to_audience,
         project_manager_person_id=list_query.filter_value("project_manager_person_id"),
         site_coordinator_person_id=list_query.filter_value(
@@ -1627,6 +1639,7 @@ def render_tickets_csv(
     status: str | None = None,
     ticket_type: str | None = None,
     region: str | None = None,
+    service_team_id: str | None = None,
     assigned_to_me: bool = False,
     actor_id: str | None = None,
     project_manager_person_id: str | None = None,
@@ -1644,6 +1657,7 @@ def render_tickets_csv(
             status=status,
             ticket_type=ticket_type,
             region=region,
+            service_team_id=service_team_id,
             assigned_to_me=assigned_to_me,
             project_manager_person_id=project_manager_person_id,
             site_coordinator_person_id=site_coordinator_person_id,

@@ -9,11 +9,16 @@ from app.services.kernel_key_provider import KEYRING_REF
 from app.services.kernel_secret_source import OPTIONAL_SECRET_REFS, SECRET_REFS
 from app.services.secrets import resolve_openbao_ref
 
+#: Material required by every deployed settings-write surface.
+REQUIRED_REFS: Mapping[str, str] = {
+    **SECRET_REFS,
+    "settings_encryption_keyring": KEYRING_REF,
+}
+
 #: Material a deployment may legitimately not have. Reported, never gating —
 #: see `report_optional_boot_material`.
 OPTIONAL_REFS: Mapping[str, str] = {
     **OPTIONAL_SECRET_REFS,
-    "settings_encryption_keyring": KEYRING_REF,
 }
 
 
@@ -30,7 +35,7 @@ class BootSecretPreflightResult:
 
 
 def check_required_boot_secrets(
-    refs: Mapping[str, str] = SECRET_REFS,
+    refs: Mapping[str, str] = REQUIRED_REFS,
     resolver: Callable[[str], str] = resolve_openbao_ref,
 ) -> BootSecretPreflightResult:
     """Resolve required fields without returning or logging their values."""
@@ -54,15 +59,13 @@ def report_optional_boot_material(
 ) -> tuple[str, ...]:
     """Optional names that resolve to nothing. Reported, never gating.
 
-    These belong to ONE feature each: the prepaid attestation trust anchor, and
-    the settings-encryption keyring. A deployment not using the feature has
-    nothing to provision, so absence must not fail a deploy — the application
-    makes the same distinction at boot.
+    These belong to ONE optional feature each. A deployment not using the
+    feature has nothing to provision, so absence must not fail a deploy — the
+    application makes the same distinction at boot.
 
     It is still worth SAYING, because the failure mode of a silently missing
     one is remote from its cause: prepaid manifest verification refuses every
-    manifest, and a secret setting cannot be written at all. Both surface much
-    later than this line, and neither names the missing path.
+    manifest later than this line.
     """
     absent: list[str] = []
     for name, reference in refs.items():

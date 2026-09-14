@@ -17,6 +17,7 @@ from app.models.network import (
     OLTDevice,
     OntUnit,
     OntWanServiceInstance,
+    Tr069ParameterMap,
     VendorModelCapability,
     WanConnectionType,
     WanServiceType,
@@ -34,18 +35,22 @@ from app.services.network.reconcile import (
     observed_from_ont_observation,
     upsert_ont_observation,
 )
+from tests.network_fixture_helpers import attach_test_olt_config_pack
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
 
 @pytest.fixture
-def olt(db_session):
+def olt(db_session, region):
     olt = OLTDevice(
         name="OLT-SPDC",
         mgmt_ip="172.20.100.30",
-        is_active=True,
+        is_active=False,
     )
     db_session.add(olt)
+    db_session.flush()
+    attach_test_olt_config_pack(db_session, olt=olt, region=region)
+    olt.is_active = True
     db_session.commit()
     db_session.refresh(olt)
     return olt
@@ -191,6 +196,43 @@ def test_desired_wifi_credentials_round_trip(db_session, ont):
     assert desired.wifi_security_mode == "WPA2-Personal"
     assert desired.wifi_paths is not None
     assert desired.wifi_paths.ssid.endswith("WLANConfiguration.1.SSID")
+
+
+def test_eg8145v5_capability_resolves_primary_and_secondary_psk_paths(db_session, ont):
+    capability = VendorModelCapability(
+        vendor="Huawei",
+        model="EG8145V5",
+        tr069_root="InternetGatewayDevice",
+        is_active=True,
+    )
+    db_session.add(capability)
+    db_session.flush()
+    db_session.add(
+        Tr069ParameterMap(
+            capability_id=capability.id,
+            canonical_name="wifi.psk.additional.1",
+            tr069_path=("LANDevice.1.WLANConfiguration.5.PreSharedKey.1.PreSharedKey"),
+            writable=True,
+            value_type="string",
+        )
+    )
+    ont.vendor = "Huawei"
+    ont.model = "EG8145V5"
+    ont.tr069_data_model = None
+    db_session.commit()
+
+    desired = desired_from_ont_unit(db_session, ont)
+
+    assert desired.tr069_data_model_root == "InternetGatewayDevice"
+    assert desired.wifi_paths is not None
+    assert desired.wifi_paths.psk_path == (
+        "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1."
+        "PreSharedKey.1.PreSharedKey"
+    )
+    assert desired.wifi_paths.additional_psk_paths == (
+        "InternetGatewayDevice.LANDevice.1.WLANConfiguration.5."
+        "PreSharedKey.1.PreSharedKey",
+    )
 
 
 def test_desired_remote_access_expires_closed_and_resolves_paths(db_session, ont):
@@ -672,6 +714,72 @@ def test_upsert_updates_existing_row_on_subsequent_call(db_session, ont):
     )
     assert len(rows) == 1
     assert rows[0].acs_observed_ssid == "NEW"
+
+
+def test_upsert_olt_read_status_none_leaves_the_prior_value_untouched(db_session, ont):
+    """``olt_read_status=None`` means "no OLT read was attempted this pass"
+    (the reconcile core's WiFi-only delivery path, substituting cached data
+    instead of a live SSH read) — it must not overwrite the freshness signal
+    left by the last genuine attempt. Distinct from ``observed_surfaces``
+    excluding ``"olt"``, which already protects the OLT VALUE columns; this
+    protects the ``olt_read_status`` column specifically, which the row
+    docstring stamps "whenever this pass genuinely attempted an OLT read" —
+    ``None`` is exactly "this pass did not."
+    """
+    upsert_ont_observation(
+        db_session,
+        ont.id,
+        _minimal_observed(),
+        observed_surfaces=frozenset({"olt", "acs"}),
+        olt_read_status="unavailable",
+    )
+    db_session.commit()
+
+    upsert_ont_observation(
+        db_session,
+        ont.id,
+        _minimal_observed(ssid="NEW"),
+        observed_surfaces=frozenset({"acs"}),
+        olt_read_status=None,
+    )
+    db_session.commit()
+
+    row = db_session.get(OntObservation, _only_obs_id(db_session, ont.id))
+    assert row.olt_read_status == "unavailable"
+    # The surface exclusion still protects the OLT value columns too.
+    assert row.olt_present is True
+    # The unrelated ACS surface still updates normally.
+    assert row.acs_observed_ssid == "NEW"
+
+
+def test_upsert_olt_read_status_a_real_value_still_overwrites(db_session, ont):
+    """Near-miss for the test above: ``olt_read_status`` is NOT a
+    write-once/sticky field in general — a genuine subsequent attempt (any
+    non-``None`` value) still overwrites the prior one, even when the OLT
+    surface itself was not re-observed this pass (e.g. a genuinely failed
+    read leaves the OLT VALUE columns alone but must still record that the
+    attempt happened and what it found).
+    """
+    upsert_ont_observation(
+        db_session,
+        ont.id,
+        _minimal_observed(),
+        observed_surfaces=frozenset({"olt", "acs"}),
+        olt_read_status="present",
+    )
+    db_session.commit()
+
+    upsert_ont_observation(
+        db_session,
+        ont.id,
+        _minimal_observed(),
+        observed_surfaces=frozenset({"acs"}),
+        olt_read_status="unavailable",
+    )
+    db_session.commit()
+
+    row = db_session.get(OntObservation, _only_obs_id(db_session, ont.id))
+    assert row.olt_read_status == "unavailable"
 
 
 def test_upsert_accepts_string_ont_unit_id(db_session, ont):

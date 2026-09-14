@@ -73,6 +73,13 @@ class TestResolveIGD:
         path = tr069_path_resolver.resolve(TR069_ROOT_IGD, "wifi.ssid")
         assert path == ("InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID")
 
+    def test_wifi_psk_uses_standard_pre_shared_key_value(self) -> None:
+        path = tr069_path_resolver.resolve(TR069_ROOT_IGD, "wifi.psk")
+        assert path == (
+            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1."
+            "PreSharedKey.1.PreSharedKey"
+        )
+
     def test_lan_ip(self) -> None:
         path = tr069_path_resolver.resolve(TR069_ROOT_IGD, "lan.ip_address")
         assert path == (

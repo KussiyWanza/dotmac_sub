@@ -119,16 +119,23 @@ adoption remains blocked until the opening is captured; deployment alone never
 repairs the invoice.
 
 The owner separately repairs an already-paid unlinked document only when the
-operator supplies the exact invoice/subscription pair and the current snapshot
-proves one positive line, one active full-value allocation, one successful
-unreturned settlement, canonical taxed contract-charge equality, no credit-note
-funding, and no overlapping entitlement or competing document. The Payment may
-fund other invoices; the selected allocation alone must exactly equal this
-invoice total. The settlement instant determines the WAT service period. If an
-older subscription anchor is one boundary later on that same WAT service-start
-business date, the repair may use that anchor only when the invoice due instant
-exactly matches the next cadence boundary; otherwise the anchor remains manual
-review.
+operator supplies the exact invoice/subscription pair. A mixed invoice also
+requires the exact positive unlinked service-line identifier; omission keeps
+mixed documents in manual review and automatic repair never guesses a line.
+The current snapshot must prove one active full-value allocation, one successful
+unreturned settlement, canonical taxed contract-charge equality for every
+integer service period represented by the selected line quantity, internally
+exact undiscounted document totals, no credit-note funding, and no overlapping
+entitlement or competing document. Unselected installation or other
+non-subscription lines remain untouched. The Payment may fund other invoices;
+the selected allocation alone must exactly equal this invoice total. The
+settlement instant determines the WAT service-period start, and the selected
+line quantity advances the contracted cadence to the coverage end. An anchor
+inside proven multi-period coverage is stale and may be advanced to that end.
+For a single-period repair, an older anchor one boundary later on the same WAT
+service-start business date remains acceptable only when the invoice due
+instant exactly matches the next cadence boundary; otherwise the anchor remains
+manual review.
 
 Confirmation posts no money and never changes invoice status, balance, total,
 or allocation. A flush-only invoice participant writes missing line and period
@@ -194,6 +201,17 @@ renewal invoice:
 - multiple drafts, mixed lines, partial activity, or ambiguous coverage:
   require manual review.
 
+One narrow partial-activity shape is eligible only for fingerprint-bound
+operator confirmation. A sole active allocation from an imported Splynx
+payment may be preserved when it predates the reviewed funding boundary, has
+no native settlement or allocation-ledger links, and is matched by the exact
+legacy invoice credit and account-level cutover debit. The remaining invoice
+balance must be fully covered by post-boundary native payment funding plus the
+unused reviewed opening. A later paid invoice entitlement must prove that the
+draft is historical. Confirmation preserves the original service period and
+never moves the newer billing anchor backwards. Automatic funding events only
+raise the existing reconciliation exception; they never apply this repair.
+
 When a current funding-change transaction finds the exact duplicate case, the
 same owner stages the void first and reports it separately from a funded draft.
 The caller may then spend the current funding on the now-due invoice-backed
@@ -206,12 +224,27 @@ funded-coverage explanation instead of a generic request conflict. A
 non-actionable overlap displays the classifier reason and requires Finance
 review; neither the route nor template reclassifies evidence.
 
-When an active reviewed opening baseline exists, account-credit classification
-uses only native payment and ledger facts crossing its timestamp. Pre-boundary
-rows are already absorbed into the signed opening amount: they are neither
-reused as Payments nor quarantined again as current unbacked credit. Without an
-active baseline, the generic all-history payment-backed classification remains
-unchanged.
+Account-credit classification uses the active reviewed funding boundary: the
+customer-subledger opening timestamp after its authority cutover, otherwise the
+reconstruction baseline timestamp. Pre-boundary rows are already absorbed into
+the signed opening amount: they are neither reused as Payments nor quarantined
+again as current unbacked credit. Without a reviewed opening source, the generic
+all-history payment-backed classification remains unchanged.
+
+When a historical prepaid draft is finally settled after that boundary, its
+customer-position consumption debit likewise excludes exact active settlement
+applications recorded through the opening timestamp. The opening already
+contains their effect; only the remainder settled after the boundary is a new
+native debit. Scalar event reads and bounded cohort aggregation apply the same
+rule.
+
+A payment-linked structural ledger projection stays on the same side of that
+boundary as its Payment. A reconciliation or allocation recorded after the
+boundary cannot make the consumption of a pre-boundary Payment reduce newer
+payment-backed credit, because the older Payment and its consumption were both
+already absorbed by the reviewed opening. A Payment created after the boundary
+still crosses it even when its business timestamp is backdated, so late native
+money is never hidden.
 
 No path rounds a shortfall, invents a payment, represents opening funding as a
 Payment, marks an underfunded invoice paid, double-spends an opening baseline,
@@ -305,18 +338,24 @@ operator-chosen service date:
 poetry run python -m scripts.billing.reconcile_prepaid_drafts \
   --repair-paid-invoice \
   --invoice-id INVOICE_UUID \
-  --subscription-id SUBSCRIPTION_UUID
+  --subscription-id SUBSCRIPTION_UUID \
+  --line-id SERVICE_LINE_UUID
 
 poetry run python -m scripts.billing.reconcile_prepaid_drafts \
   --repair-paid-invoice \
   --apply \
   --invoice-id INVOICE_UUID \
   --subscription-id SUBSCRIPTION_UUID \
+  --line-id SERVICE_LINE_UUID \
   --fingerprint REVIEWED_SHA256 \
   --idempotency-key paid-prepaid-invoice-INVOICE_UUID-v1 \
   --actor operator@example.com \
   --reason "Reviewed exact paid invoice, allocation, and settlement evidence"
 ```
+
+`--line-id` is optional for the legacy one-positive-line shape and mandatory in
+practice for a mixed invoice. The dry-run response reports
+`service_period_count`; review its WAT start/end before applying.
 
 For a completely missing document, preview the exact entity and reviewed
 outcome first. Apply repeats every argument and requires the returned

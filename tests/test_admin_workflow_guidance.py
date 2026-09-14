@@ -34,6 +34,12 @@ def test_subscription_lifecycle_guide_includes_plan_changes() -> None:
     assert "Subscriptions" in guidance_categories()
 
 
+def test_getting_started_is_the_first_help_category() -> None:
+    categories = guidance_categories()
+
+    assert categories[:2] == ("Getting started", "Billing")
+
+
 def test_specific_workflow_routes_override_or_reject_broad_sections() -> None:
     expected = {
         "/admin/dashboard": "admin-workspace",
@@ -46,6 +52,9 @@ def test_specific_workflow_routes_override_or_reject_broad_sections() -> None:
         "/admin/network": "network-access",
         "/admin/dispatch/work-orders/work-order-id": "work-order-expenses",
         "/admin/projects/project-id/edit": "project-authoring",
+        "/admin/projects/tasks/task-id": "project-task-subtasks",
+        "/admin/projects/templates/template-id/tasks/editor": "project-template-plans",
+        "/admin/sales/sales-order/order-id": "sales-orders",
         "/admin/billing": "billing-overview",
         "/admin/billing/payments/reconciliation": "payment-reconciliation",
         "/admin/support/tickets/ticket-id": "support-tickets",
@@ -58,8 +67,6 @@ def test_specific_workflow_routes_override_or_reject_broad_sections() -> None:
         assert guide.id == guide_id
 
     for unrelated_path in (
-        "/admin/projects/templates",
-        "/admin/projects/tasks",
         "/admin/support/automation",
         "/admin/support/assignment-rules",
     ):
@@ -100,6 +107,27 @@ def test_project_guidance_explains_customer_typeahead_selection() -> None:
     assert "selected customer account" in content
 
 
+def test_project_template_and_subtask_guidance_explains_revision_scope() -> None:
+    template_guide = guidance_for_path(
+        "/admin/projects/templates/template-id/tasks/editor"
+    )
+    task_guide = guidance_for_path("/admin/projects/tasks/task-id")
+
+    assert template_guide is not None
+    assert template_guide.id == "project-template-plans"
+    template_content = " ".join((*template_guide.steps, *template_guide.notes)).lower()
+    assert "new revision" in template_content
+    assert "does not alter projects that already use the template" in template_content
+    assert "all of its active subtasks are done" in template_content
+
+    assert task_guide is not None
+    assert task_guide.id == "project-task-subtasks"
+    task_content = " ".join((*task_guide.steps, *task_guide.notes)).lower()
+    assert "only to one project" in task_guide.purpose.lower()
+    assert "preserves ad-hoc work" in task_content
+    assert "read-only history" in task_content
+
+
 def test_sales_quote_guidance_explains_direct_customer_subject() -> None:
     guide = guidance_for_path("/admin/sales/quotes/new")
 
@@ -114,6 +142,20 @@ def test_sales_quote_guidance_explains_direct_customer_subject() -> None:
     assert "material quote changes require a new review" in content
 
 
+def test_sales_order_guidance_separates_funding_from_service_setup() -> None:
+    guide = guidance_for_path("/admin/sales/sales-order/order-id")
+
+    assert guide is not None
+    assert guide.id == "sales-orders"
+    content = " ".join((*guide.steps, *guide.notes)).lower()
+    assert "record payment" in content
+    assert "customer account credit" in content
+    assert "does not create a subscription" in content
+    assert "ip assignment" in content
+    assert "create the subscription" in content
+    assert "initial invoice only when billing should begin" in content
+
+
 def test_manager_ai_guidance_explains_question_and_answer_workflow() -> None:
     guide = guidance_for_path("/admin/inbox/manager-ai")
 
@@ -125,6 +167,32 @@ def test_manager_ai_guidance_explains_question_and_answer_workflow() -> None:
     assert "response under answer" in content
     assert "html-like text remains plain text" in content
     assert "verify ai advice" in content
+
+
+def test_team_inbox_guidance_explains_lazy_customer_link_search() -> None:
+    guide = guidance_for_path("/admin/inbox/conversation-id")
+
+    assert guide is not None
+    assert guide.id == "team-inbox"
+    content = " ".join((*guide.steps, *guide.notes)).lower()
+    assert "click existing customer to load likely matches" in content
+    assert "type at least two characters" in content
+    assert "search all active customers" in content
+    assert "choose the exact result" in content
+    assert "link customer" in content
+
+
+def test_smtp_sender_guidance_explains_keyring_and_mailbox_route_mapping() -> None:
+    guide = guidance_for_path("/admin/system/email")
+
+    assert guide is not None
+    assert guide.id == "smtp-senders"
+    content = " ".join((*guide.steps, *guide.notes)).lower()
+    assert "settings-encryption keyring" in content
+    assert "secret/settings/crypto#settings_encryption_keyring" in content
+    assert "reply sender" in content
+    assert "mailbox route" in content
+    assert "recreate api and celery" in content
 
 
 def test_workflow_change_without_guidance_update_fails_gate() -> None:
@@ -185,17 +253,37 @@ def test_payment_guidance_explains_funded_prepaid_renewal() -> None:
 
 def test_admin_guidance_uses_one_accessible_centered_modal() -> None:
     layout = Path("templates/layouts/admin.html").read_text(encoding="utf-8")
+    control = Path("templates/components/ui/workflow_help.html").read_text(
+        encoding="utf-8"
+    )
+    placement = Path("static/js/admin-workflow-help.js").read_text(encoding="utf-8")
     billing = Path("templates/admin/billing/index.html").read_text(encoding="utf-8")
 
     assert "{% block workflow_guidance %}" in layout
-    assert 'aria-label="How this page works: {{ workflow_guide.title }}"' in layout
-    assert 'aria-haspopup="dialog"' in layout
-    assert 'aria-modal="true"' in layout
-    assert 'x-trap.inert.noscroll="workflowHelpOpen"' in layout
-    assert "items-center justify-center" in layout
-    assert "{{ workflow_guide.purpose }}" in layout
-    assert "{% for step in workflow_guide.steps %}" in layout
+    assert "data-admin-workflow-help-staging" in layout
+    assert "admin-workflow-help.js" in layout
+    assert "data-admin-workflow-help-control" in control
+    assert 'document.querySelectorAll("main h1")' in placement
+    assert '[role="dialog"], [hidden], [x-cloak]' in placement
+    assert "data-admin-workflow-title-group" in placement
+    assert "htmx:afterSwap" in placement
+    assert 'aria-label="How this page works: {{ workflow_guide.title }}"' in control
+    assert 'aria-haspopup="dialog"' in control
+    assert 'aria-modal="true"' in control
+    assert 'x-trap.inert.noscroll="workflowHelpOpen"' in control
+    assert "items-center justify-center" in control
+    assert "{{ workflow_guide.purpose }}" in control
+    assert "{% for step in workflow_guide.steps %}" in control
     assert "billingHelpOpen" not in billing
+
+
+def test_customer_list_uses_shared_workflow_help_placement() -> None:
+    customer_list = Path("templates/admin/customers/index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "workflow_guidance" not in customer_list
+    assert "workflow_help_control" not in customer_list
 
 
 def test_olt_guidance_explains_canonical_status_and_evidence_freshness() -> None:

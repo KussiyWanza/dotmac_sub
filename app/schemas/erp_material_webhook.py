@@ -7,6 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ErpMaterialStatusLine(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     sequence: int = Field(ge=1)
     serial_numbers: tuple[str, ...] = ()
 

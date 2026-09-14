@@ -2084,6 +2084,12 @@ def _sync_active_policy_to_legacy_config(
         if version is not None and isinstance(version.metadata_, Mapping)
         else {}
     )
+    raw_conversation_policy = version_metadata.get("conversation_policy")
+    conversation_policy = (
+        dict(raw_conversation_policy)
+        if isinstance(raw_conversation_policy, Mapping)
+        else {}
+    )
     mappings: list[AiIntakeDepartmentMapping] = []
     for raw in version.intent_team_mappings or []:
         if not isinstance(raw, Mapping) or raw.get("enabled") is False:
@@ -2149,6 +2155,9 @@ def _sync_active_policy_to_legacy_config(
                     approved_isp_information=version.approved_isp_information,
                     intent_definitions=version.intent_definitions or [],
                     clarification_questions=version.clarification_questions or [],
+                    allow_category_menu_clarification=bool(
+                        conversation_policy.get("allow_category_menu_clarification")
+                    ),
                     queue_templates=queue_templates,
                     conversation_templates=version_metadata.get(
                         "conversation_templates"
@@ -2969,6 +2978,7 @@ def _composition_request(
             ),
         ),
         acknowledgement_required=state.acknowledgement_required,
+        issue_acknowledgement_required=state.issue_acknowledgement_required,
         issue_acknowledged=state.issue_acknowledged,
         frustration_acknowledged=state.frustration_acknowledged,
     )
@@ -3159,6 +3169,7 @@ def _process_one_session(
     )
     if inbound is None or not inbound.body:
         return False
+    initial_welcome_turn = session.state == "welcome_pending"
     version = (
         db.get(AiIntakePolicyVersion, session.policy_version_id)
         if session.policy_version_id
@@ -3261,6 +3272,78 @@ def _process_one_session(
             "session_state": session.state,
         },
     )
+    if (
+        initial_welcome_turn
+        and ai_intake_conversation_engine.is_greeting_only(str(inbound.body or ""))
+        and not ai_intake_conversation_engine.category_menu_clarification_enabled(
+            version
+        )
+    ):
+        session.turn_count += 1
+        session.state = "awaiting_customer"
+        metadata.update(
+            {
+                "ai_intake_status": "awaiting_customer",
+                "ai_intake_engine_action": "wait_for_customer",
+                "ai_intake_engine_reason": "greeting_only",
+                "ai_intake_response_source": "welcome",
+            }
+        )
+        inbound.metadata_ = metadata
+        generation = record_generation_attempt(
+            db,
+            session=session,
+            purpose="conversation",
+            status="greeting_only_wait",
+            inbound_message_id=inbound.id,
+            metadata={
+                "selected_action": "wait_for_customer",
+                "response_source": "welcome",
+                "policy_version_id": (
+                    str(session.policy_version_id)
+                    if session.policy_version_id
+                    else None
+                ),
+                "app_revision": get_app_revision(),
+            },
+        )
+        record_customer_wait(
+            session,
+            version=version,
+            inbound_message_id=inbound.id,
+            reason="greeting_only",
+        )
+        transition_conversation_status(
+            db,
+            conversation=conversation,
+            status=InboxConversationStatus.pending,
+            reason=team_inbox_status.InboxStatusReason.ai_awaiting_clarification,
+            source_id=f"ai-intake-greeting:{session.id}:{inbound.id}",
+        )
+        mark_conversation_ai_metadata(conversation, session=session, active=True)
+        mark_inbound_processed(
+            session,
+            inbound_message_id=inbound.id,
+            generation_attempt_id=generation.id,
+        )
+        logger.info(
+            "ai intake greeting entered natural customer wait",
+            extra={
+                "event": "ai_intake_greeting_awaiting_customer",
+                "conversation_id": str(conversation.id),
+                "session_id": str(session.id),
+                "inbound_message_id": str(inbound.id),
+                "policy_version_id": (
+                    str(session.policy_version_id)
+                    if session.policy_version_id
+                    else None
+                ),
+                "selected_action": "wait_for_customer",
+                "response_source": "welcome",
+                "session_state": session.state,
+            },
+        )
+        return True
     was_awaiting_customer = session.state == "awaiting_customer"
     if was_awaiting_customer:
         clear_customer_wait(session, reason="customer_response")
@@ -3329,6 +3412,9 @@ def _process_one_session(
         inbound_message_id=str(inbound.external_message_id or inbound.id)[:255],
         body=str(inbound.body or "")[:4000],
         conversation_id=conversation.id,
+        session_id=session.id,
+        policy_version_id=session.policy_version_id,
+        persisted_inbound_message_id=inbound.id,
         recent_messages=recent,
         campaign_attributed=False,
         routing_allows_ai=True,
@@ -3395,7 +3481,12 @@ def _process_one_session(
             "classifier_retries_exhausted": (
                 outcome.classifier_attempt.retries_exhausted
             ),
+            "classifier_attempt_number": outcome.classifier_attempt.retry_count,
             "app_revision": get_app_revision(),
+            "validation_issues": [
+                issue.model_dump(mode="json")
+                for issue in outcome.classifier_attempt.validation_issues
+            ],
         },
     )
     session_metadata = dict(session.metadata_ or {})
@@ -3457,6 +3548,11 @@ def _process_one_session(
             "classifier_retries_exhausted": (
                 outcome.classifier_attempt.retries_exhausted
             ),
+            "classifier_attempt_number": outcome.classifier_attempt.retry_count,
+            "validation_issues": [
+                issue.model_dump(mode="json")
+                for issue in outcome.classifier_attempt.validation_issues
+            ],
             "app_revision": get_app_revision(),
         },
     )
@@ -3818,14 +3914,15 @@ def _process_one_session(
             decision.action in {"respond", "handoff", "resolved"}
             and decision.response_text
         ):
+            composition_request = _composition_request(
+                version=version,
+                inbound=inbound,
+                recent=recent,
+                decision=decision,
+            )
             composition = ai_intake.compose_customer_response(
                 db,
-                request=_composition_request(
-                    version=version,
-                    inbound=inbound,
-                    recent=recent,
-                    decision=decision,
-                ),
+                request=composition_request,
                 fallback_text=decision.response_text,
                 fallback_source=str(
                     decision.metadata.get("response_source") or "template"
@@ -3850,11 +3947,12 @@ def _process_one_session(
                     decision.state.category or decision.state.current_intent
                 )
                 decision.state.issue_acknowledged = True
+                decision.state.issue_acknowledgement_required = False
             if composition.acknowledges_frustration:
                 decision.state.frustration_acknowledged = True
                 decision.state.acknowledgement_required = False
             decision.state.response_validator_result = (
-                "accepted" if composition.response_source == "model" else "fallback"
+                "accepted" if composition.response_source == "model" else "rejected"
             )
             decision.state.response_validator_reason = composition.safety_reason
             decision.state.last_response_source = composition.response_source
@@ -3890,6 +3988,9 @@ def _process_one_session(
                     "acknowledgement_required": (
                         bool(decision.metadata.get("acknowledgement_required"))
                     ),
+                    "issue_acknowledgement_required": (
+                        composition_request.issue_acknowledgement_required
+                    ),
                     "issue_acknowledged": decision.state.issue_acknowledged,
                     "frustration_acknowledged": (
                         decision.state.frustration_acknowledged
@@ -3897,6 +3998,35 @@ def _process_one_session(
                     "tokens_in": composition.tokens_in,
                     "tokens_out": composition.tokens_out,
                     "app_revision": get_app_revision(),
+                },
+            )
+            logger.info(
+                "ai intake response composition resolved",
+                extra={
+                    "event": "ai_intake_response_composition_resolved",
+                    "conversation_id": str(conversation.id),
+                    "session_id": str(session.id),
+                    "inbound_message_id": str(inbound.id),
+                    "policy_version_id": (
+                        str(session.policy_version_id)
+                        if session.policy_version_id
+                        else None
+                    ),
+                    "provider": composition.provider,
+                    "model": composition.model,
+                    "response_source": composition.response_source,
+                    "validator_result": decision.state.response_validator_result,
+                    "validator_reason": decision.state.response_validator_reason,
+                    "selected_action": (
+                        decision.metadata.get("next_action") or decision.action
+                    ),
+                    "acknowledgement_required": (
+                        bool(decision.metadata.get("acknowledgement_required"))
+                    ),
+                    "issue_acknowledgement_required": (
+                        composition_request.issue_acknowledgement_required
+                    ),
+                    "selected_question_key": decision.metadata.get("question_key"),
                 },
             )
             metadata["ai_intake_response_source"] = composition.response_source

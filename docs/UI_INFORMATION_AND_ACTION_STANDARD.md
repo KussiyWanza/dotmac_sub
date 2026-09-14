@@ -158,6 +158,12 @@ A detail page establishes the decision context before exposing exhaustive data.
   detail pages project requests from their linked native work orders and scope
   the create action to an actively assigned work order; they do not maintain
   duplicate material-request relationships.
+- The field Materials destination is requester-owned history. It remains
+  available when the requester also has manager capabilities, shows the
+  authoritative total before pagination, and exposes every owner-observed
+  lifecycle state and rejection reason. List and detail refresh from the API;
+  neither technician-profile lifecycle nor work-order reassignment may hide an
+  exactly owned historical request.
 
 ### Editor Or Form
 
@@ -460,8 +466,24 @@ implementation.
 - Customer-specific examples and fabricated fallback values are prohibited.
 - Profile and Lead actions are permission-scoped server outcomes. The browser
   never selects identity, pipeline defaults, or duplicate-prevention policy.
+- The Existing Customer control is a validated lazy typeahead. Focusing its
+  empty field requests a bounded set of conversation-derived likely matches.
+  Typing at least two characters replaces those options with a bounded search
+  across all active Customers using only the entered name, email, phone,
+  company/legal name, account number, subscriber number, display name, or exact
+  Customer UUID. Empty suggestions never fall back to unrelated recent
+  Customers. Loading, empty, failure/retry, and selected states remain distinct;
+  stale requests are cancelled. Results are discovery only, and the reviewed
+  server command links only the exact selected UUID after explicit submission.
 - Successful actions return to the exact originating conversation and trigger
   a fresh drawer query; read failure never replays the mutation.
+- A structural conversation-to-Lead link remains visible as `Origin Lead` even
+  when the channel supplies no Party-bound contact point. Conflicting
+  Subscriber, participant, intake, or Lead Parties show identity review while
+  retaining a read path to the exact linked Lead.
+- Reapplying the same reviewed Customer endpoint link is an idempotent success.
+  Replacing a different active endpoint target preserves the prior evidence;
+  stale reviewed route evidence is refused and the drawer must be refreshed.
 - The drawer keeps customer identity visible while Details and Conversations
   tabs provide progressive disclosure. The Conversations badge is the
   authoritative full count of matching previous active and resolved
@@ -516,18 +538,29 @@ implementation.
 - After AI control has ended, the first eligible human reply to an unassigned
   conversation atomically claims it for that agent and sends in one owner
   transaction. The claim obeys the same team membership, presence, capacity,
-  and FIFO rules as explicit self-assignment. A simultaneous or later reply by
-  another agent sends nothing and returns the conflict message **This
-  conversation is currently assigned to [agent].** The composer presents that
-  message without implying that its draft was sent.
-- Team Inbox Settings exposes **Maximum active chats per agent** with the
-  registered range 1–100 and default 10 to users with
-  `system:settings:write`. All workload and assignment surfaces display
-  `active/effective_max assigned` from the routing owner's projection. Online
-  state remains separate from capacity state, and over-capacity values such as
-  `15/10 assigned` remain visible after a limit reduction. Per-agent backend
+  and FIFO rules as explicit self-assignment. It may also replace a different
+  owner only when the routing owner's locked presence evidence resolves that
+  owner to `offline`, including missing or stale online evidence. Online,
+  away, and on-break owners remain protected. A simultaneous or later reply
+  against a protected assignment sends nothing and returns the conflict message
+  **This conversation is currently assigned to [agent].** The composer presents
+  that message without implying that its draft was sent.
+- Team Inbox Settings and Admin → System → Settings → Comms expose the same
+  authoritative **Maximum active chats per agent** setting with range 1–100 and
+  default 10 to users with `system:settings:write`. All workload and assignment
+  surfaces display `active/effective_max assigned` from the routing owner's
+  projection. Online state remains separate from capacity state, and
+  over-capacity values such as `15/10 assigned` remain visible after a limit
+  reduction. Per-agent backend
   overrides are not presented as though they are editable when no Admin writer
-  exists.
+  exists. The Inbox Manager Dashboard links authorized settings operators to
+  that exact control, which explains that 10 is the default rather than the
+  maximum and provides an adjacent **Save Inbox capacity** action.
+- While the authenticated Inbox workspace is visible, it supplies a
+  best-effort agent-presence heartbeat at five-minute intervals and immediately
+  when visibility resumes. The routing owner may use this only to refresh
+  selected online state; explicit away, on-break, and offline choices remain
+  authoritative.
 - Queue heartbeats are off by default. If enabled in AI intake policy they are
   clearly identified as reassurance, use different copy from a position
   update, and never repeat the current position.
@@ -621,7 +654,13 @@ implementation.
 - While AI owns the thread, Reply, Private Note, assignment, status/workflow,
   ticket, macro, and bulk controls are absent or disabled with an explanation.
   Authorized operators receive one explicit `Take Over Conversation` control
-  with confirmation and expected-session evidence.
+  with confirmation and expected-session evidence. Takeover is available to any
+  active staff actor with the required permissions regardless of team
+  membership, presence, capacity, FIFO position, or an existing human
+  assignment. The control submits the active primary team, defaults the sole
+  active team, or requires an explicit team selection when several are active;
+  team selection supplies routing and audit attribution rather than operator
+  eligibility.
 - UI gating is presentation only. Every mutation rechecks ownership at its
   backend owner and returns the stable AI-owned conflict; a normal reply never
   becomes implicit takeover. Reply auto-claim runs only after the AI-owned check
@@ -664,8 +703,9 @@ implementation.
   technician has been assigned. The requester does not need to be that technician.
 - Authority: `ui.work_order_expense_projection` owns the form, validation
   presentation, requester-owned list, action eligibility, and ERP delivery
-  labels. `operations.expense_requests` owns the atomic claim and durable ERP
-  staging; ERP owns approval routing and reimbursement.
+  labels. `operations.expense_requests` owns the atomic claim, selected local
+  approver, masked destination snapshot, and durable ERP staging; ERP owns
+  approver eligibility, bank identity, account verification, and reimbursement.
 - First viewport: the work-order identity remains the page context. The expense
   card explains that approval and payment happen in ERP, shows the actor's
   existing claims, and always exposes one New Expense Claim action. The action
@@ -677,7 +717,12 @@ implementation.
   user, or requester email input is accepted. A stable client reference prevents
   double creation. The command owner rechecks current technician assignment while
   holding the work-order lock, so a direct or stale form submission fails closed.
-- Form: purpose and expense date are required, currency defaults to NGN, notes
+  - Form: the submitter selects an ERP-eligible approver other than themselves;
+    the requester is omitted from the choices. They also select either the masked
+    ERP profile destination or editable one-expense beneficiary/bank/account
+    details. The override is verified by ERP and never updates the profile or
+    survives a failed redisplay as a raw account number. Purpose and expense
+    date are required, currency defaults to NGN, notes
   are optional, and at least one stacked repeatable item remains. Items expose
   ERP category, description, positive amount, optional date/vendor/receipt
   URL or upload/notes, category receipt rules, and category maximums. Server
@@ -689,6 +734,39 @@ implementation.
 - Responsive behavior: line items are stacked cards at every width, controls
   retain labels and text errors, totals name their currency, and add/remove and
   submit actions remain accessible without relying on colour.
+
+## Field Expense Request History Contract
+
+- Audience and task: field technicians review every expense claim they made and
+  its current approval, ERP-delivery, and payment state. Manager-technicians
+  also work the separate approval queue without losing personal history.
+- Authority: `operations.expense_requests` owns requester identity, filtered
+  total, claim state, and detail projection. The mobile client renders those
+  facts and does not infer ownership from the current technician profile.
+- First viewport: `My expense requests` shows the authoritative total before
+  pagination, newest requests first, purpose, amount and currency, status, and
+  relevant time. Detail retains rejection and delivery explanations.
+- Identity and authorization: an exact SystemUser, canonical Person Party, or
+  historically linked technician profile proves ownership. Profile inactivity,
+  replacement, work-order completion, or reassignment cannot hide history;
+  another requester's claim remains unavailable. New submission continues to
+  require the owner-resolved active technician and assigned work order.
+- States: loading, empty, read failure, locally queued drafts, submitted,
+  approved, rejected, canceled, paid, and ERP/payment delivery problems remain
+  distinct. Manager mode defaults to `Pending` and provides separate
+  `My request` and `History` tabs. The requester tab uses the same requester
+  query. The pending and resolved manager tabs filter the authoritative manager
+  projection without reinterpreting expense status, and every history item
+  links to a detailed expense projection.
+- Manager approval list: every expense card labels `Raised by` from the
+  owner-supplied staff display identity. Missing historical identity is rendered
+  as unavailable and is never inferred from current assignment. The manager
+  cannot approve a claim they raised, including a historical self-selected claim;
+  the owner refuses that transition before changing status or staging delivery.
+  The manager bottom navigation omits the Materials destination. While manager capability
+  is unresolved or unavailable, navigation also omits Materials, and a manager
+  restored onto that branch receives manager content rather than the material
+  list.
 
 ## Field Work-Order Note Contract
 

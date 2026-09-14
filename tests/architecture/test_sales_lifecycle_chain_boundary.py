@@ -27,9 +27,20 @@ def test_funding_consequences_are_event_chained_not_swallowed():
     assert "EventType.sales_order_funding_satisfied" in src
     assert "def stage_funding_transition" in src
     assert "def apply_funding_consequences" in src
-    # The consumer converts an unresolved offer into a typed failure instead
-    # of silently skipping the service line.
-    assert "funding_consequence_unresolved" in src
+    # Funding owns finance evidence only. Service and network artifacts remain
+    # behind the explicit staff subscription workflow.
+    consumer = src[
+        src.index("def apply_funding_consequences") : src.index(
+            "def _record_order_payment_evidence"
+        )
+    ]
+    assert "_record_order_payment_evidence" in consumer
+    for forbidden in (
+        "create_subscription(",
+        "_sync_sales_order_add_ons(",
+        "_ensure_provisioning_order_for_sales_line(",
+    ):
+        assert forbidden not in consumer
 
 
 def test_producers_stage_funding_output_on_every_paid_edge():

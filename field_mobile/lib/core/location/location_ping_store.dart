@@ -4,6 +4,7 @@ import 'dart:io';
 import '../../features/location/location_cadence.dart';
 import '../secure/evidence_cipher.dart';
 import '../secure/evidence_files.dart';
+import '../secure/store_work_gate.dart';
 
 class LocationPingPayload {
   const LocationPingPayload({
@@ -106,18 +107,20 @@ class FileLocationPingStore implements LocationPingStore {
     this.file, {
     required this.cipher,
     required this.scopeKey,
+    required this.work,
     DateTime Function()? clock,
   }) : _clock = clock ?? (() => DateTime.now().toUtc());
 
   final File file;
   final EvidenceCipher cipher;
   final String scopeKey;
+  final StoreWorkGate work;
   final DateTime Function() _clock;
 
   String get _context => evidenceContext(scopeKey, 'location', 'queue');
 
   @override
-  Future<List<LocationPingPayload>> load() async {
+  Future<List<LocationPingPayload>> load() => work.run(() async {
     if (!await file.exists()) return const [];
     try {
       final envelope = await file.readAsBytes();
@@ -138,7 +141,7 @@ class FileLocationPingStore implements LocationPingStore {
       await _quarantineCorruptQueue();
       return const [];
     }
-  }
+  });
 
   Future<void> _quarantineCorruptQueue() async {
     final marker = File('${file.path}.corrupt');
@@ -150,7 +153,7 @@ class FileLocationPingStore implements LocationPingStore {
   }
 
   @override
-  Future<void> save(List<LocationPingPayload> pings) async {
+  Future<void> save(List<LocationPingPayload> pings) => work.run(() async {
     await file.parent.create(recursive: true);
     if (pings.isEmpty) {
       if (await file.exists()) await file.delete();
@@ -166,5 +169,5 @@ class FileLocationPingStore implements LocationPingStore {
     );
     if (await file.exists()) await file.delete();
     await temporary.rename(file.path);
-  }
+  });
 }

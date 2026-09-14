@@ -17,7 +17,11 @@ from app.models.team_inbox import (
     InboxConversationStatus,
     InboxStatusTransitionEvent,
 )
-from app.services import team_inbox_customer_completion, team_inbox_reply_window
+from app.services import (
+    team_inbox_completion_override,
+    team_inbox_customer_completion,
+    team_inbox_reply_window,
+)
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import execute_owner_savepoint, owner_command_active
 
@@ -114,6 +118,7 @@ class InboxStatusTransitionCommand:
     compatibility_source: str
     macro_id: UUID | None = None
     resolution_reason: InboxResolutionReason | None = None
+    completion_override_grant_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,14 +217,46 @@ def _apply_status_transition(
                     message="Choose a resolution reason for this expired WhatsApp conversation.",
                     details={"conversation_id": str(conversation.id)},
                 )
-        elif not (
-            conversation.customer_completion_policy_version_id is None
-            and db.get_bind().dialect.name == "sqlite"
+        elif (
+            not (
+                conversation.customer_completion_policy_version_id is None
+                and db.get_bind().dialect.name == "sqlite"
+            )
+            and command.completion_override_grant_id is None
         ):
             team_inbox_customer_completion.require_agent_resolution_ready(
                 db, conversation
             )
     effective_at = command.occurred_at
+    gate_applies = (
+        command.status is InboxConversationStatus.resolved
+        and command.reason in _AGENT_RESOLUTION_REASONS
+        and resolution_policy is not None
+        and not resolution_policy.requires_resolution_reason
+        and not (
+            conversation.customer_completion_policy_version_id is None
+            and db.get_bind().dialect.name == "sqlite"
+        )
+    )
+    readiness = None
+    if gate_applies:
+        assert resolution_policy is not None
+        readiness = resolution_policy.customer_readiness
+        if (
+            not readiness.can_agent_resolve
+            and command.completion_override_grant_id is None
+        ):
+            # No override was offered: raise BEFORE any event row exists, so
+            # a blocked resolution never commits a phantom `resolved`
+            # transition event for a conversation whose status never
+            # actually changed. This is the exact pre-existing behavior and
+            # the exact rich `resolution_blocked` contract every caller
+            # (bulk's graceful skip, macro's per-action failure capture,
+            # direct adapters) already depends on.
+            team_inbox_customer_completion.require_agent_resolution_ready(
+                db, conversation
+            )
+
     event = InboxStatusTransitionEvent(
         conversation_id=conversation.id,
         previous_status=previous.value,
@@ -237,7 +274,47 @@ def _apply_status_transition(
         evidence_grade=InboxAuditEvidenceGrade.native,
         occurred_at=effective_at,
     )
-    db.add(event)
+
+    if gate_applies and readiness is not None and not readiness.can_agent_resolve:
+        # A grant was offered -- the no-grant case above already raised and
+        # never reaches here. Consuming it needs `event.id` for the grant's
+        # FK, so the event is created here, but ONLY inside a savepoint
+        # together with the consumption itself: a caller (bulk/macro) that
+        # catches a failed consumption and continues to the next
+        # conversation must never commit a phantom `resolved` event for
+        # this one.
+        def _create_event_and_consume_grant() -> None:
+            db.add(event)
+            db.flush()
+            team_inbox_completion_override.consume_override_for_resolution(
+                db,
+                conversation=conversation,
+                readiness=readiness,
+                actor_person_id=command.actor_person_id,
+                resolution_reason=command.reason.value,
+                override_grant_id=command.completion_override_grant_id,
+                transition_event_id=event.id,
+                occurred_at=effective_at,
+            )
+
+        if not owner_command_active(db):
+            # Every production entry point (direct, bulk, macro) reaches
+            # here only through `_commit`'s `execute_owner_command`, so a
+            # grant id supplied outside an active owner command is a
+            # programming error, not a degraded-but-acceptable path (unlike
+            # the CSAT-request best-effort step below): there would be no
+            # transaction boundary to savepoint the event-creation and
+            # consumption against, and silently running them un-isolated is
+            # exactly the phantom-event risk this savepoint exists to
+            # close. Fail closed instead.
+            raise InboxStatusTransitionError(
+                "A completion-override grant can only be consumed inside an "
+                "active owner command."
+            )
+        execute_owner_savepoint(db, _create_event_and_consume_grant)
+    else:
+        db.add(event)
+
     metadata = dict(conversation.metadata_ or {})
     history = metadata.get("status_history")
     if not isinstance(history, list):
@@ -342,6 +419,7 @@ def apply_status_transition(
     compatibility_source: str | None = None,
     macro_id: UUID | None = None,
     resolution_reason: InboxResolutionReason | None = None,
+    completion_override_grant_id: UUID | None = None,
 ) -> InboxStatusTransitionOutcome:
     """Normalize callers into the one typed, flush-only command contract."""
 
@@ -358,5 +436,6 @@ def apply_status_transition(
             compatibility_source=compatibility_source or reason.value,
             macro_id=macro_id,
             resolution_reason=resolution_reason,
+            completion_override_grant_id=completion_override_grant_id,
         ),
     )

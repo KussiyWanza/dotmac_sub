@@ -320,9 +320,8 @@ def test_a_new_waiver_is_allowed_after_revocation(db_session):
 def test_a_waiver_touches_no_payment_field_and_stages_no_funding(db_session):
     """The core guarantee. A waived order was not paid.
 
-    `funding_satisfied` is what the lifecycle projection consumes to create the
-    subscription and provisioning order, so its absence is what proves no
-    service can follow from a waiver.
+    `funding_satisfied` is the finance gate. Its absence proves the waiver did
+    not masquerade as payment; subscription creation is separately staff-owned.
     """
     subscriber = _make_subscriber(db_session)
     order = _order(db_session, subscriber)

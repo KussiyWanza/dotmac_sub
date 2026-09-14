@@ -32,6 +32,7 @@ from app.db import get_db
 from app.models.team_inbox import InboxConversation
 from app.services import (
     team_inbox_commands,
+    team_inbox_contact_links,
     team_inbox_filters,
     team_inbox_projection,
     team_inbox_read,
@@ -82,6 +83,61 @@ def test_start_conversation_passes_selected_subscriber_to_owner(db_session):
 
     assert response.status_code == 303
     assert start.call_args.kwargs["subscriber_id"] == str(selected_subscriber_id)
+
+
+def test_customer_link_options_route_maps_typed_search_and_response(db_session):
+    conversation_id = uuid.uuid4()
+    customer_id = uuid.uuid4()
+    page = team_inbox_contact_links.CustomerLinkOptionsPage(
+        items=(
+            team_inbox_contact_links.CustomerLinkOption(
+                customer_id=customer_id,
+                label="Ada Nwosu (ACCT-42)",
+                source=team_inbox_contact_links.CustomerLinkOptionSource.search,
+            ),
+        ),
+        count=1,
+        limit=8,
+    )
+    with patch(
+        "app.web.admin.inbox.team_inbox_contact_links.customer_link_options",
+        return_value=page,
+    ) as options:
+        response = _client(db_session).get(
+            f"/inbox/{conversation_id}/customer-link-options",
+            params={"q": "ACCT-42", "limit": 8},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "private, no-store"
+    assert response.json() == {
+        "items": [
+            {
+                "id": str(customer_id),
+                "label": "Ada Nwosu (ACCT-42)",
+                "type": "subscriber",
+                "source": "search",
+            }
+        ],
+        "count": 1,
+        "limit": 8,
+        "offset": 0,
+    }
+    query = options.call_args.kwargs["query"]
+    assert query == team_inbox_contact_links.CustomerLinkOptionsQuery(
+        conversation_id=conversation_id,
+        search_text="ACCT-42",
+        limit=8,
+    )
+
+
+def test_customer_link_options_route_requires_two_typed_characters(db_session):
+    response = _client(db_session).get(
+        f"/inbox/{uuid.uuid4()}/customer-link-options",
+        params={"q": "A"},
+    )
+
+    assert response.status_code == 422
 
 
 def test_merge_contact_conflict_returns_operator_facing_409(db_session):

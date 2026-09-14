@@ -1442,7 +1442,7 @@ def run_invoice_cycle(
         execute_due_prepaid_service_renewals,
     )
 
-    prepaid_renewal_summary: dict[str, int | str] = {}
+    prepaid_renewal_summary: dict[str, int | str | list[dict[str, str]]] = {}
     if run_prepaid_renewals:
         # This legacy billing coordinator owns a separate postpaid transaction
         # lifecycle.  The prepaid owner must therefore enter on a fresh clean

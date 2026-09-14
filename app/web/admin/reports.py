@@ -1,6 +1,7 @@
 """Admin reporting web routes."""
 
 import csv
+import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
@@ -1104,6 +1105,39 @@ def reports_technician_export(
     )
 
 
+def _ticket_sla_drilldown_url(
+    item: dict[str, object], *, field: str, date_from: str | None, date_to: str | None
+) -> str:
+    key = str(item["key"])
+    is_unassigned = key.startswith("unassigned_")
+    conditions: list[dict[str, object]] = [
+        {
+            "field": field,
+            "operator": "is" if is_unassigned else "=",
+            "value": None if is_unassigned else key,
+        }
+    ]
+    if date_from:
+        conditions.append(
+            {
+                "field": "created_at",
+                "operator": ">=",
+                "value": f"{date_from}T00:00:00+00:00",
+            }
+        )
+    if date_to:
+        conditions.append(
+            {
+                "field": "created_at",
+                "operator": "<=",
+                "value": f"{date_to}T23:59:59.999999+00:00",
+            }
+        )
+    return "/admin/support/tickets?filters=" + quote_plus(
+        json.dumps({"and": conditions}, separators=(",", ":"))
+    )
+
+
 @router.get(
     "/ticket-sla",
     response_class=HTMLResponse,
@@ -1121,6 +1155,15 @@ def reports_ticket_sla(
 
     start_at = _parse_date_start(date_from)
     end_at = _parse_date_end(date_to)
+    report_summary = ticket_sla_reports_service.summary(db, start_at, end_at)
+    for item in report_summary["by_service_team"]:
+        item["drilldown_url"] = _ticket_sla_drilldown_url(
+            item, field="service_team_id", date_from=date_from, date_to=date_to
+        )
+    for item in report_summary["by_region"]:
+        item["drilldown_url"] = _ticket_sla_drilldown_url(
+            item, field="region", date_from=date_from, date_to=date_to
+        )
     violation_page = ticket_sla_reports_service.violation_page(
         db,
         query=ticket_sla_reports_service.TicketSlaViolationPageQuery(
@@ -1140,7 +1183,7 @@ def reports_ticket_sla(
         "date_from": date_from or "",
         "date_to": date_to or "",
         "open_only": open_only,
-        "summary": ticket_sla_reports_service.summary(db, start_at, end_at),
+        "summary": report_summary,
         "trend": ticket_sla_reports_service.trend_daily(db, start_at, end_at),
         "violations": violation_page.rows,
         "violation_page": violation_page,

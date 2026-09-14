@@ -9,14 +9,22 @@ from uuid import uuid4
 import pytest
 from starlette.datastructures import FormData
 
-from app.models.billing import AccountAdjustment, InvoiceLine, TaxRate
+from app.models.billing import (
+    AccountAdjustment,
+    Invoice,
+    InvoiceLine,
+    TaxApplication,
+    TaxRate,
+)
 from app.models.catalog import (
     AccessCredential,
     AddOn,
     AddOnPrice,
     AddOnType,
+    BillingCycle,
     BillingMode,
     NasDevice,
+    OfferPrice,
     PriceType,
     RadiusProfile,
     Subscription,
@@ -635,6 +643,55 @@ def test_activate_after_create_stages_pending_before_canonical_command():
 
     assert flags == (True, False, False)
     assert payload == {"status": "pending"}
+
+
+def test_first_subscription_invoice_applies_offer_vat(
+    db_session,
+    subscriber,
+    subscription,
+    catalog_offer,
+):
+    vat = TaxRate(
+        name="First invoice VAT",
+        code="FIRST-INVOICE-VAT",
+        rate=Decimal("7.5000"),
+        is_active=True,
+    )
+    db_session.add_all(
+        [
+            vat,
+            OfferPrice(
+                offer_id=catalog_offer.id,
+                price_type=PriceType.recurring,
+                amount=Decimal("17500.00"),
+                currency="NGN",
+                billing_cycle=BillingCycle.monthly,
+                is_active=True,
+            ),
+        ]
+    )
+    catalog_offer.with_vat = True
+    catalog_offer.vat_percent = Decimal("7.5000")
+    subscriber.tax_rate_id = None
+    db_session.commit()
+    db_session.refresh(subscription)
+
+    web_catalog_subscriptions_service.create_invoice_for_subscription(
+        db_session,
+        subscription,
+    )
+
+    invoice = (
+        db_session.query(Invoice).filter(Invoice.account_id == subscriber.id).one()
+    )
+    line = (
+        db_session.query(InvoiceLine).filter(InvoiceLine.invoice_id == invoice.id).one()
+    )
+    assert line.tax_rate_id == vat.id
+    assert line.tax_application is TaxApplication.exclusive
+    assert invoice.subtotal == Decimal("17500.00")
+    assert invoice.tax_total == Decimal("1312.50")
+    assert invoice.total == Decimal("18812.50")
 
 
 def test_subscription_create_activates_through_canonical_lifecycle(

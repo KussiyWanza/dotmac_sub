@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # OpenBao secrets initialization for dotmac_sub.
 # Seeds project secrets into KV v2 at secret/<path> using real environment
-# values only. The script never falls back to baked-in secrets.
+# values only. The script never falls back to baked-in secrets. The settings
+# encryption keyring is the exception: it is generated once when absent and
+# written directly to OpenBao without entering an environment file.
 #
 # Usage:
 #   ./scripts/openbao_init.sh
@@ -113,14 +115,12 @@ seed_group() {
 
 seed_optional_group() {
     # Material for ONE feature, mirroring `OPTIONAL_SECRET_REFS` in
-    # app/services/kernel_secret_source.py and the settings keyring in
-    # app/services/kernel_key_provider.py.
+    # app/services/kernel_secret_source.py.
     #
     # Skips even under --strict, which is the whole difference from
     # `seed_group`. A deployment that does not use prepaid reconstruction has
-    # no attestation anchor to provision, and one that has not started
-    # encrypting secret settings has no keyring; failing a bootstrap over
-    # either would make --strict useless for the deployments that need it.
+    # no attestation anchor to provision; failing a bootstrap over it would
+    # make --strict useless for deployments that do not use that feature.
     #
     # The application makes the same distinction at boot, and makes it the
     # strict way: a missing PATH is "not provisioned", while an unreachable
@@ -202,6 +202,55 @@ seed_credential_keyring() {
     echo "  [OK] secret/${path} seeded with the verified active key"
 }
 
+seed_settings_encryption_keyring() {
+    local path="settings/crypto"
+    local field="settings_encryption_keyring"
+    local configured="${SETTINGS_ENCRYPTION_KEYRING:-}"
+    local existing=""
+    local material=""
+
+    echo "==> secret/${path}"
+    existing="$(run_bao kv get -field="$field" "secret/${path}" 2>/dev/null || true)"
+    if [ -n "$existing" ]; then
+        if [ -n "$configured" ] && [ "$configured" != "$existing" ]; then
+            echo "  [FAIL] secret/${path} already contains a different settings keyring" >&2
+            echo "  [FAIL] rotate by adding a key and retiring the old key; never replace the keyring" >&2
+            return 1
+        fi
+        echo "  [OK] secret/${path} already contains the settings keyring"
+        return 0
+    fi
+
+    if [ "$CHECK_ONLY" -eq 1 ]; then
+        if [ -n "$configured" ]; then
+            echo "  [CHECK] secret/${path} will receive the configured settings keyring"
+        else
+            echo "  [CHECK] secret/${path} will receive a generated settings keyring"
+        fi
+        return 0
+    fi
+
+    if [ -z "$configured" ]; then
+        if ! command -v openssl >/dev/null 2>&1; then
+            echo "  [FAIL] openssl is required to generate the settings keyring" >&2
+            return 1
+        fi
+        # A Fernet key is 32 random bytes encoded with URL-safe base64. Keep
+        # the generated material in-process and write it directly to OpenBao;
+        # it must never pass through stdout, a tracked file, or shell tracing.
+        material="$(openssl rand -base64 32 | tr '/+' '_-' | tr -d '\n')"
+        configured="$(printf '[{"key_id":"bootstrap-v1","key":"%s","status":"active"}]' "$material")"
+    fi
+
+    patch_secret "$path" "$field=$configured"
+    existing="$(run_bao kv get -field="$field" "secret/${path}" 2>/dev/null || true)"
+    if [ "$existing" != "$configured" ]; then
+        echo "  [FAIL] secret/${path} keyring read-back did not match" >&2
+        return 1
+    fi
+    echo "  [OK] secret/${path} settings keyring is provisioned"
+}
+
 echo "==> Waiting for OpenBao to be ready..."
 for i in $(seq 1 30); do
     if run_bao status -format=json 2>/dev/null | grep -q '"sealed":false'; then
@@ -258,9 +307,7 @@ seed_optional_group settings/billing \
 #   [{"key_id": "k1", "key": "<Fernet.generate_key()>", "status": "active"}]
 # `key_id` must stay stable for the life of its material — it is written into
 # every value the key encrypts. Rotation ADDS an entry and retires the old one.
-seed_optional_group settings/crypto \
-    "SETTINGS_ENCRYPTION_KEYRING" \
-    "settings_encryption_keyring=${SETTINGS_ENCRYPTION_KEYRING:-}"
+seed_settings_encryption_keyring
 
 seed_group database \
     "DATABASE_URL,POSTGRES_PASSWORD" \

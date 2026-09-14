@@ -95,6 +95,13 @@ class Tr069CpeDevice(Base):
             unique=True,
             postgresql_where=text("is_active AND genieacs_device_id IS NOT NULL"),
         ),
+        Index(
+            "uq_tr069_cpe_devices_active_cpe_device_id",
+            "cpe_device_id",
+            unique=True,
+            postgresql_where=text("is_active AND cpe_device_id IS NOT NULL"),
+            sqlite_where=text("is_active AND cpe_device_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

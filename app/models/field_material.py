@@ -29,6 +29,7 @@ FIELD_MATERIAL_REQUEST_STATUSES = (
     "canceled",
     "accepted_by_erp",
     "pending_stock",
+    "cancellation_pending",
     "sync_failed",
 )
 FIELD_MATERIAL_REQUEST_PRIORITIES = ("low", "medium", "high", "urgent")
@@ -214,7 +215,7 @@ class FieldMaterialRequest(Base):
         CheckConstraint(
             "status IN ('draft', 'submitted', 'approved', 'rejected', 'issued', "
             "'fulfilled', 'canceled', 'accepted_by_erp', 'pending_stock', "
-            "'sync_failed')",
+            "'cancellation_pending', 'sync_failed')",
             name="ck_field_material_requests_status",
         ),
         CheckConstraint(

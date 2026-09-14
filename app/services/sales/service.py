@@ -2259,7 +2259,7 @@ class Quotes(ListResponseMixin):
                 )
                 raise HTTPException(
                     status_code=409,
-                    detail="Save Quote edits before accepting it",
+                    detail="Save the quote changes first, then accept it.",
                 )
             db_session_adapter.release_read_transaction(db)
             quote_acceptance.accept_quote(

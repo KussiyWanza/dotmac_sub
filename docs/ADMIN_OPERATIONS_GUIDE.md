@@ -1150,6 +1150,21 @@ Use in integration installation secret bindings: `bao://secret/<path>#<field>`
 Example: Paystack installation binding `gateway_credentials` =
 `bao://secret/paystack#secret_key`.
 
+### Settings Encryption Keyring
+
+Secret-valued admin settings, including SMTP sender passwords, require the
+settings-encryption keyring held at
+`secret/settings/crypto#settings_encryption_keyring`. Run
+`scripts/setup/openbao_init.sh` during environment bootstrap. When the field is
+absent, the initializer creates one strong Fernet keyring directly in OpenBao;
+it does not print the material or copy it into an environment file. If the field
+already exists, initialization preserves it and refuses a conflicting override.
+
+Recreate the API and every Celery process after first provisioning or rotation,
+because each process holds the keyring from boot. The production deployment
+preflight refuses to continue when the keyring is missing, preventing a later
+500 response when an administrator saves a secret setting.
+
 ### Rotating Secrets
 
 Ordinary provider secrets can be updated in OpenBao. Application processes

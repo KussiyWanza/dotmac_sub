@@ -480,6 +480,7 @@ def _merge_facts(runtime: _GraphRuntime):
             fresh_signal=True,
         )
         engine._merge_classification(dotmac_state, runtime.classification)
+        engine._refresh_issue_acknowledgement_requirement(dotmac_state)
         if runtime.classification is not None:
             latest_facts.update(
                 engine._meaningful_understanding_facts(

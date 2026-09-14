@@ -276,11 +276,27 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         ),
     ),
     _guide(
+        "cpe-detail-wifi-actions",
+        "Network and access",
+        "Change WiFi SSID or password from a CPE's detail page",
+        "NOC, field operations",
+        "Update the WiFi SSID or password for the ONT behind a specific CPE inventory record, from that CPE's own detail page.",
+        ("/admin/network/cpes",),
+        "This action resolves the exact, currently active TR-069 identity for this one CPE record, then routes the change through the same owner as the ONT Configure tab — it never writes to the device directly.",
+        "It will refuse, with a specific reason, if the CPE has no linked ONT, the ONT has no active service assignment, or more than one TR-069 identity or assignment is active for it at once — do not treat that as a bug; it means the identity is ambiguous and needs review before a WiFi change can be trusted.",
+        "You need both network:cpe:write and network:ont:write to use this action — it exists because the change is actually applied by the ONT owner, not the CPE record itself.",
+        "Unchanged WiFi fields (channel, security mode, on/off) are carried forward from the ONT's current settings automatically; you do not need to re-enter them.",
+        notes=(
+            "A refusal naming a missing or ambiguous identity is not something to retry blindly — check Network Explorer's assignment-drift review queue and the CPE's TR-069 link before trying again.",
+            "This is the same durable, tracked delivery path as the ONT Configure tab's WiFi actions: the change is saved and applied at the device's next check-in through the normal reconcile lifecycle, not written to the device from this page directly.",
+        ),
+    ),
+    _guide(
         "work-order-expenses",
         "Operations",
         "Record a work-order expense",
-        "Field operations staff",
-        "Create and track your own expense claim against the exact work order.",
+        "Field operations staff and expense managers",
+        "Create, review, and track an expense claim against the exact work order.",
         (),
         "Open the exact work order and review its customer and operational context.",
         (
@@ -288,13 +304,72 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
             "becomes available after a technician is assigned and ERP categories "
             "are available."
         ),
-        "Enter the purpose, date, currency, and item details; attach required receipt evidence before submitting.",
-        "Return to the work order to track delivery and ERP acceptance separately.",
+        "Choose the intended approver from ERP's current eligible list.",
+        "Use the masked ERP payment profile or choose different details for this expense, then verify the beneficiary, bank, and account before submitting.",
+        "Enter the purpose, date, currency, and item details; attach required receipt evidence before submitting. The work-order route supplies the identity and cannot be edited in the form.",
+        "Submission stages the claim for ERP draft creation; a manager then approves or rejects it after checking the work order, category, receipt, approver, and payment-destination evidence.",
+        "Return to the work order to track draft submission, manager decision delivery, required receipt delivery, ERP acceptance, and payment separately.",
         notes=(
-            "Only your claims appear in this card; approval, reimbursement, and payment remain in ERP.",
-            "A submitted claim is not approved, and a sent delivery is not ERP acceptance.",
+            "Only your claims appear in this card. A submitted claim may already have an ERP draft, but it is not approved or released for payment until the manager decision is delivered.",
+            "Different payment details apply only to this expense and do not change the technician's ERP profile.",
+            "The selected approver alone can approve or reject the submitted expense; ERP remains authoritative for eligibility, account verification, reimbursement, and payment.",
+            "Only masked payment details are displayed. If ERP verification is unavailable or expires, verify again before submitting.",
+            "Required uploaded receipts remain private and must reach the ERP claim before delivery is accepted.",
+            "A submitted claim is not approved, a sent delivery is not ERP acceptance, and reimbursement and payment remain in ERP.",
         ),
         route_templates=("/admin/dispatch/work-orders/{work_order_id}",),
+    ),
+    _guide(
+        "material-requests",
+        "Operations",
+        "Review and cancel material requests",
+        "Field operations and material-request reviewers",
+        "Track a field material request and request cancellation without overriding ERP stock authority.",
+        ("/admin/operations/material-requests",),
+        "Open the request and confirm its work context, requested items, priority, source warehouse, and current status.",
+        "Compare the local request state with ERP delivery, reference, and observed status before taking action.",
+        "When cancellation is available, enter a clear reason and submit it once.",
+        "For a request already accepted by ERP, treat Cancellation pending as an acknowledgement wait; refresh later for ERP's final outcome.",
+        notes=(
+            "ERP owns stock availability, serial allocation, issuance, and whether an accepted request can still be canceled.",
+            "Do not retry a pending cancellation or treat it as canceled until ERP confirms that no stock was issued.",
+        ),
+    ),
+    _guide(
+        "project-template-plans",
+        "Projects",
+        "Configure project template tasks and subtasks",
+        "Project managers, operations administrators",
+        "Define the reusable task plan that future projects receive.",
+        ("/admin/projects/templates",),
+        "Open the intended project template and choose Edit Tasks.",
+        "Add top-level tasks, then use Add subtask for completion checks that belong under a task.",
+        "Keep each subtask after its parent and select dependencies only from earlier work in the plan.",
+        "Review work-order automation and evidence requirements for every task that can create field work.",
+        "Save the plan as a new revision, then confirm the revision and hierarchy on the template detail page.",
+        notes=(
+            "Saving a template revision does not alter projects that already use the template.",
+            "A parent task cannot be completed until all of its active subtasks are done.",
+            "A project receives the new revision when it is created with the template or when an operator explicitly changes that project's template.",
+        ),
+    ),
+    _guide(
+        "project-task-subtasks",
+        "Projects",
+        "Manage project tasks and project-specific subtasks",
+        "Project managers, operations",
+        "Track project work and add completion checks that apply only to one project.",
+        ("/admin/projects/tasks",),
+        "Open the project task that owns the work and review its status, dependencies, field work, and existing subtasks.",
+        "Choose Add Subtask, confirm the project and parent task, then describe the project-specific completion check.",
+        "Complete every active subtask before completing its parent task.",
+        "When changing a project's template, review the selected revision and task counts before saving.",
+        "After a template change, use the current task plan for new work and open Previous template plan only when historical evidence is needed.",
+        notes=(
+            "An ad-hoc subtask belongs only to this project and does not change the reusable template.",
+            "Changing or clearing a project's template preserves ad-hoc work and retains the former generated plan as read-only history.",
+            "Previous-plan tasks cannot be edited or used to create new field work, but their existing linked work remains available.",
+        ),
     ),
     _guide(
         "project-authoring",
@@ -351,6 +426,25 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
             "Typing text alone does not select a recipient. Choose an exact typeahead result; changing the text clears the previous selection.",
             "Customers can see an installation estimate while it is under review, but payment remains unavailable.",
             "Approval records the reviewer, time, revision, and exact Quote snapshot. Material Quote changes require a new review.",
+        ),
+    ),
+    _guide(
+        "sales-orders",
+        "Sales",
+        "Fund and prepare a sales order for service",
+        "Sales, finance, provisioning, operations",
+        "Record customer funding without starting service or allocating network resources too early.",
+        ("/admin/sales/sales-order",),
+        "Confirm the customer, commercial lines, installation amount, tax, total, payment state, and outstanding balance.",
+        "Use Record Payment to open Finance's customer-account payment workflow with the outstanding balance suggested.",
+        "Review and confirm the receipt in Finance; do not set Paid from the sales-order editor.",
+        "Confirm the installation invoice and allocation. Any remaining amount stays as customer account credit.",
+        "Treat Paid as funding evidence only: it does not create a subscription, recurring invoice, credential, service order, add-on, or IP assignment.",
+        "When installation and network details are ready, create the subscription from the customer workflow and explicitly select the offer, service address, access details, and IP requirements.",
+        notes=(
+            "Pending subscription creation may keep service start and next-billing dates empty; generate the initial invoice only when billing should begin.",
+            "After a receipt or waiver exists, do not edit or delete the commercial document. Use the appropriate Finance refund, credit-note, or adjustment workflow.",
+            "Payment state, subscription lifecycle, and network provisioning are separate decisions owned by their respective workflows.",
         ),
     ),
     _guide(
@@ -415,6 +509,7 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         "Record confirmed money and apply it to the right invoices.",
         ("/admin/billing/payments",),
         "Confirm external payment evidence, then enter amount, currency, method, date, reference, and memo.",
+        "When arriving from a sales order, verify the customer and suggested outstanding balance before previewing the account-level receipt.",
         "Review the preview, duplicate-reference and duplicate-evidence warnings, allocation, and service effects before confirming.",
         "When verified prepaid credit covers the complete renewal charge, the system creates and pays one invoice for that service period, grants the matching coverage, and updates the next billing date together.",
         "If the complete prepaid charge is unavailable, no renewal invoice is created and the billing date is not moved.",
@@ -497,6 +592,24 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         ),
     ),
     _guide(
+        "smtp-senders",
+        "System",
+        "Configure SMTP senders",
+        "System administrators, support leads, NOC leads, sales leads",
+        "Create verified outbound identities for service teams and mailbox routes.",
+        ("/admin/system/email",),
+        "Confirm the settings-encryption keyring is provisioned in OpenBao before entering a sender password.",
+        "Create one sender key for each required identity, such as support, NOC, or sales, and enter its verified From address and SMTP credentials.",
+        "Test the sender, make it active, and set a default only when it should be the application-wide fallback.",
+        "Open Team Inbox settings and assign the intended Reply sender to each mailbox route.",
+        "Send a controlled reply from each route and confirm the delivered From address matches that team.",
+        notes=(
+            "The OpenBao field is secret/settings/crypto#settings_encryption_keyring; bootstrap it before saving secret-valued settings, then recreate API and Celery processes.",
+            "A sender profile does not select itself for a team. The mailbox route's Reply sender owns that mapping.",
+            "Do not use support as the default to conceal a missing NOC or sales sender mapping.",
+        ),
+    ),
+    _guide(
         "team-inbox",
         "Support",
         "Use the team inbox",
@@ -508,6 +621,9 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         "While AI is handling a conversation or waiting for the customer, review it read-only; normal reply, note, assignment, status, ticket, macro, and bulk actions remain unavailable.",
         "When authorized human intervention is intentional, choose Take Over Conversation and confirm it before replying; an ordinary reply never takes ownership away from AI.",
         "After AI hands the conversation to the human queue, the first eligible reply claims it for that agent. If another agent already owns it, the reply is not sent and the Inbox names the current owner.",
+        "Before resolving, identify whether the sender is the Customer, a Lead, or a representative. When the sender represents someone else, select the exact participant and existing Customer or active Lead, then record the reason; this links only the current conversation and does not make the sender that person or create a global contact route.",
+        "To link the sender to an existing Customer, open Contact details and click Existing Customer to load likely matches. If none is right, type at least two characters to search all active Customers by name, email, phone, company, account number, subscriber number, or Customer ID, then choose the exact result before selecting Link Customer.",
+        "Keep the Inbox visible while available; its authenticated heartbeat refreshes your routing presence but never overrides Away, On break, or Offline.",
         "Open the conversation or linked ticket before acting, then return to the same filtered queue context.",
         "On Channel routing, save and validate an AI intake draft before activation; review the exact channel scope, allowed tools, playbook, tone, follow-up limits, and customer-wait handoff interval.",
         "In Queue messaging, keep heartbeats off unless reassurance is explicitly required; when enabled, use different non-position wording and a longer interval than position checks.",
@@ -556,7 +672,13 @@ def search_guidance(
 
 
 def guidance_categories() -> tuple[str, ...]:
-    return tuple(sorted({guide.category for guide in WORKFLOW_GUIDANCE}))
+    categories = {guide.category for guide in WORKFLOW_GUIDANCE}
+    return tuple(
+        sorted(
+            categories,
+            key=lambda category: (category != "Getting started", category.casefold()),
+        )
+    )
 
 
 def all_guidance() -> Iterable[AdminWorkflowGuidance]:

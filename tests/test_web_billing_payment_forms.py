@@ -8,7 +8,10 @@ fell back to invoice.total, so the record-payment form showed the full total as
 from decimal import Decimal
 from types import SimpleNamespace
 
-from app.services.web_billing_payment_forms import invoice_balance_info
+from app.services.web_billing_payment_forms import (
+    build_new_form_state,
+    invoice_balance_info,
+)
 
 
 def _invoice(balance_due, total, currency="NGN"):
@@ -33,6 +36,30 @@ def test_unset_balance_falls_back_to_total():
     value, display = invoice_balance_info(_invoice(None, Decimal("15000.00")))
     assert value == "15000.00"
     assert "15,000.00" in display
+
+
+def test_account_payment_can_prefill_sales_order_balance(db_session, monkeypatch):
+    account_id = "46ca495f-654e-4cef-88ac-528773a72b29"
+    monkeypatch.setattr(
+        "app.services.web_billing_payment_forms.subscriber_service.accounts.get",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "app.services.web_billing_payment_forms.billing_service.collection_accounts.list",
+        lambda **kwargs: [],
+    )
+
+    state = build_new_form_state(
+        db_session,
+        invoice_id=None,
+        invoice_alias=None,
+        account_id=account_id,
+        account_alias=None,
+        amount="233812.50",
+    )
+
+    assert state["prefill"]["account_id"] == account_id
+    assert state["prefill"]["amount"] == Decimal("233812.50")
 
 
 def test_load_invoice_currency_state_honors_default_currency_setting(db_session):

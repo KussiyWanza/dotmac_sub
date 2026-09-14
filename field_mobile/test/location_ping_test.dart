@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dotmac_field/core/location/location_ping_store.dart';
 import 'package:dotmac_field/core/location/location_source.dart';
 import 'package:dotmac_field/core/secure/evidence_cipher.dart';
+import 'package:dotmac_field/core/secure/store_work_gate.dart';
 import 'package:dotmac_field/features/location/location_cadence.dart';
 import 'package:dotmac_field/features/location/location_ping_service.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -390,6 +391,7 @@ void main() {
         file,
         cipher: cipher(),
         scopeKey: scopeKey,
+        work: StoreWorkGate(),
         clock: () => DateTime.utc(2026, 8, 18, 12),
       );
       addTearDown(() async {
@@ -417,6 +419,7 @@ void main() {
           file,
           cipher: cipher(),
           scopeKey: scopeKey,
+          work: StoreWorkGate(),
         );
         addTearDown(() async {
           if (await directory.exists()) await directory.delete(recursive: true);
@@ -548,6 +551,7 @@ void main() {
         file,
         cipher: cipher(),
         scopeKey: scopeKey,
+        work: StoreWorkGate(),
       );
       addTearDown(() async {
         if (await directory.exists()) await directory.delete(recursive: true);

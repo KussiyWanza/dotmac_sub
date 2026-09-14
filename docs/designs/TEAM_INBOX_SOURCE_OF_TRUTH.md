@@ -47,7 +47,7 @@ combined Inbox/Support workspace.
 | Inbound provider facts, deduplication, and identity-collision quarantine | `communications.team_inbox_observations` | Commits one normalized provider observation before consequences and durably quarantines conflicting SMTP candidates |
 | Consequence coordination | `communications.team_inbox_processing` | Locks a committed observation and invokes the relevant participants once |
 | Conversation identity and threading | `communications.team_inbox_threads` | Resolves provider message/thread identity and writes conversations/messages |
-| Contact, subscriber, reseller, and reviewed context | `communications.team_inbox_contact_resolution` | Aggregates canonical Customer identities, produces explicit matched, ambiguous, suppressed, or unmatched outcomes, persists safe automatic Customer links, and owns reviewed links |
+| Contact, subscriber, reseller, and reviewed context | `communications.team_inbox_contact_resolution` | Aggregates canonical Customer identities, produces explicit matched, ambiguous, suppressed, or unmatched outcomes, persists safe automatic Customer links, owns reviewed links, and projects bounded lazy Customer link options |
 | Conversation-to-Lead provenance | `communications.conversation_lead_relationships` | Owns the durable, auditable, one-active-Lead-per-conversation relationship |
 | Customer context drawer | `communications.team_inbox_contact_context` | Composes permission-scoped Party, Lead, Ticket, conversation, Project, and Task sections with typed availability |
 | Profile and Lead action resolution | `communications.inbox_lead_actions` | Resolves and coordinates identity-aware actions without owning Party or Lead fields |
@@ -125,13 +125,16 @@ provenance is the only exception for AI-authorized routing.
 `TakeOverConversationCommand` is the only ordinary human transition out of AI
 control. It locks and rechecks the expected conversation/session/state, stops
 the session as `stopped_human_takeover`, clears customer wait, records actor,
-reason, timestamps and prior state, acquires the agent through existing Inbox
-assignment rules, suppresses pending AI outbox rows, and stages projection and
-realtime effects in one owner transaction. Assignment failure rolls the whole
-operation back. A stable idempotency key replays the completed takeover; stale
-session or state evidence returns a conflict. Delivery workers independently
-revalidate the referenced active AI session immediately before provider contact
-and cancel stale queued AI messages after takeover.
+reason, timestamps and prior state, and assigns the authorized active staff
+actor. Explicit takeover deliberately bypasses ordinary assignment membership,
+presence, capacity, FIFO, and existing-owner gates; the selected active service
+team remains required as routing and audit attribution, but it is not an
+operator-eligibility gate. The same transaction suppresses pending AI outbox
+rows and stages projection and realtime effects. Assignment failure rolls the
+whole operation back. A stable idempotency key replays the completed takeover;
+stale session or state evidence returns a conflict. Delivery workers
+independently revalidate the referenced active AI session immediately before
+provider contact and cancel stale queued AI messages after takeover.
 ## Inbound flow and idempotency
 
 1. The adapter verifies the provider signature or SMTP envelope and reduces the
@@ -230,6 +233,38 @@ be used by an active-window or unavailable conversation. Resolution is an
 internal status transition: it creates no assignment, queue admission, outbound
 intent, CSAT request, template, AI session, or customer-service window.
 
+The Existing Customer selector is lazy and has two explicit read modes. Focus
+on an empty field requests at most eight conversation-derived likely matches;
+there is no unrelated recently-updated-Customer fallback. Entering at least two
+characters replaces those suggestions with at most eight active Customers
+matched only from the entered name, email, phone, company/legal name, account
+number, subscriber number, display name, or exact Customer UUID. Requests are
+debounced and stale requests are cancelled. Neither mode writes identity.
+
+Contact-route writes serialize on the complete provider-scoped endpoint before
+they lock conversation and route rows. Reapplying the same target reuses the
+active route and repairs only missing conversation projections. A reviewed
+different target retains the existing active association, records the new
+evidence as a conflict, and requires explicit adjudication; it is never silently
+replaced. Route evidence that changes during review fails closed and requires a
+fresh drawer.
+
+When the sender represents someone else, the operator selects the exact
+conversation participant, a represented existing Customer or Party-backed Lead,
+and a required reason. For a Customer, the contact-resolution owner retains the
+endpoint on the representative Party, records the `contact_for` relationship,
+and creates or reuses the provider-scoped route so later conversations can
+recover both speaker and represented Customer. It never copies the
+representative's contact details onto the Customer. The conversation-to-Lead
+owner records a selected Lead without creating a duplicate Lead. Conflicting or
+multi-Customer representation evidence remains reviewable rather than guessed.
+
+Agent resolution uses the Customer-only completion gate defined in
+`docs/designs/INBOX_CUSTOMER_COMPLETION_GATE.md`. Customer conversations must
+satisfy their immutable snapshotted policy on canonical Customer/Party facts.
+Lead profile gaps never participate in resolution readiness. Direct, bulk, and
+macro resolution all enter the status owner and consume the same verdict.
+
 The fiber website uses the same boundary through the signed
 `communications.fiber_inquiry.receive.v1` Integration Platform capability.
 The verified delivery receipt is recorded before the normalized
@@ -306,14 +341,28 @@ The per-agent lock is intentionally not team-scoped because one agent may be a
 member of several teams or channels. Normal manual, self, automation, workqueue
 and promotion assignments use the same membership, presence and capacity gate;
 there is no implicit force override and a queued non-head cannot be selected.
+Reply auto-claim preserves a different owner whose effective presence is
+`online`, `away`, or `on_break`. It may atomically replace that assignment only
+when the routing owner locks the prior owner's presence evidence and resolves it
+to `offline`; missing presence and online evidence older than the freshness
+window fail closed to offline. The replacement is recorded as a distinct
+routing reason in the same transaction as the reply and assignment transition.
 
 An `online` presence is eligible only when its `last_seen_at` evidence is no
 more than 30 minutes old; missing or stale presence fails closed as offline.
+The authenticated Inbox workspace sends a best-effort heartbeat when it opens,
+every five minutes while visible, and when a hidden tab becomes visible again.
+The routing owner accepts that heartbeat only for an active `SystemUser`. It
+creates missing online presence and refreshes selected online presence, but
+never overrides an explicit `away`, `on_break`, or `offline` selection. A
+hidden or closed workspace naturally becomes stale after the same 30-minute
+window.
 The default capacity is the `comms.inbox_agent_default_max_concurrent_conversations`
 setting (default `10`, allowed range `1..100`) unless
 `InboxAgentPresence.max_concurrent_conversations` supplies the existing
 per-agent override. Administrators edit the default at **Admin → System →
-CRM → Inbox → Settings**, field **Maximum active chats per agent**. The routing
+CRM → Inbox → Settings** and **Admin → System → Settings → Comms**, field
+**Maximum active chats per agent**. The routing
 owner validates the registered `1..100` bound, delegates persistence to the
 canonical settings writer, records setting history plus an audit event, and
 invalidates the cache on commit; subsequent assignment decisions consume the
@@ -330,7 +379,12 @@ one shared countable-active-assignment predicate used by capacity and active
 work reporting. Default/actionable,
 unassigned, pending-response, needs-response, unread-work, and manager workload
 counts apply the same authoritative exclusion; AI Intake has its own count.
-Explicit takeover uses the same membership, presence, FIFO, and capacity gates.
+Explicit takeover is the intentional exception to membership, presence, FIFO,
+capacity, and existing-owner assignment gates. Any active staff actor with both
+takeover permissions may stop AI and acquire the conversation. The routing owner
+still validates an active service team and records current availability as audit
+evidence; bypassed eligibility never becomes the policy for ordinary manual or
+automatic assignment.
 
 Capacity-opening transitions schedule an idempotent promotion task after the
 owning transaction commits. Agent return to eligible online presence,
@@ -578,6 +632,8 @@ queue interval, or assignment ending timestamp. See
 | Projection | Inputs | Canonical writer | Repair |
 | --- | --- | --- | --- |
 | Contact link | Conversation route plus reviewed Party/customer facts | contact-resolution owner | Revalidate/reapply a reviewed link, which repairs active unlinked threads on that exact normalized route; use the digest-bound `repair_team_inbox_subscriber_links` operator workflow for existing uniquely resolved routes; ambiguity remains explicit |
+| Represented Customer association | Exact active conversation participant, selected active Customer, authenticated operator, and required review reason | contact-resolution owner with participant-owner classification | Reapply the reviewed command to the same conversation, participant, and Customer; it is idempotent and never widens to another conversation or creates a global contact route |
+| Represented Lead association | Exact active conversation participant, selected active Party-backed Lead, authenticated operator, and required review reason | conversation-to-Lead owner with participant-owner classification | Reapply the reviewed command to the same conversation, participant, and Lead; the active link is idempotent and never creates a Lead or global contact route |
 | Operator unread | Message chronology plus per-person read cursor | operator-state owner | Set-based grouped queries recompute the projection; `rebuild_operator_read_state` removes impossible cross-conversation cursors |
 | Queue metrics and response cohorts | Conversation lifecycle, ordered message chronology, agent reply provenance/delivery, ticket handoff, assignment, and read state | projection query owner | Recompute on every query; no independent flag or counter is authoritative |
 | Performance report cohorts | Conversation lifecycle, ordered message chronology, recorded sender provenance, assignments, team composition, and staff identity in the selected half-open UTC period | `communications.team_inbox_metrics` | Recompute in set-based queries on every request; defaults to the latest 30 days, rejects ranges over 366 days, and exposes the effective period in the typed outcome |

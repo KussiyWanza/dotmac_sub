@@ -1,5 +1,7 @@
 import 'package:drift/drift.dart';
 
+import '../secure/store_work_gate.dart';
+
 part 'database.g.dart';
 
 /// Rebuildable read-model projections. Every row here is a copy of something
@@ -160,7 +162,12 @@ class DraftEntries extends Table with ScopedRows, PendingOutbound {
   ],
 )
 class AppDatabase extends _$AppDatabase {
-  AppDatabase(super.executor);
+  AppDatabase(super.executor, {StoreWorkGate? work})
+    : work = work ?? StoreWorkGate();
+
+  /// Coordinates every asynchronous operation that can retain this connection
+  /// across a session ending.
+  final StoreWorkGate work;
 
   @override
   int get schemaVersion => 6;

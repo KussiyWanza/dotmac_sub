@@ -83,3 +83,9 @@ same-looking social subjects have legitimately been stored under different
 provider accounts until those rows are reviewed: restoring the retired global
 `(channel_type, normalized_contact)` uniqueness index would otherwise fail or
 collapse valid identities.
+
+Reapplying a route already linked to the selected Subscriber reuses that route
+and repairs only eligible unlinked conversations. A different selected
+Subscriber does not replace the reviewed owner: it records a conflict and
+requires explicit adjudication. A stale-route refusal requires a fresh preview;
+never remove or bypass the active-route unique index.

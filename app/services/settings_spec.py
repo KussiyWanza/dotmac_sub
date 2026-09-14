@@ -2664,6 +2664,14 @@ SETTINGS_SPECS: list[SettingSpec] = [
     ),
     SettingSpec(
         domain=SettingDomain.subscriber,
+        key="service_location_required",
+        env_var="CUSTOMER_SERVICE_LOCATION_REQUIRED",
+        value_type=SettingValueType.boolean,
+        default=False,
+        label="Require customer service location",
+    ),
+    SettingSpec(
+        domain=SettingDomain.subscriber,
         key="default_country_code",
         env_var="DEFAULT_COUNTRY_CODE",
         value_type=SettingValueType.string,
@@ -4189,6 +4197,16 @@ SETTINGS_SPECS: list[SettingSpec] = [
         min_value=10,
         max_value=3600,
         label="Team Inbox queue-notification due-work scan interval",
+    ),
+    SettingSpec(
+        domain=SettingDomain.comms,
+        key="inbox_completion_override_grant_window_hours",
+        env_var="INBOX_COMPLETION_OVERRIDE_GRANT_WINDOW_HOURS",
+        value_type=SettingValueType.integer,
+        default=24,
+        min_value=1,
+        max_value=168,
+        label="Team Inbox legacy completion-override grant validity window",
     ),
     # ============== Notification Domain: Email Settings ==============
     SettingSpec(

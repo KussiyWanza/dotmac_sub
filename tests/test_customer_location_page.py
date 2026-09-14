@@ -7,10 +7,9 @@ import pytest
 from fastapi import HTTPException
 
 from app.models.gis import (
-    CustomerLocationChangeRequest,
     CustomerLocationChangeRequestStatus,
 )
-from app.models.subscriber import Subscriber
+from app.models.subscriber import Address, AddressType, Subscriber
 from app.schemas.geocoding import ReverseGeocodeQuery
 from app.services import customer_location_requests as location_service
 from app.services import geocoding
@@ -152,57 +151,116 @@ class TestPortalLocationRoutes:
         assert context["active_page"] == "location"
         assert context["can_submit_request"] is True
 
-    def test_submit_creates_pending_request(self, db_session):
+    def test_submit_saves_service_address_and_pin(self, db_session):
         subscriber = _subscriber(db_session)
         request = MagicMock()
-        request.client.host = "203.0.113.9"
         with patch(
             "app.web.customer.location.get_current_customer_from_request",
             return_value=_customer(subscriber),
         ):
             response = location_web.customer_location_submit(
                 request,
+                address_line1="44 New Service Road",
+                address_line2="Flat 2",
+                city="Lekki",
+                region="Lagos",
+                lga="Eti-Osa",
+                postal_code="101233",
+                country_code="ng",
                 latitude=6.601234,
                 longitude=3.351234,
-                customer_note="Pin is one street off",
                 db=db_session,
             )
         assert response.status_code == 303
         stored = (
-            db_session.query(CustomerLocationChangeRequest)
-            .filter(CustomerLocationChangeRequest.subscriber_id == subscriber.id)
+            db_session.query(Address)
+            .filter(Address.subscriber_id == subscriber.id)
             .one()
         )
-        assert stored.status == CustomerLocationChangeRequestStatus.pending
-        assert stored.requested_latitude == pytest.approx(6.601234)
-        assert stored.submitted_from_ip == "203.0.113.9"
+        assert stored.address_type == AddressType.service
+        assert stored.address_line1 == "44 New Service Road"
+        assert stored.region == "Lagos"
+        assert stored.latitude == pytest.approx(6.601234)
+        assert stored.longitude == pytest.approx(3.351234)
 
-    def test_second_pending_submit_renders_error(self, db_session):
+    def test_second_submit_updates_existing_service_address(self, db_session):
         subscriber = _subscriber(db_session)
         request = MagicMock()
-        request.client.host = None
-        template_response = MagicMock(name="template_response")
+        customer = _customer(subscriber)
+        with patch(
+            "app.web.customer.location.get_current_customer_from_request",
+            return_value=customer,
+        ):
+            first = location_web.customer_location_submit(
+                request,
+                address_line1="First Address",
+                address_line2="",
+                city="Ikeja",
+                region="Lagos",
+                lga="",
+                postal_code="",
+                country_code="NG",
+                latitude=6.6,
+                longitude=3.35,
+                db=db_session,
+            )
+            second = location_web.customer_location_submit(
+                request,
+                address_line1="Second Address",
+                address_line2="",
+                city="Lekki",
+                region="Lagos",
+                lga="",
+                postal_code="",
+                country_code="NG",
+                latitude=6.7,
+                longitude=3.36,
+                db=db_session,
+            )
+        assert first.status_code == 303
+        assert second.status_code == 303
+        assert (
+            db_session.query(Address)
+            .filter(Address.subscriber_id == subscriber.id)
+            .count()
+            == 1
+        )
+        stored = (
+            db_session.query(Address)
+            .filter(Address.subscriber_id == subscriber.id)
+            .one()
+        )
+        assert stored.address_line1 == "Second Address"
+        assert stored.latitude == pytest.approx(6.7)
+
+    def test_read_only_customer_cannot_submit_location(self, db_session):
+        subscriber = _subscriber(db_session)
+        customer = {**_customer(subscriber), "read_only": True}
         with (
             patch(
                 "app.web.customer.location.get_current_customer_from_request",
-                return_value=_customer(subscriber),
+                return_value=customer,
             ),
             patch(
                 "app.web.customer.location.templates.TemplateResponse",
-                return_value=template_response,
+                return_value=MagicMock(name="read_only_response"),
             ) as render,
         ):
-            first = location_web.customer_location_submit(
-                request, latitude=6.6, longitude=3.35, customer_note="", db=db_session
+            response = location_web.customer_location_submit(
+                MagicMock(),
+                address_line1="Should not save",
+                latitude=6.6,
+                longitude=3.35,
+                db=db_session,
             )
-            assert first.status_code == 303
-            second = location_web.customer_location_submit(
-                request, latitude=6.7, longitude=3.36, customer_note="", db=db_session
-            )
-        assert second is template_response
-        assert render.call_args[1]["status_code"] == 400
-        context = render.call_args[0][1]
-        assert "pending" in context["form_error"].lower()
+        assert response is render.return_value
+        assert render.call_args.kwargs["status_code"] == 403
+        assert (
+            db_session.query(Address)
+            .filter(Address.subscriber_id == subscriber.id)
+            .count()
+            == 0
+        )
 
     def test_cancel_pending_request(self, db_session):
         subscriber = _subscriber(db_session)

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi import BackgroundTasks
 from starlette.requests import Request
+from starlette.responses import Response
 
 from app.models.notification import Notification, NotificationStatus
 from app.models.party import Party, PartyType
@@ -17,14 +19,23 @@ from app.models.team_inbox import (
     InboxChannelType,
     InboxContactLink,
     InboxConversation,
+    InboxConversationLeadLink,
+    InboxConversationParticipant,
     InboxConversationStatus,
     InboxLabel,
     InboxMessage,
     InboxMessageDirection,
     InboxMessageTemplate,
+    InboxParticipantAdmissionSource,
+    InboxParticipantRelationship,
     InboxReplyMacro,
 )
-from app.services import team_inbox_operations, team_inbox_projection, team_inbox_read
+from app.services import (
+    team_inbox_contact_links,
+    team_inbox_operations,
+    team_inbox_projection,
+    team_inbox_read,
+)
 from app.web.admin import inbox as inbox_web
 from tests.staff_identity_fixtures import add_bound_staff_user
 
@@ -128,6 +139,183 @@ def test_admin_contact_link_candidates_match_timeline_context(db_session):
     assert candidates.resellers[0].id == str(reseller.id)
 
 
+def test_customer_link_options_suggest_only_conversation_matches(db_session):
+    suggested = _subscriber(db_session, first_name="ConversationMatch")
+    unrelated = _subscriber(db_session, first_name="RecentlyUpdated")
+    conversation = _conversation(
+        db_session,
+        subject="No useful subject",
+    )
+    conversation.metadata_["contact_name"] = "ConversationMatch"
+
+    page = team_inbox_contact_links.customer_link_options(
+        db_session,
+        query=team_inbox_contact_links.CustomerLinkOptionsQuery(
+            conversation_id=conversation.id,
+        ),
+    )
+
+    assert [item.customer_id for item in page.items] == [suggested.id]
+    assert unrelated.id not in {item.customer_id for item in page.items}
+    assert page.items[0].source.value == "suggested"
+
+
+def test_customer_link_options_do_not_fallback_to_recent_customers(db_session):
+    _subscriber(db_session, first_name="Unrelated")
+    conversation = _conversation(db_session, subject="No matching identity here")
+
+    page = team_inbox_contact_links.customer_link_options(
+        db_session,
+        query=team_inbox_contact_links.CustomerLinkOptionsQuery(
+            conversation_id=conversation.id,
+        ),
+    )
+
+    assert page.items == ()
+
+
+def test_customer_link_options_search_only_typed_text_and_customer_uuid(db_session):
+    suggested = _subscriber(db_session, first_name="SuggestedOnly")
+    target = _subscriber(db_session, first_name="ManualTarget")
+    target.company_name = "Manual Search Company"
+    target.account_number = "ACCT-MANUAL-42"
+    target.subscriber_number = "SUB-MANUAL-42"
+    conversation = _conversation(db_session, subject="SuggestedOnly needs help")
+
+    text_page = team_inbox_contact_links.customer_link_options(
+        db_session,
+        query=team_inbox_contact_links.CustomerLinkOptionsQuery(
+            conversation_id=conversation.id,
+            search_text="ACCT-MANUAL-42",
+        ),
+    )
+    id_page = team_inbox_contact_links.customer_link_options(
+        db_session,
+        query=team_inbox_contact_links.CustomerLinkOptionsQuery(
+            conversation_id=conversation.id,
+            search_text=str(target.id),
+        ),
+    )
+
+    assert [item.customer_id for item in text_page.items] == [target.id]
+    assert [item.customer_id for item in id_page.items] == [target.id]
+    assert suggested.id not in {item.customer_id for item in text_page.items}
+    assert text_page.items[0].source.value == "search"
+
+
+def test_customer_link_options_search_every_supported_customer_field(db_session):
+    target = _subscriber(db_session, first_name="GivenNeedle")
+    target.last_name = "FamilyNeedle"
+    target.display_name = "Display Needle"
+    target.email = "field-needle@example.com"
+    target.phone = "+234 809 111 2233"
+    target.company_name = "Company Needle Limited"
+    target.legal_name = "Legal Needle Holdings"
+    target.account_number = "ACCT-FIELD-991"
+    target.subscriber_number = "SUB-FIELD-991"
+    conversation = _conversation(db_session, subject="No matching suggestion")
+
+    for search_text in (
+        "GivenNeedle",
+        "FamilyNeedle",
+        "Display Needle",
+        "field-needle@example.com",
+        "+234 809",
+        "Company Needle",
+        "Legal Needle",
+        "ACCT-FIELD-991",
+        "SUB-FIELD-991",
+    ):
+        page = team_inbox_contact_links.customer_link_options(
+            db_session,
+            query=team_inbox_contact_links.CustomerLinkOptionsQuery(
+                conversation_id=conversation.id,
+                search_text=search_text,
+            ),
+        )
+
+        assert target.id in {item.customer_id for item in page.items}, search_text
+
+
+def test_customer_link_options_escape_wildcards_and_exclude_inactive(db_session):
+    active = _subscriber(db_session, first_name="ActivePercent")
+    inactive = _subscriber(db_session, first_name="InactiveNeedle")
+    inactive.is_active = False
+    conversation = _conversation(db_session, subject="No candidate")
+
+    wildcard_page = team_inbox_contact_links.customer_link_options(
+        db_session,
+        query=team_inbox_contact_links.CustomerLinkOptionsQuery(
+            conversation_id=conversation.id,
+            search_text="%%",
+        ),
+    )
+    inactive_page = team_inbox_contact_links.customer_link_options(
+        db_session,
+        query=team_inbox_contact_links.CustomerLinkOptionsQuery(
+            conversation_id=conversation.id,
+            search_text="InactiveNeedle",
+        ),
+    )
+
+    assert wildcard_page.items == ()
+    assert inactive_page.items == ()
+    assert active.id not in {item.customer_id for item in wildcard_page.items}
+
+
+def test_customer_link_options_enforce_the_eight_result_ceiling(db_session):
+    for index in range(10):
+        _subscriber(db_session, first_name=f"Bounded{index}")
+    conversation = _conversation(db_session, subject="No suggestion")
+
+    page = team_inbox_contact_links.customer_link_options(
+        db_session,
+        query=team_inbox_contact_links.CustomerLinkOptionsQuery(
+            conversation_id=conversation.id,
+            search_text="Nwosu",
+            limit=99,
+        ),
+    )
+
+    assert page.count == 8
+    assert page.limit == 8
+    assert len(page.items) == 8
+
+
+def test_admin_customer_link_options_route_returns_typed_bounded_results(db_session):
+    target = _subscriber(db_session, first_name="RouteSearch")
+    conversation = _conversation(db_session, subject="No suggestion")
+    response = Response()
+
+    result = inbox_web.team_inbox_customer_link_options(
+        conversation.id,
+        response,
+        q="RouteSearch",
+        limit=8,
+        db=db_session,
+    )
+
+    assert result.count == 1
+    assert result.items[0].id == target.id
+    assert result.items[0].source == "search"
+    assert response.headers["cache-control"] == "private, no-store"
+
+
+def test_existing_customer_card_uses_lazy_validated_typeahead() -> None:
+    root = Path(__file__).resolve().parents[1]
+    template = (root / "templates/admin/inbox/_authoritative_context.html").read_text(
+        encoding="utf-8"
+    )
+    typeahead = (root / "static/js/typeahead.js").read_text(encoding="utf-8")
+
+    assert "data-typeahead-initial-url=" in template
+    assert "customer-link-options" in template
+    assert 'name="subscriber_id" data-typeahead-hidden' in template
+    assert 'data-typeahead-validate-selection="true"' in template
+    assert '<select name="subscriber_id"' not in template
+    assert 'input.addEventListener("focus", fetchInitialResults)' in typeahead
+
+
 def test_admin_contact_link_route_links_subscriber(db_session, monkeypatch):
     actor_id = uuid.uuid4()
     subscriber = _subscriber(db_session)
@@ -175,6 +363,132 @@ def test_admin_contact_link_route_reports_missing_target(db_session):
     assert response.status_code == 303
     assert "status=error" in response.headers["location"]
     assert db_session.query(InboxContactLink).count() == 0
+
+
+def test_admin_represented_customer_route_keeps_sender_as_representative(
+    db_session, monkeypatch
+):
+    actor_id = uuid.uuid4()
+    subscriber = _subscriber(db_session)
+    conversation = _conversation(db_session)
+    participant = InboxConversationParticipant(
+        conversation_id=conversation.id,
+        channel_type=conversation.channel_type,
+        normalized_endpoint=conversation.contact_address,
+        provider_account_scope="default",
+        admission_source=InboxParticipantAdmissionSource.inbound_from.value,
+    )
+    db_session.add(participant)
+    db_session.flush()
+    from app.services import web_admin as web_admin_service
+
+    monkeypatch.setattr(
+        web_admin_service, "get_actor_id", lambda request: str(actor_id)
+    )
+
+    response = inbox_web.team_inbox_represented_customer(
+        conversation.id,
+        _request(),
+        participant_id=str(participant.id),
+        subscriber_id=str(subscriber.id),
+        reason="Calling for the account holder",
+        db=db_session,
+    )
+
+    db_session.refresh(conversation)
+    db_session.refresh(participant)
+    assert response.status_code == 303
+    assert "status=success" in response.headers["location"]
+    assert conversation.subscriber_id == subscriber.id
+    assert (
+        participant.relationship_type
+        == InboxParticipantRelationship.representative.value
+    )
+    link = db_session.query(InboxContactLink).one()
+    assert link.subscriber_id == subscriber.id
+    assert link.linked_by_person_id == actor_id
+
+
+def test_admin_represented_lead_route_links_subject_not_sender(db_session, monkeypatch):
+    actor_id = uuid.uuid4()
+    conversation = _conversation(db_session)
+    participant = InboxConversationParticipant(
+        conversation_id=conversation.id,
+        channel_type=conversation.channel_type,
+        normalized_endpoint=conversation.contact_address,
+        provider_account_scope="default",
+        admission_source=InboxParticipantAdmissionSource.inbound_from.value,
+    )
+    represented_party = Party(
+        party_type=PartyType.person.value,
+        display_name="Represented Prospect",
+    )
+    db_session.add_all([participant, represented_party])
+    db_session.flush()
+    lead = Lead(
+        party_id=represented_party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Explicit represented Lead fixture",
+        title="Represented Prospect",
+    )
+    db_session.add(lead)
+    db_session.flush()
+    from app.services import web_admin as web_admin_service
+
+    monkeypatch.setattr(
+        web_admin_service, "get_actor_id", lambda request: str(actor_id)
+    )
+
+    response = inbox_web.team_inbox_represented_lead(
+        conversation.id,
+        _request(),
+        participant_id=str(participant.id),
+        lead_id=str(lead.id),
+        reason="Calling for the prospective account holder",
+        db=db_session,
+    )
+
+    db_session.refresh(participant)
+    relationship = db_session.query(InboxConversationLeadLink).one()
+    assert response.status_code == 303
+    assert "status=success" in response.headers["location"]
+    assert relationship.lead_id == lead.id
+    assert relationship.party_id == represented_party.id
+    assert participant.relationship_type == (
+        InboxParticipantRelationship.representative.value
+    )
+    assert conversation.subscriber_id is None
+    assert db_session.query(InboxContactLink).count() == 0
+
+
+def test_inbox_represented_lead_search_uses_typed_active_lead_query(db_session):
+    represented_party = Party(
+        party_type=PartyType.person.value,
+        display_name="Searchable Represented Prospect",
+    )
+    db_session.add(represented_party)
+    db_session.flush()
+    lead = Lead(
+        party_id=represented_party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Explicit represented Lead fixture",
+        title="Searchable Represented Prospect",
+    )
+    db_session.add(lead)
+    db_session.flush()
+
+    response = inbox_web.team_inbox_lead_search(
+        q="Searchable Represented",
+        limit=8,
+        db=db_session,
+    )
+
+    assert len(response["items"]) == 1
+    assert response["items"][0]["id"] == str(lead.id)
+    assert response["items"][0]["type"] == "lead"
+    assert "Searchable Represented Prospect" in response["items"][0]["label"]
 
 
 def test_admin_merge_contact_route_links_customer_without_creating_lead(

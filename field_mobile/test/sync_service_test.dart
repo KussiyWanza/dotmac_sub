@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
@@ -9,6 +10,7 @@ import 'package:dotmac_field/core/offline/connectivity.dart';
 import 'package:dotmac_field/core/offline/database.dart';
 import 'package:dotmac_field/core/offline/sync_service.dart';
 import 'package:dotmac_field/core/secure/secure_field_store.dart';
+import 'package:dotmac_field/core/secure/store_work_gate.dart';
 import 'package:drift/drift.dart' show Value;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/open.dart';
@@ -30,6 +32,7 @@ void main() {
   late FakeHttpAdapter adapter;
   late FakeConnectivity connectivity;
   late SyncService sync;
+  late ApiClient api;
   late List<Duration> delays;
   late Directory tempDir;
 
@@ -53,7 +56,7 @@ void main() {
     );
     final dio = Dio(BaseOptions(baseUrl: 'https://test.local'));
     dio.httpClientAdapter = adapter;
-    final api = ApiClient(
+    api = ApiClient(
       baseUrl: 'https://test.local',
       tokenStore: tokens,
       dio: dio,
@@ -202,9 +205,62 @@ void main() {
     expect(await sync.flushOutbox(), 0);
 
     connectivity.online = true;
-    await Future<void>.delayed(const Duration(milliseconds: 50));
+    await Future<void>.delayed(Duration.zero);
+    await sync.waitForBackgroundWork();
     expect(await sync.pending(), isEmpty);
   });
+
+  test(
+    'store close waits for an active sync before closing the database',
+    () async {
+      final delayStarted = Completer<void>();
+      final releaseDelay = Completer<void>();
+      var delayCalls = 0;
+
+      await sync.dispose();
+      sync = SyncService(
+        db: db,
+        api: api,
+        connectivity: connectivity,
+        evidence: store.evidence,
+        delay: (_) async {
+          delayCalls++;
+          if (delayCalls == 1) {
+            delayStarted.complete();
+            await releaseDelay.future;
+          }
+        },
+      );
+      adapter.on(
+        'POST',
+        '/api/v1/field/jobs/wo-1/transition',
+        (_) => (200, {'ok': true}),
+      );
+      await sync.enqueue(
+        kind: 'transition',
+        clientRef: 'closing-a',
+        payload: transitionPayload('closing-a'),
+      );
+      await sync.enqueue(
+        kind: 'transition',
+        clientRef: 'closing-b',
+        payload: transitionPayload('closing-b'),
+      );
+
+      final flushing = sync.flushOutbox();
+      await delayStarted.future;
+      var closeFinished = false;
+      final closing = store.discardAndClose().then((_) => closeFinished = true);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(closeFinished, isFalse);
+      releaseDelay.complete();
+      expect(await flushing, 2);
+      await closing;
+      expect(closeFinished, isTrue);
+      await expectLater(sync.pending(), throwsA(isA<StoreDiscarded>()));
+    },
+  );
 
   test('down-sync upserts cached jobs', () async {
     adapter.on(

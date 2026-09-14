@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -7,8 +8,9 @@ from enum import StrEnum
 from typing import TypeVar
 from uuid import UUID
 
-from sqlalchemy import or_
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.audit import AuditActorType
 from app.models.organization import Organization
@@ -26,6 +28,7 @@ from app.models.subscriber import Reseller, Subscriber, SubscriberStatus
 from app.models.team_inbox import (
     InboxContactLink,
     InboxConversation,
+    InboxConversationParticipant,
     InboxMessage,
     InboxMessageDirection,
     InboxParticipantRelationship,
@@ -44,6 +47,7 @@ from app.services.customer_identity_resolution import (
     CustomerIdentityResolution,
     resolve_customer_identity_query,
 )
+from app.services.domain_errors import DomainError
 from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
@@ -51,8 +55,19 @@ from app.services.owner_commands import (
 )
 
 
-class ContactLinkError(ValueError):
-    pass
+class ContactLinkError(DomainError, ValueError):
+    def __init__(
+        self,
+        message: str = "Contact identity command was rejected.",
+        *,
+        suffix: str = "command_rejected",
+        details: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(
+            code=f"communications.team_inbox_contact_resolution.{suffix}",
+            message=message,
+            details=details,
+        )
 
 
 class ConversationContactLinkError(ContactLinkError):
@@ -109,6 +124,39 @@ class ReviewedContactLinkDisposition(StrEnum):
     linked = "linked"
     replayed = "replayed"
     conflict = "conflict"
+
+
+class ContactLinkTargetType(StrEnum):
+    subscriber = "subscriber"
+    reseller = "reseller"
+
+
+class ContactLinkSource(StrEnum):
+    manual_inbox_conversation = "manual_inbox_conversation"
+    lead_conversion = "lead_conversion"
+    reviewed_repair = "reviewed_repair"
+
+
+class CustomerLinkOptionSource(StrEnum):
+    suggested = "suggested"
+    search = "search"
+
+
+@dataclass(frozen=True, slots=True)
+class ContactLinkTarget:
+    target_type: ContactLinkTargetType
+    target_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class LinkConversationContactCommand:
+    context: CommandContext
+    conversation_id: UUID
+    target: ContactLinkTarget
+    actor_person_id: UUID | None
+    source: ContactLinkSource
+    note: str | None = None
+    expected_active_link_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,6 +258,7 @@ class ReviewConversationContactCommand:
     representative_role: str | None = None
     actor_person_id: UUID | None = None
     note: str | None = None
+    expected_active_link_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -224,6 +273,45 @@ class ContactLinkResult:
     speaking_party_id: UUID | None
     previous_link_ids_deactivated: tuple[UUID, ...]
     repaired_conversation_ids: tuple[UUID, ...]
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AssociateRepresentedCustomerCommand:
+    conversation_id: UUID
+    participant_id: UUID
+    subscriber_id: UUID
+    actor_person_id: UUID | None
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class RepresentedCustomerAssociation:
+    conversation_id: UUID
+    participant_id: UUID
+    subscriber_id: UUID
+    already_linked: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerLinkOptionsQuery:
+    conversation_id: UUID
+    search_text: str | None = None
+    limit: int = 8
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerLinkOption:
+    customer_id: UUID
+    label: str
+    source: CustomerLinkOptionSource
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerLinkOptionsPage:
+    items: tuple[CustomerLinkOption, ...]
+    count: int
+    limit: int
 
 
 T = TypeVar("T")
@@ -277,6 +365,138 @@ def _organization_label(row: Organization) -> str:
     extras = [row.legal_name, row.domain, row.email, row.phone, row.account_status]
     suffix = " Â· ".join(str(item) for item in extras if item and item != label)
     return f"{label} ({suffix})" if suffix else label
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _conversation_customer_terms(conversation: InboxConversation) -> tuple[str, ...]:
+    metadata = (
+        conversation.metadata_ if isinstance(conversation.metadata_, dict) else {}
+    )
+    values: list[object] = [
+        conversation.contact_address,
+        metadata.get("contact_name"),
+        conversation.subject,
+        conversation.external_thread_id,
+    ]
+    resolution = metadata.get("contact_resolution")
+    if isinstance(resolution, dict):
+        values.extend(
+            (
+                resolution.get("normalized_contact"),
+                resolution.get("subscriber_id"),
+            )
+        )
+        matched_ids = resolution.get("matched_subscriber_ids")
+        if isinstance(matched_ids, list):
+            values.extend(matched_ids)
+
+    terms: list[str] = []
+    for value in values:
+        term = str(value or "").strip()
+        if len(term) >= 3 and term not in terms:
+            terms.append(term)
+    return tuple(terms[:8])
+
+
+def _subscriber_search_conditions(
+    terms: tuple[str, ...],
+) -> list[ColumnElement[bool]]:
+    conditions: list[ColumnElement[bool]] = []
+    for term in terms:
+        try:
+            customer_id = UUID(term)
+        except ValueError:
+            customer_id = None
+        if customer_id is not None:
+            conditions.append(Subscriber.id == customer_id)
+            continue
+
+        escaped = _escape_like(term)
+        like = f"%{escaped}%"
+        conditions.extend(
+            [
+                Subscriber.email.ilike(like, escape="\\"),
+                Subscriber.phone.ilike(like, escape="\\"),
+                Subscriber.first_name.ilike(like, escape="\\"),
+                Subscriber.last_name.ilike(like, escape="\\"),
+                Subscriber.display_name.ilike(like, escape="\\"),
+                Subscriber.company_name.ilike(like, escape="\\"),
+                Subscriber.legal_name.ilike(like, escape="\\"),
+                Subscriber.account_number.ilike(like, escape="\\"),
+                Subscriber.subscriber_number.ilike(like, escape="\\"),
+            ]
+        )
+
+    if len(terms) == 1:
+        words = terms[0].split()
+        if len(words) >= 2:
+            first = f"%{_escape_like(words[0])}%"
+            remainder = f"%{_escape_like(' '.join(words[1:]))}%"
+            conditions.append(
+                and_(
+                    Subscriber.first_name.ilike(first, escape="\\"),
+                    Subscriber.last_name.ilike(remainder, escape="\\"),
+                )
+            )
+    return conditions
+
+
+def customer_link_options(
+    db: Session,
+    *,
+    query: CustomerLinkOptionsQuery,
+) -> CustomerLinkOptionsPage:
+    """Return bounded Customer suggestions or a search over only entered text."""
+
+    limit = max(1, min(query.limit, 8))
+    conversation = db.get(InboxConversation, query.conversation_id)
+    if conversation is None or not conversation.is_active:
+        raise ConversationContactLinkError("Conversation not found.")
+
+    if query.search_text is None:
+        terms = _conversation_customer_terms(conversation)
+        source = CustomerLinkOptionSource.suggested
+    else:
+        search_text = query.search_text.strip()
+        if len(search_text) < 2:
+            raise ContactLinkError("Enter at least two characters to search Customers.")
+        if len(search_text) > 120:
+            raise ContactLinkError("Customer search text is too long.")
+        terms = (search_text,)
+        source = CustomerLinkOptionSource.search
+
+    conditions = _subscriber_search_conditions(terms)
+    if not conditions:
+        return CustomerLinkOptionsPage(items=(), count=0, limit=limit)
+
+    statement = select(Subscriber).where(
+        Subscriber.is_active.is_(True),
+        or_(*conditions),
+    )
+    if source is CustomerLinkOptionSource.suggested:
+        statement = statement.order_by(
+            Subscriber.updated_at.desc().nullslast(),
+            Subscriber.id.asc(),
+        )
+    else:
+        statement = statement.order_by(
+            Subscriber.last_name.asc(),
+            Subscriber.first_name.asc(),
+            Subscriber.id.asc(),
+        )
+    subscribers = tuple(db.scalars(statement.limit(limit)).all())
+    items = tuple(
+        CustomerLinkOption(
+            customer_id=subscriber.id,
+            label=_subscriber_label(subscriber),
+            source=source,
+        )
+        for subscriber in subscribers
+    )
+    return CustomerLinkOptionsPage(items=items, count=len(items), limit=limit)
 
 
 def contact_link_candidates(
@@ -463,6 +683,77 @@ def conversation_provider_identity(
     )
     external_subject_id = str(conversation.contact_address or "").strip() or None
     return provider, provider_account_id, external_subject_id
+
+
+def _contact_route_lock_key(
+    channel_type: str,
+    normalized_contact: str,
+    provider: str | None,
+    provider_account_id: str | None,
+    external_subject_id: str | None,
+) -> int:
+    scope = ":".join(
+        value or "" for value in (provider, provider_account_id, external_subject_id)
+    )
+    digest = hashlib.sha256(
+        f"team-inbox-contact-link:{channel_type}:{scope}:{normalized_contact}".encode()
+    ).digest()[:8]
+    return int.from_bytes(digest, byteorder="big", signed=True)
+
+
+def lock_conversation_contact_route(
+    db: Session, *, conversation_id: UUID
+) -> tuple[InboxConversation, str]:
+    """Lock one fully provider-scoped endpoint before changing its reviewed owner."""
+
+    snapshot = db.get(InboxConversation, conversation_id)
+    if snapshot is None or not snapshot.is_active:
+        raise ConversationContactLinkError("Conversation not found.")
+    normalized_contact = normalize_contact_address(
+        db, snapshot.channel_type, snapshot.contact_address
+    )
+    if not normalized_contact:
+        raise ContactLinkError("Conversation contact address cannot be normalized.")
+    provider, provider_account_id, external_subject_id = conversation_provider_identity(
+        db, snapshot
+    )
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"),
+            {
+                "key": _contact_route_lock_key(
+                    snapshot.channel_type,
+                    normalized_contact,
+                    provider,
+                    provider_account_id,
+                    external_subject_id,
+                )
+            },
+        )
+    conversation = db.scalar(
+        select(InboxConversation)
+        .where(
+            InboxConversation.id == conversation_id,
+            InboxConversation.is_active.is_(True),
+        )
+        .with_for_update()
+    )
+    if conversation is None:
+        raise ConversationContactLinkError("Conversation not found.")
+    locked_normalized = normalize_contact_address(
+        db, conversation.channel_type, conversation.contact_address
+    )
+    locked_scope = conversation_provider_identity(db, conversation)
+    if locked_normalized != normalized_contact or locked_scope != (
+        provider,
+        provider_account_id,
+        external_subject_id,
+    ):
+        raise ContactLinkError(
+            "The conversation contact route changed. Refresh and try again.",
+            suffix="stale_contact_route",
+        )
+    return conversation, normalized_contact
 
 
 def _active_contact_links(
@@ -995,6 +1286,73 @@ def _target(
     return subscriber, reseller
 
 
+def associate_represented_customer(
+    db: Session,
+    command: AssociateRepresentedCustomerCommand,
+) -> RepresentedCustomerAssociation:
+    """Persist the speaking Party's reusable endpoint and represented Customer."""
+
+    reason = command.reason.strip()
+    if not reason:
+        raise ContactLinkError("Explain why this person represents the Customer.")
+    if len(reason) > 2000:
+        raise ContactLinkError("Representative link reason is too long.")
+    participant_row = db.scalar(
+        select(InboxConversationParticipant)
+        .where(
+            InboxConversationParticipant.id == command.participant_id,
+            InboxConversationParticipant.conversation_id == command.conversation_id,
+            InboxConversationParticipant.is_active.is_(True),
+        )
+        .with_for_update()
+    )
+    if participant_row is None:
+        raise ContactLinkError("The selected conversation participant was not found.")
+
+    representative_party_id: UUID | None = None
+    if participant_row.party_contact_point_id is not None:
+        point = db.get(PartyContactPoint, participant_row.party_contact_point_id)
+        representative_party_id = point.party_id if point is not None else None
+    representative_name = (
+        participant_row.display_name
+        or f"{participant_row.channel_type.replace('_', ' ').title()} contact"
+    )
+    result = link_conversation_contact(
+        db,
+        ReviewConversationContactCommand(
+            conversation_id=command.conversation_id,
+            identity_kind=ReviewedContactIdentityKind.representative,
+            subscriber_id=command.subscriber_id,
+            representative_party_id=representative_party_id,
+            representative_name=representative_name,
+            actor_person_id=command.actor_person_id,
+            note=reason,
+        ),
+    )
+    if result.disposition is ReviewedContactLinkDisposition.conflict:
+        raise ContactLinkError(
+            "This communication identity already has a different reviewed owner; "
+            "the existing association was preserved for human review.",
+            suffix="reviewed_identity_conflict",
+        )
+    participant = team_inbox_participants.mark_representative(
+        db,
+        team_inbox_participants.MarkRepresentativeCommand(
+            conversation_id=command.conversation_id,
+            participant_id=command.participant_id,
+            actor_person_id=command.actor_person_id,
+            source=OWNER,
+            reason=reason,
+        ),
+    )
+    return RepresentedCustomerAssociation(
+        conversation_id=command.conversation_id,
+        participant_id=command.participant_id,
+        subscriber_id=command.subscriber_id,
+        already_linked=result.replayed and participant.already_classified,
+    )
+
+
 def bind_contact_link_party_contact_point(
     db: Session,
     *,
@@ -1405,21 +1763,42 @@ def _speaking_party_conflict_result(
         speaking_party_id=existing_point.party_id,
         previous_link_ids_deactivated=(),
         repaired_conversation_ids=(),
+        replayed=False,
     )
 
 
 def link_conversation_contact(
     db: Session,
-    command: ReviewConversationContactCommand,
+    command: ReviewConversationContactCommand | LinkConversationContactCommand,
 ) -> ContactLinkResult:
-    conversation = (
-        db.query(InboxConversation)
-        .filter(InboxConversation.id == command.conversation_id)
-        .with_for_update()
-        .one_or_none()
+    if isinstance(command, LinkConversationContactCommand):
+        review_command = ReviewConversationContactCommand(
+            conversation_id=command.conversation_id,
+            identity_kind=(
+                ReviewedContactIdentityKind.customer
+                if command.target.target_type is ContactLinkTargetType.subscriber
+                else ReviewedContactIdentityKind.reseller
+            ),
+            subscriber_id=(
+                command.target.target_id
+                if command.target.target_type is ContactLinkTargetType.subscriber
+                else None
+            ),
+            reseller_id=(
+                command.target.target_id
+                if command.target.target_type is ContactLinkTargetType.reseller
+                else None
+            ),
+            actor_person_id=command.actor_person_id,
+            note=command.note,
+            expected_active_link_id=command.expected_active_link_id,
+        )
+    else:
+        review_command = command
+    command = review_command
+    conversation, normalized_contact = lock_conversation_contact_route(
+        db, conversation_id=command.conversation_id
     )
-    if conversation is None or not conversation.is_active:
-        raise ConversationContactLinkError("Conversation not found.")
     if not conversation.channel_type or not conversation.contact_address:
         raise ContactLinkError("Conversation does not have a linkable contact address.")
     subscriber, reseller = _target(
@@ -1443,11 +1822,6 @@ def link_conversation_contact(
             "Conversation is already linked to a different Customer; use the "
             "reviewed identity-conflict workflow."
         )
-    normalized_contact = normalize_contact_address(
-        db, conversation.channel_type, conversation.contact_address
-    )
-    if not normalized_contact:
-        raise ContactLinkError("Conversation contact address cannot be normalized.")
     provider, provider_account_id, external_subject_id = conversation_provider_identity(
         db, conversation
     )
@@ -1473,6 +1847,13 @@ def link_conversation_contact(
             InboxContactLink.external_subject_id == external_subject_id,
         )
     links = active_links.with_for_update().all()
+    if command.expected_active_link_id is not None and not any(
+        link.id == command.expected_active_link_id for link in links
+    ):
+        raise ContactLinkError(
+            "The reviewed contact link changed. Refresh and try again.",
+            suffix="stale_contact_link",
+        )
     selected_subscriber_id = subscriber.id if subscriber is not None else None
     selected_reseller_id = reseller.id if reseller is not None else None
     conflicts = [
@@ -1537,6 +1918,7 @@ def link_conversation_contact(
             speaking_party_id=None,
             previous_link_ids_deactivated=(),
             repaired_conversation_ids=(),
+            replayed=False,
         )
 
     target_party_id = None
@@ -1816,21 +2198,37 @@ def link_conversation_contact(
         speaking_party_id=speaking_party.id,
         previous_link_ids_deactivated=(),
         repaired_conversation_ids=tuple(repaired_conversation_ids),
+        replayed=replayed,
     )
 
 
 def link_conversation_contact_by_id(
     db: Session,
-    command: ReviewConversationContactCommand,
+    command: ReviewConversationContactCommand | LinkConversationContactCommand,
 ) -> ContactLinkResult:
     return link_conversation_contact(db, command)
 
 
 def link_conversation_contact_by_id_committed(
     db: Session,
-    command: ReviewConversationContactCommand,
+    command: ReviewConversationContactCommand | LinkConversationContactCommand,
 ) -> ContactLinkResult:
-    return _commit(
+    context = (
+        command.context
+        if isinstance(command, LinkConversationContactCommand)
+        else CommandContext.system(
+            actor=(
+                f"person:{command.actor_person_id}"
+                if command.actor_person_id
+                else "system:team-inbox-contact-adapter"
+            ),
+            scope="team-inbox:contact-link-command",
+            reason="execute reviewed Team Inbox contact association",
+        )
+    )
+    return execute_owner_command(
         db,
-        lambda: link_conversation_contact_by_id(db, command),
+        definition=_CONTACT_LINK_COMMAND,
+        context=context,
+        operation=lambda: link_conversation_contact_by_id(db, command),
     )

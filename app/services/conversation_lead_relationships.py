@@ -76,6 +76,26 @@ class ConversationLeadDriftFinding:
     kind: ConversationLeadDriftKind
 
 
+@dataclass(frozen=True, slots=True)
+class ConversationRelationshipEvidence:
+    """Typed structural Party and Lead evidence for one conversation."""
+
+    conversation_id: UUID
+    subscriber_id: UUID | None
+    subscriber_party_id: UUID | None
+    participant_party_ids: tuple[UUID, ...]
+    completed_intake_party_ids: tuple[UUID, ...]
+    active_lead_id: UUID | None
+    active_lead_party_id: UUID | None
+    authoritative_party_ids: tuple[UUID, ...]
+    subscriber_party_unavailable: bool
+    lead_party_mismatch: bool
+
+    @property
+    def identity_conflict(self) -> bool:
+        return len(self.authoritative_party_ids) > 1
+
+
 def _error(suffix: str, message: str, **details: object) -> DomainError:
     return ConversationLeadRelationshipError(
         code=f"communications.conversation_lead_relationships.{suffix}",
@@ -198,15 +218,20 @@ def drift_report(
     return tuple(findings[:bounded_limit])
 
 
-def exact_party_ids(db: Session, conversation: InboxConversation) -> tuple[UUID, ...]:
-    """Return only structurally reviewed Party identities for a conversation."""
+def relationship_evidence(
+    db: Session, conversation: InboxConversation
+) -> ConversationRelationshipEvidence:
+    """Collect structural evidence without choosing between conflicting Parties."""
 
-    if conversation.subscriber_id is not None:
-        subscriber = db.get(Subscriber, conversation.subscriber_id)
-        if subscriber is None or subscriber.party_id is None:
-            return ()
-        return (subscriber.party_id,)
-
+    subscriber = (
+        db.get(Subscriber, conversation.subscriber_id)
+        if conversation.subscriber_id is not None
+        else None
+    )
+    subscriber_party_id = subscriber.party_id if subscriber is not None else None
+    subscriber_party_unavailable = (
+        conversation.subscriber_id is not None and subscriber_party_id is None
+    )
     participant_party_ids = tuple(
         db.scalars(
             select(PartyContactPoint.party_id)
@@ -224,9 +249,6 @@ def exact_party_ids(db: Session, conversation: InboxConversation) -> tuple[UUID,
             .order_by(PartyContactPoint.party_id)
         ).all()
     )
-    if participant_party_ids:
-        return participant_party_ids
-
     completed_party_ids = tuple(
         db.scalars(
             select(LeadIntakeInvitation.party_id)
@@ -239,7 +261,41 @@ def exact_party_ids(db: Session, conversation: InboxConversation) -> tuple[UUID,
             .order_by(LeadIntakeInvitation.party_id)
         ).all()
     )
-    return tuple(party_id for party_id in completed_party_ids if party_id is not None)
+    completed_intake_party_ids = tuple(
+        party_id for party_id in completed_party_ids if party_id is not None
+    )
+    direct = active_link(db, conversation.id)
+    direct_lead = db.get(Lead, direct.lead_id) if direct is not None else None
+    lead_party_mismatch = bool(
+        direct is not None
+        and (direct_lead is None or direct_lead.party_id != direct.party_id)
+    )
+    party_ids = {
+        *participant_party_ids,
+        *completed_intake_party_ids,
+    }
+    if subscriber_party_id is not None:
+        party_ids.add(subscriber_party_id)
+    if direct is not None:
+        party_ids.add(direct.party_id)
+    return ConversationRelationshipEvidence(
+        conversation_id=conversation.id,
+        subscriber_id=conversation.subscriber_id,
+        subscriber_party_id=subscriber_party_id,
+        participant_party_ids=participant_party_ids,
+        completed_intake_party_ids=completed_intake_party_ids,
+        active_lead_id=direct.lead_id if direct is not None else None,
+        active_lead_party_id=direct.party_id if direct is not None else None,
+        authoritative_party_ids=tuple(sorted(party_ids)),
+        subscriber_party_unavailable=subscriber_party_unavailable,
+        lead_party_mismatch=lead_party_mismatch,
+    )
+
+
+def exact_party_ids(db: Session, conversation: InboxConversation) -> tuple[UUID, ...]:
+    """Return every distinct structurally authoritative Party identity."""
+
+    return relationship_evidence(db, conversation).authoritative_party_ids
 
 
 def require_exact_party(

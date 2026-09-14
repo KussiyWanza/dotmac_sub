@@ -52,6 +52,8 @@ ERP_HR_ROLE_SOURCE = "erp_hr"
 STAFF_ASSIGN_SCOPE = "rbac:assign"
 STAFF_PROFILE_SCOPE = "profile:self"
 STAFF_LOGIN_IDENTITY_MAX_LENGTH = 150
+_ERP_HR_SOURCE_SYSTEM = "erp_hr"
+_ERP_STAFF_ACCOUNT_ENTITY_TYPE = "staff_account"
 
 _EMAIL_ADAPTER = TypeAdapter(EmailStr)
 
@@ -119,6 +121,13 @@ class StaffIdentityField(str, Enum):
     phone = "phone"
 
 
+class ExistingStaffAccountPolicy(str, Enum):
+    """Whether ERP provisioning may reconcile an identity that already exists."""
+
+    reconcile = "reconcile"
+    reject = "reject"
+
+
 @dataclass(frozen=True)
 class ProvisionStaffAccountCommand:
     """ERP HR request to create or reconcile one staff principal."""
@@ -129,6 +138,9 @@ class ProvisionStaffAccountCommand:
     last_name: str
     role_names: tuple[str, ...]
     send_invite: bool = True
+    existing_account_policy: ExistingStaffAccountPolicy = (
+        ExistingStaffAccountPolicy.reconcile
+    )
 
 
 @dataclass(frozen=True)
@@ -1057,9 +1069,52 @@ def _provision(
     desired_roles = _role_names(command.role_names)
     _acquire_identity_lock(db, email)
 
+    source_reference = None
+    if (
+        command.existing_account_policy is ExistingStaffAccountPolicy.reject
+        and command.context.idempotency_key
+    ):
+        source_reference = command.context.idempotency_key.strip()
+        _acquire_identity_lock(db, f"erp-source:{source_reference}")
+        reserved_party_id = party_registry.external_reference_party_id(
+            db,
+            source_system=_ERP_HR_SOURCE_SYSTEM,
+            entity_type=_ERP_STAFF_ACCOUNT_ENTITY_TYPE,
+            external_id=source_reference,
+        )
+        if reserved_party_id is not None:
+            reserved_user = db.execute(
+                select(SystemUser)
+                .where(SystemUser.person_party_id == reserved_party_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if reserved_user is None or reserved_user.email != email:
+                raise _error(
+                    "identity_conflict",
+                    "The ERP source reference belongs to another staff identity.",
+                )
+            return _outcome(
+                reserved_user,
+                role_names=assignment_service.system_user_role_names(
+                    db, reserved_user.id
+                ),
+                created=False,
+                changed=False,
+                invite_requested=False,
+                context=command.context,
+            )
+
     user = db.execute(
         select(SystemUser).where(SystemUser.email == email).with_for_update()
     ).scalar_one_or_none()
+    if (
+        user is not None
+        and command.existing_account_policy is ExistingStaffAccountPolicy.reject
+    ):
+        raise _error(
+            "identity_conflict",
+            "Staff identity already exists; create-only provisioning made no changes.",
+        )
     created = user is None
     if user is None:
         user = _create_principal(
@@ -1070,6 +1125,23 @@ def _provision(
             context=command.context,
             binding_source="auth.staff_provisioning:erp_hr",
         )
+        if source_reference is not None:
+            if user.person_party_id is None:
+                raise _error(
+                    "identity_conflict",
+                    "Created staff identity has no canonical Party binding.",
+                )
+            party_registry.add_external_reference(
+                db,
+                party_id=user.person_party_id,
+                source_system=_ERP_HR_SOURCE_SYSTEM,
+                entity_type=_ERP_STAFF_ACCOUNT_ENTITY_TYPE,
+                external_id=source_reference,
+                metadata={
+                    "owner": "auth.staff_provisioning",
+                    "command_id": str(command.context.command_id),
+                },
+            )
 
     role_result = _sync_roles(db, user=user, role_names=desired_roles)
     invite_requested = bool(created and command.send_invite)

@@ -13,7 +13,7 @@
     soundEnabled: "dotmac.inbox.soundEnabled",
     draftPrefix: "dotmac.inbox.draft.",
   };
-  const INBOX_FRAGMENT_VERSION = "20260827a";
+  const INBOX_FRAGMENT_VERSION = "20260910b";
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
   const parseStoredBoolean = (key, fallback) => {
     const value = localStorage.getItem(key);
@@ -239,6 +239,8 @@
       reconnectTimer: null,
       reconnectAttempts: 0,
       pollTimer: null,
+      presenceHeartbeatTimer: null,
+      presenceHeartbeatInFlight: false,
       typingTimer: null,
       inFlight: new Set(),
       recentlyRefreshedMessageIds: new Set(),
@@ -312,6 +314,7 @@
         this.bindHtmx();
         this.connectRealtime();
         this.startFallbackPolling();
+        this.startPresenceHeartbeat();
         this.scrollThread(true);
         this.clearDraftAfterSuccessfulSend();
         this.$nextTick(() => this.syncSelectedCheckboxes());
@@ -2075,6 +2078,40 @@
             this.refreshSidebar("poll");
           }
         }, 5000);
+      },
+
+      startPresenceHeartbeat() {
+        window.clearInterval(this.presenceHeartbeatTimer);
+        this.refreshPresenceHeartbeat();
+        this.presenceHeartbeatTimer = window.setInterval(() => {
+          this.refreshPresenceHeartbeat();
+        }, 5 * 60 * 1000);
+        document.addEventListener("visibilitychange", () => {
+          if (document.visibilityState === "visible") {
+            this.refreshPresenceHeartbeat();
+          }
+        });
+      },
+
+      async refreshPresenceHeartbeat() {
+        if (
+          !this.actorId ||
+          document.visibilityState !== "visible" ||
+          this.presenceHeartbeatInFlight
+        ) {
+          return;
+        }
+        this.presenceHeartbeatInFlight = true;
+        try {
+          await fetchWithTimeout("/admin/inbox/presence/heartbeat", {
+            method: "POST",
+            headers: { "X-CSRF-Token": csrfToken() },
+          });
+        } catch (_error) {
+          // Presence is best-effort; the next visible heartbeat retries it.
+        } finally {
+          this.presenceHeartbeatInFlight = false;
+        }
       },
 
       filteredCommands() {

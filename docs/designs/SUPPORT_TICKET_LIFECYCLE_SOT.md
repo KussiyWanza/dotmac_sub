@@ -63,10 +63,10 @@ cancellation.
 `support.ticket_configuration` owns operator-managed status choices,
 priorities, types, routing inputs, service-team membership configuration, and
 priority/type SLA targets. It may only expose statuses from the ticket
-vocabulary owner. `support.ticket_region_projection` separately resolves the
-current region choices from configured values and canonical Ticket observations.
-This separation prevents lifecycle and configuration from depending on each
-other while preserving the provenance of both inputs.
+vocabulary owner. `support.ticket_region_projection` resolves the current
+selectable region choices from the configured region option values. Configured
+regions are the sole source of truth: Ticket rows are historical observations
+and must not expand the selectable vocabulary.
 
 The operator-selectable subset contains only canonical typed `TicketStatus`
 values. The configuration owner and admin adapters canonicalize legacy

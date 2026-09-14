@@ -73,8 +73,8 @@ Funding, verified implementation, service-order release, and CX acceptance are
 consumed through `sales.fulfillment`'s receipted owner commands
 (`consume_funding_satisfaction` / `consume_verified_implementation` /
 `consume_service_order_release` / `consume_cx_acceptance`). The funding
-consumer's catalog, invoice, add-on, route, service-order, and payment helpers
-are flush-only participants; its complete effect and unique
+consumer's installation-invoice and account-payment helpers are flush-only
+participants; its complete effect and unique
 `(consumer, event_id)` receipt commit atomically via `events.owner_outputs`
 (ADR 0007 §2), so redelivery is an exact no-op.
 
@@ -88,8 +88,8 @@ drives an invoice, payment, balance, access decision, or funding transition.
 
 ```text
 sales_order.funding_satisfied   (sales.orders, atomically with the paid edge)
-  -> pending Subscription + draft ServiceOrder per service line
-     + order payment evidence            [sales.fulfillment, receipted]
+  -> installation settlement + order payment evidence
+     + unapplied remainder as account credit       [sales.fulfillment, receipted]
   -> sales.fulfillment.funding_applied
   -> proposed BillingContractVersion     [billing.contracts, shadow + receipted]
   -> proposed first-period obligation    [billing.obligations, shadow + receipted]
@@ -423,16 +423,42 @@ configuration. Changing one requires a migration/versioned contract and tests.
 5. Every non-cancelled SalesOrder receives at most one structurally linked
    Project and InstallationProject. Users may create a WorkOrder against the
    Project or an individual ProjectTask. ProjectTask may own several
-   WorkOrders; WorkOrder owns the foreign key.
-6. A partially paid SalesOrder records the receipt but creates no Subscription
-   or ServiceOrder. Full funding stages `sales_order.funding_satisfied`
-   atomically with the paid transition; the lifecycle projection handler
-   creates one pending Subscription and one idempotent ServiceOrder per
-   service line through `sales.fulfillment.consume_funding_satisfaction`. The
-   same receipted transaction stages the Phase 1 structural shadow input. An
-   unresolved consequence (for example an offer that no longer resolves)
-   fails the delivery visibly instead of being skipped.
-7. Sales ServiceOrders remain `draft` until the vendor-project owner records an
+   WorkOrders; WorkOrder owns the foreign key. When the order records tax,
+   the installation invoice uses the single active TaxRate that reproduces
+   the order's effective tax percentage. The invoice owner snapshots that
+   rate on the installation line and derives subtotal, tax, gross receivable,
+   and balance; the project stores the gross invoiced amount. A missing or
+   ambiguous matching rate blocks invoice issuance and records a retryable
+   project error instead of silently understating tax.
+6. An operator never sets a SalesOrder to `paid` (or `fulfilled`) from the
+   generic sales edit. The SalesOrder detail action opens Finance's canonical
+   account-scoped **Record Payment** flow with the remaining order balance
+   suggested. Finance previews and confirms the receipt, posts it to the
+   customer account, allocates it to eligible open invoices oldest/soonest-due
+   first (including the structurally linked installation invoice), and retains
+   any remainder as account credit. The linked-invoice allocation is the
+   structural evidence used to reconcile SalesOrder coverage. A partial
+   receipt updates the SalesOrder to partial but creates no Subscription or
+   ServiceOrder. Once successful payment evidence covers the complete order,
+   Sales advances it to `paid` and stages `sales_order.funding_satisfied`
+   atomically. The lifecycle projection records the order payment and settles
+   the installation invoice through
+   `sales.fulfillment.consume_funding_satisfaction`; any excess remains
+   customer account credit. Funding creates no Subscription, recurring invoice,
+   credential, add-on, IP assignment, or ServiceOrder. An authorized staff user
+   creates the Subscription explicitly after confirming the offer, service
+   address, access method, NAS/site and IP requirements. Pending creation keeps
+   `start_at` and `next_billing_at` empty; invoice generation is a separate,
+   explicit option. The same receipted funding transaction stages the Phase 1
+   structural shadow input.
+   Once any receipt or waiver exists, the SalesOrder's commercial header and
+   line terms are immutable. Corrections use the Finance refund, credit-note,
+   or adjustment owners; deleting or repricing the receipted sale is refused.
+7. A staff-created pending Subscription may create its provisioning
+   ServiceOrder only after the operator has selected the required IPAM and
+   access-network inputs. Sales funding itself never allocates network
+   resources. Sales-linked ServiceOrders remain `draft` until the
+   vendor-project owner records an
    append-only staff verification event. After that fact commits, the registered
    lifecycle projection handler asks `sales.fulfillment` to complete the native
    Project and release linked ServiceOrders. Replay is idempotent and failure is
@@ -440,7 +466,7 @@ configuration. Changing one requires a migration/versioned contract and tests.
    The committed `service_order.released` output then moves the sales-linked
    ServiceOrder into `provisioning` through its lifecycle owner; repair and
    reprovisioning orders keep manual progression.
-8. Billing cannot directly activate a sales-created pending Subscription.
+8. Billing cannot directly activate a pending Subscription.
    Only a successful provisioning result may transition the linked ServiceOrder
    to `active`; that transition asks the subscription owner to activate access.
 9. Successful activation emits the committed service-order completion fact.

@@ -1573,7 +1573,10 @@ DOMAIN = DomainSOT(
                 "authenticated staff identity, live ERP categories, active vendor "
                 "labels, and only the actor's claims. It supplies action eligibility, "
                 "field errors, category rules, totals input, and honest ERP delivery "
-                "states; the route and template do not infer financial state."
+                "states. Awaiting approval, not applicable, pending, failed, and "
+                "unavailable remain distinct; failed delivery detail comes only from "
+                "typed allowlisted diagnostics. The route and template do not infer "
+                "financial state."
             ),
             contract=ServiceContract(
                 concerns=(
@@ -1640,7 +1643,8 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source=(
                             "Actor-owned FieldExpenseRequest state plus durable ERP "
-                            "outbox acceptance, rejection, failure, and reference facts"
+                            "outbox acceptance, rejection, failure, reference facts, "
+                            "and allowlisted request-correlation diagnostics"
                         ),
                     ),
                     AuthorityInput(

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType
 from app.models.team_inbox import InboxCustomerCompletionPolicyVersion
-from app.services.audit_adapter import stage_audit_event
+from app.services.audit_adapter import AuditActor, stage_audit_event
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import (
     CommandContext,
@@ -144,9 +144,13 @@ def create_policy_version(
             action="inbox_customer_completion_policy.created",
             entity_type="inbox_customer_completion_policy_version",
             entity_id=str(policy.id),
-            actor_type=command.actor_type,
-            actor_id=(
-                str(command.actor_person_id) if command.actor_person_id else None
+            actor=AuditActor(
+                actor_type=command.actor_type,
+                actor_id=(
+                    str(command.actor_person_id)
+                    if command.actor_person_id
+                    else command.context.actor
+                ),
             ),
             metadata={
                 "decision_source": source,

@@ -351,12 +351,40 @@ def _add_due_account_without_baseline(db_session, subscriber, subscription):
     return account, due_subscription
 
 
+def test_scheduled_owner_requires_an_active_owner_command(
+    db_session, subscriber, subscription
+):
+    """`run_due_prepaid_service_renewals` is an internal function, never the
+    production entry point on its own -- nightly per-account isolation
+    (`execute_owner_savepoint`) requires an active owner command, which only
+    exists via `execute_due_prepaid_service_renewals`. This is a deliberate,
+    tested invariant of the owner-command boundary, not just something the
+    3 fixed fixtures below happen to satisfy.
+    """
+    _prepare_scheduled_cycle(db_session, subscriber, subscription)
+
+    with pytest.raises(
+        RuntimeError, match="Owner savepoints require an active owner command"
+    ):
+        run_due_prepaid_service_renewals(
+            db_session,
+            run_at=datetime(2026, 7, 1, 12, tzinfo=UTC),
+        )
+
+
 def test_scheduled_owner_funds_current_due_cycle(db_session, subscriber, subscription):
     _prepare_scheduled_cycle(db_session, subscriber, subscription)
 
-    summary = run_due_prepaid_service_renewals(
+    # Routed through the real production entry point (`execute_due_prepaid_
+    # service_renewals` -> `execute_owner_command`), not the bare function:
+    # nightly per-account isolation depends on an active owner command
+    # (`execute_owner_savepoint` requires one), which only exists here.
+    summary = execute_due_prepaid_service_renewals(
         db_session,
-        run_at=datetime(2026, 7, 1, 12, tzinfo=UTC),
+        _scheduled_command(
+            datetime(2026, 7, 1, 12, tzinfo=UTC),
+            key="pytest:scheduled-owner-funds-current-due-cycle",
+        ),
     )
     db_session.commit()
 
@@ -476,11 +504,23 @@ def test_funding_event_uses_owner_root_for_renewal_consumption(
     )
     db_session.commit()
 
+    from app.services import event_store as event_store_service
+
     event = Event(
         event_type=EventType.payment_received,
         payload={"payment_id": str(payment.id)},
         account_id=subscriber.id,
     )
+    # A real `EventStore` row (2026-09 round 8): this test calls the
+    # handler directly (not through the real dispatcher), but
+    # `evaluate_prepaid_service_after_settlement`'s fail-closed guard now
+    # requires `event_id` to resolve to a real, durable row -- this test's
+    # payment carries genuine settlement evidence
+    # (`create_test_settled_payment_credit`), so it reaches that guard
+    # rather than failing earlier the way the two deliberately-incomplete
+    # fixtures above do.
+    event_store_service.create_event_record(db_session, event)
+    db_session.flush()
     PrepaidRenewalHandler().handle(db_session, event)
 
     group = (
@@ -521,9 +561,12 @@ def test_scheduled_owner_skips_quarantine_and_funds_verified_account(
         db_session, subscriber, subscription
     )
 
-    summary = run_due_prepaid_service_renewals(
+    summary = execute_due_prepaid_service_renewals(
         db_session,
-        run_at=datetime(2026, 7, 1, 12, tzinfo=UTC),
+        _scheduled_command(
+            datetime(2026, 7, 1, 12, tzinfo=UTC),
+            key="pytest:scheduled-owner-skips-quarantine",
+        ),
     )
     db_session.commit()
 
@@ -574,9 +617,17 @@ def test_scheduled_owner_refuses_catalog_fallback_without_contract_price(
     subscription.unit_price = None
     db_session.commit()
 
-    summary = run_due_prepaid_service_renewals(
+    # Routed through the real production entry point (2026-09, round 9 --
+    # a second occurrence of the B1 caller-sweep gap): `run_due_prepaid_
+    # service_renewals`'s account-level isolation savepoint requires an
+    # active owner command, which only exists via
+    # `execute_due_prepaid_service_renewals`.
+    summary = execute_due_prepaid_service_renewals(
         db_session,
-        run_at=datetime(2026, 7, 1, 12, tzinfo=UTC),
+        _scheduled_command(
+            datetime(2026, 7, 1, 12, tzinfo=UTC),
+            key="pytest:scheduled-owner-refuses-catalog-fallback",
+        ),
     )
 
     assert summary["prepaid_renewals_missing_price"] == 1
@@ -594,9 +645,14 @@ def test_scheduled_owner_refuses_historical_catch_up(
     subscription.next_billing_at = datetime(2026, 7, 1, tzinfo=UTC)
     db_session.commit()
 
-    summary = run_due_prepaid_service_renewals(
+    # Routed through the real production entry point (2026-09, round 9 --
+    # a second occurrence of the B1 caller-sweep gap): same reason as above.
+    summary = execute_due_prepaid_service_renewals(
         db_session,
-        run_at=datetime(2026, 7, 5, tzinfo=UTC),
+        _scheduled_command(
+            datetime(2026, 7, 5, tzinfo=UTC),
+            key="pytest:scheduled-owner-refuses-historical-catch-up",
+        ),
     )
 
     assert summary["prepaid_renewals_stale_anchor"] == 1
@@ -635,9 +691,12 @@ def test_scheduled_owner_restores_canonically_funded_prepaid_lock(
         lambda *_args, **_kwargs: None,
     )
 
-    summary = run_due_prepaid_service_renewals(
+    summary = execute_due_prepaid_service_renewals(
         db_session,
-        run_at=datetime(2026, 7, 1, 12, tzinfo=UTC),
+        _scheduled_command(
+            datetime(2026, 7, 1, 12, tzinfo=UTC),
+            key="pytest:scheduled-owner-restores-lock",
+        ),
     )
     db_session.commit()
 
@@ -664,8 +723,30 @@ def test_scheduled_owner_restores_canonically_funded_prepaid_lock(
     assert event.payload["renewed_through"] == "2026-08-01T00:00:00+00:00"
 
 
+@pytest.mark.parametrize(
+    ("effective_at", "expected_starts_at", "expected_ends_at"),
+    (
+        (
+            datetime(2026, 7, 20, 17, 30, tzinfo=UTC),
+            datetime(2026, 7, 19, 23, tzinfo=UTC),
+            datetime(2026, 8, 19, 23, tzinfo=UTC),
+        ),
+        (
+            datetime(2026, 7, 20, 23, 30, tzinfo=UTC),
+            datetime(2026, 7, 20, 23, tzinfo=UTC),
+            datetime(2026, 8, 20, 23, tzinfo=UTC),
+        ),
+    ),
+    ids=("within-utc-day", "lagos-next-day"),
+)
 def test_funding_change_renews_suspended_due_service_from_payment_day(
-    db_session, subscriber, subscription, monkeypatch
+    db_session,
+    subscriber,
+    subscription,
+    monkeypatch,
+    effective_at,
+    expected_starts_at,
+    expected_ends_at,
 ):
     _prepare_scheduled_cycle(db_session, subscriber, subscription)
     subscription.status = SubscriptionStatus.suspended
@@ -698,7 +779,7 @@ def test_funding_change_renews_suspended_due_service_from_payment_day(
     result = apply_due_prepaid_service_after_funding_change(
         db_session,
         account_id=subscriber.id,
-        effective_at=datetime(2026, 7, 20, 17, 30, tzinfo=UTC),
+        effective_at=effective_at,
         funding_currency="NGN",
         evidence_ref="pytest:account-credit-event",
     )
@@ -714,23 +795,19 @@ def test_funding_change_renews_suspended_due_service_from_payment_day(
     assert lock.is_active is False
     assert subscription.status == SubscriptionStatus.active
     assert subscriber.status == SubscriberStatus.active
-    assert entitlement.starts_at.replace(tzinfo=UTC) == datetime(
-        2026, 7, 20, tzinfo=UTC
-    )
-    assert entitlement.ends_at.replace(tzinfo=UTC) == datetime(2026, 8, 20, tzinfo=UTC)
-    assert subscription.next_billing_at.replace(tzinfo=UTC) == datetime(
-        2026, 8, 20, tzinfo=UTC
-    )
+    assert entitlement.starts_at.replace(tzinfo=UTC) == expected_starts_at
+    assert entitlement.ends_at.replace(tzinfo=UTC) == expected_ends_at
+    assert subscription.next_billing_at.replace(tzinfo=UTC) == expected_ends_at
     assert calculate_customer_balance(db_session, subscriber.id) == Decimal("50.00")
     assert len(result.renewals) == 1
-    assert result.renewals[0].renewed_through == datetime(2026, 8, 20, tzinfo=UTC)
+    assert result.renewals[0].renewed_through == expected_ends_at
     assert result.renewals[0].source.value == "account_credit"
     event = (
         db_session.query(EventStore)
         .filter_by(event_type="prepaid_service.renewed")
         .one()
     )
-    assert event.payload["renewed_through"] == "2026-08-20T00:00:00+00:00"
+    assert event.payload["renewed_through"] == expected_ends_at.isoformat()
     assert event.payload["schema_version"] == 2
     assert event.payload["invoice_id"] is not None
     assert str(event.invoice_id) == event.payload["invoice_id"]

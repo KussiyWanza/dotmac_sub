@@ -731,7 +731,7 @@ def test_acs_set_wifi_password_pushes_resolved_psk_and_records_redacted():
     assert (
         params[
             "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1."
-            "PreSharedKey.1.KeyPassphrase"
+            "PreSharedKey.1.PreSharedKey"
         ]
         == "ACTUAL_PSK"
     )
@@ -748,6 +748,7 @@ def test_acs_set_wifi_config_batches_fields_and_resolves_password():
         psk_path="Device.WiFi.AccessPoint.1.Security.KeyPassphrase",
         channel="Device.WiFi.Radio.1.Channel",
         security_mode="Device.WiFi.AccessPoint.1.Security.ModeEnabled",
+        additional_psk_paths=("Device.WiFi.AccessPoint.5.Security.KeyPassphrase",),
     )
     result = apply_plan(
         _plan(
@@ -776,6 +777,7 @@ def test_acs_set_wifi_config_batches_fields_and_resolves_password():
         paths.channel: 6,
         paths.security_mode: "WPA2-Personal",
         paths.psk_path: "ACTUAL_PSK",
+        paths.additional_psk_paths[0]: "ACTUAL_PSK",
     }
     assert "ACTUAL_PSK" not in str(result.actions_applied)
     assert result.actions_applied[0].evidence == {
@@ -785,7 +787,8 @@ def test_acs_set_wifi_config_batches_fields_and_resolves_password():
             "wifi_channel",
             "wifi_security_mode",
             "wifi_password_ref",
-        ]
+        ],
+        "password_target_count": 2,
     }
 
 

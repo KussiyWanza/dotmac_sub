@@ -324,7 +324,7 @@ def test_inbox_pagination_renders_compact_page_numbers_and_preserves_selection()
 
 def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     index = Path("templates/admin/inbox/index.html").read_text()
-    sidebar = Path("templates/admin/inbox/_sidebar.html").read_text()
+    sidebar = Path("templates/admin/inbox/_sidebar.html").read_text(encoding="utf-8")
     conversation = Path("templates/admin/inbox/_conversation.html").read_text()
     javascript = Path("static/js/admin-inbox.js").read_text()
 
@@ -354,6 +354,8 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert "\n                        Done\n" not in sidebar
     assert "support:inbox:self_assign" in conversation
     assert "service_team_options | default(())" in conversation
+    assert 'aria-label="Service team for conversation takeover"' in conversation
+    assert "action_eligibility.takeover_team_options" in conversation
     assert "/admin/inbox/{{ timeline.id }}/assign-to-me" in conversation
     assert 'action="/admin/inbox/bulk"' not in conversation
     assert 'aria-label="Team for assignment to me"' in conversation
@@ -370,10 +372,10 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert 'name="cc"' in conversation
     assert 'name="bcc"' in conversation
     assert (
-        'hx-get="/admin/inbox/{{ row.id }}?view=20260827a"'
+        'hx-get="/admin/inbox/{{ row.id }}?view=20260910b"'
         in Path("templates/admin/inbox/_queue_macros.html").read_text()
     )
-    assert 'const INBOX_FRAGMENT_VERSION = "20260827a"' in javascript
+    assert 'const INBOX_FRAGMENT_VERSION = "20260910b"' in javascript
     assert "import message_bubble with context" in conversation
     triage = Path("templates/components/ui/triage.html").read_text()
     assert "att.mime_type.startswith('video/')" in triage
@@ -556,7 +558,10 @@ def test_assignment_agent_options_show_team_and_presence_status(db_session):
         InboxAgentPresenceStatus.online.value
     )
     assert 'name="service_team_id"' in conversation_template
-    assert conversation_template.count('name="service_team_id" required') == 1
+    assert conversation_template.count('name="service_team_id" required') == 2
+    assert (
+        'aria-label="Service team for conversation takeover"' in conversation_template
+    )
     assert "service_team_options" in conversation_template
     assert "selectedTeam" in conversation_template
     assert "data-team-ids" in conversation_template

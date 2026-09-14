@@ -208,7 +208,8 @@
 {% set show_core = can(request, 'customer:read') or can(request, 'support:ticket:read') or can(request, 'crm:lead:read') or can(request, 'provisioning:read') %}
 {% set show_operations = can(request, 'project:read') or can(request, 'billing_account:read') or can(request, 'catalog:read') or can(request, 'network:hub:read') or can(request, 'network:vpn:read') or can(request, 'operations:dispatch:read') or can(request, 'operations:material_request:read') or can(request, 'inventory:read') or can(request, 'network:fiber:read') %}
 {% set show_reports = can(request, 'reports:billing:read') or can(request, 'reports:network:read') or can(request, 'reports:support:read') or can(request, 'customer:read') or can(request, 'reports:ncc:read') %}
-{% set show_admin = show_reports or can(request, 'gis:map:view') or can(request, 'system:settings:read') or can(request, 'notification:read') or can(request, 'provisioning:read') or can(request, 'crm:conversation:read') or can(request, 'support:ticket:read') %}
+{# Help Center is available to every staff principal, so this group is never empty. #}
+{% set show_admin = true %}
 
 {# ── Navigation ── #}
 <div class="space-y-0.5">
@@ -330,5 +331,5 @@
             "system-email"
         ], permission="system:settings:read") }}
     {{ nav_link("Meta connection", "/admin/crm/meta", icon_integrations, "meta-connection", permission="crm:conversation:read") }}
-    {{ nav_link("Help center", "/admin/help", icon_support, "help-center", permission="support:ticket:read") }}
+    {{ nav_link("Help center", "/admin/help", icon_support, "help-center") }}
 </div>

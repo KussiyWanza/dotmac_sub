@@ -3,9 +3,21 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.1
     hooks:
+      # docs/kernel-runtime-composition.json and docs/kernel-runtime-
+      # readiness.json are strict-JSON evidence documents, not formattable
+      # source — `ruff format` rewrites a trailing comma into them that
+      # `json.load` then refuses. pyproject.toml's [tool.ruff] extend-exclude
+      # already keeps a directory-walk `ruff`/`ruff-format` invocation off
+      # both files, but a pre-commit hook passes each *changed* file's exact
+      # path on the command line, which bypasses that exclude — so the same
+      # two paths are excluded here too, explicitly, not just in
+      # pyproject.toml. Their JSON validity is enforced instead by
+      # tests/architecture/test_strict_json_evidence_documents.py.
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
+        exclude: ^docs/(kernel-runtime-composition|kernel-runtime-readiness)\.json$
       - id: ruff-format
+        exclude: ^docs/(kernel-runtime-composition|kernel-runtime-readiness)\.json$
 
   # Standard pre-commit hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks

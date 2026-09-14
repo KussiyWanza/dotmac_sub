@@ -7,6 +7,7 @@ import 'package:drift/drift.dart';
 
 import '../api/api_client.dart';
 import '../secure/evidence_files.dart';
+import '../secure/store_work_gate.dart';
 import 'connectivity.dart';
 import 'database.dart';
 
@@ -114,17 +115,17 @@ class SyncService {
     this.throttle = const Duration(seconds: 1),
   }) : _delay = delay ?? Future.delayed {
     _subscription = connectivity.onlineChanges.listen((online) {
-      if (online) unawaited(flushAll());
+      if (online) requestBackgroundFlush();
     });
   }
 
   /// Upload evidence (photos + signatures) BEFORE outbox mutations, so a queued
   /// "complete" transition never reaches the server ahead of its attachments
   /// (which would trip the server's photo+signature completion gate).
-  Future<void> flushAll() async {
+  Future<void> flushAll() => _run(() async {
     await flushPhotos();
     await flushOutbox();
-  }
+  });
 
   final AppDatabase db;
   final ApiClient api;
@@ -141,14 +142,45 @@ class SyncService {
 
   StreamSubscription<bool>? _subscription;
   bool _flushing = false;
+  bool _disposed = false;
+  Future<void>? _backgroundWork;
+
+  Future<T> _run<T>(Future<T> Function() operation) => db.work.run(operation);
+
+  /// Starts best-effort automatic work without surfacing the expected session
+  /// teardown fence as an uncaught application error.
+  void requestBackgroundFlush() {
+    if (_disposed || _backgroundWork != null) return;
+    late final Future<void> work;
+    work = _backgroundFlush().whenComplete(() {
+      if (identical(_backgroundWork, work)) _backgroundWork = null;
+    });
+    _backgroundWork = work;
+    unawaited(work);
+  }
+
+  Future<void> waitForBackgroundWork() async {
+    await _backgroundWork;
+  }
+
+  Future<void> _backgroundFlush() async {
+    try {
+      await flushAll();
+    } on StoreDiscarded {
+      // Logout/account switch won admission. A new session gets a new service
+      // and its own startup flush; the retired store must not be reopened.
+    }
+  }
 
   Future<void> dispose() async {
+    _disposed = true;
     await _subscription?.cancel();
+    await waitForBackgroundWork();
   }
 
   // ---- Down-sync ---------------------------------------------------------
 
-  Future<int> downSyncJobs() async {
+  Future<int> downSyncJobs() => _run(() async {
     final response = await api.dio.get(
       '/api/v1/field/jobs',
       queryParameters: {'limit': 200},
@@ -156,10 +188,10 @@ class SyncService {
     final items = (response.data['items'] as List).cast<Map>();
     await cacheJobs(items);
     return items.length;
-  }
+  });
 
   /// Upsert job-list rows into the offline cache.
-  Future<void> cacheJobs(List<Map> items) async {
+  Future<void> cacheJobs(List<Map> items) => _run(() async {
     final now = DateTime.now().toUtc();
     await db.batch((batch) {
       for (final item in items) {
@@ -189,10 +221,10 @@ class SyncService {
         );
       }
     });
-  }
+  });
 
   /// Cached job-list rows (optionally filtered by status), newest schedule first.
-  Future<List<CachedJob>> readCachedJobs({String? status}) async {
+  Future<List<CachedJob>> readCachedJobs({String? status}) => _run(() async {
     final query = db.select(db.cachedJobs)
       ..where((row) => row.scopeKey.equals(scopeKey));
     if (status != null) {
@@ -200,35 +232,38 @@ class SyncService {
     }
     query.orderBy([(row) => OrderingTerm.asc(row.scheduledStart)]);
     return query.get();
-  }
+  });
 
-  Future<void> cacheJobDetail(String jobId, Map<String, dynamic> detail) async {
-    await (db.update(
-          db.cachedJobs,
-        )..where((row) => row.scopeKey.equals(scopeKey) & row.id.equals(jobId)))
-        .write(CachedJobsCompanion(detailJson: Value(jsonEncode(detail))));
-  }
+  Future<void> cacheJobDetail(String jobId, Map<String, dynamic> detail) =>
+      _run(() async {
+        await (db.update(db.cachedJobs)..where(
+              (row) => row.scopeKey.equals(scopeKey) & row.id.equals(jobId),
+            ))
+            .write(CachedJobsCompanion(detailJson: Value(jsonEncode(detail))));
+      });
 
   /// Cached job-detail JSON, or null if not cached.
-  Future<Map<String, dynamic>?> readCachedDetail(String jobId) async {
-    final row =
-        await (db.select(db.cachedJobs)
-              ..where((r) => r.scopeKey.equals(scopeKey) & r.id.equals(jobId)))
-            .getSingleOrNull();
-    if (row?.detailJson == null) return null;
-    return (jsonDecode(row!.detailJson!) as Map).cast<String, dynamic>();
-  }
+  Future<Map<String, dynamic>?> readCachedDetail(String jobId) =>
+      _run(() async {
+        final row =
+            await (db.select(db.cachedJobs)..where(
+                  (r) => r.scopeKey.equals(scopeKey) & r.id.equals(jobId),
+                ))
+                .getSingleOrNull();
+        if (row?.detailJson == null) return null;
+        return (jsonDecode(row!.detailJson!) as Map).cast<String, dynamic>();
+      });
 
-  Future<int> downSyncSchedule() async {
+  Future<int> downSyncSchedule() => _run(() async {
     final response = await api.dio.get('/api/v1/field/schedule');
     final items = (response.data as List).cast<Map>();
     await cacheSchedule(items);
     return items.length;
-  }
+  });
 
   /// Replace the cached schedule with the latest fetch. A full replace (rather
   /// than upsert) ensures entries dropped server-side don't linger offline.
-  Future<void> cacheSchedule(List<Map> items) async {
+  Future<void> cacheSchedule(List<Map> items) => _run(() async {
     await db.transaction(() async {
       await (db.delete(
         db.cachedScheduleEntries,
@@ -254,15 +289,15 @@ class SyncService {
         }
       });
     });
-  }
+  });
 
   /// Cached schedule entries, earliest first.
-  Future<List<CachedScheduleEntry>> readCachedSchedule() async {
+  Future<List<CachedScheduleEntry>> readCachedSchedule() => _run(() async {
     final query = db.select(db.cachedScheduleEntries)
       ..where((row) => row.scopeKey.equals(scopeKey))
       ..orderBy([(row) => OrderingTerm.asc(row.startAt)]);
     return query.get();
-  }
+  });
 
   // ---- Outbox ------------------------------------------------------------
 
@@ -270,7 +305,7 @@ class SyncService {
     required String kind,
     required String clientRef,
     required Map<String, dynamic> payload,
-  }) async {
+  }) => _run(() async {
     await db
         .into(db.outboxEntries)
         .insert(
@@ -283,43 +318,50 @@ class SyncService {
           ),
           mode: InsertMode.insertOrIgnore, // retried enqueues are no-ops
         );
-  }
+  });
 
-  Future<List<OutboxEntry>> pending() =>
-      (db.select(db.outboxEntries)
-            ..where(
+  Future<List<OutboxEntry>> pending() => _run(
+    () =>
+        (db.select(db.outboxEntries)
+              ..where(
+                (row) =>
+                    row.scopeKey.equals(scopeKey) &
+                    row.status.equals('pending'),
+              )
+              ..orderBy([(row) => OrderingTerm.asc(row.seq)]))
+            .get(),
+  );
+
+  Future<OutboxEntry?> outboxEntry(String clientRef) => _run(
+    () =>
+        (db.select(db.outboxEntries)..where(
               (row) =>
-                  row.scopeKey.equals(scopeKey) & row.status.equals('pending'),
-            )
-            ..orderBy([(row) => OrderingTerm.asc(row.seq)]))
-          .get();
+                  row.scopeKey.equals(scopeKey) &
+                  row.clientRef.equals(clientRef),
+            ))
+            .getSingleOrNull(),
+  );
 
-  Future<OutboxEntry?> outboxEntry(String clientRef) =>
-      (db.select(db.outboxEntries)..where(
-            (row) =>
-                row.scopeKey.equals(scopeKey) & row.clientRef.equals(clientRef),
-          ))
-          .getSingleOrNull();
-
-  Future<MutationDeliveryResult> deliveryResult(String clientRef) async {
-    final entry = await outboxEntry(clientRef);
-    if (entry == null) {
-      return MutationDeliveryResult(
-        clientRef: clientRef,
-        state: MutationDeliveryState.failed,
-        error: 'Queued note could not be found',
-      );
-    }
-    return MutationDeliveryResult(
-      clientRef: clientRef,
-      state: switch (entry.status) {
-        'sent' => MutationDeliveryState.delivered,
-        'conflict' => MutationDeliveryState.failed,
-        _ => MutationDeliveryState.queued,
-      },
-      error: entry.lastError,
-    );
-  }
+  Future<MutationDeliveryResult> deliveryResult(String clientRef) =>
+      _run(() async {
+        final entry = await outboxEntry(clientRef);
+        if (entry == null) {
+          return MutationDeliveryResult(
+            clientRef: clientRef,
+            state: MutationDeliveryState.failed,
+            error: 'Queued note could not be found',
+          );
+        }
+        return MutationDeliveryResult(
+          clientRef: clientRef,
+          state: switch (entry.status) {
+            'sent' => MutationDeliveryState.delivered,
+            'conflict' => MutationDeliveryState.failed,
+            _ => MutationDeliveryState.queued,
+          },
+          error: entry.lastError,
+        );
+      });
 
   /// Queued mutations carry the customer's own words and readings, so the
   /// payload column holds an envelope bound to this scope and this client ref.
@@ -339,61 +381,61 @@ class SyncService {
     return (jsonDecode(json) as Map).cast<String, dynamic>();
   }
 
-  Future<List<OfflineRequestHistoryEntry>> offlineRequestHistory(
-    String kind,
-  ) async {
-    final rows =
-        await (db.select(db.outboxEntries)
-              ..where(
-                (row) =>
-                    row.scopeKey.equals(scopeKey) &
-                    row.kind.equals(kind) &
-                    row.status.isNotValue('sent'),
-              )
-              ..orderBy([(row) => OrderingTerm.desc(row.createdAt)]))
-            .get();
-    return [
-      for (final row in rows)
-        OfflineRequestHistoryEntry(
-          clientRef: row.clientRef,
-          kind: row.kind,
-          status: row.status,
-          payload: _openPayload(row),
-          createdAt: row.createdAt,
-          lastError: row.lastError,
-        ),
-    ];
-  }
+  Future<List<OfflineRequestHistoryEntry>> offlineRequestHistory(String kind) =>
+      _run(() async {
+        final rows =
+            await (db.select(db.outboxEntries)
+                  ..where(
+                    (row) =>
+                        row.scopeKey.equals(scopeKey) &
+                        row.kind.equals(kind) &
+                        row.status.isNotValue('sent'),
+                  )
+                  ..orderBy([(row) => OrderingTerm.desc(row.createdAt)]))
+                .get();
+        return [
+          for (final row in rows)
+            OfflineRequestHistoryEntry(
+              clientRef: row.clientRef,
+              kind: row.kind,
+              status: row.status,
+              payload: _openPayload(row),
+              createdAt: row.createdAt,
+              lastError: row.lastError,
+            ),
+        ];
+      });
 
-  Future<List<OfflineNoteProjection>> offlineNotesForJob(
-    String workOrderId,
-  ) async {
-    final entries = await offlineRequestHistory('note');
-    return [
-      for (final entry in entries)
-        if (entry.payload['work_order_id'] == workOrderId)
-          OfflineNoteProjection(
-            clientRef: entry.clientRef,
-            body: entry.payload['body'] as String? ?? '',
-            isInternal: entry.payload['is_internal'] as bool? ?? true,
-            createdAt: entry.createdAt,
-            state: entry.status == 'conflict'
-                ? MutationDeliveryState.failed
-                : MutationDeliveryState.queued,
-            error: entry.lastError,
-          ),
-    ];
-  }
+  Future<List<OfflineNoteProjection>> offlineNotesForJob(String workOrderId) =>
+      _run(() async {
+        final entries = await offlineRequestHistory('note');
+        return [
+          for (final entry in entries)
+            if (entry.payload['work_order_id'] == workOrderId)
+              OfflineNoteProjection(
+                clientRef: entry.clientRef,
+                body: entry.payload['body'] as String? ?? '',
+                isInternal: entry.payload['is_internal'] as bool? ?? true,
+                createdAt: entry.createdAt,
+                state: entry.status == 'conflict'
+                    ? MutationDeliveryState.failed
+                    : MutationDeliveryState.queued,
+                error: entry.lastError,
+              ),
+        ];
+      });
 
-  Future<List<PendingPhoto>> pendingPhotosForJob(String workOrderId) =>
-      (db.select(db.pendingPhotos)..where(
-            (row) =>
-                row.scopeKey.equals(scopeKey) &
-                row.workOrderId.equals(workOrderId),
-          ))
-          .get();
+  Future<List<PendingPhoto>> pendingPhotosForJob(String workOrderId) => _run(
+    () =>
+        (db.select(db.pendingPhotos)..where(
+              (row) =>
+                  row.scopeKey.equals(scopeKey) &
+                  row.workOrderId.equals(workOrderId),
+            ))
+            .get(),
+  );
 
-  Future<void> removePendingPhoto(String clientRef) async {
+  Future<void> removePendingPhoto(String clientRef) => _run(() async {
     final row =
         await (db.select(db.pendingPhotos)..where(
               (photo) =>
@@ -409,13 +451,13 @@ class SyncService {
               photo.clientRef.equals(clientRef),
         ))
         .go();
-  }
+  });
 
   Future<bool> get isOnline => connectivity.isOnline;
 
   /// Flush pending entries FIFO. One failure stops the flush (order matters:
   /// a note may reference a transition); conflicts are parked, not dropped.
-  Future<int> flushOutbox() async {
+  Future<int> flushOutbox() => _run(() async {
     if (_flushing) return 0;
     if (!await connectivity.isOnline) return 0;
     _flushing = true;
@@ -490,7 +532,7 @@ class SyncService {
       _flushing = false;
     }
     return sent;
-  }
+  });
 
   // ---- Photo uploads -----------------------------------------------------
 
@@ -499,7 +541,7 @@ class SyncService {
   /// Upload queued photos as multipart to the attachments endpoint. The
   /// server dedupes on client_ref, so retries are safe. 4xx responses record
   /// the error but keep the file — evidence is never silently dropped.
-  Future<int> flushPhotos() async {
+  Future<int> flushPhotos() => _run(() async {
     if (_flushingPhotos) return 0;
     if (!await connectivity.isOnline) return 0;
     _flushingPhotos = true;
@@ -590,7 +632,7 @@ class SyncService {
       _flushingPhotos = false;
     }
     return uploaded;
-  }
+  });
 
   Future<void> _markPhoto(
     String clientRef, {

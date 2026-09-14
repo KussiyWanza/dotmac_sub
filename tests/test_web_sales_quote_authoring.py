@@ -166,6 +166,19 @@ def test_new_quote_template_retains_responsive_dark_install_and_line_contracts()
     assert 'role="status"' in template
 
 
+def test_quote_edit_requires_changes_to_be_saved_before_acceptance():
+    template = Path("templates/admin/sales/quotes/form.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'x-init="captureInitialEditState($el)"' in template
+    assert "name !== '_csrf_token' && name !== 'status'" in template
+    assert "statusInput.value === 'accepted'" in template
+    assert "this.editState(event.target) !== this.initialEditState" in template
+    assert "Save the quote changes first, then accept it." in template
+    assert 'role="alert" aria-live="assertive"' in template
+
+
 def test_new_quote_context_renders_defaults_and_one_empty_line(db_session):
     _actor, lead, _party = _identity(db_session)
     context = web_sales.build_quote_new_context(db_session, lead_id=str(lead.id))

@@ -147,7 +147,7 @@
         "path": "tests/test_nextcloud_talk_staff_notifications.py",
         "symbol": "<module>",
         "category": "delivery_retry",
-        "fingerprint": "2ad03d19e91abbbd467037d4672ba61b4433b2533ead11b04955f1873b6017af"
+        "fingerprint": "e6a540dee1e6ddfb5448aef0a667aef1f3b7bf54e955fbcd9bd7ae86e2dbd315"
       },
       {
         "path": "tests/test_router_management_connection.py",

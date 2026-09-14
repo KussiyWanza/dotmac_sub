@@ -397,7 +397,7 @@
             {% else %}
             <div class="mt-6 grid gap-4 sm:grid-cols-2">
                 {% for setting in settings_rows %}
-                <div>
+                <div {% if setting.key == 'inbox_agent_default_max_concurrent_conversations' %}id="inbox-agent-capacity" class="scroll-mt-6 rounded-lg border border-amber-200 bg-amber-50/50 p-4 dark:border-amber-500/30 dark:bg-amber-500/10"{% endif %}>
                     <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
                         {{ setting.spec.label or (setting.key | replace('_', ' ') | title) }}
                         {% if setting.spec.required %}
@@ -423,6 +423,7 @@
                         <input type="number" name="{{ setting.key }}" value="{{ setting.value }}"
                                {% if setting.spec.min_value is not none %}min="{{ setting.spec.min_value }}"{% endif %}
                                {% if setting.spec.max_value is not none %}max="{{ setting.spec.max_value }}"{% endif %}
+                               step="1"
                                {% if setting.spec.required %}required{% endif %}
                                class="block w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                     {% else %}
@@ -434,6 +435,10 @@
                         {% if setting.spec.is_secret and setting.value %}
                         <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Stored value hidden.</p>
                         {% endif %}
+                    {% endif %}
+                    {% if setting.key == 'inbox_agent_default_max_concurrent_conversations' %}
+                    <p class="mt-2 text-xs text-slate-600 dark:text-slate-300">Enter 1–100. Ten is the default, not the maximum. This applies to agents without a per-agent override.</p>
+                    <button type="submit" class="mt-3 rounded-lg bg-amber-600 px-3 py-2 text-xs font-semibold text-white hover:bg-amber-700">Save Inbox capacity</button>
                     {% endif %}
                 </div>
                 {% endfor %}

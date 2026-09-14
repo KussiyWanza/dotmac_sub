@@ -69,6 +69,14 @@ class InboxConversationContactLinkRead(BaseModel):
     speaking_party_id: UUID | None = None
     previous_link_ids_deactivated: list[UUID] = Field(default_factory=list)
     repaired_conversation_ids: tuple[UUID, ...] = ()
+    replayed: bool
+
+
+class InboxCustomerLinkOptionRead(BaseModel):
+    id: UUID
+    label: str
+    type: Literal["subscriber"] = "subscriber"
+    source: Literal["suggested", "search"]
 
 
 class InboxTimelineTeamRead(BaseModel):

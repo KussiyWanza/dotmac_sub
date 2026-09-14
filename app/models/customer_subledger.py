@@ -54,6 +54,7 @@ class PostingCommandKind(enum.Enum):
     refund = "refund"
     adjustment = "adjustment"
     opening_position = "opening_position"
+    opening_position_correction = "opening_position_correction"
     reversal = "reversal"
 
 
@@ -91,6 +92,7 @@ class PostingSourceKind(enum.Enum):
     prepaid_opening_funding_consumption = "prepaid_opening_funding_consumption"
     prepaid_funding_baseline = "prepaid_funding_baseline"
     customer_subledger_opening_position = "customer_subledger_opening_position"
+    customer_subledger_opening_correction = "customer_subledger_opening_correction"
 
 
 class PositionEffectKind(enum.Enum):
@@ -177,6 +179,72 @@ class CustomerSubledgerOpeningPosition(Base):
     evidence_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     review_reference: Mapped[str] = mapped_column(Text, nullable=False)
     captured_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
+class CustomerSubledgerOpeningCorrection(Base):
+    """Append-only, reviewed correction to an immutable opening position."""
+
+    __tablename__ = "customer_subledger_opening_corrections"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_subledger_opening_correction_key"),
+        CheckConstraint(
+            "length(currency) = 3 AND currency = upper(currency)",
+            name="ck_subledger_opening_correction_currency",
+        ),
+        CheckConstraint("delta <> 0", name="ck_subledger_opening_correction_nonzero"),
+        CheckConstraint(
+            "corrected_opening_amount = previous_opening_amount + delta",
+            name="ck_subledger_opening_correction_exact_delta",
+        ),
+        CheckConstraint(
+            "length(preview_fingerprint) = 64",
+            name="ck_subledger_opening_correction_hash",
+        ),
+        Index("ix_subledger_opening_correction_opening", "opening_position_id"),
+        Index("ix_subledger_opening_correction_account", "account_id", "currency"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    opening_position_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("customer_subledger_opening_positions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("subscribers.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    previous_opening_amount: Mapped[Decimal] = mapped_column(
+        Numeric(18, 4), nullable=False
+    )
+    corrected_opening_amount: Mapped[Decimal] = mapped_column(
+        Numeric(18, 4), nullable=False
+    )
+    delta: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    review_reference: Mapped[str] = mapped_column(Text, nullable=False)
+    preview_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    applied_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    authorized_system_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("system_users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
     command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     correlation_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False

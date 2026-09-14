@@ -215,6 +215,13 @@ release.
 | Rolling version bump into `main` | Squash |
 | `integration/**` or `consolidate/**` batch into `main` | Merge commit |
 
+A rolling version bump changes `pyproject.toml`, which is the complete source
+of the `dependency-manifest` Kernel composition observation. The version bump
+generator therefore refreshes both dependency-manifest digests in
+`docs/kernel-runtime-composition.json` in the same generated commit. A digest
+mismatch is a failed generation, not a lint exception; do not disable or skip
+the composition-observation check to merge a bump.
+
 A batch branch keeps a merge commit because its individual commits carry the
 migration sequence that `migration_sequence_gate.py` reads; squashing a batch
 collapses that ordering into one commit and the gate can no longer see it.

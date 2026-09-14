@@ -32,6 +32,7 @@ from app.models.subscriber import (
     AddressType,
     ChannelType,
     ContactMethod,
+    Gender,
     Reseller,
     Subscriber,
     SubscriberCategory,
@@ -110,6 +111,66 @@ CUSTOMER_INVOICE_PAYMENT_METHOD_TRANSFER_VALUES = frozenset(
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class IndividualBiodataCompletion:
+    """Authoritative completion result for residential customer biodata."""
+
+    applicable: bool
+    missing: tuple[str, ...]
+
+    @property
+    def complete(self) -> bool:
+        return self.applicable and not self.missing
+
+
+def evaluate_individual_biodata(subscriber: Subscriber) -> IndividualBiodataCompletion:
+    """Return whether a residential subscriber has complete biodata."""
+    if subscriber.category != SubscriberCategory.residential:
+        return IndividualBiodataCompletion(applicable=False, missing=())
+    missing: list[str] = []
+    if subscriber.date_of_birth is None:
+        missing.append("date_of_birth")
+    if subscriber.gender in {None, Gender.unknown}:
+        missing.append("gender")
+    nin = (subscriber.nin or "").strip()
+    if re.fullmatch(r"[0-9]{11}", nin) is None:
+        missing.append("nin")
+    return IndividualBiodataCompletion(applicable=True, missing=tuple(missing))
+
+
+def _validate_individual_biodata(
+    subscriber: Subscriber,
+    *,
+    nin: str | None,
+    date_of_birth: str | None,
+    gender: str | None,
+    nin_locked: bool,
+) -> tuple[str | None, date | None, Gender | str | None]:
+    """Validate required residential biodata at the profile write boundary."""
+    if subscriber.category != SubscriberCategory.residential:
+        return None, None, None
+    candidate_nin = subscriber.nin if nin_locked else (nin or "").strip() or None
+    if re.fullmatch(r"[0-9]{11}", candidate_nin or "") is None:
+        raise ValueError("NIN must contain exactly 11 digits.")
+    dob_text = (date_of_birth or "").strip()
+    if not dob_text:
+        raise ValueError("Date of birth is required.")
+    try:
+        candidate_dob = date.fromisoformat(dob_text)
+    except ValueError as exc:
+        raise ValueError("Date of birth must be a valid date.") from exc
+    if candidate_dob > date.today():
+        raise ValueError("Date of birth cannot be in the future.")
+    gender_text = (gender or "").strip()
+    try:
+        candidate_gender = Gender(gender_text)
+    except ValueError as exc:
+        raise ValueError("Select a valid gender.") from exc
+    if candidate_gender is Gender.unknown:
+        raise ValueError("Gender is required.")
+    return candidate_nin, candidate_dob, candidate_gender
 
 
 def resolve_customer_reseller_id(
@@ -3313,6 +3374,7 @@ def update_customer_profile(
     usage_notifications: bool = True,
     general_notifications: bool = True,
     locale: str | None = None,
+    enforce_biodata: bool = False,
 ) -> Subscriber | None:
     """Update a customer's profile fields."""
     subscriber = db.get(Subscriber, subscriber_id)
@@ -3334,6 +3396,15 @@ def update_customer_profile(
 
     display = (display_name or "").strip()
     nin_locked = bool((subscriber.metadata_ or {}).get("nin_verified"))
+    validated_nin = validated_dob = validated_gender = None
+    if enforce_biodata:
+        validated_nin, validated_dob, validated_gender = _validate_individual_biodata(
+            subscriber,
+            nin=nin,
+            date_of_birth=date_of_birth,
+            gender=gender,
+            nin_locked=nin_locked,
+        )
     update_fields: dict[str, Any] = {
         "first_name": first_name.strip(),
         "last_name": last_name.strip(),
@@ -3343,25 +3414,26 @@ def update_customer_profile(
         "locale": (locale or "").strip() or None,
         "metadata_": metadata,
     }
-    if not nin_locked:
-        update_fields["nin"] = (nin or "").strip() or None
-
-    # Date of birth: blank clears it; a malformed value is ignored (keep prior).
-    dob = (date_of_birth or "").strip()
-    if not dob:
-        update_fields["date_of_birth"] = None
+    if enforce_biodata and subscriber.category == SubscriberCategory.residential:
+        if not nin_locked:
+            update_fields["nin"] = validated_nin
+        update_fields["date_of_birth"] = validated_dob
+        update_fields["gender"] = validated_gender
     else:
-        try:
-            update_fields["date_of_birth"] = date.fromisoformat(dob)
-        except ValueError:
-            pass
+        if not nin_locked:
+            update_fields["nin"] = (nin or "").strip() or None
+        dob = (date_of_birth or "").strip()
+        if not dob:
+            update_fields["date_of_birth"] = None
+        else:
+            try:
+                update_fields["date_of_birth"] = date.fromisoformat(dob)
+            except ValueError:
+                pass
+        gender_value = (gender or "").strip()
+        if gender_value:
+            update_fields["gender"] = gender_value
 
-    # gender always carries a value from the form (defaults to "unknown");
-    # contact method is optional ("" → no preference). Pydantic coerces the
-    # string to the enum on the SubscriberUpdate model.
-    gender_value = (gender or "").strip()
-    if gender_value:
-        update_fields["gender"] = gender_value
     contact_value = (preferred_contact_method or "").strip()
     update_fields["preferred_contact_method"] = contact_value or None
 

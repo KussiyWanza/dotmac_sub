@@ -20,6 +20,8 @@ from app.models.ai_intake import AiIntakePolicyVersion, AiIntakeSession
 from app.models.team_inbox import InboxConversation
 from app.schemas.ai_intake import (
     DEFAULT_CLARIFICATION_QUESTIONS,
+    GENERIC_FOLLOW_UP_QUESTION,
+    NATURAL_CLARIFICATION_QUESTION,
     AiClassifierAttempt,
     AiClassifierAttemptStatus,
     AiClassifierFailureKind,
@@ -71,6 +73,20 @@ PRIOR_INTERACTION_RE = re.compile(
 OUTAGE_CONTEXT_RE = re.compile(
     r"\b(?:since|for)\s+([a-z0-9][a-z0-9\s-]{0,60}?)"
     r"(?=(?:\s+(?:and|but|so|because)\b)|[,.!?;]|$)",
+    re.I,
+)
+CONNECTIVITY_DOWN_RE = re.compile(
+    r"\b(?:no\s+(?:internet|service)|(?:internet|network)\s+(?:is\s+)?down|"
+    r"not\s+browsing|not\s+working)\b",
+    re.I,
+)
+DURATION_SHORTHAND_RE = re.compile(
+    r"\b(?:(?:for|since)\s+)?(?P<count>[1-9]\d{0,2})\s*"
+    r"(?P<unit>dys?|days?|hrs?|hours?|wks?|weeks?)\b",
+    re.I,
+)
+GREETING_ONLY_RE = re.compile(
+    r"^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))(?:\s+there)?[!.?]*$",
     re.I,
 )
 PORTAL_RE = re.compile(
@@ -489,6 +505,7 @@ class ConversationalState:
     question_history: list[QuestionState] = field(default_factory=list)
     acknowledged_issue_key: str | None = None
     issue_acknowledged: bool = False
+    issue_acknowledgement_required: bool = False
     frustration_level: AiIntakeAffectLevel = AiIntakeAffectLevel.none
     agitation_level: AiIntakeAffectLevel = AiIntakeAffectLevel.none
     repeated_complaint: bool = False
@@ -592,6 +609,9 @@ class ConversationalState:
                 issue_acknowledged=bool(
                     raw.get("issue_acknowledged") or raw.get("acknowledged_issue_key")
                 ),
+                issue_acknowledgement_required=bool(
+                    raw.get("issue_acknowledgement_required")
+                ),
                 frustration_level=_affect_level(raw.get("frustration_level")),
                 agitation_level=_affect_level(raw.get("agitation_level")),
                 repeated_complaint=bool(raw.get("repeated_complaint")),
@@ -684,6 +704,7 @@ class ConversationalState:
             ],
             "acknowledged_issue_key": self.acknowledged_issue_key,
             "issue_acknowledged": self.issue_acknowledged,
+            "issue_acknowledgement_required": self.issue_acknowledgement_required,
             "frustration_level": self.frustration_level.value,
             "agitation_level": self.agitation_level.value,
             "repeated_complaint": self.repeated_complaint,
@@ -774,6 +795,7 @@ def run_conversational_turn(
     _merge_facts(state, facts)
     _merge_affect(state, detect_affect(latest_body, state=state), fresh_signal=True)
     _merge_classification(state, classification)
+    _refresh_issue_acknowledgement_requirement(state)
     latest_facts = dict(facts)
     if classification is not None:
         latest_facts.update(
@@ -1119,10 +1141,7 @@ def extract_facts(text: str) -> dict[str, object]:
         facts["portal_id"] = portal.group(1).strip()
     if HUMAN_RE.search(value):
         facts["human_requested"] = True
-    if any(
-        item in lowered
-        for item in ("not browsing", "internet is down", "no internet", "not working")
-    ):
+    if CONNECTIVITY_DOWN_RE.search(value):
         facts["connectivity_problem"] = True
         facts["connectivity_state"] = "down"
     if "slow" in lowered:
@@ -1180,9 +1199,33 @@ def extract_facts(text: str) -> dict[str, object]:
     if "restart" in lowered or "reboot" in lowered:
         facts["router_restarted"] = True
         facts["restart_attempted"] = True
-    outage_context = OUTAGE_CONTEXT_RE.search(value)
-    if outage_context:
-        issue_started_when = outage_context.group(0).strip()[:80]
+    shorthand_duration = DURATION_SHORTHAND_RE.search(value)
+    if shorthand_duration:
+        count = int(shorthand_duration.group("count"))
+        raw_unit = shorthand_duration.group("unit").lower()
+        unit = (
+            "day"
+            if raw_unit.startswith("d")
+            else "hour"
+            if raw_unit.startswith("h")
+            else "week"
+        )
+        bounded = (
+            (unit == "hour" and count <= 168)
+            or (unit == "day" and count <= 365)
+            or (unit == "week" and count <= 52)
+        )
+        issue_started_when = (
+            f"for {count} {unit}{'' if count == 1 else 's'}" if bounded else None
+        )
+    elif re.search(r"\bsince\s+yesterday\b", value, re.I):
+        issue_started_when = "since yesterday"
+    else:
+        outage_context = OUTAGE_CONTEXT_RE.search(value)
+        issue_started_when = (
+            outage_context.group(0).strip()[:80] if outage_context else None
+        )
+    if issue_started_when:
         facts["outage_context"] = issue_started_when
         facts["issue_started_when"] = issue_started_when
     if (
@@ -1212,6 +1255,15 @@ def extract_facts(text: str) -> dict[str, object]:
         facts["slow_internet"] = True
         facts["connectivity_state"] = "slow"
     return facts
+
+
+def is_greeting_only(text: str) -> bool:
+    """Return true only for a short, bounded greeting with no support content."""
+
+    normalized = " ".join(str(text or "").strip().split())
+    return bool(
+        normalized and len(normalized) <= 40 and GREETING_ONLY_RE.fullmatch(normalized)
+    )
 
 
 def detect_affect(
@@ -1691,12 +1743,26 @@ def _merge_classifier_attempt(
 def _classifier_unavailable_question(
     version: AiIntakePolicyVersion | None,
 ) -> str:
+    allow_category_menu = category_menu_clarification_enabled(version)
     raw = version.clarification_questions if version is not None else None
     if isinstance(raw, list | tuple) and raw:
         question = str(raw[0] or "").strip()
         if question:
+            if question == GENERIC_FOLLOW_UP_QUESTION and not allow_category_menu:
+                return NATURAL_CLARIFICATION_QUESTION
             return question[:300]
     return DEFAULT_CLARIFICATION_QUESTIONS[0]
+
+
+def category_menu_clarification_enabled(
+    version: AiIntakePolicyVersion | None,
+) -> bool:
+    metadata = dict(version.metadata_ or {}) if version is not None else {}
+    conversation_policy = metadata.get("conversation_policy")
+    return bool(
+        isinstance(conversation_policy, Mapping)
+        and conversation_policy.get("allow_category_menu_clarification")
+    )
 
 
 def classifier_unavailable_decision(
@@ -1721,6 +1787,42 @@ def classifier_unavailable_decision(
                 ),
             ),
         )
+    fact_path = _deterministic_support_path(state)
+    if fact_path is not None:
+        state.current_intent, state.category = fact_path
+        clarification = _next_useful_question(state, policy, now=now)
+        if clarification is not None:
+            return ConversationEngineDecision(
+                action="respond",
+                state=state,
+                response_text=clarification.prompt,
+                metadata={
+                    "reason": AiIntakeReason.classifier_unavailable.value,
+                    "classifier_attempt_status": classifier_attempt.status.value,
+                    "classifier_failure_kind": (
+                        classifier_attempt.failure_kind.value
+                        if classifier_attempt.failure_kind is not None
+                        else None
+                    ),
+                    "classifier_retry_count": classifier_attempt.retry_count,
+                    "classifier_retry_limit": classifier_attempt.retry_limit,
+                    "classifier_retries_exhausted": False,
+                    "fact_driven_path": True,
+                    "question_key": clarification.key,
+                    "expected_fact": clarification.expected_fact,
+                    "question_purpose": clarification.purpose,
+                    "question_priority": clarification.priority,
+                    "priority_source": clarification.priority_source,
+                    "candidate_question_keys": list(state.candidate_question_keys),
+                    "effective_question_order": list(state.effective_question_order),
+                    "acknowledgement_required": state.acknowledgement_required,
+                    "issue_acknowledgement_required": (
+                        state.issue_acknowledgement_required
+                    ),
+                    "next_action": "ask_question",
+                    "response_source": "template",
+                },
+            )
     clarification = _record_question(
         state,
         key="classifier_unavailable_clarification",
@@ -1754,6 +1856,36 @@ def classifier_unavailable_decision(
             "next_action": "ask_question",
             "response_source": "template",
         },
+    )
+
+
+def _deterministic_support_path(
+    state: ConversationalState,
+) -> tuple[str, str] | None:
+    connectivity_state = str(state.collected_facts.get("connectivity_state") or "")
+    category = {
+        "down": "no_internet",
+        "slow": "slow_internet",
+        "intermittent": "intermittent_connection",
+    }.get(connectivity_state)
+    if category is None:
+        return None
+    return "technical_support", category
+
+
+def _refresh_issue_acknowledgement_requirement(state: ConversationalState) -> None:
+    state.issue_acknowledgement_required = bool(
+        not state.issue_acknowledged
+        and (
+            _deterministic_support_path(state) is not None
+            or (state.category or "")
+            in {
+                "no_internet",
+                "slow_internet",
+                "intermittent_connection",
+                "router_issue",
+            }
+        )
     )
 
 

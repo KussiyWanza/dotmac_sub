@@ -45,10 +45,18 @@ class FieldExpenseRequest(Base):
             "requested_by_system_user_id",
         ),
         Index("ix_field_expense_requests_status", "status"),
+        Index(
+            "ix_field_expense_requests_selected_approver",
+            "selected_approver_system_user_id",
+        ),
         Index("ix_field_expense_requests_client_ref", "client_ref", unique=True),
         CheckConstraint(
             "status IN ('draft', 'submitted', 'approved', 'rejected', 'paid', 'canceled')",
             name="ck_field_expense_requests_status",
+        ),
+        CheckConstraint(
+            "payment_destination_mode IS NULL OR payment_destination_mode IN ('erp_profile', 'expense_override')",
+            name="ck_field_expense_requests_destination_mode",
         ),
     )
 
@@ -69,6 +77,29 @@ class FieldExpenseRequest(Base):
     )
     requested_by_system_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("system_users.id")
+    )
+    selected_approver_erp_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True)
+    )
+    selected_approver_system_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("system_users.id")
+    )
+    selected_approver_name: Mapped[str | None] = mapped_column(String(200))
+    selected_approver_email: Mapped[str | None] = mapped_column(String(255))
+    payment_destination_mode: Mapped[str | None] = mapped_column(String(30))
+    payment_destination_token: Mapped[str | None] = mapped_column(Text)
+    recipient_bank_code: Mapped[str | None] = mapped_column(String(20))
+    recipient_bank_name: Mapped[str | None] = mapped_column(String(100))
+    recipient_account_last4: Mapped[str | None] = mapped_column(String(4))
+    verified_beneficiary_name: Mapped[str | None] = mapped_column(String(150))
+    destination_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    destination_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    payment_destination_locked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
     )
     status: Mapped[str] = mapped_column(String(30), default="draft", nullable=False)
     purpose: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -99,7 +130,12 @@ class FieldExpenseRequest(Base):
 
     work_order_mirror = relationship("WorkOrder")
     requested_by_technician = relationship("TechnicianProfile")
-    requested_by_system_user = relationship("SystemUser")
+    requested_by_system_user = relationship(
+        "SystemUser", foreign_keys=[requested_by_system_user_id]
+    )
+    selected_approver_system_user = relationship(
+        "SystemUser", foreign_keys=[selected_approver_system_user_id]
+    )
     items = relationship(
         "FieldExpenseRequestItem",
         back_populates="expense_request",

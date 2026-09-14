@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -22,6 +24,64 @@ from app.services.genieacs_client import (
 from app.services.network.serial_utils import search_candidates
 
 logger = logging.getLogger(__name__)
+
+
+class CpeGenieAcsResolutionStatus(StrEnum):
+    """Fail-closed outcome for CPE-to-GenieACS identity resolution."""
+
+    resolved = "resolved"
+    ambiguous = "ambiguous"
+    unresolved = "unresolved"
+
+
+@dataclass(frozen=True, slots=True)
+class CpeGenieAcsResolution:
+    """Typed CPE identity verdict; only ``resolved`` carries a write target."""
+
+    status: CpeGenieAcsResolutionStatus
+    reason: str
+    provenance: str | None = None
+    client: GenieACSClient | None = None
+    device_id: str | None = None
+    candidate_count: int = 0
+
+    @property
+    def resolved_pair(self) -> tuple[GenieACSClient, str] | None:
+        if (
+            self.status is not CpeGenieAcsResolutionStatus.resolved
+            or self.client is None
+            or not self.device_id
+        ):
+            return None
+        return self.client, self.device_id
+
+
+def _cpe_resolved(
+    client: GenieACSClient, device_id: str, provenance: str
+) -> CpeGenieAcsResolution:
+    return CpeGenieAcsResolution(
+        status=CpeGenieAcsResolutionStatus.resolved,
+        reason=provenance,
+        provenance=provenance,
+        client=client,
+        device_id=device_id,
+        candidate_count=1,
+    )
+
+
+def _cpe_ambiguous(reason: str, candidate_count: int) -> CpeGenieAcsResolution:
+    return CpeGenieAcsResolution(
+        status=CpeGenieAcsResolutionStatus.ambiguous,
+        reason=reason,
+        candidate_count=candidate_count,
+    )
+
+
+def _cpe_unresolved(reason: str) -> CpeGenieAcsResolution:
+    return CpeGenieAcsResolution(
+        status=CpeGenieAcsResolutionStatus.unresolved,
+        reason=reason,
+    )
 
 
 def _normalized_serial_expr(column):
@@ -264,6 +324,43 @@ def _resolve_device_id_from_server(
         if device_id:
             return device_id
     return None
+
+
+def _resolve_cpe_device_ids_from_server(
+    client: GenieACSClient, serial_number: str
+) -> tuple[str, ...]:
+    """Return every distinct live ACS identity matching the CPE serial.
+
+    The older ONT discovery helper intentionally keeps its historic first-match
+    contract. Remaining CPE actions use this complete candidate set so a
+    duplicate live ACS document becomes an explicit refusal, never a guessed
+    write target.
+    """
+
+    device_ids: set[str] = set()
+    for candidate in _serial_search_candidates(serial_number):
+        escaped_candidate = re.escape(candidate)
+        devices = client.list_devices(
+            query={
+                "$or": [
+                    {"_id": {"$regex": f".*-{escaped_candidate}$"}},
+                    {"_deviceId._SerialNumber": candidate},
+                    {"_deviceId.SerialNumber": candidate},
+                    {"Device.DeviceInfo.SerialNumber._value": candidate},
+                    {
+                        "InternetGatewayDevice.DeviceInfo.SerialNumber._value": (
+                            candidate
+                        )
+                    },
+                ]
+            }
+        )
+        device_ids.update(
+            clean_id
+            for device in devices
+            if (clean_id := str(device.get("_id") or "").strip())
+        )
+    return tuple(sorted(device_ids))
 
 
 def _parse_genieacs_timestamp(value: object) -> datetime | None:
@@ -691,13 +788,12 @@ def resolve_genieacs_for_cpe(
     db: Session, cpe: CPEDevice
 ) -> tuple[GenieACSClient, str] | None:
     """Resolve GenieACS client and device ID for a CPE device."""
-    resolved, _reason = resolve_genieacs_for_cpe_with_reason(db, cpe)
-    return resolved
+    return resolve_genieacs_for_cpe_with_reason(db, cpe).resolved_pair
 
 
 def resolve_genieacs_for_cpe_with_reason(
     db: Session, cpe: CPEDevice
-) -> tuple[tuple[GenieACSClient, str] | None, str]:
+) -> CpeGenieAcsResolution:
     """Resolve GenieACS client and device ID for a CPE device.
 
     Resolution tiers (simpler than ONT — no OLT hierarchy):
@@ -705,12 +801,14 @@ def resolve_genieacs_for_cpe_with_reason(
     2. Linked Tr069CpeDevice by normalized serial number match
     3. Default ACS server from settings
 
-    Returns:
-        Tuple of (client, device_id) or None if not resolvable.
+    Every tier enumerates all candidates before choosing. Multiple local rows
+    or multiple live GenieACS documents are ``ambiguous`` and carry no target.
+    This remains true even where a database constraint normally prevents the
+    local duplicate: the resolver is the last mutation-boundary defence.
     """
     serial = str(getattr(cpe, "serial_number", None) or "").strip()
     if not serial:
-        return None, "CPE serial number is missing."
+        return _cpe_unresolved("CPE serial number is missing.")
 
     cpe_id = str(cpe.id) if cpe.id else ""
 
@@ -720,25 +818,42 @@ def resolve_genieacs_for_cpe_with_reason(
             select(Tr069CpeDevice)
             .where(Tr069CpeDevice.cpe_device_id == cpe.id)
             .where(Tr069CpeDevice.is_active.is_(True))
-            .limit(1)
+            .order_by(Tr069CpeDevice.id)
         )
-        linked = db.scalars(stmt).first()
+        linked_candidates = list(db.scalars(stmt))
+        if len(linked_candidates) > 1:
+            return _cpe_ambiguous(
+                "Multiple active TR-069 identities are linked to this CPE; "
+                "review the identity records before retrying.",
+                len(linked_candidates),
+            )
+        linked = linked_candidates[0] if linked_candidates else None
         if linked and linked.acs_server_id:
             server = _resolve_server_by_id(db, str(linked.acs_server_id))
             if server:
                 client = create_genieacs_client(server.base_url)
                 if linked.genieacs_device_id:
-                    return (
+                    return _cpe_resolved(
                         client,
                         str(linked.genieacs_device_id),
-                    ), "resolved_via_cpe_device_fk"
+                        "resolved_via_cpe_device_fk",
+                    )
                 try:
-                    device_id = _resolve_device_id_from_server(client, serial)
+                    device_ids = _resolve_cpe_device_ids_from_server(client, serial)
                 except GenieACSError:
-                    device_id = None
-                if device_id:
+                    device_ids = ()
+                if len(device_ids) > 1:
+                    return _cpe_ambiguous(
+                        "Multiple GenieACS devices match this CPE serial on its "
+                        "linked ACS server; review device identity before retrying.",
+                        len(device_ids),
+                    )
+                if device_ids:
+                    device_id = device_ids[0]
                     _cache_genieacs_device_id(db, linked, device_id)
-                    return (client, device_id), "resolved_via_cpe_device_fk"
+                    return _cpe_resolved(
+                        client, device_id, "resolved_via_cpe_device_fk"
+                    )
 
     # 2) Linked Tr069CpeDevice by normalized serial number match
     normalized_candidates = [
@@ -754,26 +869,43 @@ def resolve_genieacs_for_cpe_with_reason(
                 )
             )
             .where(Tr069CpeDevice.is_active.is_(True))
-            .limit(1)
+            .order_by(Tr069CpeDevice.id)
         )
-        cpe_tr069 = db.scalars(stmt).first()
+        serial_candidates = list(db.scalars(stmt))
+        if len(serial_candidates) > 1:
+            return _cpe_ambiguous(
+                "Multiple active TR-069 identities match this CPE serial; "
+                "review the identity records before retrying.",
+                len(serial_candidates),
+            )
+        cpe_tr069 = serial_candidates[0] if serial_candidates else None
 
         if cpe_tr069 and cpe_tr069.acs_server_id:
             server = _resolve_server_by_id(db, str(cpe_tr069.acs_server_id))
             if server:
                 client = create_genieacs_client(server.base_url)
                 if cpe_tr069.genieacs_device_id:
-                    return (
+                    return _cpe_resolved(
                         client,
                         str(cpe_tr069.genieacs_device_id),
-                    ), "resolved_via_tr069_serial_match"
+                        "resolved_via_tr069_serial_match",
+                    )
                 try:
-                    device_id = _resolve_device_id_from_server(client, serial)
+                    device_ids = _resolve_cpe_device_ids_from_server(client, serial)
                 except GenieACSError:
-                    device_id = None
-                if device_id:
+                    device_ids = ()
+                if len(device_ids) > 1:
+                    return _cpe_ambiguous(
+                        "Multiple GenieACS devices match this CPE serial on the "
+                        "matched ACS server; review device identity before retrying.",
+                        len(device_ids),
+                    )
+                if device_ids:
+                    device_id = device_ids[0]
                     _cache_genieacs_device_id(db, cpe_tr069, device_id)
-                    return (client, device_id), "resolved_via_tr069_serial_match"
+                    return _cpe_resolved(
+                        client, device_id, "resolved_via_tr069_serial_match"
+                    )
 
     # 3) Default ACS server from settings
     default_server_id = settings_spec.resolve_value(
@@ -786,15 +918,24 @@ def resolve_genieacs_for_cpe_with_reason(
         if server:
             client = create_genieacs_client(server.base_url)
             try:
-                device_id = _resolve_device_id_from_server(client, serial)
-                if device_id:
-                    return (client, device_id), "resolved_via_default_acs"
+                device_ids = _resolve_cpe_device_ids_from_server(client, serial)
+                if len(device_ids) > 1:
+                    return _cpe_ambiguous(
+                        "Multiple GenieACS devices match this CPE serial on the "
+                        "default ACS server; review device identity before retrying.",
+                        len(device_ids),
+                    )
+                if device_ids:
+                    return _cpe_resolved(
+                        client, device_ids[0], "resolved_via_default_acs"
+                    )
             except GenieACSError:
                 logger.warning("Failed to search GenieACS for CPE %s", serial)
 
     if not default_server_id:
-        return (
-            None,
+        return _cpe_unresolved(
             "No ACS server configured on linked TR-069 device or default settings.",
         )
-    return None, f"No matching GenieACS device found for CPE serial '{serial}'."
+    return _cpe_unresolved(
+        f"No matching GenieACS device found for CPE serial '{serial}'."
+    )

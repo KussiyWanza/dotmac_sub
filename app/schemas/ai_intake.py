@@ -13,15 +13,20 @@ GENERIC_FOLLOW_UP_QUESTION = (
     "Please tell us whether your request is about your internet connection, "
     "payment, subscription, account, or a new installation."
 )
+NATURAL_CLARIFICATION_QUESTION = "Could you briefly tell me what you need help with?"
 CUSTOMER_TYPE_FOLLOW_UP_QUESTION = (
     "Is this new internet request for you personally or for an organization?"
 )
 DEFAULT_CLARIFICATION_QUESTIONS = (
-    GENERIC_FOLLOW_UP_QUESTION,
+    NATURAL_CLARIFICATION_QUESTION,
     CUSTOMER_TYPE_FOLLOW_UP_QUESTION,
 )
 APPROVED_FOLLOW_UP_QUESTIONS = frozenset(
-    {GENERIC_FOLLOW_UP_QUESTION, CUSTOMER_TYPE_FOLLOW_UP_QUESTION}
+    {
+        NATURAL_CLARIFICATION_QUESTION,
+        GENERIC_FOLLOW_UP_QUESTION,
+        CUSTOMER_TYPE_FOLLOW_UP_QUESTION,
+    }
 )
 
 
@@ -265,6 +270,17 @@ class AiClassifierFailureKind(StrEnum):
     no_accepted_intent = "no_accepted_intent"
 
 
+class AiClassifierValidationIssue(BaseModel):
+    """Sanitized provider-schema evidence without customer or completion content."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    location: str = Field(min_length=1, max_length=240)
+    error_type: str = Field(min_length=1, max_length=120)
+    expected_type: str = Field(min_length=1, max_length=120)
+    actual_type: str = Field(min_length=1, max_length=80)
+
+
 class AiClassifierAttempt(BaseModel):
     """Safe classifier evidence passed from classification into orchestration."""
 
@@ -278,6 +294,7 @@ class AiClassifierAttempt(BaseModel):
     retries_exhausted: bool = False
     provider: str | None = Field(default=None, max_length=80)
     model: str | None = Field(default=None, max_length=160)
+    validation_issues: tuple[AiClassifierValidationIssue, ...] = ()
 
 
 class AiIntakeContextMessage(BaseModel):
@@ -339,6 +356,9 @@ class AiIntakeRequest(BaseModel):
     inbound_message_id: str = Field(min_length=1, max_length=255)
     body: str = Field(min_length=1, max_length=4000)
     conversation_id: UUID | None = None
+    session_id: UUID | None = None
+    policy_version_id: UUID | None = None
+    persisted_inbound_message_id: UUID | None = None
     recent_messages: tuple[AiIntakeContextMessage, ...] = ()
     conversation_tags: tuple[str, ...] = ()
     campaign_attributed: bool = False
@@ -479,6 +499,7 @@ class AiCustomerResponseCompositionRequest(BaseModel):
     approved_isp_information: str | None = Field(default=None, max_length=4000)
     affect: AiIntakeAffectAssessment = Field(default_factory=AiIntakeAffectAssessment)
     acknowledgement_required: bool = False
+    issue_acknowledgement_required: bool = False
     issue_acknowledged: bool = False
     frustration_acknowledged: bool = False
 

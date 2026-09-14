@@ -10,6 +10,7 @@ from app.models.ai_intake import AiIntakeConfig
 from app.models.service_team import ServiceTeam
 from app.schemas.ai_intake import (
     CUSTOMER_TYPE_FOLLOW_UP_QUESTION,
+    NATURAL_CLARIFICATION_QUESTION,
     AiClassifierAttemptStatus,
     AiClassifierFailureKind,
     AiCustomerResponseCompositionRequest,
@@ -34,9 +35,18 @@ from app.services.ai.client import AIClientError, AIResponse
 
 
 class _Gateway:
-    def __init__(self, content: str | None = None, error: Exception | None = None):
+    def __init__(
+        self,
+        content: str | None = None,
+        error: Exception | None = None,
+        *,
+        provider: str = "test-provider",
+        model: str = "test-model",
+    ):
         self.content = content
         self.error = error
+        self.provider = provider
+        self.model = model
         self.calls: list[dict[str, object]] = []
 
     def generate_with_fallback(self, _db, **kwargs):
@@ -48,8 +58,8 @@ class _Gateway:
                 content=str(self.content or ""),
                 tokens_in=10,
                 tokens_out=20,
-                model="test-model",
-                provider="test-provider",
+                model=self.model,
+                provider=self.provider,
             ),
             {"endpoint": "primary", "fallback_used": False},
         )
@@ -118,6 +128,30 @@ def _classification(
             "party_type": party_type,
             "party_type_confidence": party_type_confidence,
             **({"message_affect": message_affect} if message_affect else {}),
+        }
+    )
+
+
+def _deepseek_null_default_classification() -> str:
+    return json.dumps(
+        {
+            "intent": "technical_support",
+            "category": "no_internet",
+            "confidence": 0.96,
+            "department": None,
+            "requires_follow_up": False,
+            "follow_up_question": None,
+            "summary": "Service is unavailable.",
+            "party_type": None,
+            "party_type_confidence": None,
+            "message_facts": dict.fromkeys(AiIntakeExtractedFacts.model_fields),
+            "message_affect": {
+                "frustration_level": None,
+                "agitation_level": None,
+                "repeated_complaint": None,
+                "repeated_failed_steps": None,
+                "prior_failed_interaction": None,
+            },
         }
     )
 
@@ -385,6 +419,76 @@ def test_unknown_intent_malformed_json_and_invalid_confidence_fail_closed(
     assert malformed.classifier_attempt.retries_exhausted is False
 
 
+def test_deepseek_null_defaults_are_normalized_without_relaxing_schema(
+    db_session, monkeypatch
+):
+    _config(db_session)
+    gateway = _Gateway(
+        _deepseek_null_default_classification(),
+        provider="primary",
+        model="deepseek-flash",
+    )
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+
+    outcome = ai_intake.classify_message(db_session, _request())
+
+    assert outcome.status is AiIntakeStatus.classified
+    assert outcome.classification is not None
+    assert outcome.classification.message_facts.connectivity_state.value == "unknown"
+    assert outcome.classification.message_facts.human_requested is False
+    assert outcome.classification.message_affect.frustration_level.value == "none"
+    assert outcome.classifier_attempt.validation_issues == ()
+
+    gateway.provider = "another-provider"
+    gateway.model = "another-model"
+    rejected = ai_intake.classify_message(db_session, _request())
+    assert rejected.status is AiIntakeStatus.classification_unavailable
+    assert rejected.classifier_attempt.failure_kind is (
+        AiClassifierFailureKind.schema_validation_failure
+    )
+
+
+def test_classifier_validation_logging_is_structural_and_sanitized(
+    db_session, monkeypatch, caplog
+):
+    _config(db_session)
+    secret = "CUSTOMER-AND-MODEL-TEXT-MUST-NOT-APPEAR"
+    payload = json.loads(_deepseek_null_default_classification())
+    payload["confidence"] = secret
+    gateway = _Gateway(json.dumps(payload), provider="primary", model="deepseek-flash")
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+    session_id = uuid4()
+    inbound_id = uuid4()
+    policy_version_id = uuid4()
+
+    with caplog.at_level("WARNING", logger="app.services.ai_intake"):
+        outcome = ai_intake.classify_message(
+            db_session,
+            _request(
+                session_id=session_id,
+                persisted_inbound_message_id=inbound_id,
+                policy_version_id=policy_version_id,
+            ),
+        )
+
+    assert outcome.status is AiIntakeStatus.classification_unavailable
+    [issue] = outcome.classifier_attempt.validation_issues
+    assert issue.location == "confidence"
+    assert issue.error_type == "float_type"
+    assert issue.expected_type == "strict_number_0_to_1"
+    assert issue.actual_type == "str"
+    invalid_record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "ai_intake_invalid_model_output"
+    )
+    assert invalid_record.session_id == str(session_id)
+    assert invalid_record.inbound_message_id == str(inbound_id)
+    assert invalid_record.policy_version_id == str(policy_version_id)
+    assert invalid_record.classifier_attempt_number == 1
+    assert secret not in json.dumps(invalid_record.__dict__, default=str)
+
+
 def test_classifier_unknown_intent_is_no_accepted_intent(db_session, monkeypatch):
     _config(db_session)
     gateway = _Gateway(_classification(intent="unknown", category="unknown"))
@@ -549,7 +653,9 @@ def test_response_composer_failure_uses_safe_configured_question(
 
     outcome = ai_intake.compose_customer_response(
         db_session,
-        request=_composition_request(),
+        request=_composition_request().model_copy(
+            update={"issue_acknowledgement_required": True}
+        ),
         fallback_text="Is it the same over Wi-Fi and Ethernet?",
         fallback_source="template",
     )
@@ -558,6 +664,37 @@ def test_response_composer_failure_uses_safe_configured_question(
     assert outcome.safety_reason == "composition_unavailable"
     assert outcome.follow_up_fact_key == "connection_medium"
     assert outcome.response_text.endswith("Is it the same over Wi-Fi and Ethernet?")
+    assert outcome.acknowledges_issue is True
+
+
+def test_validator_rejects_missing_required_issue_acknowledgement(
+    db_session, monkeypatch
+):
+    gateway = _Gateway(
+        json.dumps(
+            {
+                "response_text": "Is it the same over Wi-Fi and Ethernet?",
+                "purpose": "acknowledgement_question",
+                "follow_up_fact_key": "connection_medium",
+                "acknowledges_issue": False,
+                "acknowledges_frustration": False,
+            }
+        )
+    )
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+
+    outcome = ai_intake.compose_customer_response(
+        db_session,
+        request=_composition_request().model_copy(
+            update={"issue_acknowledgement_required": True}
+        ),
+        fallback_text="Is it the same over Wi-Fi and Ethernet?",
+        fallback_source="template",
+    )
+
+    assert outcome.response_source == "template"
+    assert outcome.safety_reason == "missing_required_issue_acknowledgement"
+    assert outcome.acknowledges_issue is True
 
 
 def test_response_validator_does_not_treat_monitoring_no_data_as_offline(
@@ -846,9 +983,7 @@ def test_low_confidence_allows_one_controlled_follow_up_then_fallback(
     assert first.status is AiIntakeStatus.awaiting_follow_up
     assert first.follow_up_count == 1
     assert first.classification is not None
-    assert first.classification.follow_up_question == (
-        ai_intake.GENERIC_FOLLOW_UP_QUESTION
-    )
+    assert first.classification.follow_up_question == NATURAL_CLARIFICATION_QUESTION
     assert second.status is AiIntakeStatus.fallback
     assert second.reason is AiIntakeReason.follow_up_limit_reached
 
@@ -878,6 +1013,30 @@ def test_configured_clarification_questions_are_used(db_session, monkeypatch):
     assert outcome.classification is not None
     assert outcome.classification.follow_up_question == (
         "Is the connection for you or your organization?"
+    )
+
+
+def test_category_menu_requires_explicit_configuration(db_session, monkeypatch):
+    _config(
+        db_session,
+        confidence_threshold=0.8,
+        metadata_={
+            "clarification_questions": [
+                ai_intake.GENERIC_FOLLOW_UP_QUESTION,
+                CUSTOMER_TYPE_FOLLOW_UP_QUESTION,
+            ],
+            "allow_category_menu_clarification": True,
+        },
+    )
+    gateway = _Gateway(_classification(confidence=0.4))
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+
+    outcome = ai_intake.classify_message(db_session, _request())
+
+    assert outcome.classification is not None
+    assert (
+        outcome.classification.follow_up_question
+        == ai_intake.GENERIC_FOLLOW_UP_QUESTION
     )
 
 

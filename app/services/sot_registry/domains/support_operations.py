@@ -930,19 +930,13 @@ DOMAIN = DomainSOT(
             name="support.ticket_region_projection",
             module="app.services.support_ticket_region_projection",
             owns=("canonical support-ticket region projection",),
-            depends_on=(
-                "support.ticket_configuration",
-                "support.ticket_lifecycle",
-            ),
+            depends_on=("support.ticket_configuration",),
             contract=ServiceContract(
                 concerns=(
                     ConcernContract(
                         name="canonical support-ticket region projection",
                         role=OwnerRole.RESOLVER,
-                        input_names=(
-                            "current ticket configuration",
-                            "canonical ticket regions",
-                        ),
+                        input_names=("current ticket configuration",),
                     ),
                 ),
                 authoritative_inputs=(
@@ -952,21 +946,12 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source="configured workflow region option values",
                     ),
-                    AuthorityInput(
-                        name="canonical ticket regions",
-                        owner="support.ticket_lifecycle",
-                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                        source=(
-                            "distinct normalized non-empty Region values on current "
-                            "active Ticket rows"
-                        ),
-                    ),
                 ),
                 transaction=TransactionContract(
                     mode=TransactionMode.READ_ONLY,
                     boundary=(
-                        "list_canonical_region_options reads configuration and Ticket "
-                        "rows without writes."
+                        "list_canonical_region_options reads configured region option "
+                        "values without writes."
                     ),
                     locking="A transaction-current read requires no row lock.",
                     idempotency=(
@@ -991,7 +976,8 @@ DOMAIN = DomainSOT(
                     new_owner="support.ticket_region_projection",
                     verification="support settings and SOT relationship tests",
                     cutover_gate=(
-                        "region reads name both configuration and Ticket provenance"
+                        "region reads name configured region options as the sole source "
+                        "of truth"
                     ),
                     fallback_retirement=(
                         "configuration no longer claims lifecycle-derived region authority"

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models.network import CPEDevice, OntUnit
 from app.services.network._resolve import (
+    CpeGenieAcsResolutionStatus,
     clear_stale_genieacs_device_id,
     resolve_genieacs_for_cpe_with_reason,
     resolve_genieacs_with_reason,
@@ -503,11 +504,21 @@ def resolve_cpe_client_or_error(
     cpe: CPEDevice,
 ) -> tuple[tuple[Any, str] | None, ActionResult | None]:
     """Resolve the GenieACS client/device pair for a CPE device."""
-    resolved, reason = resolve_genieacs_for_cpe_with_reason(db, cpe)
-    if not resolved:
+    resolution = resolve_genieacs_for_cpe_with_reason(db, cpe)
+    resolved = resolution.resolved_pair
+    if resolved is None:
+        error_code = (
+            "network.cpe_identity.ambiguous"
+            if resolution.status is CpeGenieAcsResolutionStatus.ambiguous
+            else "network.cpe_identity.unresolved"
+        )
         return None, ActionResult(
             success=False,
-            message=reason or "No GenieACS server configured for this CPE device.",
+            message=(
+                resolution.reason
+                or "No GenieACS server configured for this CPE device."
+            ),
+            error_code=error_code,
         )
     return resolved, None
 

@@ -13,7 +13,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.project import (
     ProjectPriority,
@@ -21,6 +21,7 @@ from app.models.project import (
     ProjectTaskDependencyType,
     ProjectTaskPriority,
     ProjectTaskStatus,
+    ProjectTaskTemplatePlanState,
     ProjectType,
 )
 from app.schemas.infrastructure import InfrastructureReference
@@ -103,6 +104,7 @@ class ProjectRead(ProjectBase):
 
     id: UUID
     number: str | None = None
+    applied_template_revision: int | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -142,6 +144,7 @@ class ProjectTemplateRead(ProjectTemplateBase):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     id: UUID
+    revision: int
     created_at: datetime
     updated_at: datetime
 
@@ -149,6 +152,7 @@ class ProjectTemplateRead(ProjectTemplateBase):
 class ProjectTemplateTaskBase(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     template_id: UUID
+    parent_template_task_id: UUID | None = None
     title: str = Field(min_length=1, max_length=200)
     description: str | None = None
     status: ProjectTaskStatus | None = None
@@ -165,6 +169,7 @@ class ProjectTemplateTaskCreate(ProjectTemplateTaskBase):
 
 
 class ProjectTemplateTaskUpdate(BaseModel):
+    parent_template_task_id: UUID | None = None
     title: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
     status: ProjectTaskStatus | None = None
@@ -278,6 +283,37 @@ class ProjectTaskUpdate(BaseModel):
     is_active: bool | None = None
 
 
+class ProjectTemplatePlanTaskInput(BaseModel):
+    """One ordered task definition submitted by the template plan editor."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    client_id: str = Field(min_length=1, max_length=100)
+    parent_client_id: str | None = Field(default=None, max_length=100)
+    title: str = Field(min_length=1, max_length=200)
+    description: str = ""
+    status: ProjectTaskStatus | None = None
+    priority: ProjectTaskPriority | None = None
+    effort_hours: int | None = Field(default=None, ge=0, le=100_000)
+    auto_create_work_order: bool = False
+    work_order_requires_as_built_evidence: bool = True
+    dependencies: list[str] = Field(default_factory=list, max_length=100)
+
+    @field_validator("effort_hours", mode="before")
+    @classmethod
+    def _empty_effort_is_unspecified(cls, value: object) -> object:
+        return None if value == "" else value
+
+
+class ProjectTemplatePlanReplace(BaseModel):
+    """Optimistic, full-plan replacement command owned by project lifecycle."""
+
+    template_id: UUID
+    expected_revision: int = Field(ge=1)
+    tasks: list[ProjectTemplatePlanTaskInput] = Field(max_length=500)
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class ProjectTaskStatusTransition(BaseModel):
     expected_status: ProjectTaskStatus
     status: ProjectTaskStatus
@@ -303,5 +339,7 @@ class ProjectTaskRead(ProjectTaskBase):
 
     id: UUID
     number: str | None = None
+    template_revision: int | None = None
+    template_plan_state: ProjectTaskTemplatePlanState | None = None
     created_at: datetime
     updated_at: datetime

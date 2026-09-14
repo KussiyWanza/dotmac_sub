@@ -40,7 +40,7 @@ class MaterialsRepository {
     return _items(response.data).map(InventoryLocation.fromJson).toList();
   }
 
-  Future<List<MaterialRequest>> fetchRequests() async {
+  Future<MaterialRequestHistory> fetchRequests() async {
     final local = await _offlineMaterialRequests(_ref);
     try {
       final response = await _ref
@@ -50,9 +50,18 @@ class MaterialsRepository {
             '/api/v1/field/material-requests',
             queryParameters: {'limit': 100},
           );
-      return [...local, ..._items(response.data).map(MaterialRequest.fromJson)];
+      final serverItems = _items(
+        response.data,
+      ).map(MaterialRequest.fromJson).toList();
+      return MaterialRequestHistory(
+        items: [...local, ...serverItems],
+        totalCount:
+            local.length + _totalCount(response.data, serverItems.length),
+      );
     } on DioException {
-      if (local.isNotEmpty) return local;
+      if (local.isNotEmpty) {
+        return MaterialRequestHistory(items: local, totalCount: local.length);
+      }
       rethrow;
     }
   }
@@ -73,8 +82,6 @@ class MaterialsRepository {
     String? clientRef,
     String? notes,
     String? workOrderId,
-    String? projectId,
-    String? ticketId,
     String? sourceLocationId,
     String? sourceWarehouseCode,
     String? destinationLocationId,
@@ -97,8 +104,6 @@ class MaterialsRepository {
             clientRef: clientRef,
             notes: notes,
             workOrderId: workOrderId,
-            projectId: projectId,
-            ticketId: ticketId,
             sourceLocationId: sourceLocationId,
             sourceWarehouseCode: sourceWarehouseCode,
             destinationLocationId: destinationLocationId,
@@ -116,6 +121,23 @@ class MaterialsRepository {
         .read(apiClientProvider)
         .dio
         .post('/api/v1/field/material-requests/$id/submit');
+    return MaterialRequest.fromJson(
+      (response.data as Map).cast<String, dynamic>(),
+    );
+  }
+
+  Future<MaterialRequest> cancelRequest({
+    required String id,
+    required String clientRef,
+    required String reason,
+  }) async {
+    final response = await _ref
+        .read(apiClientProvider)
+        .dio
+        .post(
+          '/api/v1/field/material-requests/$id/cancel',
+          data: {'client_ref': clientRef, 'reason': reason.trim()},
+        );
     return MaterialRequest.fromJson(
       (response.data as Map).cast<String, dynamic>(),
     );
@@ -150,8 +172,6 @@ Map<String, dynamic> buildMaterialRequestPayload({
   String? clientRef,
   String? notes,
   String? workOrderId,
-  String? projectId,
-  String? ticketId,
   String? sourceLocationId,
   String? sourceWarehouseCode,
   String? destinationLocationId,
@@ -163,10 +183,6 @@ Map<String, dynamic> buildMaterialRequestPayload({
   if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
   if (workOrderId != null && workOrderId.trim().isNotEmpty)
     'work_order_id': workOrderId.trim(),
-  if (projectId != null && projectId.trim().isNotEmpty)
-    'project_id': projectId.trim(),
-  if (ticketId != null && ticketId.trim().isNotEmpty)
-    'ticket_id': ticketId.trim(),
   if (sourceWarehouseCode != null && sourceWarehouseCode.trim().isNotEmpty)
     'source_warehouse_code': sourceWarehouseCode.trim(),
   'items': items.map((item) => item.toJson()).toList(),
@@ -194,6 +210,17 @@ List<Map<String, dynamic>> _items(Object? data) {
   return const [];
 }
 
+int _totalCount(Object? data, int fallback) {
+  if (data is Map) {
+    final raw = data['count'] ?? data['total_count'] ?? data['total'];
+    if (raw is num) return raw.toInt();
+    if (raw is String) return int.tryParse(raw) ?? fallback;
+    final nested = data['data'];
+    if (nested is Map) return _totalCount(nested, fallback);
+  }
+  return fallback;
+}
+
 List<Map<String, dynamic>> _mapItems(Object? raw) {
   if (raw is! List) return const [];
   return [
@@ -206,7 +233,7 @@ final materialsRepositoryProvider = Provider<MaterialsRepository>(
   MaterialsRepository.new,
 );
 
-final materialRequestsProvider = FutureProvider<List<MaterialRequest>>(
+final materialRequestsProvider = FutureProvider<MaterialRequestHistory>(
   (ref) => ref.watch(materialsRepositoryProvider).fetchRequests(),
 );
 

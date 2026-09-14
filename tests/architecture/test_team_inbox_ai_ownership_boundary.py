@@ -48,6 +48,7 @@ def test_implicit_fail_open_takeover_does_not_return() -> None:
     outbound = _source("app/services/team_inbox_outbound.py")
 
     assert "InboxAssignmentProvenance.ai_intake_handoff" in assignment
+    assert "InboxAssignmentProvenance.explicit_human_takeover" in assignment
     assert "complete_session(" not in assignment
     assert "stopped_human_takeover" not in outbound
     assert (

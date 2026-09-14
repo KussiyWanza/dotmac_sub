@@ -58,7 +58,7 @@
                     {% endfor %}
                 </select>
             </div>
-            <div class="xl:col-span-2">
+            <div class="xl:col-span-1">
                 <label class="sr-only" for="ticket-region-filter">Region</label>
                 <select id="ticket-region-filter" name="region" data-auto-submit class="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-800 dark:text-white">
                     <option value="">All Regions</option>
@@ -68,6 +68,15 @@
                 </select>
             </div>
             <div class="xl:col-span-2">
+                <label class="sr-only" for="ticket-service-team-filter">Service Team</label>
+                <select id="ticket-service-team-filter" name="service_team_id" data-auto-submit class="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-800 dark:text-white">
+                    <option value="">All Service Teams</option>
+                    {% for team in service_team_options %}
+                    <option value="{{ team.id }}" {% if service_team_id == team.id %}selected{% endif %}>{{ team.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="xl:col-span-1">
                 <label class="sr-only" for="ticket-assignee-filter">Assignee Scope</label>
                 <span id="ticket-assignee-filter-help" class="sr-only">Assigned To Me includes tickets where you are an assignee, technician, manager, site coordinator, or a member of the assigned team.</span>
                 <select id="ticket-assignee-filter" name="assigned_to_me" data-auto-submit aria-describedby="ticket-assignee-filter-help" class="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-800 dark:text-white">

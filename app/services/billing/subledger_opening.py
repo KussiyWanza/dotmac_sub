@@ -16,12 +16,14 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.billing_shadow_verification import BillingCutoverVerificationRun
 from app.models.customer_subledger import (
+    CustomerPostingGroup,
     CustomerSubledgerAuthorityCutover,
+    CustomerSubledgerOpeningCorrection,
     CustomerSubledgerOpeningPosition,
     PositionEffectKind,
     PostingCommandKind,
@@ -62,6 +64,7 @@ def _object_dict_rows(value: object) -> list[dict[str, object]]:
 
 OWNER = "financial.customer_subledger_opening_positions"
 CONCERN = "reviewed customer-subledger opening-position capture"
+CORRECTION_SCOPE = "billing:customer_subledger_opening:correct"
 _CAPTURE_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
     concern=CONCERN,
@@ -71,6 +74,11 @@ _CUTOVER_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
     concern="customer-subledger authority cutover activation",
     name="activate_customer_subledger_authority",
+)
+_CORRECTION_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="reviewed customer-subledger opening-position correction",
+    name="correct_customer_subledger_opening_position",
 )
 
 
@@ -133,6 +141,45 @@ class CustomerSubledgerAuthorityResult:
     cutover_id: UUID
     verification_run_id: UUID
     cutover_at: datetime
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PreviewCustomerSubledgerOpeningCorrectionQuery:
+    account_id: UUID
+    currency: str
+    corrected_opening_amount: Decimal
+    reason: str
+    review_reference: str
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerSubledgerOpeningCorrectionPreview:
+    opening_position_id: UUID
+    account_id: UUID
+    currency: str
+    previous_opening_amount: Decimal
+    corrected_opening_amount: Decimal
+    delta: Decimal
+    preview_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class CorrectCustomerSubledgerOpeningCommand:
+    context: CommandContext
+    query: PreviewCustomerSubledgerOpeningCorrectionQuery
+    expected_preview_fingerprint: str
+    permission_granted: bool
+    authorized_system_user_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerSubledgerOpeningCorrectionResult:
+    correction_id: UUID
+    posting_group_id: UUID
+    previous_opening_amount: Decimal
+    corrected_opening_amount: Decimal
+    delta: Decimal
     replayed: bool
 
 
@@ -513,6 +560,232 @@ def _result(
     )
 
 
+def preview_customer_subledger_opening_correction(
+    db: Session,
+    query: PreviewCustomerSubledgerOpeningCorrectionQuery,
+) -> CustomerSubledgerOpeningCorrectionPreview:
+    """Preview one explicit replacement value without changing any records."""
+
+    currency = query.currency.strip().upper()
+    reason = query.reason.strip()
+    review_reference = query.review_reference.strip()
+    if len(currency) != 3:
+        raise _error("invalid_currency", "Opening correction requires a currency.")
+    if not reason:
+        raise _error("missing_reason", "Opening correction requires a reason.")
+    if not review_reference:
+        raise _error(
+            "missing_review_reference",
+            "Opening correction requires a durable review reference.",
+        )
+    corrected = round_money(Decimal(query.corrected_opening_amount))
+    if not corrected.is_finite():
+        raise _error(
+            "invalid_corrected_amount", "Corrected opening amount must be finite."
+        )
+    if db.scalar(select(CustomerSubledgerAuthorityCutover.id).limit(1)) is None:
+        raise _error(
+            "authority_not_active",
+            "Opening corrections require active customer-subledger authority.",
+        )
+    opening = db.scalar(
+        select(CustomerSubledgerOpeningPosition).where(
+            CustomerSubledgerOpeningPosition.account_id == query.account_id,
+            CustomerSubledgerOpeningPosition.currency == currency,
+        )
+    )
+    if opening is None:
+        raise _error(
+            "opening_position_not_found",
+            "The account has no immutable opening position to correct.",
+            account_id=str(query.account_id),
+            currency=currency,
+        )
+    prior_delta = db.scalar(
+        select(
+            func.coalesce(
+                func.sum(CustomerSubledgerOpeningCorrection.delta),
+                0,
+            )
+        ).where(CustomerSubledgerOpeningCorrection.opening_position_id == opening.id)
+    )
+    previous = round_money(Decimal(opening.legacy_position) + Decimal(prior_delta or 0))
+    delta = round_money(corrected - previous)
+    if delta == 0:
+        raise _error(
+            "no_change", "Corrected opening amount already matches the current value."
+        )
+    fingerprint = _digest(
+        {
+            "opening_position_id": str(opening.id),
+            "account_id": str(query.account_id),
+            "currency": currency,
+            "previous_opening_amount": str(previous),
+            "corrected_opening_amount": str(corrected),
+            "delta": str(delta),
+            "reason": reason,
+            "review_reference": review_reference,
+        }
+    )
+    return CustomerSubledgerOpeningCorrectionPreview(
+        opening_position_id=opening.id,
+        account_id=query.account_id,
+        currency=currency,
+        previous_opening_amount=previous,
+        corrected_opening_amount=corrected,
+        delta=delta,
+        preview_fingerprint=fingerprint,
+    )
+
+
+def correct_customer_subledger_opening_position(
+    db: Session,
+    command: CorrectCustomerSubledgerOpeningCommand,
+) -> CustomerSubledgerOpeningCorrectionResult:
+    """Append an audited correction and matching customer-position effect."""
+
+    return execute_owner_command(
+        db,
+        definition=_CORRECTION_COMMAND,
+        context=command.context,
+        operation=lambda: _correct_opening(db, command),
+    )
+
+
+def _correction_result(
+    db: Session,
+    correction: CustomerSubledgerOpeningCorrection,
+    *,
+    replayed: bool,
+) -> CustomerSubledgerOpeningCorrectionResult:
+    group_id = db.scalar(
+        select(CustomerPostingGroup.id).where(
+            CustomerPostingGroup.producer_owner
+            == PostingProducer.customer_subledger_opening_positions.value,
+            CustomerPostingGroup.source_kind
+            == PostingSourceKind.customer_subledger_opening_correction.value,
+            CustomerPostingGroup.source_id == correction.id,
+        )
+    )
+    if group_id is None:
+        raise _error(
+            "correction_posting_missing",
+            "The opening correction has no matching customer posting.",
+            correction_id=str(correction.id),
+        )
+    return CustomerSubledgerOpeningCorrectionResult(
+        correction_id=correction.id,
+        posting_group_id=group_id,
+        previous_opening_amount=round_money(
+            Decimal(correction.previous_opening_amount)
+        ),
+        corrected_opening_amount=round_money(
+            Decimal(correction.corrected_opening_amount)
+        ),
+        delta=round_money(Decimal(correction.delta)),
+        replayed=replayed,
+    )
+
+
+def _correct_opening(
+    db: Session,
+    command: CorrectCustomerSubledgerOpeningCommand,
+) -> CustomerSubledgerOpeningCorrectionResult:
+    if command.context.scope != CORRECTION_SCOPE or not command.permission_granted:
+        raise _error(
+            "permission_denied",
+            "Opening correction requires the dedicated staff permission.",
+        )
+    key = (command.context.idempotency_key or "").strip()
+    if not key or len(key) > 120:
+        raise _error(
+            "invalid_idempotency_key",
+            "Opening correction requires an idempotency key of at most 120 characters.",
+        )
+    existing = db.scalar(
+        select(CustomerSubledgerOpeningCorrection).where(
+            CustomerSubledgerOpeningCorrection.idempotency_key == key
+        )
+    )
+    if existing is not None:
+        if existing.preview_fingerprint != command.expected_preview_fingerprint:
+            raise _error(
+                "idempotency_conflict",
+                "This idempotency key was already used for a different correction.",
+            )
+        return _correction_result(db, existing, replayed=True)
+
+    if lock_for_update(db, Subscriber, command.query.account_id) is None:
+        raise _error(
+            "account_not_found",
+            "The customer account does not exist.",
+            account_id=str(command.query.account_id),
+        )
+    preview = preview_customer_subledger_opening_correction(db, command.query)
+    if preview.preview_fingerprint != command.expected_preview_fingerprint:
+        raise _error(
+            "stale_reviewed_preview",
+            "The opening position changed after review; preview it again.",
+        )
+    occurred_at = datetime.now(UTC)
+    correction = CustomerSubledgerOpeningCorrection(
+        opening_position_id=preview.opening_position_id,
+        account_id=preview.account_id,
+        currency=preview.currency,
+        previous_opening_amount=preview.previous_opening_amount,
+        corrected_opening_amount=preview.corrected_opening_amount,
+        delta=preview.delta,
+        reason=command.query.reason.strip(),
+        review_reference=command.query.review_reference.strip(),
+        preview_fingerprint=preview.preview_fingerprint,
+        idempotency_key=key,
+        applied_by=command.context.actor,
+        authorized_system_user_id=command.authorized_system_user_id,
+        command_id=command.context.command_id,
+        correlation_id=command.context.correlation_id,
+        occurred_at=occurred_at,
+    )
+    db.add(correction)
+    db.flush()
+    effect = (
+        PositionEffectKind.customer_credit_created
+        if preview.delta > 0
+        else PositionEffectKind.customer_credit_consumed
+    )
+    stage_posting_group(
+        db,
+        StagePostingGroupCommand(
+            account_id=preview.account_id,
+            currency=preview.currency,
+            command_kind=PostingCommandKind.opening_position_correction,
+            producer_owner=PostingProducer.customer_subledger_opening_positions,
+            source_kind=PostingSourceKind.customer_subledger_opening_correction,
+            source_id=correction.id,
+            occurred_at=occurred_at,
+            effects=(EffectInput(effect=effect, amount=abs(preview.delta)),),
+            idempotency_key=f"posting:opening-correction:{correction.id}",
+        ),
+        context=command.context,
+    )
+    emit_event(
+        db,
+        EventType.customer_subledger_opening_position_corrected,
+        {
+            "correction_id": str(correction.id),
+            "opening_position_id": str(preview.opening_position_id),
+            "account_id": str(preview.account_id),
+            "currency": preview.currency,
+            "previous_opening_amount": str(preview.previous_opening_amount),
+            "corrected_opening_amount": str(preview.corrected_opening_amount),
+            "delta": str(preview.delta),
+            "review_reference": command.query.review_reference.strip(),
+            "authorized_system_user_id": str(command.authorized_system_user_id),
+        },
+        actor=command.context.actor,
+    )
+    return _correction_result(db, correction, replayed=False)
+
+
 def activate_customer_subledger_authority(
     db: Session,
     command: ActivateCustomerSubledgerAuthorityCommand,
@@ -634,9 +907,16 @@ def _activate_authority(
 __all__ = [
     "ActivateCustomerSubledgerAuthorityCommand",
     "CaptureCustomerSubledgerOpeningsCommand",
+    "CorrectCustomerSubledgerOpeningCommand",
+    "CORRECTION_SCOPE",
     "CustomerSubledgerAuthorityResult",
     "CustomerSubledgerOpeningCaptureResult",
+    "CustomerSubledgerOpeningCorrectionPreview",
+    "CustomerSubledgerOpeningCorrectionResult",
     "CustomerSubledgerOpeningError",
+    "PreviewCustomerSubledgerOpeningCorrectionQuery",
     "activate_customer_subledger_authority",
     "capture_customer_subledger_opening_positions",
+    "correct_customer_subledger_opening_position",
+    "preview_customer_subledger_opening_correction",
 ]

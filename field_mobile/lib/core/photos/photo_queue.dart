@@ -115,7 +115,7 @@ class PhotoQueue {
     String? workOrderId,
     String? installationProjectId,
     String kind = 'photo',
-  }) async {
+  }) => db.work.run(() async {
     if (workOrderId != null && kind == 'photo') {
       await evidence.write(
         _captureMarkerName,
@@ -140,29 +140,30 @@ class PhotoQueue {
     } finally {
       await _deletePendingCompletionCapture();
     }
-  }
+  });
 
-  Future<bool> recoverForJob({required String workOrderId}) async {
-    if (!await _pendingCompletionCapture.exists() ||
-        await _markedWorkOrder() != workOrderId) {
-      return false;
-    }
-    try {
-      final raw = await source.recoverLost();
-      if (raw == null) return false;
-      final position = await location.current();
-      await enqueueImageBytes(
-        raw,
-        kind: 'photo',
-        workOrderId: workOrderId,
-        latitude: position?.latitude,
-        longitude: position?.longitude,
-      );
-      return true;
-    } finally {
-      await _deletePendingCompletionCapture();
-    }
-  }
+  Future<bool> recoverForJob({required String workOrderId}) =>
+      db.work.run(() async {
+        if (!await _pendingCompletionCapture.exists() ||
+            await _markedWorkOrder() != workOrderId) {
+          return false;
+        }
+        try {
+          final raw = await source.recoverLost();
+          if (raw == null) return false;
+          final position = await location.current();
+          await enqueueImageBytes(
+            raw,
+            kind: 'photo',
+            workOrderId: workOrderId,
+            latitude: position?.latitude,
+            longitude: position?.longitude,
+          );
+          return true;
+        } finally {
+          await _deletePendingCompletionCapture();
+        }
+      });
 
   Future<String?> _markedWorkOrder() async {
     try {
@@ -197,7 +198,7 @@ class PhotoQueue {
     String? installationProjectId,
     double? latitude,
     double? longitude,
-  }) async {
+  }) => db.work.run(() async {
     final processed = processPhoto(bytes);
     final clientRef = _uuid.v4();
     final file = await evidence.write(
@@ -227,9 +228,9 @@ class PhotoQueue {
       await evidence.delete(file);
       rethrow;
     }
-  }
+  });
 
-  Future<int> pendingCount() async {
+  Future<int> pendingCount() => db.work.run(() async {
     final rows =
         await (db.select(db.pendingPhotos)..where(
               (row) =>
@@ -237,5 +238,5 @@ class PhotoQueue {
             ))
             .get();
     return rows.length;
-  }
+  });
 }

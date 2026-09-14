@@ -38,6 +38,7 @@ from app.services import (
     projects,
     support,
     team_inbox_customer_completion,
+    team_inbox_participants,
     team_inbox_status,
 )
 
@@ -200,6 +201,7 @@ class InboxContactContext:
     identity_state: InboxIdentityState
     party_id: UUID | None
     subscriber_id: UUID | None
+    participants: tuple[team_inbox_participants.ParticipantRow, ...]
     conversation_history_scope: ConversationHistoryScope
     profile: ContextSection[PartyProfileSummary]
     linked_identities: ContextSection[LinkedIdentitySummary]
@@ -233,7 +235,10 @@ def _unavailable() -> ContextSection[T]:
 def _identity(
     db: Session, conversation: InboxConversation
 ) -> tuple[InboxIdentityState, UUID | None, UUID | None]:
-    party_ids = conversation_lead_relationships.exact_party_ids(db, conversation)
+    evidence = conversation_lead_relationships.relationship_evidence(db, conversation)
+    party_ids = evidence.authoritative_party_ids
+    if evidence.lead_party_mismatch:
+        return InboxIdentityState.unavailable, None, conversation.subscriber_id
     if len(party_ids) == 1:
         return InboxIdentityState.linked_party, party_ids[0], conversation.subscriber_id
     if len(party_ids) > 1:
@@ -458,18 +463,21 @@ def _leads(
 ) -> ContextSection[LeadSummary]:
     if not permitted:
         return _restricted()
-    if party_id is None:
-        return _not_applicable("Lead context requires an authoritative Party.")
     direct = conversation_lead_relationships.active_link(db, conversation_id)
+    if party_id is None and direct is None:
+        return _not_applicable("Lead context requires an authoritative Party.")
+    if party_id is not None:
+        scope = Lead.party_id == party_id
+    else:
+        assert direct is not None
+        scope = Lead.id == direct.lead_id
     query = (
         select(Lead)
-        .where(Lead.party_id == party_id)
+        .where(scope)
         .order_by(Lead.is_active.desc(), Lead.updated_at.desc(), Lead.id)
     )
     rows = tuple(db.scalars(query.limit(5)).all())
-    count = int(
-        db.scalar(select(func.count(Lead.id)).where(Lead.party_id == party_id)) or 0
-    )
+    count = int(db.scalar(select(func.count()).select_from(Lead).where(scope)) or 0)
     if count == 0:
         return ContextSection(
             ContextAvailability.empty,
@@ -957,6 +965,7 @@ def _project_tasks(
             or_(*scopes),
             Project.is_active.is_(True),
             ProjectTask.is_active.is_(True),
+            projects.current_project_task_plan_clause(),
             ProjectTask.status.in_(projects.active_project_task_status_values()),
         )
     )
@@ -1066,6 +1075,11 @@ def build_contact_context(
         identity_state=identity_state,
         party_id=party_id,
         subscriber_id=subscriber_id,
+        participants=tuple(
+            team_inbox_participants.list_participants(
+                db, conversation_id=conversation_id
+            )
+        ),
         conversation_history_scope=conversation_history_scope,
         profile=_safe_section(
             "profile",

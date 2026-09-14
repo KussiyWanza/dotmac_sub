@@ -182,11 +182,11 @@ def test_ticket_region_projection_has_one_typed_owner() -> None:
         in configuration
     )
     assert "configured_regions: tuple[str, ...]" in projection
-    assert "func.lower(func.trim(Ticket.region))" in projection
     assert "normalize_region_value" in projection
-    assert ".order_by(region_sources.c.region.asc())" in projection
+    assert "from app.models.support import Ticket" not in projection
+    assert "Ticket.region" not in projection
+    assert "union_all" not in projection
     assert "func.lower(func.trim(Ticket.region)) == normalized_region" in lifecycle
-    assert "db.query(Ticket.region)" not in configuration
 
 
 def test_customer_reply_staff_email_stays_in_ticket_lifecycle_owner() -> None:

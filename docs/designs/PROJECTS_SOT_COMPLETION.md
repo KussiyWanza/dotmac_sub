@@ -206,6 +206,48 @@ is inactive or not itself `done`. Dependency replacement is atomic, replaces
 the full reviewed set, records audit evidence, and emits
 `project_task.dependencies_replaced` in the same owner transaction.
 
+Project-template task plans are revisioned snapshots owned by
+`operations.project_lifecycle`. A template task may name one top-level parent;
+when that revision is instantiated, the concrete `ProjectTask.parent_task_id`
+relationship is copied in a second pass after all native task identities exist.
+A parent task cannot transition to `done` while any active current-plan or
+ad-hoc child is not `done`. Template editor saves use an expected revision,
+lock the template and definitions, replace hierarchy and dependencies
+atomically, stage audit evidence, and emit `project_template.plan_replaced`.
+
+Editing a template never mutates projects that already use it. Each generated
+task records the applied template revision and each Project records its applied
+revision. Creating a project applies the current revision. Explicitly changing
+an existing Project's template marks its former generated tasks as
+`superseded`, retains their rows and active native bindings for work-order and
+provisioning evidence, leaves every ad-hoc task untouched, and creates a fresh
+current-plan snapshot from the selected template. Current operational queries
+exclude superseded rows; Project detail exposes them under Previous template
+plan. Clearing a template performs the same preservation step without adding a
+new plan. The owner emits `project.template_applied`; retries are atomic and a
+subsequent ordinary project edit cannot reapply an unchanged template.
+Superseded generated tasks are read-only history: lifecycle mutations and new
+work-order creation are rejected, while existing exact task/work-order bindings
+remain valid for historical access. Current-plan projections, including CRM
+reporting, Quote acceptance, and Team Inbox context, exclude superseded tasks.
+
+Page contract: service-delivery administrators edit a template task plan to
+define future task/subtask completion requirements, and project operators add
+one project-specific subtask or explicitly change a project's template. The
+template editor's first viewport identifies forward-only scope and the next
+revision. The project editor previews the selected revision and task/subtask
+counts, and explains preserved prior-plan and ad-hoc work. Project and task
+detail views show current hierarchy and completion state; prior generated work
+is collapsed as investigation history. `app.services.web_projects` owns these
+projections and `operations.project_lifecycle` owns all eligibility and writes.
+
+Migration 605 is additive. It backfills existing templated projects and their
+generated tasks as revision 1 without creating any parent links, so existing
+projects retain their exact task graph. The migration takes ordinary DDL row
+locks and bounded set-based updates; deployers should use the platform's normal
+lock and statement timeouts and forward-fix rather than downgrade after new
+hierarchy data is in use.
+
 Project and task comment creation now participates in the same typed Project
 owner boundary as attachment staging, audit evidence, and explicit-mention
 notification staging. Task assignment and explicit project/task comment

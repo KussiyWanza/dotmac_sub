@@ -38,6 +38,7 @@ from app.errors import register_error_handlers
 from app.logging import configure_logging
 from app.metrics import APPLICATION_READINESS, WORKER_STARTUP_DURATION
 from app.models.domain_settings import DomainSetting, SettingDomain
+from app.models.subscriber import Subscriber
 from app.monitoring import setup_monitoring
 from app.observability import ObservabilityMiddleware
 from app.request_meta import client_ip
@@ -1050,6 +1051,69 @@ async def _terminated_request_response(
         path,
     )
     return Response(status_code=204)
+
+
+@app.middleware("http")
+async def customer_service_location_gate_middleware(request: Request, call_next):
+    """Require an exact service pin when the subscriber setting is enabled."""
+    path = request.url.path
+    is_customer_portal = path == "/portal" or path.startswith("/portal/")
+    location_route = path == "/portal/location" or path.startswith("/portal/location/")
+    auth_route = path == "/portal/auth" or path.startswith("/portal/auth/")
+    request.state.service_location_required = False
+    request.state.profile_biodata_required = False
+    if (
+        not is_customer_portal
+        or location_route
+        or auth_route
+        or request.method.upper() == "OPTIONS"
+    ):
+        return await call_next(request)
+
+    db = SessionLocal()
+    try:
+        from app.services import location_capture, web_customer_actions
+        from app.services.customer_context import optional_customer_subscriber_id
+        from app.web.customer.auth import get_current_customer_from_request
+
+        customer = get_current_customer_from_request(request, db)
+        if not customer or customer.get("is_impersonation"):
+            return await call_next(request)
+        subscriber_id = optional_customer_subscriber_id(db, customer)
+        if subscriber_id:
+            try:
+                request.state.service_location_required = (
+                    location_capture.requires_service_location_update(
+                        db, str(subscriber_id)
+                    )
+                )
+            except Exception:
+                logger.exception(
+                    "customer service location gate failed for subscriber %s",
+                    subscriber_id,
+                )
+            if (
+                not request.state.service_location_required
+                and not location_route
+                and location_capture.service_location_requirement_enabled(db)
+            ):
+                try:
+                    subscriber = db.get(Subscriber, subscriber_id)
+                    if subscriber is not None:
+                        completion = web_customer_actions.evaluate_individual_biodata(
+                            subscriber
+                        )
+                        request.state.profile_biodata_required = (
+                            completion.applicable and not completion.complete
+                        )
+                except Exception:
+                    logger.exception(
+                        "customer biodata completion gate failed for subscriber %s",
+                        subscriber_id,
+                    )
+    finally:
+        db.close()
+    return await call_next(request)
 
 
 @app.middleware("http")

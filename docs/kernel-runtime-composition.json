@@ -1,0 +1,82 @@
+{
+  "schema_version": "dimensional-composition.v3",
+  "repository": "dotmac_sub",
+  "product_id": "dotmac-sub",
+  "subject": "sub-kernel-successor-composition",
+  "contract_revision": {
+    "repository": "dotmac_starter_mt",
+    "commit": "8b4b6d4b42e650c47fe4c04a679a5ccb51c4b2cd"
+  },
+  "observations": [
+    {
+      "id": "dependency-manifest",
+      "source_path": "pyproject.toml",
+      "source_blob_sha256": "415926233f43a980bbfc77ddec755d5cce2c3b032c5e6559891a0d80233d3581",
+      "selector": "whole-file.v1",
+      "extract_sha256": "415926233f43a980bbfc77ddec755d5cce2c3b032c5e6559891a0d80233d3581"
+    },
+    {
+      "id": "dependency-lock",
+      "source_path": "poetry.lock",
+      "source_blob_sha256": "2b05204e1408e82502d3a23ebaf148584877111fc859db0251bf70dbbb2269da",
+      "selector": "whole-file.v1",
+      "extract_sha256": "2b05204e1408e82502d3a23ebaf148584877111fc859db0251bf70dbbb2269da"
+    },
+    {
+      "id": "production-install",
+      "source_path": "Dockerfile",
+      "source_blob_sha256": "3828c3b388ed5ad1518c644ad2689eb8102f45a075016c6ee0dc8adc438a63b0",
+      "selector": "poetry-install-command.v1/dockerfile",
+      "extract_sha256": "ae3c944907ef14ea0311b2347d755e084ca1417c80e4b6350754cf4a71069f3a"
+    },
+    {
+      "id": "product-assembly-source",
+      "source_path": "app/composition.py",
+      "source_blob_sha256": "7db5c0f0fac0807acb671db12e91c00e656fc8369ace91fcf6fa02c9565b25de",
+      "selector": "whole-file.v1",
+      "extract_sha256": "7db5c0f0fac0807acb671db12e91c00e656fc8369ace91fcf6fa02c9565b25de"
+    },
+    {
+      "id": "product-identity",
+      "source_path": "app/composition.py",
+      "source_blob_sha256": "7db5c0f0fac0807acb671db12e91c00e656fc8369ace91fcf6fa02c9565b25de",
+      "selector": "python-string-assignment.v1/PRODUCT_NAME",
+      "extract_sha256": "6d13e4fecf6e961ab7cbfb51bdb92aa0c50ef6ee76c3a25f8ffb1c39c6e0f0c9"
+    },
+    {
+      "id": "module-registration",
+      "source_path": "app/composition.py",
+      "source_blob_sha256": "7db5c0f0fac0807acb671db12e91c00e656fc8369ace91fcf6fa02c9565b25de",
+      "selector": "python-assignment-keyword.v1/SUB_ASSEMBLY/ProductAssemblySpec/modules",
+      "extract_sha256": "24e4debc7b71788e1b322d52e799d87fdc9cdb85998a17b094c74e1f3782c582"
+    },
+    {
+      "id": "boot-entry-point",
+      "source_path": "app/main.py",
+      "source_blob_sha256": "73dbea280c058553e4e6030e4d7d6d3f8fca2affa7191b98f9f540ca80ba06de",
+      "selector": "whole-file.v1",
+      "extract_sha256": "73dbea280c058553e4e6030e4d7d6d3f8fca2affa7191b98f9f540ca80ba06de"
+    },
+    {
+      "id": "migration-config",
+      "source_path": "alembic.ini",
+      "source_blob_sha256": "4ee4ac6feb6d6fb5263782640f9a4c039089c981fac6c8d5b70ecc4d4c939633",
+      "selector": "whole-file.v1",
+      "extract_sha256": "4ee4ac6feb6d6fb5263782640f9a4c039089c981fac6c8d5b70ecc4d4c939633"
+    },
+    {
+      "id": "migration-bindings",
+      "source_path": "app/migration_bindings.py",
+      "source_blob_sha256": "3f34e01b486440d0ec4656938080ac7c14040d27b31704afefac89ffe781ca12",
+      "selector": "whole-file.v1",
+      "extract_sha256": "3f34e01b486440d0ec4656938080ac7c14040d27b31704afefac89ffe781ca12"
+    },
+    {
+      "id": "collections-operator-entry-point",
+      "source_path": "scripts/migration/collections_module_shadow_parity.py",
+      "source_blob_sha256": "a460f39fe042e76916aa09aa5053eac910152d17e9c9ae121d04199457a6da7b",
+      "selector": "whole-file.v1",
+      "extract_sha256": "a460f39fe042e76916aa09aa5053eac910152d17e9c9ae121d04199457a6da7b"
+    }
+  ]
+}

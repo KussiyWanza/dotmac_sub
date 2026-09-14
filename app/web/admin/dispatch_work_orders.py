@@ -32,8 +32,14 @@ from app.services.field.expense_requests import (
     ExpenseReceiptUploadInput,
     ExpenseRequestAccessMode,
     ExpenseRequestLineInput,
+    ExpenseWorkOrderIdentity,
+    ExpenseWorkOrderScopeGrant,
+    SelectedExpenseApprover,
+    StaffWorkOrderAccess,
     SubmitFieldExpenseRequest,
+    VerifyFieldExpenseDestination,
     submit_field_expense_request_command,
+    verify_field_expense_destination,
 )
 from app.services.field.note_commands import (
     FieldNoteQueryError,
@@ -111,6 +117,21 @@ def _actor_id(auth: dict) -> UUID:
         ) from exc
 
 
+def _expense_staff_access(db: Session, auth: dict) -> StaffWorkOrderAccess:
+    grants = grant_scopes_for_permission(auth, db, _WORK_ORDER_READ_PERMISSION)
+    if grants == "global":
+        return StaffWorkOrderAccess(global_access=True)
+    if not isinstance(grants, set):
+        return StaffWorkOrderAccess(global_access=False)
+    return StaffWorkOrderAccess(
+        global_access=False,
+        scopes=tuple(
+            ExpenseWorkOrderScopeGrant(scope_type=scope_type, scope_id=scope_id)
+            for scope_type, scope_id in sorted(grants)
+        ),
+    )
+
+
 def _require_expense_csrf(request: Request) -> None:
     """Fail closed at the financial route in addition to global middleware."""
 
@@ -174,6 +195,11 @@ def _expense_form(form: FormData) -> expense_web.WorkOrderExpenseFormInput:
         expense_date=_form_text(form, "expense_date"),
         currency=_form_text(form, "currency"),
         notes=_form_text(form, "notes"),
+        selected_approver_id=_form_text(form, "selected_approver_id"),
+        payment_destination_mode=_form_text(form, "payment_destination_mode"),
+        bank_code=_form_text(form, "bank_code"),
+        account_number=_form_text(form, "account_number"),
+        beneficiary_name=_form_text(form, "beneficiary_name"),
         lines=tuple(lines),
     )
 
@@ -333,7 +359,20 @@ def create_work_order_expense(
         prepared = expense_web.validate_work_order_expense_form(
             form,
             category_rules=panel.categories,
+            approvers=panel.approvers,
         )
+        verified_destination = verify_field_expense_destination(
+            db,
+            VerifyFieldExpenseDestination(
+                requester_system_user_id=actor_id,
+                source_claim_id=prepared.request_id,
+                mode=prepared.payment_destination_mode,
+                bank_code=prepared.bank_code,
+                account_number=prepared.account_number,
+                beneficiary_name=prepared.beneficiary_name,
+            ),
+        )
+        staff_access = _expense_staff_access(db, auth)
         db_session_adapter.release_read_transaction(db)
         outcome = submit_field_expense_request_command(
             db,
@@ -347,7 +386,7 @@ def create_work_order_expense(
                     idempotency_key=str(prepared.request_id),
                 ),
                 requester_person_id=None,
-                work_order_public_id=work_order_id,
+                work_order=ExpenseWorkOrderIdentity(public_id=work_order_id),
                 request_id=prepared.request_id,
                 purpose=prepared.purpose,
                 expense_date=prepared.expense_date,
@@ -369,8 +408,14 @@ def create_work_order_expense(
                     for line in prepared.lines
                 ),
                 access_mode=ExpenseRequestAccessMode.STAFF_WORK_ORDER,
-                authorized_work_order_id=panel.work_order_id,
-                category_rules=prepared.category_rules,
+                staff_access=staff_access,
+                selected_approver=SelectedExpenseApprover(
+                    erp_employee_id=prepared.selected_approver.erp_employee_id,
+                    system_user_id=prepared.selected_approver.system_user_id,
+                    display_name=prepared.selected_approver.display_name,
+                    email=prepared.selected_approver.email,
+                ),
+                payment_destination=verified_destination,
             ),
         )
     except expense_web.WorkOrderExpenseFormError as exc:

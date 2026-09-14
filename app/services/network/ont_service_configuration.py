@@ -14,7 +14,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType
 from app.models.network import (
+    CPEDevice,
     OLTDevice,
     OntAssignment,
     OntAuthorizationStatus,
@@ -43,6 +44,7 @@ from app.models.ont_service_configuration import (
     OntServiceConfigurationPhase,
     OntServiceConfigurationRevision,
 )
+from app.models.tr069 import Tr069CpeDevice
 from app.services.audit_adapter import stage_audit_event
 from app.services.credential_crypto import encrypt_credential, get_encryption_key
 from app.services.domain_errors import DomainError
@@ -107,6 +109,11 @@ _CONFIGURE_CUSTOMER_WIFI = OwnerCommandDefinition(
     owner=OWNER,
     concern=_COORDINATION_CONCERN,
     name="configure_customer_wifi",
+)
+_CONFIGURE_CPE_WIFI = OwnerCommandDefinition(
+    owner=OWNER,
+    concern=_COORDINATION_CONCERN,
+    name="configure_cpe_wifi",
 )
 _EXECUTE = OwnerCommandDefinition(
     owner=OWNER,
@@ -192,6 +199,14 @@ class CustomerWifiConfigurationChange:
 
 
 @dataclass(frozen=True, slots=True)
+class CpeWifiConfigurationChange:
+    """Sparse CPE-detail WiFi patch applied under the owner's row locks."""
+
+    ssid: str | None = None
+    password: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ManagementConfigurationChange:
     ip_mode: str | None
     ip_address: str | None
@@ -232,6 +247,18 @@ class ConfigureCustomerWifiCommand:
     subscriber_id: uuid.UUID
     subscription_id: uuid.UUID
     change: CustomerWifiConfigurationChange
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigureCpeWifiCommand:
+    context: CommandContext
+    cpe_device_id: uuid.UUID
+    expected_tr069_device_id: uuid.UUID
+    expected_ont_unit_id: uuid.UUID
+    expected_assignment_id: uuid.UUID
+    permission_granted: bool
+    object_scope_granted: bool
+    change: CpeWifiConfigurationChange
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,7 +434,11 @@ def _json_default(value: object) -> object:
 
 
 def _command_fingerprint(
-    command: ConfigureOntServiceCommand | ConfigureCustomerWifiCommand,
+    command: (
+        ConfigureOntServiceCommand
+        | ConfigureCustomerWifiCommand
+        | ConfigureCpeWifiCommand
+    ),
 ) -> str:
     key = get_encryption_key()
     if key is None:
@@ -420,16 +451,23 @@ def _command_fingerprint(
         if isinstance(command, ConfigureOntServiceCommand)
         else OntConfigurationSection.wifi
     )
+    if isinstance(command, ConfigureOntServiceCommand):
+        target: object = command.ont_unit_id
+    elif isinstance(command, ConfigureCustomerWifiCommand):
+        target = {
+            "subscriber_id": command.subscriber_id,
+            "subscription_id": command.subscription_id,
+        }
+    else:
+        target = {
+            "cpe_device_id": command.cpe_device_id,
+            "tr069_device_id": command.expected_tr069_device_id,
+            "ont_unit_id": command.expected_ont_unit_id,
+            "assignment_id": command.expected_assignment_id,
+        }
     material = json.dumps(
         {
-            "target": (
-                command.ont_unit_id
-                if isinstance(command, ConfigureOntServiceCommand)
-                else {
-                    "subscriber_id": command.subscriber_id,
-                    "subscription_id": command.subscription_id,
-                }
-            ),
+            "target": target,
             "section": section,
             "change": asdict(command.change),
         },
@@ -657,8 +695,38 @@ def _customer_wifi_change_updates(
     return updates, evidence
 
 
+def _cpe_wifi_change_updates(
+    change: CpeWifiConfigurationChange,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Validate one sparse CPE-detail field without snapshotting its siblings."""
+    if (change.ssid is None) == (change.password is None):
+        raise _error(
+            "invalid_change",
+            "A CPE WiFi command must change exactly one of name or password.",
+        )
+    updates: dict[str, object] = {}
+    evidence: dict[str, object] = {}
+    if change.ssid is not None:
+        ssid = change.ssid.strip()
+        if not 1 <= len(ssid) <= 32:
+            raise _error("invalid_change", "WiFi name must be 1-32 characters.")
+        updates["wifi.ssid"] = ssid
+        evidence["wifi.ssid"] = ssid
+    if change.password is not None:
+        password = change.password.strip()
+        if not 8 <= len(password) <= 63:
+            raise _error("invalid_change", "WiFi password must be 8-63 characters.")
+        updates["wifi.password"] = encrypt_credential(password)
+        evidence["wifi.password"] = "changed"
+    return updates, evidence
+
+
 def _load_admission_scope(
-    db: Session, command: ConfigureOntServiceCommand
+    db: Session,
+    *,
+    context: CommandContext,
+    ont_unit_id: uuid.UUID,
+    permission_granted: bool,
 ) -> tuple[
     OntUnit,
     OntAssignment,
@@ -666,13 +734,11 @@ def _load_admission_scope(
     OLTDevice,
     PonPort,
 ]:
-    if command.context.scope != "network:ont:write" or not command.permission_granted:
+    if context.scope != "network:ont:write" or not permission_granted:
         raise _error(
             "permission_denied", "ONT service configuration requires network:ont:write."
         )
-    ont = db.scalar(
-        select(OntUnit).where(OntUnit.id == command.ont_unit_id).with_for_update()
-    )
+    ont = db.scalar(select(OntUnit).where(OntUnit.id == ont_unit_id).with_for_update())
     if ont is None:
         raise _error("ont_not_found", "ONT was not found.")
     assignments = list(
@@ -875,6 +941,231 @@ def _load_customer_wifi_admission_scope(
     return ont, assignment, subscription, olt, pon
 
 
+@dataclass(frozen=True, slots=True)
+class CpeWifiAdmissionScope:
+    """The exact, unambiguous ONT this admin CPE-detail WiFi action may touch.
+
+    Resolved by ``resolve_cpe_wifi_admission_scope`` from the CPE side of the
+    TR-069 identity chain (``cpe_device_id`` -> ``Tr069CpeDevice`` ->
+    ``OntUnit`` -> active ``OntAssignment``) so the admin CPE-detail WiFi
+    routes can delegate to ``configure_cpe_wifi`` — a typed owner-command
+    path beside the customer self-care WiFi flow — instead of writing to
+    GenieACS directly. This never falls back to serial-number matching or a
+    default ACS server (``resolve_genieacs_for_cpe_with_reason`` tiers 2/3):
+    an admin mutation targets one exact device or it is refused.
+    """
+
+    cpe_device_id: uuid.UUID
+    ont_unit_id: uuid.UUID
+    tr069_device_id: uuid.UUID
+    assignment_id: uuid.UUID
+
+
+def resolve_cpe_wifi_admission_scope(
+    db: Session, cpe_device_id: uuid.UUID, *, for_update: bool = False
+) -> CpeWifiAdmissionScope:
+    """Resolve exactly one active TR-069 CPE row to its eligible owning ONT.
+
+    Refuses, with a distinct typed ``OntServiceConfigurationError`` code per
+    cause, rather than falling through to a looser resolution strategy:
+
+    - ``cpe_device_not_found``: no active ``Tr069CpeDevice`` row is keyed to
+      this exact ``cpe_device_id``.
+    - ``cpe_device_ambiguous``: more than one active ``Tr069CpeDevice`` row is
+      keyed to this exact ``cpe_device_id``.
+    - ``cpe_ont_not_linked``: the resolved TR-069 row has no ``ont_unit_id``.
+    - ``cpe_ont_missing``: ``ont_unit_id`` is set but the referenced
+      ``OntUnit`` row cannot be found.
+    - ``cpe_assignment_inactive``: the linked ONT has no active
+      ``OntAssignment``.
+    - ``cpe_assignment_ambiguous``: the linked ONT has more than one active
+      ``OntAssignment``.
+    - ``cpe_assignment_identity_conflict``: the CPE customer (and, when set,
+      service) identity disagrees with the active assignment.
+
+    The web preflight uses read-only lookups. ``configure_cpe_wifi`` invokes
+    this resolver again with row locks, compares every resolved identity with
+    the submitted preflight evidence, and then rechecks subscription, PON,
+    OLT, commissioning, permission, and object scope before staging a change.
+    """
+    cpe_statement = select(CPEDevice).where(CPEDevice.id == cpe_device_id)
+    if for_update:
+        cpe_statement = cpe_statement.with_for_update()
+    cpe = db.scalar(cpe_statement)
+    if cpe is None:
+        raise _error(
+            "cpe_device_not_found",
+            "The CPE inventory record could not be found.",
+            cpe_device_id=str(cpe_device_id),
+        )
+    candidate_statement = (
+        select(Tr069CpeDevice)
+        .where(
+            Tr069CpeDevice.cpe_device_id == cpe_device_id,
+            Tr069CpeDevice.is_active.is_(True),
+        )
+        .order_by(Tr069CpeDevice.id)
+    )
+    if for_update:
+        candidate_statement = candidate_statement.with_for_update()
+    candidates = list(db.scalars(candidate_statement))
+    if not candidates:
+        raise _error(
+            "cpe_device_not_found",
+            "No active TR-069 device is linked to this CPE.",
+            cpe_device_id=str(cpe_device_id),
+        )
+    if len(candidates) > 1:
+        raise _error(
+            "cpe_device_ambiguous",
+            "Multiple active TR-069 devices are linked to this CPE; contact support.",
+            cpe_device_id=str(cpe_device_id),
+            candidate_count=len(candidates),
+            candidate_tr069_device_ids=[str(item.id) for item in candidates],
+        )
+    tr069_device = candidates[0]
+    if tr069_device.ont_unit_id is None:
+        raise _error(
+            "cpe_ont_not_linked",
+            "This CPE is not linked to an ONT.",
+            cpe_device_id=str(cpe_device_id),
+            tr069_device_id=str(tr069_device.id),
+        )
+    ont_statement = select(OntUnit).where(OntUnit.id == tr069_device.ont_unit_id)
+    if for_update:
+        ont_statement = ont_statement.with_for_update()
+    ont = db.scalar(ont_statement)
+    if ont is None:
+        raise _error(
+            "cpe_ont_missing",
+            "The ONT linked to this CPE could not be found.",
+            cpe_device_id=str(cpe_device_id),
+            tr069_device_id=str(tr069_device.id),
+            ont_unit_id=str(tr069_device.ont_unit_id),
+        )
+    assignment_statement = (
+        select(OntAssignment)
+        .where(
+            OntAssignment.ont_unit_id == ont.id,
+            OntAssignment.active.is_(True),
+        )
+        .order_by(OntAssignment.id)
+    )
+    if for_update:
+        assignment_statement = assignment_statement.with_for_update()
+    assignments = list(db.scalars(assignment_statement))
+    if not assignments:
+        raise _error(
+            "cpe_assignment_inactive",
+            "The ONT linked to this CPE has no active assignment.",
+            cpe_device_id=str(cpe_device_id),
+            ont_unit_id=str(ont.id),
+        )
+    if len(assignments) > 1:
+        raise _error(
+            "cpe_assignment_ambiguous",
+            "The ONT linked to this CPE has multiple active assignments; "
+            "contact support.",
+            cpe_device_id=str(cpe_device_id),
+            ont_unit_id=str(ont.id),
+            candidate_assignment_ids=[str(item.id) for item in assignments],
+        )
+    assignment = assignments[0]
+    subscription_conflict = (
+        cpe.subscription_id is not None
+        and assignment.subscription_id != cpe.subscription_id
+    )
+    if assignment.subscriber_id != cpe.subscriber_id or subscription_conflict:
+        raise _error(
+            "cpe_assignment_identity_conflict",
+            "The CPE customer identity disagrees with the ONT's active assignment; "
+            "contact support.",
+            cpe_device_id=str(cpe_device_id),
+            cpe_subscriber_id=str(cpe.subscriber_id),
+            cpe_subscription_id=(
+                str(cpe.subscription_id) if cpe.subscription_id is not None else None
+            ),
+            assignment_id=str(assignment.id),
+            assignment_subscriber_id=(
+                str(assignment.subscriber_id)
+                if assignment.subscriber_id is not None
+                else None
+            ),
+            assignment_subscription_id=(
+                str(assignment.subscription_id)
+                if assignment.subscription_id is not None
+                else None
+            ),
+        )
+    return CpeWifiAdmissionScope(
+        cpe_device_id=cpe.id,
+        ont_unit_id=ont.id,
+        tr069_device_id=tr069_device.id,
+        assignment_id=assignment.id,
+    )
+
+
+def _load_cpe_wifi_admission_scope(
+    db: Session, command: ConfigureCpeWifiCommand
+) -> tuple[
+    OntUnit,
+    OntAssignment,
+    AssignmentSubscriptionSnapshot,
+    OLTDevice,
+    PonPort,
+]:
+    """Lock and revalidate the complete CPE-origin identity chain."""
+    if command.context.scope != "network:ont:write" or not command.permission_granted:
+        raise _error(
+            "permission_denied", "ONT service configuration requires network:ont:write."
+        )
+    if not command.object_scope_granted:
+        raise _error(
+            "cpe_scope_denied",
+            "The current user cannot manage the ONT linked to this CPE.",
+        )
+    scope = resolve_cpe_wifi_admission_scope(db, command.cpe_device_id, for_update=True)
+    expected = (
+        command.cpe_device_id,
+        command.expected_tr069_device_id,
+        command.expected_ont_unit_id,
+        command.expected_assignment_id,
+    )
+    observed = (
+        scope.cpe_device_id,
+        scope.tr069_device_id,
+        scope.ont_unit_id,
+        scope.assignment_id,
+    )
+    if observed != expected:
+        raise _error(
+            "cpe_identity_changed",
+            "The CPE, ONT, or assignment link changed; refresh and retry.",
+            expected_cpe_device_id=str(command.cpe_device_id),
+            expected_tr069_device_id=str(command.expected_tr069_device_id),
+            expected_ont_unit_id=str(command.expected_ont_unit_id),
+            expected_assignment_id=str(command.expected_assignment_id),
+            observed_cpe_device_id=str(scope.cpe_device_id),
+            observed_tr069_device_id=str(scope.tr069_device_id),
+            observed_ont_unit_id=str(scope.ont_unit_id),
+            observed_assignment_id=str(scope.assignment_id),
+        )
+    ont, assignment, subscription, olt, pon = _load_admission_scope(
+        db,
+        context=command.context,
+        ont_unit_id=scope.ont_unit_id,
+        permission_granted=command.permission_granted,
+    )
+    if assignment.id != scope.assignment_id:
+        raise _error(
+            "cpe_identity_changed",
+            "The CPE's active assignment changed; refresh and retry.",
+            expected_assignment_id=str(scope.assignment_id),
+            observed_assignment_id=str(assignment.id),
+        )
+    return ont, assignment, subscription, olt, pon
+
+
 def _head_for_assignment(
     db: Session, ont: OntUnit, assignment: OntAssignment
 ) -> OntServiceConfigurationHead:
@@ -918,7 +1209,12 @@ def _connection_type(mode: object) -> str:
 
 
 def _admit(
-    db: Session, command: ConfigureOntServiceCommand | ConfigureCustomerWifiCommand
+    db: Session,
+    command: (
+        ConfigureOntServiceCommand
+        | ConfigureCustomerWifiCommand
+        | ConfigureCpeWifiCommand
+    ),
 ) -> ConfigureOntServiceOutcome:
     idempotency_key = _require_idempotency(command.context)
     fingerprint = _command_fingerprint(command)
@@ -927,9 +1223,19 @@ def _admit(
         ont, assignment, _subscription, _olt, _pon = (
             _load_customer_wifi_admission_scope(db, command)
         )
+    elif isinstance(command, ConfigureCpeWifiCommand):
+        section = OntConfigurationSection.wifi
+        ont, assignment, _subscription, _olt, _pon = _load_cpe_wifi_admission_scope(
+            db, command
+        )
     else:
         section = command.section
-        ont, assignment, _subscription, _olt, _pon = _load_admission_scope(db, command)
+        ont, assignment, _subscription, _olt, _pon = _load_admission_scope(
+            db,
+            context=command.context,
+            ont_unit_id=command.ont_unit_id,
+            permission_granted=command.permission_granted,
+        )
     head = _head_for_assignment(db, ont, assignment)
     replay = db.scalar(
         select(OntServiceConfigurationRevision).where(
@@ -955,6 +1261,8 @@ def _admit(
         )
     if isinstance(command, ConfigureCustomerWifiCommand):
         updates, evidence = _customer_wifi_change_updates(command.change)
+    elif isinstance(command, ConfigureCpeWifiCommand):
+        updates, evidence = _cpe_wifi_change_updates(command.change)
     else:
         updates, evidence = _change_updates(
             db,
@@ -1207,6 +1515,25 @@ def configure_customer_wifi(
         ) from exc
 
 
+def configure_cpe_wifi(
+    db: Session, command: ConfigureCpeWifiCommand
+) -> ConfigureOntServiceOutcome:
+    """Atomically revalidate CPE ownership and queue one sparse WiFi change."""
+
+    try:
+        return execute_owner_command(
+            db,
+            definition=_CONFIGURE_CPE_WIFI,
+            context=command.context,
+            operation=lambda: _admit(db, command),
+        )
+    except IntegrityError as exc:
+        raise _error(
+            "concurrent_configuration",
+            "Configuration changed concurrently; refresh and retry.",
+        ) from exc
+
+
 def _record_execution_event(
     db: Session,
     *,
@@ -1219,7 +1546,11 @@ def _record_execution_event(
     message: str,
     success: bool,
     waiting: bool = False,
+    extra_data: dict[str, Any] | None = None,
 ) -> None:
+    data = {"phase": phase.value, "revision": revision.revision}
+    if extra_data:
+        data.update(extra_data)
     record_ont_provisioning_event(
         db,
         ont,
@@ -1229,7 +1560,7 @@ def _record_execution_event(
             success=success,
             waiting=waiting,
             message=message,
-            data={"phase": phase.value, "revision": revision.revision},
+            data=data,
         ),
         action="configuration_phase_changed",
         lifecycle=ProvisioningLifecycleIdentity(
@@ -1293,29 +1624,37 @@ def _only_ppp_delivery_residual_drift(result: ReconcileResult) -> bool:
     )
 
 
-def _lan_connection_request_pending(
-    revision: OntServiceConfigurationRevision, result: ReconcileResult
-) -> bool:
+def _connection_request_queued_pending(result: ReconcileResult) -> bool:
+    """Whether GenieACS accepted this revision's write but the immediate
+    Connection Request failed, leaving the task queued for the device's next
+    Inform.
+
+    This GenieACS behavior (``ACS_CR_FAILED``) is identical regardless of
+    which section (LAN, WiFi, WAN, management) issued the write — the
+    ``setParameterValues`` batch is accepted and queued either way. This used
+    to be gated to ``_force_lan_delivery`` (LAN's forced write-only-block
+    predicate), which routed every WiFi/WAN/management occurrence of this
+    exact GenieACS delivery outcome into terminal failure instead of the
+    queued/readback-pending recovery LAN already received.
+    """
     failure = result.failure
-    return (
-        _force_lan_delivery(revision)
-        and failure is not None
-        and failure.reason == "acs_cr_failed"
-    )
+    return failure is not None and failure.reason == "acs_cr_failed"
 
 
-def _lan_connection_request_drain_still_pending(
+def _connection_request_drain_still_pending(
     *,
-    revision: OntServiceConfigurationRevision,
     waiting_reason: str | None,
     result: ReconcileResult,
 ) -> bool:
+    """Whether a prior queued-CR-failure wait is still undrained.
+
+    Section-agnostic for the same reason as
+    ``_connection_request_queued_pending`` — the ``awaiting_acs_task_drain``
+    wait state and the GenieACS failure it watches for are identical across
+    sections.
+    """
     failure = result.failure
-    if (
-        not _force_lan_delivery(revision)
-        or waiting_reason != "awaiting_acs_task_drain"
-        or failure is None
-    ):
+    if waiting_reason != "awaiting_acs_task_drain" or failure is None:
         return False
     if failure.reason == "acs_cr_failed":
         return True
@@ -1579,14 +1918,15 @@ def _execution_locked(
             and isinstance(failure.evidence, dict)
             and failure.evidence.get("readback_pending")
         )
-        lan_cr_pending = _lan_connection_request_pending(
-            revision, result
-        ) or _lan_connection_request_drain_still_pending(
-            revision=revision,
+        connection_request_queued_pending = _connection_request_queued_pending(
+            result
+        ) or _connection_request_drain_still_pending(
             waiting_reason=prior_waiting_reason,
             result=result,
         )
-        if command.force_readback_only and (readback_pending or lan_cr_pending):
+        if command.force_readback_only and (
+            readback_pending or connection_request_queued_pending
+        ):
             # A readback-only verification (``verify_ont_service_configuration_
             # readback``) must never auto re-dispatch. The retry loop below
             # re-stages ``ont_service_config_apply_v1`` with a ``verify:N``
@@ -1664,12 +2004,15 @@ def _execution_locked(
             )
             phase = OntServiceConfigurationPhase.readback_pending
             message = "Configuration applied; fresh readback is pending."
-        elif lan_cr_pending and command.verification_attempt < _MAX_READBACK_ATTEMPTS:
+        elif (
+            connection_request_queued_pending
+            and command.verification_attempt < _MAX_READBACK_ATTEMPTS
+        ):
             next_attempt = command.verification_attempt + 1
             pending_message = (
-                "The LAN configuration was accepted by ACS, but the ONT rejected "
-                "the immediate Connection Request. The queued ACS task will drain "
-                "on the next Inform or after an OLT ONT reset."
+                f"The {revision.section} configuration was accepted by ACS, but "
+                "the ONT rejected the immediate Connection Request. The queued "
+                "ACS task will drain on the next Inform or after an OLT ONT reset."
             )
             head.phase = OntServiceConfigurationPhase.readback_pending
             revision.phase = OntServiceConfigurationPhase.readback_pending
@@ -1695,16 +2038,27 @@ def _execution_locked(
                 message=pending_message,
                 success=False,
                 waiting=True,
+                extra_data={
+                    "acs_task_queued_despite_cr_failure": True,
+                    "section": revision.section,
+                    "failure_reason": failure.reason if failure is not None else None,
+                    "failure_message": (
+                        failure.message if failure is not None else None
+                    ),
+                    "confirmation_path": "readback_only_verification_after_fresh_inform",
+                    "verification_attempt": next_attempt,
+                },
             )
             phase = OntServiceConfigurationPhase.readback_pending
             message = pending_message
         else:
-            if lan_cr_pending:
+            if connection_request_queued_pending:
                 failure_code = "acs_cr_failed"
                 failure_message = (
-                    "The LAN configuration is queued in ACS, but the ONT still rejects "
-                    "or misses the GenieACS Connection Request. Fix the ONT connection "
-                    "request credentials or force an OLT ONT reset, then retry."
+                    f"The {revision.section} configuration is queued in ACS, but "
+                    "the ONT still rejects or misses the GenieACS Connection "
+                    "Request. Fix the ONT connection request credentials or force "
+                    "an OLT ONT reset, then retry."
                 )
             head.phase = OntServiceConfigurationPhase.failed
             revision.phase = OntServiceConfigurationPhase.failed
@@ -2507,10 +2861,13 @@ def repair_ont_service_configuration_drift(
 
 __all__ = (
     "AdvancedConfigurationChange",
+    "ConfigureCpeWifiCommand",
     "ConfigureCustomerWifiCommand",
     "ConfigureOntServiceCommand",
     "ConfigureOntServiceOutcome",
     "CustomerWifiConfigurationChange",
+    "CpeWifiAdmissionScope",
+    "CpeWifiConfigurationChange",
     "ExecuteOntServiceConfigurationCommand",
     "ExecuteOntServiceConfigurationOutcome",
     "LanConfigurationChange",
@@ -2529,6 +2886,7 @@ __all__ = (
     "WanConfigurationChange",
     "WanVlanSource",
     "WifiConfigurationChange",
+    "configure_cpe_wifi",
     "configure_customer_wifi",
     "configure_ont_service",
     "execute_ont_service_configuration",
@@ -2537,6 +2895,7 @@ __all__ = (
     "get_latest_ont_configuration_section_delivery",
     "inspect_ont_service_configuration_drift",
     "repair_ont_service_configuration_drift",
+    "resolve_cpe_wifi_admission_scope",
     "retry_ont_service_configuration",
     "verify_ont_service_configuration_readback",
 )

@@ -25,9 +25,10 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
+from app.models.domain_settings import SettingDomain
 from app.models.location_capture_prompt import LocationCapturePromptState
 from app.models.subscriber import Subscriber
-from app.services import control_registry
+from app.services import control_registry, settings_spec
 from app.services import geocode_reconciler as reconciler
 from app.services import service_address as service_address_service
 from app.services import subscriber_data_completeness as completeness
@@ -47,10 +48,58 @@ _PROMPT_SOURCES = frozenset({SOURCE_CUSTOMER_PORTAL, SOURCE_AGENT})
 
 _SNOOZE_DAYS_KEY = "loyalty_capture_prompt_snooze_days"
 _DEFAULT_SNOOZE_DAYS = 30
+_SERVICE_LOCATION_REQUIRED_KEY = "service_location_required"
 
 
 class LocationCaptureDisabled(RuntimeError):
     """The requested location-capture surface is not enabled."""
+
+
+def service_location_requirement_enabled(db: Session) -> bool:
+    """Return the operator-controlled direct portal location requirement."""
+    try:
+        value = settings_spec.resolve_value(
+            db, SettingDomain.subscriber, _SERVICE_LOCATION_REQUIRED_KEY
+        )
+    except Exception:
+        logger.warning(
+            "service location requirement setting could not be resolved", exc_info=True
+        )
+        return False
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def service_location_complete(db: Session, subscriber_id: str) -> bool:
+    """Whether the canonical service Address has a usable map coordinate."""
+    address = service_address_service.service_address(db, subscriber_id)
+    if address is None or address.latitude is None or address.longitude is None:
+        return False
+    try:
+        latitude = float(address.latitude)
+        longitude = float(address.longitude)
+    except (TypeError, ValueError):
+        return False
+    return -90 <= latitude <= 90 and -180 <= longitude <= 180
+
+
+def requires_service_location_update(db: Session, subscriber_id: str) -> bool:
+    """Single policy decision used by the portal gate and banner.
+
+    A read failure fails open so a database/transient issue cannot lock every
+    customer out of the portal. The exception is logged for operations.
+    """
+    if not service_location_requirement_enabled(db):
+        return False
+    try:
+        return not service_location_complete(db, subscriber_id)
+    except Exception:
+        logger.exception(
+            "service location completeness check failed for subscriber %s",
+            subscriber_id,
+        )
+        return False
 
 
 def prompt_enabled(db: Session) -> bool:

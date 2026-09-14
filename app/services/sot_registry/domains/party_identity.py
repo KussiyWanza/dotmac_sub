@@ -65,6 +65,136 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="party.identity_reactivation",
+            module="app.services.party_identity_reactivation",
+            owns=("reviewed quarantined Party identity reactivation",),
+            depends_on=(
+                "party.registry",
+                "auth.permission_gate",
+                "observability.audit_log",
+            ),
+            notes=(
+                "Applies one attributable administrator's explicit decision to "
+                "restore an exact quarantined Party. It never infers identity, "
+                "merges or repoints a Party, activates a login, grants access, or "
+                "accepts archived and merged identities."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="reviewed quarantined Party identity reactivation",
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=(
+                            "attributable Party reactivation decision",
+                            "canonical Party identity",
+                        ),
+                        canonical_writer="party.identity_reactivation",
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="attributable Party reactivation decision",
+                        owner="party.identity_reactivation",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "typed administrator command naming the exact Party, "
+                            "expected type, expected update timestamp, decision "
+                            "source, reviewer, review time and bounded reason"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical Party identity",
+                        owner="party.registry",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="exact Party row and its current identity status",
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.OWNER_MANAGED,
+                    boundary=(
+                        "The public command enters execute_owner_command once, "
+                        "locks one Party, writes its status, audit evidence and "
+                        "domain event, and commits once before returning."
+                    ),
+                    locking=(
+                        "The exact Party is selected FOR UPDATE before status, type "
+                        "or stale-evidence validation."
+                    ),
+                    idempotency=(
+                        "Only the same command and correlation id, reviewer, "
+                        "decision source and reason digest may replay an already "
+                        "active Party; every other active state fails closed."
+                    ),
+                    retries=(
+                        "Retry the complete command with identical evidence after "
+                        "transient database failure. A stale, merged, archived or "
+                        "differently activated Party requires a new review."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "party.identity_reactivation.invalid_command",
+                        "party.identity_reactivation.party_not_found",
+                        "party.identity_reactivation.party_type_changed",
+                        "party.identity_reactivation.party_not_quarantined",
+                        "party.identity_reactivation.stale_party",
+                        *owner_command_boundary_error_codes(
+                            "party.identity_reactivation"
+                        ),
+                    ),
+                    mapping_owner=("scripts.migration.reactivate_party_identity"),
+                    fail_closed_on=(
+                        "unattributable or mismatched administrator",
+                        "missing or stale Party",
+                        "changed Party type",
+                        "active Party without exact replay evidence",
+                        "merged or archived Party",
+                        "active caller transaction or manifest mismatch",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=("party.identity_reactivated",),
+                    schema_version=1,
+                    delivery_owner="events.dispatcher",
+                    compatibility=(
+                        "The event and audit contain Party and command UUIDs, status "
+                        "values and a reason digest; no name, email or raw review "
+                        "reason is persisted in their payloads."
+                    ),
+                    replay=(
+                        "An exact replay returns the active Party without staging a "
+                        "second audit or event."
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.NATIVE,
+                    new_owner="party.identity_reactivation",
+                    verification=(
+                        "Focused transition, stale-state, authorization, audit, "
+                        "event and exact-replay tests."
+                    ),
+                    cutover_gate=(
+                        "Only the typed operator adapter invokes the owner and no "
+                        "direct Party status restoration writer exists."
+                    ),
+                    fallback_retirement=(
+                        "There is no direct SQL or ORM fallback; failed decisions "
+                        "remain quarantined pending a fresh review."
+                    ),
+                ),
+                steward="identity and authentication",
+                design_refs=(
+                    "docs/PARTY_PRINCIPAL_CONTEXT_BINDING.md",
+                    "docs/runbooks/PARTY_IDENTITY_REACTIVATION.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_party_identity_reactivation.py",
+                    "tests/architecture/test_party_identity_reactivation_boundary.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="party.identity_audit",
             module="app.services.party_identity_audit",
             owns=(
@@ -1085,6 +1215,7 @@ DOMAIN = DomainSOT(
     ),
     entrypoints=(
         "scripts.migration.audit_subscriber_identity",
+        "scripts.migration.reactivate_party_identity",
         "scripts.migration.plan_subscriber_party_backfill",
         "scripts.migration.execute_subscriber_party_backfill",
         "scripts.migration.audit_party_organization_profiles",

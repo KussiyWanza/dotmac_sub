@@ -118,6 +118,7 @@ def tickets_list(
     status: str | None = Query(default=None),
     ticket_type: str | None = Query(default=None),
     region: str | None = Query(default=None),
+    service_team_id: str | None = Query(default=None),
     assigned_to_me: bool = Query(default=False),
     project_manager_person_id: str | None = Query(default=None),
     site_coordinator_person_id: str | None = Query(default=None),
@@ -144,6 +145,9 @@ def tickets_list(
             status=status,
             ticket_type=ticket_type,
             region=region,
+            service_team_id=(
+                service_team_id if isinstance(service_team_id, str) else None
+            ),
             assigned_to_me=assigned_to_me,
             project_manager_person_id=project_manager_person_id,
             site_coordinator_person_id=site_coordinator_person_id,
@@ -209,6 +213,7 @@ def tickets_export_csv(
     status: str | None = Query(default=None),
     ticket_type: str | None = Query(default=None),
     region: str | None = Query(default=None),
+    service_team_id: str | None = Query(default=None),
     assigned_to_me: bool = Query(default=False),
     project_manager_person_id: str | None = Query(default=None),
     site_coordinator_person_id: str | None = Query(default=None),
@@ -234,6 +239,7 @@ def tickets_export_csv(
             status=status,
             ticket_type=ticket_type,
             region=region,
+            service_team_id=service_team_id,
             assigned_to_me=assigned_to_me,
             project_manager_person_id=project_manager_person_id,
             site_coordinator_person_id=site_coordinator_person_id,

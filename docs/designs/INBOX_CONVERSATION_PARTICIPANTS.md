@@ -53,7 +53,7 @@ Two separate columns, deliberately:
 | Column | Meaning | Changes? |
 | --- | --- | --- |
 | `admission_source` | how the endpoint arrived — `inbound_from`, `inbound_to`, `inbound_cc`, `outbound_to`, `outbound_cc`, `operator_added` | never |
-| `relationship_type` | what it turns out to be — `customer`, `contact`, `third_party`, `unknown` | Party may revise |
+| `relationship_type` | what it turns out to be — `customer`, `contact`, `representative`, `third_party`, `unknown` | reviewed classification may revise |
 
 `copied` is not a relationship. A customer may be copied and a third party may
 be the sender, so provenance cannot stand in for classification. Collapsing the
@@ -61,6 +61,11 @@ two would let a later reclassification rewrite how a participant originally
 arrived, which is precisely the audit property the split protects.
 
 Everything is admitted `unknown`. That is the honest default.
+
+`representative` means the endpoint belongs to the person speaking, while the
+conversation concerns a different Customer. It is deliberately scoped to one
+conversation. It never makes the representative's endpoint a reusable contact
+route for the represented Customer.
 
 ### Other properties
 
@@ -119,6 +124,30 @@ use the same provider account scope. This read does not admit a sender to an
 existing thread, authorize an export, or infer that another Party endpoint
 participated.
 
+## Implemented representative consequence
+
+An authenticated operator may select one exact active participant, one active
+existing Customer or Party-backed Lead, and a required review reason. The Inbox
+command coordinator locks the conversation. The contact-resolution owner
+records a represented Customer on that conversation, or the canonical
+conversation-to-Lead owner records a represented Lead. The participant owner
+classifies the selected endpoint as `representative`. Audit evidence retains
+participant, represented subject, actor, reason, and the explicit fact that no
+global contact route was created.
+
+This path does not create a Customer, Lead, Party, Party relationship, or
+`InboxContactLink`. The Lead path only selects an existing Lead; it does not
+create one. Neither path repairs other conversations sharing the
+representative's endpoint. Future messages from that person therefore remain
+unresolved until their own conversation is reviewed, which is required when a
+single representative may speak for different Customers or Leads.
+
+Both commands serialize on the conversation and participant rows and are
+idempotent for the same selected subject. The Customer association has no
+automatic downstream side effect or integration event; the later status
+command re-reads current readiness. The Lead association emits the canonical
+`team_inbox.conversation_lead_linked.v1` event with its durable relationship.
+
 ## Pending decisions
 
 None of the following is implemented, and none should be inferred from the
@@ -126,7 +155,8 @@ bounded history read above.
 
 1. **Admission policy.** Whether an unrecognised sender may join a thread, and
    what weight transport authentication carries in that decision.
-2. **Role taxonomy** beyond the default, and who may reclassify.
+2. **Role taxonomy** beyond the implemented representative classification, and
+   who may reclassify other participant roles.
 3. **Transcript permission and override.** Whether export needs its own
    permission separate from `support:ticket:update`, and whether recipients are
    restricted to participants. Note that an exceptional recipient must **not**

@@ -56,6 +56,7 @@ from app.services.billing._common import (
     get_account_credit_balance,
     get_spendable_account_credit_balance,
     lock_account,
+    payment_crosses_reviewed_position_boundary,
     resolve_invoice_settlement_amounts,
 )
 from app.services.billing.ledger import LedgerEntries
@@ -428,11 +429,7 @@ def _source_payments(
     )
     if funding_position_at is not None:
         query = query.filter(
-            or_(
-                Payment.created_at > funding_position_at,
-                func.coalesce(Payment.paid_at, Payment.created_at)
-                > funding_position_at,
-            )
+            payment_crosses_reviewed_position_boundary(funding_position_at)
         )
     rows = query.all()
     account_remaining: dict[str, Decimal] = {}
@@ -452,7 +449,11 @@ def _source_payments(
                 ),
             )
         room = min(
-            PaymentAllocations.available_amount(db, str(payment.id)),
+            PaymentAllocations.available_amount_at_reviewed_boundary_for_owner(
+                db,
+                str(payment.id),
+                funding_position_at=funding_position_at,
+            ),
             account_remaining[currency],
         )
         if room > 0:
@@ -784,14 +785,23 @@ class AccountCreditApplications:
                 amount=amount,
             )
             try:
-                allocation_preview = PaymentAllocations.preview(db, request)
-                confirmation = PaymentAllocations.stage_confirm(
-                    db,
-                    PaymentAllocationConfirm(
-                        **request.model_dump(),
-                        preview_fingerprint=allocation_preview.fingerprint,
-                        idempotency_key=_allocation_key(payment, invoice),
-                    ),
+                allocation_preview = (
+                    PaymentAllocations.preview_at_reviewed_boundary_for_owner(
+                        db,
+                        request,
+                        funding_position_at=funding_position_at,
+                    )
+                )
+                confirmation = (
+                    PaymentAllocations.stage_confirm_at_reviewed_boundary_for_owner(
+                        db,
+                        PaymentAllocationConfirm(
+                            **request.model_dump(),
+                            preview_fingerprint=allocation_preview.fingerprint,
+                            idempotency_key=_allocation_key(payment, invoice),
+                        ),
+                        funding_position_at=funding_position_at,
+                    )
                 )
             except HTTPException as exc:
                 raise AccountCreditApplicationError(

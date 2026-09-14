@@ -31,15 +31,16 @@ moving Sub domain authority or rewriting Sub's core services.
 8. Secrets remain provider-local. Contracts carry opaque references, never
    credentials.
 
-For field expenses, Sub's manager approval is the authoritative release point.
-Submission records the technician's request but does not create an ERP delivery
-intent. After expense-flow cutover, approval and the idempotent expense-claim
-outbox row are committed together; a staging failure rolls both back for safe
-retry. ERP transport happens asynchronously and cannot reverse the local
-approval. The retained `exp-{request_id}-submit-v1` key prevents duplicates from
-older submission-triggered deployments. Existing approved expenses are not
-automatically backfilled; any historical repair requires a separately reviewed,
-explicitly scoped operation.
+For field expenses, technician submission and the versioned submission outbox
+intent commit together. Delivery creates an idempotent hidden ERP draft, uploads
+its receipts, and explicitly submits it before ERP users can see it as
+`SUBMITTED`. Sub remains authoritative for the manager decision; approval or
+rejection commits a separate, ordered outbox intent and ERP projects that
+decision as `APPROVED` or `REJECTED`. ERP transport happens asynchronously and
+cannot reverse the local decision. Legacy `release_approved_v2` rows retain
+their original behavior. Existing expenses are not automatically backfilled;
+any historical repair requires a separately reviewed, explicitly scoped
+operation.
 
 ## Current provider mapping
 

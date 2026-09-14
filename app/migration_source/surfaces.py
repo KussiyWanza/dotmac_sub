@@ -244,8 +244,8 @@ _BOUNDARY_CLASSIFICATION: Final[dict[BoundaryRole, SurfaceClassification]] = {
 #: The disposition every *referencing* file falls under unless this inventory
 #: gives it one individually.
 #:
-#: 386 files name a cohort model or table; 45 are inventoried here. Assigning
-#: an individual disposition to the other 343 would be fabrication at scale —
+#: 401 files name a cohort model or table; 47 are inventoried here. Assigning
+#: an individual disposition to the other 356 would be fabrication at scale —
 #: the reference census is a bounded reach, not an impact analysis, and many of
 #: those files only mention a model in a type hint.
 #:
@@ -585,6 +585,26 @@ COHORT_SURFACES: Final[tuple[SourceSurface, ...]] = (
             "A ticket importer that also writes the customer account's CRM provenance "
             "id. Collecting an observation is legitimate; writing it onto the "
             "authoritative row is what makes it parallel."
+        ),
+    ),
+    SourceSurface(
+        path="app/services/customer_canonical_profile_patch.py",
+        family=EntryPointFamily.SERVICE,
+        authority=AuthorityRole.DECLARED_OWNER,
+        boundary=BoundaryRole.PERSISTS,
+        reachability=Reachability.INTERNAL_ONLY,
+        disposition=Disposition.RETIRE_AFTER_CUTOVER,
+        entity_types=(
+            CohortEntityType.CUSTOMER_ACCOUNT,
+            CohortEntityType.CUSTOMER_ADDRESS,
+        ),
+        owning_service="customer.canonical_profile_patch",
+        registry_declared=True,
+        open_question=None,
+        note=(
+            "The registered flush-only participant applies an explicit typed field "
+            "set to an existing canonical Customer and service address inside its "
+            "coordinator's transaction."
         ),
     ),
     SourceSurface(

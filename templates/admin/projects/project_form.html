@@ -24,7 +24,7 @@
     <form method="post"
           action="{% if form_mode == 'edit' and project %}/admin/projects/{{ project.number or project.id }}/edit{% else %}/admin/projects{% endif %}"
           class="space-y-5"
-          x-data='{ templateMap: {{ project_template_map | tojson }}, projectType: {{ prefill.project_type | tojson }} }'>
+          x-data='{ templateMap: {{ project_template_map | tojson }}, planMap: {{ project_template_plan_map | tojson }}, projectType: {{ prefill.project_type | tojson }}, originalTemplate: {{ original_project_template_id | tojson }}, selectedTemplate: {{ prefill.project_template_id | tojson }} }'>
         <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
 
         <div class="grid gap-4 sm:grid-cols-2">
@@ -41,7 +41,7 @@
             <div>
                 <label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Project Type</label>
                 <select name="project_type" x-model="projectType"
-                        x-on:change="const tpl = templateMap[$event.target.value]; if (tpl) { $refs.templateSelect.value = tpl; }"
+                        x-on:change="const tpl = templateMap[$event.target.value]; if (tpl) { selectedTemplate = tpl; }"
                         class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                     <option value="">— None —</option>
                     {% for t in project_types %}
@@ -51,14 +51,24 @@
             </div>
             <div class="sm:col-span-2">
                 <label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Template</label>
-                <select name="project_template_id" x-ref="templateSelect"
+                <select name="project_template_id" x-ref="templateSelect" x-model="selectedTemplate"
                         class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                     <option value="">— No template —</option>
                     {% for template in project_templates %}
                     <option value="{{ template.id }}" {% if prefill.project_template_id == template.id|string %}selected{% endif %}>{{ template.name }}{% if template.project_type %} ({{ template.project_type|replace('_', ' ')|title }}){% endif %}</option>
                     {% endfor %}
                 </select>
-                <p class="mt-1 text-xs text-slate-400 dark:text-slate-500">Selecting a template instantiates its tasks (with dependencies and scheduled dates){% if form_mode == 'edit' %}; changing it replaces open template tasks{% endif %}.</p>
+                <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Selecting a template instantiates a snapshot of its current revision, including subtasks, dependencies, and scheduled dates.</p>
+                {% if form_mode == 'edit' %}
+                <div x-show="selectedTemplate !== originalTemplate" x-cloak role="status"
+                     class="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
+                    <p class="font-semibold">Template plan will be updated when you save</p>
+                    <p class="mt-1" x-show="selectedTemplate && planMap[selectedTemplate]"
+                       x-text="selectedTemplate && planMap[selectedTemplate] ? `Revision ${planMap[selectedTemplate].revision} will add ${planMap[selectedTemplate].task_count} tasks, including ${planMap[selectedTemplate].subtask_count} subtasks.` : ''"></p>
+                    <p class="mt-1" x-show="!selectedTemplate">No new template tasks will be added.</p>
+                    <p class="mt-1">Existing template-generated tasks are retained under Previous template plan. Ad-hoc tasks and subtasks are not changed.</p>
+                </div>
+                {% endif %}
             </div>
             <div class="sm:col-span-2">
                 <label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Description</label>

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from app.models.billing import Invoice
+from app.models.billing import Invoice, TaxRate
 from app.models.catalog import Subscription, SubscriptionStatus
 from app.models.party import Party
 from app.models.project import Project, ProjectTask, ProjectTemplate
@@ -352,7 +352,9 @@ def test_update_from_input_parses_strings(db_session):
 # ---------------------------------------------------------------------------
 
 
-def test_paid_order_pushes_subscription_then_payment(db_session, billing_calls):
+def test_paid_order_records_payment_without_creating_subscription(
+    db_session, billing_calls
+):
     subscriber = _make_subscriber(db_session)
     offer_id = str(uuid.uuid4())
     order = sales_order_service.sales_orders.create(
@@ -381,32 +383,22 @@ def test_paid_order_pushes_subscription_then_payment(db_session, billing_calls):
     )
 
     names = [name for name, _ in billing_calls]
-    # Subscription (plus its first invoice) BEFORE the payment, so a single
-    # account-level payment settles everything (§2.3).
-    assert names == ["create_subscription", "record_external_payment"]
+    assert names == ["record_external_payment"]
 
-    sub_kwargs = billing_calls[0][1]
-    assert sub_kwargs["subscriber_id"] == str(subscriber.id)
-    assert sub_kwargs["offer_ref"] == offer_id
-    # The idempotency keys are byte-identical to the HTTP era.
-    assert sub_kwargs["external_ref"] == (
-        f"sales_order:{order.id}:subscription:{line.id}"
-    )
-
-    pay_kwargs = billing_calls[1][1]
+    pay_kwargs = billing_calls[0][1]
     assert pay_kwargs["subscriber_id"] == str(subscriber.id)
     assert pay_kwargs["external_ref"] == f"sales_order:{order.id}:payment"
     assert Decimal(str(pay_kwargs["amount"])) == order.amount_paid
 
-    # The resolved ids are written back onto the line metadata (§1.5 keys).
+    # Funding does not start service, billing cadence, credential generation,
+    # provisioning, add-on attachment, or IP allocation.
     db_session.refresh(line)
-    assert (line.metadata_ or {}).get("selfcare_subscription_id")
-    assert (line.metadata_ or {}).get("selfcare_subscription_invoice_id")
+    assert not (line.metadata_ or {}).get("selfcare_subscription_id")
+    assert not (line.metadata_ or {}).get("selfcare_subscription_invoice_id")
+    assert db_session.query(Subscription).count() == 0
 
     # Re-recording the payment evidence is idempotent server-side on the
-    # external_ref. Full consumer replay with already-tagged lines is
-    # exercised in tests/test_sales_lifecycle_chain.py with a persisted
-    # subscription; the mocked one here is not in the database.
+    # external_ref.
     billing_calls.clear()
     sales_order_service._record_sales_order_payment(db_session, order)
     assert [name for name, _ in billing_calls] == ["record_external_payment"]
@@ -786,6 +778,7 @@ def test_installation_invoice_created_once_for_project(db_session, billing_calls
     assert name == "create_installation_invoice"
     assert kwargs["subscriber_id"] == str(subscriber.id)
     assert kwargs["amount"] == Decimal("80000.00")
+    assert kwargs["tax_rate_id"] is None
     # The idempotency key keeps its HTTP-era shape (§2.3).
     assert kwargs["external_ref"] == f"project:{project.id}"
 
@@ -800,6 +793,65 @@ def test_installation_invoice_created_once_for_project(db_session, billing_calls
         db_session, order.id
     )
     assert billing_calls == []
+
+
+def test_installation_invoice_uses_sales_order_tax_rate(db_session, billing_calls):
+    vat = TaxRate(name="VAT 7.5%", code="VAT75", rate=Decimal("7.5000"))
+    db_session.add(vat)
+    db_session.commit()
+    subscriber = _make_subscriber(db_session)
+    order = sales_order_service.sales_orders.create(
+        db_session,
+        SalesOrderCreate(
+            subscriber_id=subscriber.id,
+            subtotal=Decimal("80000.00"),
+            tax_total=Decimal("6000.00"),
+            total=Decimal("86000.00"),
+        ),
+    )
+
+    sales_order_service.sales_order_lines.create(
+        db_session,
+        SalesOrderLineCreate(
+            sales_order_id=order.id,
+            description="Fiber installation",
+            quantity=Decimal("1"),
+            unit_price=Decimal("80000.00"),
+        ),
+    )
+
+    assert len(billing_calls) == 1
+    assert billing_calls[0][1]["tax_rate_id"] == vat.id
+
+
+def test_taxed_installation_invoice_fails_closed_without_matching_rate(
+    db_session, billing_calls
+):
+    subscriber = _make_subscriber(db_session)
+    order = sales_order_service.sales_orders.create(
+        db_session,
+        SalesOrderCreate(
+            subscriber_id=subscriber.id,
+            subtotal=Decimal("80000.00"),
+            tax_total=Decimal("6000.00"),
+            total=Decimal("86000.00"),
+        ),
+    )
+
+    sales_order_service.sales_order_lines.create(
+        db_session,
+        SalesOrderLineCreate(
+            sales_order_id=order.id,
+            description="Fiber installation",
+            quantity=Decimal("1"),
+            unit_price=Decimal("80000.00"),
+        ),
+    )
+
+    assert billing_calls == []
+    project = db_session.query(Project).filter(Project.sales_order_id == order.id).one()
+    error = (project.metadata_ or {})["selfcare_installation_invoice_error"]
+    assert "TaxRate" in error["detail"]
 
 
 def test_installation_amount_falls_back_to_quote_lines(db_session, billing_calls):

@@ -905,7 +905,7 @@ def test_langgraph_classifier_unavailable_asks_and_preserves_facts(db_session):
         conversation=conversation,
         session=session,
         version=version,
-        latest_body="My internet is down",
+        latest_body="7dys no service",
         classification=None,
         classifier_attempt=AiClassifierAttempt(
             status=AiClassifierAttemptStatus.invalid_output,
@@ -926,9 +926,58 @@ def test_langgraph_classifier_unavailable_asks_and_preserves_facts(db_session):
     assert "handoff" not in decision.metadata["node_trace"]
     assert decision.state.collected_facts["connectivity_state"] == "down"
     assert decision.state.collected_facts["connectivity_problem"] is True
+    assert decision.state.collected_facts["issue_started_when"] == "for 7 days"
+    assert decision.state.current_intent == "technical_support"
+    assert decision.state.category == "no_internet"
+    assert decision.state.issue_acknowledgement_required is True
+    assert decision.metadata["question_key"] == "device_scope"
+    assert decision.metadata["fact_driven_path"] is True
+    assert "whether your request is about" not in decision.response_text.lower()
     assert decision.state.classifier_failure_reason is (
         AiIntakeReason.classifier_invalid_output
     )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_state", "expected_duration"),
+    [
+        ("7dys no service", "down", "for 7 days"),
+        ("No internet for 7 days", "down", "for 7 days"),
+        ("Internet down 2hrs", "down", "for 2 hours"),
+        ("Network down for 1wk", "down", "for 1 week"),
+        ("Not browsing since yesterday", "down", "since yesterday"),
+        ("The internet is not working for 3 hours", "down", "for 3 hours"),
+    ],
+)
+def test_bounded_support_shorthand_normalizes_typed_facts(
+    text, expected_state, expected_duration
+):
+    facts = engine.extract_facts(text)
+
+    assert facts["connectivity_state"] == expected_state
+    assert facts["connectivity_problem"] is True
+    assert facts["issue_started_when"] == expected_duration
+
+
+def test_slow_internet_duration_is_retained_and_not_asked_again(db_session):
+    subscriber = _subscriber(db_session)
+    conversation = _conversation(db_session, subscriber_id=subscriber.id)
+    version = _version(db_session)
+    session = _session(db_session, conversation, version)
+
+    decision = engine.run_conversational_turn(
+        db_session,
+        conversation=conversation,
+        session=session,
+        version=version,
+        latest_body="My internet has been slow for 3 days",
+        classification=_classification(category="slow_internet"),
+        tool_mode="simulation",
+    )
+
+    assert decision.state.collected_facts["issue_started_when"] == "for 3 days"
+    assert decision.metadata["question_key"] == "device_scope"
+    assert "issue_started_when" not in decision.state.candidate_question_keys
 
 
 def test_langgraph_classifier_unavailable_hands_off_after_retry_limit(db_session):
@@ -1172,7 +1221,7 @@ def test_general_enquiry_selects_policy_clarification_instead_of_handoff(db_sess
         conversation=conversation,
         session=session,
         version=version,
-        latest_body="I want to make enquiries about your services",
+        latest_body="I would like to make enquiries about your services",
         classification=_classification(
             intent="general_enquiry", category="general_enquiry"
         ),

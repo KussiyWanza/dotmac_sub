@@ -584,7 +584,7 @@ def test_the_reader_reach_is_wider_than_the_writer_surface() -> None:
 def test_every_counted_writer_has_an_individual_disposition() -> None:
     """A writer's fate is a decision about a specific line of code.
 
-    The class default exists for the 343 referencing files this inventory does
+    The class default exists for the 356 referencing files this inventory does
     not name one by one. It must never reach a writer: "displace this" is not
     something a blanket rule can decide, and a writer that quietly inherited a
     reader's disposition would be missing from the set `ctl-isp-009` ratchets

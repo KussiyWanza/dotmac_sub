@@ -2273,8 +2273,9 @@ DOMAIN = DomainSOT(
                     mode=TransactionMode.COORDINATOR_MANAGED,
                     boundary=(
                         "Approval enqueues through the material owner transaction; each "
-                        "accepted delivery or scheduled poll asks that owner to project "
-                        "one ERP outcome before the surrounding row commit."
+                        "accepted delivery or scheduled poll normalizes one typed ERP "
+                        "observation. Polling releases candidate-read transactions, then "
+                        "enters the material observation owner once per response."
                     ),
                     locking=(
                         "The material owner resolves the active request and rejects a "
@@ -2287,6 +2288,37 @@ DOMAIN = DomainSOT(
                     retries=(
                         "The outbox retries transport with the stable key; scheduled "
                         "reconciliation isolates failures per request and repairs later."
+                    ),
+                ),
+                projections=(
+                    ProjectionContract(
+                        name="ERP material reconciliation freshness",
+                        input_names=(
+                            "canonical material dependency projection target",
+                            "ERP material-support outcome response",
+                            "ERP material-support transport contract",
+                        ),
+                        writer="operations.material_dependencies",
+                        freshness=(
+                            "Every valid webhook or polling response records its UTC "
+                            "observation time in FieldMaterialRequest.last_reconciled_at, "
+                            "including unchanged normalized outcomes."
+                        ),
+                        stale_behavior=(
+                            "Keep the last ERP observation visible without inferring a "
+                            "new outcome; the bounded poller retries stale in-flight rows."
+                        ),
+                        drift_signal=(
+                            "Active ERP-managed in-flight backlog size and oldest "
+                            "last_reconciled_at exceed the page-size/cadence bound, or "
+                            "ERP and Sub normalized status disagree."
+                        ),
+                        rebuild_operation=(
+                            "Run bounded refresh_material_request_statuses cycles; "
+                            "NULL/oldest freshness and UUID ordering rotates through all "
+                            "in-flight rows and invokes observe_erp_material_status."
+                        ),
+                        repair_owner="integration.dotmac_erp_material_support_adapter",
                     ),
                 ),
                 errors=ErrorContract(
@@ -2342,9 +2374,12 @@ DOMAIN = DomainSOT(
                 design_refs=(
                     "docs/SOT_RELATIONSHIP_MAP.md",
                     "docs/designs/SOT_CODING_STANDARDS_REFACTOR.md",
+                    "docs/designs/MATERIALS_VENDOR_ERP_CHAIN.md",
+                    "docs/runbooks/MATERIAL_REQUEST_ERP_CUTOVER.md",
                 ),
                 test_refs=(
                     "tests/test_dotmac_erp_material_sync.py",
+                    "tests/test_erp_material_webhook.py",
                     "tests/test_field_material_requests.py",
                 ),
             ),

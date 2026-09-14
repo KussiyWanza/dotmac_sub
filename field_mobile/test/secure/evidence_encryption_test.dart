@@ -127,6 +127,7 @@ void main() {
       store.locationQueueFile,
       cipher: store.cipher,
       scopeKey: store.scopeKey,
+      work: store.work,
     ).save([
       LocationPingPayload(
         latitude: 6.4954,

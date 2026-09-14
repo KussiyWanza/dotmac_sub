@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import case, func
+from sqlalchemy import case, distinct, func
 from sqlalchemy.orm import Session
 
 from app.models.service_team import ServiceTeam
@@ -167,47 +167,100 @@ def _labeled_bucket_rows(
     return buckets
 
 
+def _apply_ticket_window(query, start_at: datetime | None, end_at: datetime | None):
+    if start_at:
+        query = query.filter(Ticket.created_at >= start_at)
+    if end_at:
+        query = query.filter(Ticket.created_at <= end_at)
+    return query
+
+
+def _ticket_buckets(rows, *, region: bool = False, none_key: str, none_label: str):
+    buckets: list[dict[str, Any]] = []
+    for row in rows:
+        if region:
+            key, total, breached, closed = row
+            label = key or none_label
+        else:
+            key, label, total, breached, closed = row
+        total_count = int(total or 0)
+        breached_count = int(breached or 0)
+        buckets.append(
+            {
+                "key": str(key or none_key),
+                "label": str(label or none_label),
+                "total": total_count,
+                "breached": breached_count,
+                "closed_breached": int(closed or 0),
+                "breach_rate": round(breached_count / total_count, 4)
+                if total_count
+                else 0.0,
+            }
+        )
+    return sorted(
+        buckets,
+        key=lambda item: (-item["breached"], -item["total"], item["label"].lower()),
+    )
+
+
 def summary(
     db: Session, start_at: datetime | None = None, end_at: datetime | None = None
 ) -> dict[str, Any]:
-    """Summarize ticket SLA clocks and breach rates."""
+    """Summarize SLA clocks and distinct created tickets by ownership dimension."""
     base = _apply_clock_window(_ticket_clock_query(db), start_at, end_at)
     total_clocks = int(base.count())
-    total_breaches = int(
-        base.filter(
-            (SlaClock.status == SlaClockStatus.breached.value)
-            | SlaClock.breached_at.is_not(None)
-        ).count()
-    )
-    breach_rate = float(total_breaches) / float(total_clocks) if total_clocks else 0.0
-
-    breached_expr = case(
-        (
-            (SlaClock.status == SlaClockStatus.breached.value)
-            | SlaClock.breached_at.is_not(None),
-            1,
-        ),
-        else_=0,
-    )
+    breach_filter = (
+        SlaClock.status == SlaClockStatus.breached.value
+    ) | SlaClock.breached_at.is_not(None)
+    total_breaches = int(base.filter(breach_filter).count())
+    breached_expr = case((breach_filter, 1), else_=0)
     by_status = (
         base.with_entities(
-            SlaClock.status,
-            func.count(SlaClock.id),
-            func.sum(breached_expr),
+            SlaClock.status, func.count(SlaClock.id), func.sum(breached_expr)
         )
         .group_by(SlaClock.status)
         .all()
     )
+    ticket_base = _apply_ticket_window(
+        db.query(Ticket).filter(Ticket.is_active.is_(True)), start_at, end_at
+    )
+    clock_join = (SlaClock.entity_id == Ticket.id) & (
+        SlaClock.entity_type == WorkflowEntityType.ticket.value
+    )
+    ticket_breach_id = case((breach_filter, Ticket.id), else_=None)
+    closed_breach_id = case(
+        (breach_filter & (Ticket.status == "closed"), Ticket.id), else_=None
+    )
     by_team = (
-        base.outerjoin(ServiceTeam, ServiceTeam.id == Ticket.service_team_id)
+        ticket_base.outerjoin(SlaClock, clock_join)
+        .outerjoin(ServiceTeam, ServiceTeam.id == Ticket.service_team_id)
         .with_entities(
             Ticket.service_team_id,
             ServiceTeam.name,
-            func.count(SlaClock.id),
-            func.sum(breached_expr),
+            func.count(distinct(Ticket.id)),
+            func.count(distinct(ticket_breach_id)),
+            func.count(distinct(closed_breach_id)),
         )
         .group_by(Ticket.service_team_id, ServiceTeam.name)
         .all()
+    )
+    by_region = (
+        ticket_base.outerjoin(SlaClock, clock_join)
+        .with_entities(
+            Ticket.region,
+            func.count(distinct(Ticket.id)),
+            func.count(distinct(ticket_breach_id)),
+            func.count(distinct(closed_breach_id)),
+        )
+        .group_by(Ticket.region)
+        .all()
+    )
+    total_tickets = int(ticket_base.count())
+    total_breached_tickets = int(
+        ticket_base.outerjoin(SlaClock, clock_join)
+        .filter(breach_filter)
+        .distinct(Ticket.id)
+        .count()
     )
     by_assignee = (
         base.outerjoin(SystemUser, SystemUser.id == Ticket.assigned_to_person_id)
@@ -223,10 +276,21 @@ def summary(
     return {
         "total_clocks": total_clocks,
         "total_breaches": total_breaches,
-        "breach_rate": round(breach_rate, 4),
+        "breach_rate": round(total_breaches / total_clocks, 4) if total_clocks else 0.0,
+        "total_tickets": total_tickets,
+        "total_breached_tickets": total_breached_tickets,
+        "ticket_breach_rate": round(total_breached_tickets / total_tickets, 4)
+        if total_tickets
+        else 0.0,
         "by_status": _bucket_rows(by_status),
-        "by_service_team": _labeled_bucket_rows(
+        "by_service_team": _ticket_buckets(
             by_team, none_key="unassigned_team", none_label="Unassigned Team"
+        ),
+        "by_region": _ticket_buckets(
+            by_region,
+            region=True,
+            none_key="unassigned_region",
+            none_label="Unassigned Region",
         ),
         "by_assignee": _labeled_bucket_rows(
             by_assignee, none_key="unassigned_person", none_label="Unassigned Person"

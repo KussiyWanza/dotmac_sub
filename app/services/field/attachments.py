@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -36,6 +38,101 @@ class StageExpenseReceiptAttachment:
 @dataclass(frozen=True, slots=True)
 class ExpenseReceiptAttachmentOutcome:
     id: UUID
+
+
+SUPPORTED_EXPENSE_RECEIPT_MIME_TYPES = frozenset(
+    {
+        "image/jpeg",
+        "image/png",
+        "image/gif",
+        "image/webp",
+        "application/pdf",
+    }
+)
+MAX_EXPENSE_RECEIPT_BYTES = 10 * 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedExpenseReceiptAttachment:
+    attachment_id: UUID
+    work_order_id: UUID
+    file_name: str
+    mime_type: str
+    size_bytes: int
+    checksum_sha256: str
+    content: bytes = field(repr=False)
+
+
+def resolve_expense_receipt_attachment(
+    db: Session,
+    *,
+    work_order_id: UUID,
+    attachment_id: UUID,
+    allowed_owner_ids: frozenset[UUID],
+) -> ResolvedExpenseReceiptAttachment:
+    """Resolve and verify private receipt bytes for the expense owner/worker."""
+    attachment = db.get(FieldAttachment, attachment_id)
+    if (
+        attachment is None
+        or not attachment.is_active
+        or attachment.kind != "document"
+        or attachment.work_order_mirror_id != work_order_id
+    ):
+        raise _expense_receipt_error("Receipt attachment is unavailable")
+    attachment_owner_ids = frozenset(
+        value
+        for value in (
+            attachment.uploaded_by_system_user_id,
+            attachment.uploaded_by_person_id,
+            attachment.uploaded_by_technician_id,
+        )
+        if value is not None
+    )
+    if not attachment_owner_ids.intersection(allowed_owner_ids):
+        raise _expense_receipt_error("Receipt attachment ownership is invalid")
+    if (
+        not attachment.file_name
+        or Path(attachment.file_name).name != attachment.file_name
+        or "\x00" in attachment.file_name
+    ):
+        raise _expense_receipt_error("Receipt filename is invalid")
+    if attachment.mime_type not in SUPPORTED_EXPENSE_RECEIPT_MIME_TYPES:
+        raise _expense_receipt_error("Receipt file type is unsupported")
+    if not 0 < attachment.size_bytes <= MAX_EXPENSE_RECEIPT_BYTES:
+        raise _expense_receipt_error("Receipt file size is invalid")
+    stored = db.get(StoredFile, attachment.stored_file_id)
+    if (
+        stored is None
+        or stored.is_deleted
+        or stored.entity_type != "field_attachment"
+        or stored.entity_id != attachment.work_order_mirror.public_id
+        or stored.file_size != attachment.size_bytes
+    ):
+        raise _expense_receipt_error("Receipt storage evidence is invalid")
+    try:
+        stream = file_uploads.stream_file(stored)
+        content = b"".join(stream.chunks)
+    except ObjectNotFoundError as exc:
+        raise _expense_receipt_error("Receipt content is unavailable") from exc
+    if (
+        len(content) != attachment.size_bytes
+        or len(content) > MAX_EXPENSE_RECEIPT_BYTES
+    ):
+        raise _expense_receipt_error("Receipt checksum evidence is invalid")
+    if stream.content_type and stream.content_type != attachment.mime_type:
+        raise _expense_receipt_error("Receipt MIME evidence is inconsistent")
+    checksum = hashlib.sha256(content).hexdigest()
+    if stored.checksum and stored.checksum.casefold() != checksum:
+        raise _expense_receipt_error("Receipt checksum evidence is inconsistent")
+    return ResolvedExpenseReceiptAttachment(
+        attachment_id=attachment.id,
+        work_order_id=attachment.work_order_mirror_id,
+        file_name=attachment.file_name,
+        mime_type=attachment.mime_type,
+        size_bytes=len(content),
+        checksum_sha256=checksum,
+        content=content,
+    )
 
 
 def stage_expense_receipt_attachment(

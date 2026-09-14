@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:dotmac_field/core/api/api_client.dart';
 import 'package:dotmac_field/core/api/token_store.dart';
 import 'package:dotmac_field/features/auth/auth_state.dart';
+import 'package:dotmac_field/features/expenses/expense_models.dart';
 import 'package:dotmac_field/features/manager/manager_providers.dart';
 import 'package:dotmac_field/features/manager/manager_screen.dart';
 import 'package:flutter/material.dart';
@@ -11,6 +12,29 @@ import 'package:flutter_test/flutter_test.dart';
 import 'helpers/fake_http.dart';
 
 void main() {
+  test('manager history includes all resolved expense statuses', () {
+    ExpenseRequest request(String status) =>
+        ExpenseRequest(id: 'expense-$status', status: status);
+
+    expect(
+      [
+        'approved',
+        'rejected',
+        'paid',
+        'canceled',
+      ].map(request).every(ManagerExpenseReviewFilter.history.includes),
+      isTrue,
+    );
+    expect(
+      ManagerExpenseReviewFilter.history.includes(request('submitted')),
+      isFalse,
+    );
+    expect(
+      ManagerExpenseReviewFilter.history.includes(request('draft')),
+      isFalse,
+    );
+  });
+
   testWidgets('successful approval survives a failed list refresh', (
     tester,
   ) async {
@@ -42,6 +66,7 @@ void main() {
               'number': 'EXP-0001',
               'status': 'submitted',
               'purpose': 'Site transport',
+              'requested_by_name': 'Ada Technician',
               'total_amount': '2500.00',
             },
           ],
@@ -56,11 +81,16 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [apiClientProvider.overrideWithValue(client)],
-        child: const MaterialApp(home: ManagerExpenseReviewScreen()),
+        child: const MaterialApp(
+          home: ManagerExpenseReviewScreen(
+            filter: ManagerExpenseReviewFilter.pendingApprovals,
+          ),
+        ),
       ),
     );
     await tester.pumpAndSettle();
 
+    expect(find.text('Raised by Ada Technician'), findsOneWidget);
     await tester.tap(find.widgetWithText(FilledButton, 'Approve'));
     await tester.pumpAndSettle();
 
@@ -69,7 +99,7 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Site transport'), findsNothing);
-    expect(find.text('No team expenses'), findsOneWidget);
+    expect(find.text('No pending approvals'), findsOneWidget);
     expect(
       find.text(
         'Could not refresh approvals. Showing the last loaded results.',
@@ -126,11 +156,16 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [apiClientProvider.overrideWithValue(client)],
-        child: const MaterialApp(home: ManagerExpenseReviewScreen()),
+        child: const MaterialApp(
+          home: ManagerExpenseReviewScreen(
+            filter: ManagerExpenseReviewFilter.pendingApprovals,
+          ),
+        ),
       ),
     );
     await tester.pumpAndSettle();
 
+    expect(find.text('Raised by unavailable'), findsOneWidget);
     await tester.tap(find.widgetWithText(OutlinedButton, 'Reject'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), 'Missing receipt');
@@ -213,7 +248,11 @@ void main() {
             ),
           ),
         ],
-        child: const MaterialApp(home: ManagerExpenseReviewScreen()),
+        child: const MaterialApp(
+          home: ManagerExpenseReviewScreen(
+            filter: ManagerExpenseReviewFilter.history,
+          ),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -229,7 +268,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Payment queued securely in ERP'), findsOneWidget);
+    expect(find.text('Payment queued; waiting for ERP'), findsOneWidget);
     expect(find.text('Payment in progress'), findsOneWidget);
   });
 }

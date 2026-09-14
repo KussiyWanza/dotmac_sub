@@ -378,6 +378,16 @@ def sales_order_status_values() -> list[str]:
     return [status.value for status in SalesOrderStatus]
 
 
+def operator_sales_order_status_values() -> list[str]:
+    """Statuses an ordinary sales edit may assert without external evidence."""
+
+    return [
+        SalesOrderStatus.draft.value,
+        SalesOrderStatus.confirmed.value,
+        SalesOrderStatus.cancelled.value,
+    ]
+
+
 def sales_order_payment_status_values() -> list[str]:
     return [status.value for status in SalesOrderPaymentStatus]
 
@@ -3605,7 +3615,7 @@ def build_sales_order_form_context(
         "agents": sales_agent_options(db),
         "offers": web_catalog_subscriptions.active_offer_options(db),
         "inventory_items": inventory_items,
-        "statuses": sales_order_status_values(),
+        "statuses": operator_sales_order_status_values(),
         "payment_statuses": sales_order_payment_status_values(),
         "lead_sources": list(sales_service.LEAD_SOURCE_OPTIONS),
         "project_types": [item.value for item in ProjectType],
@@ -3722,17 +3732,19 @@ def save_manual_sales_order(
         order = sales_orders_service.sales_orders.get(db, sales_order_id)
         metadata = dict(order.metadata_) if isinstance(order.metadata_, dict) else {}
         metadata["project_type"] = project_type
-        update_payload = SalesOrderUpdate(
-            subscriber_id=coerce_uuid(subscriber_id),
-            owner_agent_id=agent_id,
-            source=(source or "").strip() or None,
-            status=SalesOrderStatus(status),
-            subtotal=totals.subtotal,
-            tax_total=totals.tax_total,
-            total=totals.total,
-            notes=(notes or "").strip() or None,
-            metadata_=metadata,
-        )
+        update_data: dict[str, Any] = {
+            "subscriber_id": coerce_uuid(subscriber_id),
+            "owner_agent_id": agent_id,
+            "source": (source or "").strip() or None,
+            "subtotal": totals.subtotal,
+            "tax_total": totals.tax_total,
+            "total": totals.total,
+            "notes": (notes or "").strip() or None,
+            "metadata_": metadata,
+        }
+        if status:
+            update_data["status"] = SalesOrderStatus(status)
+        update_payload = SalesOrderUpdate(**update_data)
         order = sales_orders_service.sales_orders.update(
             db, sales_order_id, update_payload
         )
@@ -3760,7 +3772,7 @@ def save_manual_sales_order(
         subscriber_id=coerce_uuid(subscriber_id),
         owner_agent_id=agent_id,
         source=(source or "").strip() or None,
-        status=SalesOrderStatus(status),
+        status=SalesOrderStatus(status or SalesOrderStatus.draft.value),
         subtotal=totals.subtotal,
         tax_total=totals.tax_total,
         total=totals.total,

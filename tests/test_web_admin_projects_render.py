@@ -404,6 +404,7 @@ def test_render_template_admin_pages(db_session, base_context):
     web_projects.save_template_tasks_from_editor(
         db_session,
         template_id=str(template.id),
+        expected_revision=template.revision,
         tasks_json=(
             '[{"client_id": "a", "title": "Alpha", "description": "",'
             ' "effort_hours": 2, "dependencies": []},'
@@ -441,7 +442,7 @@ def test_render_template_admin_pages(db_session, base_context):
         {**detail_context, "can_manage_project_templates": True},
     )
     assert "Edit Tasks" in manager_detail_html
-    assert "Add Task" in manager_detail_html
+    assert "Edit plan" in manager_detail_html
     assert "Delete Template" in manager_detail_html
 
     form_ctx = web_projects.build_template_form_context(db_session)
@@ -466,3 +467,5 @@ def test_render_template_admin_pages(db_session, base_context):
         "admin/projects/project_template_tasks_editor.html", base_context, editor_ctx
     )
     assert "templateTasksEditor" in editor_html
+    assert "Add subtask" in editor_html
+    assert "Applies to future projects only" in editor_html

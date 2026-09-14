@@ -355,6 +355,7 @@ def _automated_work_orders(
         .where(
             ProjectTask.project_id == project_id,
             ProjectTask.is_active.is_(True),
+            projects.current_project_task_plan_clause(),
         )
         .order_by(ProjectTemplateTask.sort_order.asc(), ProjectTask.id.asc())
     ).all()
@@ -443,6 +444,7 @@ def _stage_accept_quote(
             .where(
                 ProjectTask.project_id == scope.project.id,
                 ProjectTask.is_active.is_(True),
+                projects.current_project_task_plan_clause(),
             )
             .order_by(ProjectTask.created_at.asc(), ProjectTask.id.asc())
         ).all()

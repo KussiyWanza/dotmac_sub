@@ -189,6 +189,55 @@ def build_email_team_routing_plan(
     )
 
 
+def build_operator_email_team_routing_plan(
+    db: Session,
+    *,
+    service_team_id: UUID | None,
+) -> EmailTeamRoutingPlan:
+    """Route an operator-started email through the team's primary mailbox.
+
+    The new-conversation form selects a team rather than receiving mail at a
+    mailbox address.  Resolve that team's active primary route explicitly so
+    its outbound sender metadata is preserved on the owner link.  Teams with
+    no primary mailbox deliberately inherit the application default sender.
+    """
+
+    if service_team_id is None:
+        return EmailTeamRoutingPlan(
+            primary_service_team_id=None,
+            participant_service_team_ids=[],
+            matches=[],
+            unmatched_recipients=[],
+        )
+
+    route = (
+        db.query(TeamInboxEmailRoute)
+        .filter(TeamInboxEmailRoute.service_team_id == service_team_id)
+        .filter(TeamInboxEmailRoute.is_active.is_(True))
+        .filter(TeamInboxEmailRoute.is_primary.is_(True))
+        .order_by(TeamInboxEmailRoute.priority, TeamInboxEmailRoute.email_address)
+        .first()
+    )
+    matches = []
+    if route is not None:
+        matches.append(
+            EmailTeamRecipientMatch(
+                service_team_id=str(service_team_id),
+                email_address=route.email_address,
+                recipient_kind="routing_rule",
+                is_primary_route=True,
+                priority=route.priority,
+                metadata=(route.metadata_ if isinstance(route.metadata_, dict) else {}),
+            )
+        )
+    return EmailTeamRoutingPlan(
+        primary_service_team_id=str(service_team_id),
+        participant_service_team_ids=[str(service_team_id)],
+        matches=matches,
+        unmatched_recipients=[],
+    )
+
+
 def apply_email_routing_plan(
     db: Session,
     *,

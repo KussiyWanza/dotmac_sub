@@ -1,7 +1,7 @@
 """Scope Team Inbox and Party social identities to provider accounts.
 
-Revision ID: 595_team_inbox_provider_identity_scope
-Revises: 594_inbox_customer_completion_policy
+Revision ID: 607_team_inbox_provider_identity_scope
+Revises: 606_project_task_subtasks
 Create Date: 2026-09-14
 
 The migration is additive apart from replacing the unsafe active Inbox-link
@@ -16,8 +16,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "595_team_inbox_provider_identity_scope"
-down_revision = "594_inbox_customer_completion_policy"
+revision = "607_team_inbox_provider_identity_scope"
+down_revision = "606_project_task_subtasks"
 branch_labels = None
 depends_on = None
 

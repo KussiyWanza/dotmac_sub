@@ -87,13 +87,25 @@ _CAPACITY_CONFIGURATION_COMMAND = OwnerCommandDefinition(
     concern="global Inbox capacity configuration coordination",
     name="update_default_inbox_capacity",
 )
+_PRESENCE_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="agent presence transitions",
+    name="refresh_team_inbox_agent_presence",
+)
 
 
-def _commit(db: Session, action: Callable[[], T]) -> T:
+def _commit(
+    db: Session,
+    action: Callable[[], T],
+    *,
+    context: CommandContext | None = None,
+    definition: OwnerCommandDefinition = _ROUTING_COMMAND,
+) -> T:
     return execute_owner_command(
         db,
-        definition=_ROUTING_COMMAND,
-        context=CommandContext.system(
+        definition=definition,
+        context=context
+        or CommandContext.system(
             actor="system:team-inbox-routing-adapter",
             scope="team-inbox:routing-command",
             reason="execute Team Inbox routing transition",
@@ -114,6 +126,7 @@ class InboxAgentCandidate:
 class InboxPresenceReason(StrEnum):
     manual_change = "manual_change"
     staff_sign_in = "staff_sign_in"
+    authenticated_inbox_activity = "authenticated_inbox_activity"
     session_timeout = "session_timeout"
     logout = "logout"
     connection_lost = "connection_lost"
@@ -128,11 +141,13 @@ class InboxAgentUnavailabilityReason(StrEnum):
 class InboxAssignmentProvenance(StrEnum):
     human_or_generic = "human_or_generic"
     ai_intake_handoff = "ai_intake_handoff"
+    explicit_human_takeover = "explicit_human_takeover"
 
 
 class InboxExistingAssignmentPolicy(StrEnum):
     replace_existing = "replace"
     preserve_existing = "preserve"
+    replace_offline_existing = "replace_offline"
 
 
 @dataclass(frozen=True)
@@ -148,6 +163,27 @@ class AgentSignedInPresenceOutcome:
     presence_id: UUID
     status: InboxAgentPresenceStatus
     transition_recorded: bool
+
+
+class AgentPresenceHeartbeatDisposition(StrEnum):
+    refreshed = "refreshed"
+    explicit_unavailable = "explicit_unavailable"
+    inactive_principal = "inactive_principal"
+
+
+@dataclass(frozen=True, slots=True)
+class AgentPresenceHeartbeatCommand:
+    context: CommandContext
+    system_user_id: UUID
+    observed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AgentPresenceHeartbeatOutcome:
+    system_user_id: UUID
+    status: InboxAgentPresenceStatus
+    disposition: AgentPresenceHeartbeatDisposition
+    last_seen_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -578,6 +614,77 @@ def record_agent_reply_activity(
     return presence
 
 
+def refresh_agent_presence(
+    db: Session,
+    *,
+    command: AgentPresenceHeartbeatCommand,
+) -> AgentPresenceHeartbeatOutcome:
+    """Record authenticated, visible Inbox activity without overriding absence."""
+
+    def action() -> AgentPresenceHeartbeatOutcome:
+        active_principal_id = (
+            db.query(SystemUser.id)
+            .filter(SystemUser.id == command.system_user_id)
+            .filter(SystemUser.is_active.is_(True))
+            .with_for_update()
+            .scalar()
+        )
+        if active_principal_id is None:
+            return AgentPresenceHeartbeatOutcome(
+                system_user_id=command.system_user_id,
+                status=InboxAgentPresenceStatus.offline,
+                disposition=AgentPresenceHeartbeatDisposition.inactive_principal,
+                last_seen_at=None,
+            )
+
+        existing = (
+            db.query(InboxAgentPresence)
+            .filter(InboxAgentPresence.person_id == command.system_user_id)
+            .with_for_update()
+            .one_or_none()
+        )
+        selected_status = (
+            existing.manual_override_status or existing.status
+            if existing is not None
+            else InboxAgentPresenceStatus.online.value
+        )
+        if selected_status != InboxAgentPresenceStatus.online.value:
+            return AgentPresenceHeartbeatOutcome(
+                system_user_id=command.system_user_id,
+                status=InboxAgentPresenceStatus(selected_status),
+                disposition=AgentPresenceHeartbeatDisposition.explicit_unavailable,
+                last_seen_at=existing.last_seen_at if existing is not None else None,
+            )
+
+        presence = set_agent_presence(
+            db,
+            person_id=command.system_user_id,
+            status=InboxAgentPresenceStatus.online.value,
+            now=command.observed_at,
+            actor_person_id=command.system_user_id,
+            reason_code=InboxPresenceReason.authenticated_inbox_activity,
+            source_id=f"inbox-heartbeat:{command.context.command_id}",
+            manual_override=(
+                existing is not None
+                and existing.manual_override_status
+                == InboxAgentPresenceStatus.online.value
+            ),
+        )
+        return AgentPresenceHeartbeatOutcome(
+            system_user_id=command.system_user_id,
+            status=InboxAgentPresenceStatus.online,
+            disposition=AgentPresenceHeartbeatDisposition.refreshed,
+            last_seen_at=presence.last_seen_at,
+        )
+
+    return _commit(
+        db,
+        action,
+        context=command.context,
+        definition=_PRESENCE_COMMAND,
+    )
+
+
 def agent_availability_snapshots(
     db: Session,
     system_user_ids: Sequence[str | UUID],
@@ -1006,6 +1113,25 @@ def _active_assignment(
     )
 
 
+def _locked_effective_presence_status(
+    db: Session,
+    *,
+    person_id: UUID,
+    now: datetime,
+) -> InboxAgentPresenceStatus:
+    """Lock and resolve the routing owner's current presence evidence."""
+
+    presence = (
+        db.query(InboxAgentPresence)
+        .filter(InboxAgentPresence.person_id == person_id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if presence is None:
+        return InboxAgentPresenceStatus.offline
+    return InboxAgentPresenceStatus(effective_presence_status(presence, now=now))
+
+
 def _lock_active_conversation(
     db: Session,
     conversation: InboxConversation,
@@ -1408,30 +1534,32 @@ def assign_conversation_to_agent(
             reason="service_team_id must reference an active team",
         )
 
-    member = (
-        db.query(ServiceTeamMember)
-        .join(
-            SystemUser,
-            SystemUser.person_party_id == ServiceTeamMember.person_id,
-        )
-        .filter(ServiceTeamMember.team_id == team_uuid)
-        .filter(ServiceTeamMember.is_active.is_(True))
-        .filter(SystemUser.id == person_uuid)
-        .filter(SystemUser.is_active.is_(True))
-        .one_or_none()
-    )
-    if member is None:
-        return InboxAssignmentResult(
-            kind="invalid_agent",
-            service_team_id=str(team_uuid),
-            reason="person_id must be an active member of the target team",
-        )
     if _lock_agent_capacity(db, person_uuid) is None:
         return InboxAssignmentResult(
             kind="invalid_agent",
             service_team_id=str(team_uuid),
             reason="person_id must reference an active staff user",
         )
+    explicit_takeover = provenance is InboxAssignmentProvenance.explicit_human_takeover
+    if not explicit_takeover:
+        member = (
+            db.query(ServiceTeamMember)
+            .join(
+                SystemUser,
+                SystemUser.person_party_id == ServiceTeamMember.person_id,
+            )
+            .filter(ServiceTeamMember.team_id == team_uuid)
+            .filter(ServiceTeamMember.is_active.is_(True))
+            .filter(SystemUser.id == person_uuid)
+            .filter(SystemUser.is_active.is_(True))
+            .one_or_none()
+        )
+        if member is None:
+            return InboxAssignmentResult(
+                kind="invalid_agent",
+                service_team_id=str(team_uuid),
+                reason="person_id must be an active member of the target team",
+            )
 
     locked_conversation = _lock_active_conversation(
         db,
@@ -1454,7 +1582,10 @@ def assign_conversation_to_agent(
                 "assignment. Resolve it internally or wait for a customer reply."
             ),
         )
-    if provenance is not InboxAssignmentProvenance.ai_intake_handoff:
+    if provenance not in {
+        InboxAssignmentProvenance.ai_intake_handoff,
+        InboxAssignmentProvenance.explicit_human_takeover,
+    }:
         ai_conversation_ownership.require_human_control(
             db,
             conversation_id=conversation.id,
@@ -1486,22 +1617,40 @@ def assign_conversation_to_agent(
             reason="already_assigned",
         )
 
-    if (
-        previous_assignment is not None
-        and existing_assignment_policy
-        is InboxExistingAssignmentPolicy.preserve_existing
-        and previous_assignment.person_id != person_uuid
-    ):
-        return InboxAssignmentResult(
-            kind="assigned_to_other",
-            service_team_id=str(previous_assignment.service_team_id),
-            assigned_person_id=str(previous_assignment.person_id),
-            reason="Conversation is already assigned to another agent.",
+    replacing_offline_owner = False
+    if previous_assignment is not None and previous_assignment.person_id != person_uuid:
+        if (
+            existing_assignment_policy
+            is InboxExistingAssignmentPolicy.replace_offline_existing
+        ):
+            previous_owner_status = _locked_effective_presence_status(
+                db,
+                person_id=previous_assignment.person_id,
+                now=assigned_at,
+            )
+            replacing_offline_owner = (
+                previous_owner_status is InboxAgentPresenceStatus.offline
+            )
+        should_preserve_existing = (
+            existing_assignment_policy
+            is InboxExistingAssignmentPolicy.preserve_existing
+        ) or (
+            existing_assignment_policy
+            is InboxExistingAssignmentPolicy.replace_offline_existing
+            and not replacing_offline_owner
         )
+        if should_preserve_existing:
+            return InboxAssignmentResult(
+                kind="assigned_to_other",
+                service_team_id=str(previous_assignment.service_team_id),
+                assigned_person_id=str(previous_assignment.person_id),
+                reason="Conversation is already assigned to another agent.",
+            )
 
     queued_entry = _queue_entry(db, conversation.id)
     if (
-        queued_entry is not None
+        not explicit_takeover
+        and queued_entry is not None
         and queued_entry.status == InboxQueueEntryStatus.queued.value
     ):
         if queued_entry.service_team_id != team_uuid:
@@ -1532,7 +1681,11 @@ def assign_conversation_to_agent(
         availability.unavailability_reason is InboxAgentUnavailabilityReason.at_capacity
         and replacing_same_agent
     )
-    if not availability.assignment_eligible and not capacity_only_block:
+    if (
+        not explicit_takeover
+        and not availability.assignment_eligible
+        and not capacity_only_block
+    ):
         if (
             availability.unavailability_reason
             is InboxAgentUnavailabilityReason.at_capacity
@@ -1595,7 +1748,15 @@ def assign_conversation_to_agent(
         service_team_id=team_uuid,
         person_id=person_uuid,
         actor_person_id=actor_uuid,
-        reason_code=("reassigned" if previous_assignment else "assigned"),
+        reason_code=(
+            "explicit_human_takeover"
+            if explicit_takeover
+            else "reassigned_offline_owner"
+            if replacing_offline_owner
+            else "reassigned"
+            if previous_assignment
+            else "assigned"
+        ),
         occurred_at=assigned_at,
         source_id=source_id,
         decision_mode=decision_mode,

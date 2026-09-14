@@ -180,6 +180,7 @@ def payment_new(
     invoice: str | None = Query(None),
     account_id: str | None = Query(None),
     account: str | None = Query(None),
+    amount: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
     state = web_billing_payment_forms_service.build_new_form_state(
@@ -188,6 +189,7 @@ def payment_new(
         invoice_alias=invoice,
         account_id=account_id,
         account_alias=account,
+        amount=amount,
     )
     selected_account = cast(Subscriber | None, state["selected_account"])
     prefill = cast(dict[str, Any], state["prefill"])

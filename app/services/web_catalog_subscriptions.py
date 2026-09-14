@@ -84,6 +84,7 @@ from app.services.billing_adapter import (
     billing_adapter,
 )
 from app.services.billing_settings import resolve_payment_due_days
+from app.services.billing_tax_resolution import resolve_subscription_tax
 from app.services.credential_crypto import decrypt_credential
 from app.services.ip_assignment_lifecycle import (
     IPv4ServedProjectionDecision,
@@ -3300,9 +3301,8 @@ def create_invoice_for_subscription(db: Session, created: Subscription) -> None:
         if offer.prices:
             line_amount = offer.prices[0].amount or Decimal("0.00")
 
-    from app.services.billing_settings import resolve_payment_due_days
-
     subscriber = db.get(Subscriber, created.subscriber_id)
+    tax_resolution = resolve_subscription_tax(db, created)
     issued_at = datetime.now(UTC)
     due_days = resolve_payment_due_days(db, subscriber=subscriber)
     billing_adapter.create_invoice_with_lines(
@@ -3322,6 +3322,8 @@ def create_invoice_for_subscription(db: Session, created: Subscription) -> None:
                 description=line_description,
                 quantity=Decimal("1"),
                 unit_price=line_amount,
+                tax_rate_id=tax_resolution.tax_rate_id,
+                tax_application=tax_resolution.tax_application,
             )
         ],
     )

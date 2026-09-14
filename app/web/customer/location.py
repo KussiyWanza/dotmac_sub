@@ -1,17 +1,22 @@
 """Customer portal service-location page and geocode helpers."""
 
 import logging
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 
-from app.db import get_db
-from app.models.subscriber import Subscriber
+from app.db import finish_read_transaction, get_db
+from app.models.subscriber import AddressType, Subscriber
+from app.schemas.subscriber import CustomerServiceLocationUpdate
 from app.services import customer_location_requests as location_service
+from app.services import customer_portal_location_commands as location_commands
 from app.services import geocoding as geocoding_service
 from app.services import location_capture
+from app.services import web_customer_actions as customer_profile_service
 from app.services.customer_context import optional_customer_subscriber_id
+from app.services.owner_commands import CommandContext
 from app.web.customer.auth import get_current_customer_from_request
 from app.web.customer.branding import get_customer_templates
 
@@ -19,9 +24,12 @@ templates = get_customer_templates()
 router = APIRouter(prefix="/portal", tags=["web-customer"])
 
 logger = logging.getLogger(__name__)
+READ_ONLY_MUTATION_MESSAGE = "View-only sessions cannot make changes."
 
 
-def _page_context(request: Request, db: Session, customer: dict) -> dict:
+def _page_context(
+    request: Request, db: Session, customer: dict, *, biodata_required: bool = False
+) -> dict:
     context = location_service.get_customer_location_page_context(db, customer)
     context.update(
         {
@@ -30,6 +38,7 @@ def _page_context(request: Request, db: Session, customer: dict) -> dict:
             "active_page": "location",
             "form_error": None,
             "form_note": "",
+            "biodata_required": biodata_required,
         }
     )
     return context
@@ -45,42 +54,99 @@ def customer_location_page(
         return RedirectResponse(
             url="/portal/auth/login?next=/portal/location", status_code=303
         )
-    context = _page_context(request, db, customer)
+    context = _page_context(
+        request,
+        db,
+        customer,
+        biodata_required=request.query_params.get("biodata_required") == "1",
+    )
     return templates.TemplateResponse("customer/location/index.html", context)
 
 
 @router.post("/location", response_class=HTMLResponse)
 def customer_location_submit(
     request: Request,
+    address_line1: str = Form(...),
+    address_line2: str = Form(""),
+    city: str = Form(""),
+    region: str = Form(""),
+    lga: str = Form(""),
+    postal_code: str = Form(""),
+    country_code: str = Form("NG"),
     latitude: float = Form(...),
     longitude: float = Form(...),
-    customer_note: str = Form(""),
     db: Session = Depends(get_db),
 ) -> Response:
     customer = get_current_customer_from_request(request, db)
     if not customer:
         return RedirectResponse(url="/portal/auth/login", status_code=303)
-    subscriber_id = str(optional_customer_subscriber_id(db, customer) or "")
-    try:
-        location_service.submit_request(
-            db,
-            subscriber_id=subscriber_id,
-            latitude=latitude,
-            longitude=longitude,
-            customer_note=customer_note,
-            actor_id=subscriber_id or None,
-            actor_name=str(customer.get("username") or "") or None,
-            submitted_from_ip=request.client.host if request.client else None,
+    if customer.get("read_only"):
+        return templates.TemplateResponse(
+            "customer/errors/400.html",
+            {
+                "request": request,
+                "customer": customer,
+                "message": READ_ONLY_MUTATION_MESSAGE,
+                "active_page": "location",
+            },
+            status_code=403,
         )
+    subscriber_id = optional_customer_subscriber_id(db, customer)
+    if not subscriber_id:
+        return RedirectResponse(url="/portal/location?error=1", status_code=303)
+    try:
+        subscriber_uuid = UUID(subscriber_id)
+        finish_read_transaction(db)
+        location_commands.update_service_location(
+            db,
+            location_commands.UpdateServiceLocationCommand(
+                context=CommandContext.system(
+                    actor=f"user:{subscriber_uuid}",
+                    scope=location_commands.PORTAL_LOCATION_WRITE_SCOPE,
+                    reason="Customer updated the portal service location",
+                ),
+                location=CustomerServiceLocationUpdate(
+                    subscriber_id=subscriber_uuid,
+                    address_line1=address_line1.strip(),
+                    address_line2=address_line2.strip() or None,
+                    city=city.strip() or None,
+                    region=region.strip() or None,
+                    lga=lga.strip() or None,
+                    postal_code=postal_code.strip() or None,
+                    country_code=country_code.strip().upper() or "NG",
+                    latitude=latitude,
+                    longitude=longitude,
+                    address_type=AddressType.service,
+                    label="Primary service",
+                    is_primary=True,
+                    actor_id=subscriber_uuid,
+                    actor_name=str(customer.get("username") or "") or None,
+                ),
+            ),
+        )
+        subscriber = db.get(Subscriber, subscriber_uuid)
+        if subscriber is not None:
+            completion = customer_profile_service.evaluate_individual_biodata(
+                subscriber
+            )
+            if (
+                location_capture.service_location_requirement_enabled(db)
+                and completion.applicable
+                and not completion.complete
+            ):
+                return RedirectResponse(
+                    url="/portal/location?saved=1&biodata_required=1", status_code=303
+                )
     except Exception as exc:
-        detail = getattr(exc, "detail", None) or "Unable to submit the correction."
+        detail = (
+            getattr(exc, "detail", None) or str(exc) or "Unable to save your location."
+        )
         context = _page_context(request, db, customer)
         context["form_error"] = str(detail)
-        context["form_note"] = customer_note
         return templates.TemplateResponse(
             "customer/location/index.html", context, status_code=400
         )
-    return RedirectResponse(url="/portal/location?submitted=1", status_code=303)
+    return RedirectResponse(url="/portal/location?saved=1", status_code=303)
 
 
 @router.post("/location-requests/{request_id}/cancel")
@@ -173,23 +239,30 @@ def customer_location_confirm(
     if not subscriber_id:
         return RedirectResponse(url="/portal/location?error=1", status_code=303)
     try:
-        location_capture.capture(
+        subscriber_uuid = UUID(subscriber_id)
+        finish_read_transaction(db)
+        location_commands.confirm_location(
             db,
-            subscriber_id,
-            lat=latitude,
-            lng=longitude,
-            accuracy_m=accuracy_m,
-            source=location_capture.SOURCE_CUSTOMER_PORTAL,
-            actor_id=subscriber_id,
-            actor_name=str(customer.get("username") or "") or None,
-            claimed_state=claimed_state,
-            claimed_lga=claimed_lga,
-            claimed_postcode=claimed_postcode,
+            location_commands.ConfirmLocationCommand(
+                context=CommandContext.system(
+                    actor=f"user:{subscriber_uuid}",
+                    scope=location_commands.PORTAL_LOCATION_WRITE_SCOPE,
+                    reason="Customer confirmed the portal service location",
+                ),
+                subscriber_id=subscriber_uuid,
+                latitude=latitude,
+                longitude=longitude,
+                accuracy_m=accuracy_m,
+                actor_name=str(customer.get("username") or "") or None,
+                claimed_state=claimed_state,
+                claimed_lga=claimed_lga,
+                claimed_postcode=claimed_postcode,
+            ),
         )
-    except location_capture.LocationCaptureDisabled:
-        db.rollback()
-        return RedirectResponse(url="/portal/location?disabled=1", status_code=303)
-    db.commit()
+    except location_commands.PortalLocationCommandError as exc:
+        if exc.code == "customer.portal_location_commands.capture_disabled":
+            return RedirectResponse(url="/portal/location?disabled=1", status_code=303)
+        raise
     return RedirectResponse(url="/portal/location?confirmed=1", status_code=303)
 
 
@@ -204,11 +277,25 @@ def customer_location_snooze(
     subscriber_id = str(optional_customer_subscriber_id(db, customer) or "")
     if subscriber_id:
         try:
-            location_capture.snooze_prompt(db, subscriber_id)
-        except location_capture.LocationCaptureDisabled:
-            db.rollback()
-            return RedirectResponse(url="/portal/location?disabled=1", status_code=303)
-        db.commit()
+            subscriber_uuid = UUID(subscriber_id)
+            finish_read_transaction(db)
+            location_commands.snooze_location_prompt(
+                db,
+                location_commands.SnoozeLocationPromptCommand(
+                    context=CommandContext.system(
+                        actor=f"user:{subscriber_uuid}",
+                        scope=location_commands.PORTAL_LOCATION_WRITE_SCOPE,
+                        reason="Customer snoozed the portal location prompt",
+                    ),
+                    subscriber_id=subscriber_uuid,
+                ),
+            )
+        except location_commands.PortalLocationCommandError as exc:
+            if exc.code == "customer.portal_location_commands.capture_disabled":
+                return RedirectResponse(
+                    url="/portal/location?disabled=1", status_code=303
+                )
+            raise
     return RedirectResponse(url="/portal", status_code=303)
 
 

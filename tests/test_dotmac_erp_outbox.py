@@ -8,6 +8,7 @@ substrate is exercised end-to-end without a live ERP.
 from __future__ import annotations
 
 import importlib.util
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -38,9 +39,15 @@ from app.services.dotmac_erp.client import (
 from app.services.dotmac_erp.operational_contracts import ErpOperationalSyncOutcome
 from app.services.integrations.backoffice_contracts import (
     ERP_OPERATIONAL_SYNC_CAPABILITY,
+    ERP_OUTBOX_CAPABILITY,
     ERP_STAFF_ACCESS_RECONCILE_CAPABILITY,
 )
 from app.services.integrations.connectors.dotmac_erp import DotmacErpRunner
+from app.services.integrations.runtime import (
+    OperationEnvelope,
+    OperationStatus,
+    OperationTrigger,
+)
 from app.services.integrations.runtime_execution import (
     RuntimeExecutionContext,
     validate_connection,
@@ -67,7 +74,10 @@ def _seed_ownership(db, *, sub_flows: set[str] | None = None) -> None:
     db.flush()
 
 
-def _enqueue(db, *, flow=FieldErpSyncFlow.expense_claim, key=None) -> FieldErpSyncEvent:
+_GENERIC_DELIVERY_FLOW = FieldErpSyncFlow.material_request
+
+
+def _enqueue(db, *, flow=_GENERIC_DELIVERY_FLOW, key=None) -> FieldErpSyncEvent:
     return outbox.enqueue(
         db,
         flow=flow,
@@ -110,6 +120,77 @@ class FakeOperationalValidationClient:
         if isinstance(self.outcome, Exception):
             raise self.outcome
         return self.outcome
+
+
+def _expense_payment_envelope(
+    *, source_claim_id: str, command_id: str, idempotency_key: str
+) -> OperationEnvelope:
+    return OperationEnvelope(
+        operation_id=uuid4(),
+        correlation_id=idempotency_key,
+        installation_id=uuid4(),
+        config_revision_id=uuid4(),
+        capability_binding_id=uuid4(),
+        capability_id=ERP_OUTBOX_CAPABILITY,
+        connector_key="dotmac.erp",
+        connector_version="1.4.0",
+        manifest_digest="a" * 64,
+        trigger=OperationTrigger.scheduled,
+        idempotency_key=idempotency_key,
+        deadline_at=datetime.now(UTC) + timedelta(seconds=30),
+        payload={
+            "action": "initiate_expense_payment",
+            "params": {
+                "source_claim_id": source_claim_id,
+                "payload": {
+                    "command_id": command_id,
+                    "initiated_by_email": "manager@example.com",
+                    "initiated_at": "2026-09-13T10:00:00Z",
+                },
+                "idempotency_key": idempotency_key,
+            },
+        },
+    )
+
+
+def test_erp_runner_routes_typed_expense_payment_to_exact_endpoint():
+    source_claim_id = str(uuid4())
+    command_id = str(uuid4())
+    idempotency_key = f"exp-{source_claim_id}-pay-{command_id}-v1"
+    response = {
+        "claim_id": str(uuid4()),
+        "claim_number": "EXP-0001",
+        "claim_status": "approved",
+        "source_claim_id": source_claim_id,
+        "payment_intent_id": str(uuid4()),
+        "payment_status": "processing",
+        "retryable": False,
+    }
+    client = FakeERPClient([response])
+
+    result = DotmacErpRunner(client_override=client).execute(
+        _expense_payment_envelope(
+            source_claim_id=source_claim_id,
+            command_id=command_id,
+            idempotency_key=idempotency_key,
+        ),
+        config={"base_url": "https://erp.dotmac.io"},
+        secret_material={"service_credentials": "test-token"},
+    )
+
+    assert result.status is OperationStatus.succeeded
+    assert result.output == response
+    assert client.posts == [
+        {
+            "path": f"/api/v1/sync/sub/expense-claims/{source_claim_id}/payments",
+            "payload": {
+                "command_id": command_id,
+                "initiated_by_email": "manager@example.com",
+                "initiated_at": "2026-09-13T10:00:00Z",
+            },
+            "idempotency_key": idempotency_key,
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +286,7 @@ def test_material_writeback_failure_is_not_swallowed(monkeypatch):
 
 
 def test_deliver_accepted_marks_row_and_sends_idempotency_key(db_session):
-    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.expense_claim.value})
+    _seed_ownership(db_session, sub_flows={_GENERIC_DELIVERY_FLOW.value})
     event = _enqueue(db_session)
     client = FakeERPClient([{"claim_id": "ERP-123", "status": "approved"}])
 
@@ -218,12 +299,12 @@ def test_deliver_accepted_marks_row_and_sends_idempotency_key(db_session):
     assert event.erp_response == {"claim_id": "ERP-123", "status": "approved"}
     # The stored idempotency key is what gets sent (safe re-delivery).
     assert client.posts[0]["idempotency_key"] == event.idempotency_key
-    assert client.posts[0]["path"] == "/api/v1/sync/sub/expense-claims"
+    assert client.posts[0]["path"] == "/api/v1/sync/sub/material-requests"
     assert result.accepted == 1 and result.processed == 1
 
 
 def test_deliver_rejected_is_terminal(db_session):
-    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.expense_claim.value})
+    _seed_ownership(db_session, sub_flows={_GENERIC_DELIVERY_FLOW.value})
     event = _enqueue(db_session)
     client = FakeERPClient([{"status": "rejected", "rejection_reason": "over budget"}])
 
@@ -235,7 +316,7 @@ def test_deliver_rejected_is_terminal(db_session):
 
 
 def test_deliver_2xx_without_decision_marks_sent(db_session):
-    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.expense_claim.value})
+    _seed_ownership(db_session, sub_flows={_GENERIC_DELIVERY_FLOW.value})
     event = _enqueue(db_session)
     client = FakeERPClient([{"received": True}])  # no id, no terminal status
 
@@ -247,7 +328,7 @@ def test_deliver_2xx_without_decision_marks_sent(db_session):
 
 
 def test_deliver_transient_error_stays_pending_for_retry(db_session):
-    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.expense_claim.value})
+    _seed_ownership(db_session, sub_flows={_GENERIC_DELIVERY_FLOW.value})
     event = _enqueue(db_session)
     client = FakeERPClient([DotMacERPTransientError("ERP 503")])
 
@@ -261,7 +342,7 @@ def test_deliver_transient_error_stays_pending_for_retry(db_session):
 
 
 def test_deliver_transient_dead_letters_at_attempt_budget(db_session):
-    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.expense_claim.value})
+    _seed_ownership(db_session, sub_flows={_GENERIC_DELIVERY_FLOW.value})
     event = _enqueue(db_session)
     event.attempts = 7  # one below the default budget of 8
     db_session.flush()
@@ -276,7 +357,7 @@ def test_deliver_transient_dead_letters_at_attempt_budget(db_session):
 
 
 def test_deliver_permanent_error_dead_letters_immediately(db_session):
-    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.expense_claim.value})
+    _seed_ownership(db_session, sub_flows={_GENERIC_DELIVERY_FLOW.value})
     event = _enqueue(db_session)
     client = FakeERPClient([DotMacERPError("422 validation", status_code=422)])
 
@@ -304,8 +385,8 @@ def test_deliver_refuses_flow_sub_does_not_own(db_session):
 
 
 def test_deliver_mixed_ownership_only_sends_owned_flow(db_session):
-    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.expense_claim.value})
-    owned = _enqueue(db_session, flow=FieldErpSyncFlow.expense_claim)
+    _seed_ownership(db_session, sub_flows={_GENERIC_DELIVERY_FLOW.value})
+    owned = _enqueue(db_session)
     not_owned = _enqueue(db_session, flow=FieldErpSyncFlow.purchase_order)
     client = FakeERPClient([{"claim_id": "ERP-9"}])
 
@@ -320,7 +401,7 @@ def test_deliver_mixed_ownership_only_sends_owned_flow(db_session):
 
 
 def test_deliver_no_pending_rows_is_noop(db_session):
-    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.expense_claim.value})
+    _seed_ownership(db_session, sub_flows={_GENERIC_DELIVERY_FLOW.value})
     client = FakeERPClient([])
     result = outbox.deliver_pending(db_session, client=client)
     assert result.processed == 0 and result.skipped_not_owned == 0
@@ -436,8 +517,9 @@ def test_erp_manifest_owns_config_secrets_and_capabilities():
         "erp.staff_access.webhook.v1",
         "workforce.attendance.read.v1",
         "workforce.attendance.punch.v1",
+        "erp.expense.form_context.v1",
     }
-    assert definition.version == "1.3.0"
+    assert definition.version == "1.4.0"
 
 
 def test_erp_capability_fails_closed_without_binding(db_session):

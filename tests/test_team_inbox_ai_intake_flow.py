@@ -700,8 +700,76 @@ def test_invalid_classifier_output_asks_without_handoff(db_session, monkeypatch)
     ]
 
 
-def test_general_enquiry_enters_awaiting_customer_without_handoff(
+def test_classifier_failure_preserves_no_service_facts_and_acknowledges_issue(
     db_session, monkeypatch
+):
+    config = _config(
+        db_session,
+        welcome_message="Welcome to Dotmac Support. How can we help today?",
+    )
+    _enable_langgraph(config)
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: _ClassifierFailureGateway())
+
+    received = _receive(
+        db_session,
+        message_id="classifier-facts-preserved",
+        body="7dys no service",
+    )
+    _process_ai(db_session, sweeps=1)
+
+    conversation = db_session.get(InboxConversation, received.conversation_id)
+    inbound = db_session.get(InboxMessage, received.message_id)
+    session = (
+        db_session.query(AiIntakeSession)
+        .filter(AiIntakeSession.conversation_id == conversation.id)
+        .one()
+    )
+    state = ai_intake_conversation_engine.ConversationalState.load(
+        conversation=conversation,
+        session=session,
+    )
+    response = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.conversation_id == conversation.id)
+        .filter(InboxMessage.direction == InboxMessageDirection.outbound.value)
+        .filter(
+            InboxMessage.metadata_["ai_message_purpose"].as_string() == "conversation"
+        )
+        .one()
+    )
+    outbound = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.conversation_id == conversation.id)
+        .filter(InboxMessage.direction == InboxMessageDirection.outbound.value)
+        .order_by(InboxMessage.created_at.asc())
+        .all()
+    )
+
+    assert state.collected_facts["connectivity_state"] == "down"
+    assert state.collected_facts["issue_started_when"] == "for 7 days"
+    assert state.selected_question_key == "device_scope"
+    assert state.issue_acknowledged is True
+    assert "issue_started_when" not in state.candidate_question_keys
+    assert inbound.metadata_["ai_intake_classifier_failure_kind"] == (
+        "invalid_model_output"
+    )
+    assert inbound.metadata_["ai_intake_question_key"] == "device_scope"
+    assert inbound.metadata_["ai_intake_response_source"] == "template"
+    assert inbound.metadata_["ai_intake_validator_result"] == "rejected"
+    assert inbound.metadata_["ai_intake_validator_reason"] == (
+        "missing_required_issue_acknowledgement"
+    )
+    assert "whether your request is about" not in response.body.lower()
+    assert "connection" in response.body.lower()
+    assert "?" in response.body
+    assert [message.metadata_["ai_message_purpose"] for message in outbound] == [
+        "welcome",
+        "conversation",
+    ]
+
+
+def test_general_enquiry_enters_awaiting_customer_without_handoff(
+    db_session, monkeypatch, caplog
 ):
     config = _config(db_session)
     _enable_langgraph(config)
@@ -713,7 +781,8 @@ def test_general_enquiry_enters_awaiting_customer_without_handoff(
         message_id="general-enquiry-policy-follow-up",
         body="I want to make enquiries about your services",
     )
-    _process_ai(db_session, sweeps=1)
+    with caplog.at_level("INFO", logger="app.services.ai_conversation_intake"):
+        _process_ai(db_session, sweeps=1)
 
     conversation = db_session.get(InboxConversation, received.conversation_id)
     inbound = db_session.get(InboxMessage, received.message_id)
@@ -756,6 +825,16 @@ def test_general_enquiry_enters_awaiting_customer_without_handoff(
         .count()
         == 0
     )
+    composition_log = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "ai_intake_response_composition_resolved"
+    )
+    assert composition_log.response_source == "model"
+    assert composition_log.validator_result == "accepted"
+    assert composition_log.validator_reason is None
+    assert composition_log.selected_action == "ask_question"
+    assert composition_log.selected_question_key == "service_interest"
 
 
 def test_classifier_recovers_on_next_message_in_same_session(db_session, monkeypatch):
@@ -1337,7 +1416,7 @@ def test_follow_up_reply_can_route_and_first_message_is_not_enqueued(
     assert conversation.primary_service_team_id is None
     assert first_message.metadata_["ai_intake_status"] == "awaiting_follow_up"
     assert first_message.metadata_["ai_intake_follow_up_question"] == (
-        ai_intake.GENERIC_FOLLOW_UP_QUESTION
+        ai_intake.NATURAL_CLARIFICATION_QUESTION
     )
     outbound = (
         db_session.query(InboxMessage)
@@ -1347,7 +1426,7 @@ def test_follow_up_reply_can_route_and_first_message_is_not_enqueued(
     )
     assert [message.body for message in outbound] == [
         "Welcome to Dotmac Support. How can we help?",
-        ai_intake.GENERIC_FOLLOW_UP_QUESTION,
+        ai_intake.NATURAL_CLARIFICATION_QUESTION,
     ]
     assert outbound[0].metadata_["ai_message_purpose"] == "welcome"
     follow_up = outbound[1]
@@ -1375,7 +1454,7 @@ def test_follow_up_reply_can_route_and_first_message_is_not_enqueued(
     assert _non_queue_outbound_count(db_session) == 2
 
 
-def test_composable_engine_preserves_low_confidence_follow_up(db_session, monkeypatch):
+def test_composable_engine_greeting_only_waits_after_welcome(db_session, monkeypatch):
     account_scope = f"phone-clarify-{uuid4().hex}"
     _install_whatsapp_scope(db_session, account_scope=account_scope)
     fallback = _team(db_session, "Composable Clarification Fallback")
@@ -1438,6 +1517,7 @@ def test_composable_engine_preserves_low_confidence_follow_up(db_session, monkey
     draft_version = db_session.get(AiIntakePolicyVersion, draft.version_id)
     assert draft_version.escalation_rules["customer_wait_handoff_minutes"] == 10
     assert "customer_wait_expiry_hours" not in draft_version.escalation_rules
+    db_session_adapter.release_read_transaction(db_session)
     ai_conversation_intake.activate_policy_version(
         db_session,
         ai_conversation_intake.AiPolicyVersionActivateCommand(
@@ -1480,17 +1560,17 @@ def test_composable_engine_preserves_low_confidence_follow_up(db_session, monkey
     )
 
     assert conversation.primary_service_team_id is None
-    assert first_message.metadata_["ai_intake_status"] == "awaiting_follow_up"
-    assert first_message.metadata_["ai_intake_engine_action"] == "respond"
-    assert (
-        first_message.metadata_["ai_intake_engine_reason"] == "classifier_clarification"
+    assert first_message.metadata_["ai_intake_status"] == "awaiting_customer"
+    assert first_message.metadata_["ai_intake_engine_action"] == "wait_for_customer"
+    assert first_message.metadata_["ai_intake_engine_reason"] == "greeting_only"
+    assert [message.body for message in outbound] == ["Hello from AI intake."]
+    assert gateway.calls == 0
+    session = (
+        db_session.query(AiIntakeSession)
+        .filter(AiIntakeSession.conversation_id == conversation.id)
+        .one()
     )
-    assert first_message.metadata_["ai_intake_question_key"] == "intent_clarification"
-    assert first_message.metadata_["ai_intake_requires_follow_up"] is True
-    assert [message.body for message in outbound] == [
-        "Hello from AI intake.",
-        ai_intake.GENERIC_FOLLOW_UP_QUESTION,
-    ]
+    assert session.state == "awaiting_customer"
     assert (
         db_session.query(InboxConversationQueueEntry)
         .filter(InboxConversationQueueEntry.conversation_id == conversation.id)
@@ -1545,7 +1625,7 @@ def test_whatsapp_follow_up_dispatcher_sends_the_approved_question(
     )
 
     assert delivered == 2
-    assert calls[1]["body"] == ai_intake.GENERIC_FOLLOW_UP_QUESTION
+    assert calls[1]["body"] == ai_intake.NATURAL_CLARIFICATION_QUESTION
     outbound = (
         db_session.query(InboxMessage)
         .filter(InboxMessage.direction == "outbound")
@@ -2537,7 +2617,7 @@ def test_customer_silence_handoff_respects_existing_fifo_head(db_session, monkey
     assert outcome.changed == 1
     assert [entry.conversation_id for entry in entries] == [
         older.id,
-        received.conversation_id,
+        UUID(str(received.conversation_id)),
     ]
     assert [entry.queue_position for entry in entries] == [1, 2]
     assert (

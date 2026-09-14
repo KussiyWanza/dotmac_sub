@@ -23,6 +23,7 @@ from app.services import crm_reporting as crm_reporting_service
 from app.services import subscriber as subscriber_service
 from app.services import subscriber_growth
 from app.services import usage_summary as usage_summary_service
+from app.services.service_address import address_parts
 from app.services.ui_contracts import ChartProjection, ChartSeries, Kpi, StateValue
 
 if TYPE_CHECKING:
@@ -738,7 +739,7 @@ def get_subscribers_report_data(
     plan_distribution = dict(segment_facts.plan_distribution)
     region_counts: dict[str, int] = {}
     for subscriber in all_subscribers:
-        region = subscriber.region or "Unspecified"
+        region = address_parts(subscriber).region or "Unspecified"
         region_counts[region] = region_counts.get(region, 0) + 1
     ticket_region_counts = dict(segment_facts.ticket_counts_by_region)
     regional_breakdown: list[RegionalSubscriberReportRow] = [

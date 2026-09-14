@@ -683,3 +683,70 @@ def test_create_customer_contact_bad_account_id_raises_value_error(db_session):
             phone=None,
             is_primary="false",
         )
+
+
+def test_individual_biodata_completion_requires_exact_nin():
+    from datetime import date
+
+    from app.models.subscriber import Gender
+
+    subscriber = Subscriber(
+        first_name="Individual",
+        last_name="Customer",
+        email="individual-biodata@example.com",
+        category=SubscriberCategory.residential,
+        date_of_birth=date(1990, 1, 2),
+        gender=Gender.female,
+        nin="12345678901",
+    )
+    assert actions.evaluate_individual_biodata(subscriber).complete is True
+
+    subscriber.nin = "1234567890"
+    completion = actions.evaluate_individual_biodata(subscriber)
+    assert completion.complete is False
+    assert completion.missing == ("nin",)
+
+
+def test_individual_biodata_validation_rejects_incomplete_values():
+    subscriber = Subscriber(
+        first_name="Individual",
+        last_name="Customer",
+        email="individual-validation@example.com",
+        category=SubscriberCategory.residential,
+    )
+    with pytest.raises(ValueError, match="NIN must contain exactly 11 digits"):
+        actions._validate_individual_biodata(
+            subscriber,
+            nin="12345",
+            date_of_birth="1990-01-01",
+            gender="female",
+            nin_locked=False,
+        )
+    with pytest.raises(ValueError, match="Date of birth cannot be in the future"):
+        actions._validate_individual_biodata(
+            subscriber,
+            nin="12345678901",
+            date_of_birth="2999-01-01",
+            gender="female",
+            nin_locked=False,
+        )
+    with pytest.raises(ValueError, match="Gender is required"):
+        actions._validate_individual_biodata(
+            subscriber,
+            nin="12345678901",
+            date_of_birth="1990-01-01",
+            gender="unknown",
+            nin_locked=False,
+        )
+
+
+def test_business_biodata_is_not_required():
+    subscriber = Subscriber(
+        first_name="Business",
+        last_name="Customer",
+        email="business-biodata@example.com",
+        category=SubscriberCategory.business,
+    )
+    completion = actions.evaluate_individual_biodata(subscriber)
+    assert completion.applicable is False
+    assert completion.complete is False

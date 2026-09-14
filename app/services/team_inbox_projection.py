@@ -264,6 +264,9 @@ class InboxActionEligibility:
     ai_session_state: str | None
     waiting_for_customer: bool
     can_take_over: bool
+    takeover_team_id: UUID | None
+    takeover_team_options: tuple[InboxServiceTeamOption, ...]
+    takeover_needs_team_select: bool
     can_reply: bool
     can_private_note: bool
     can_assign: bool
@@ -1326,6 +1329,14 @@ def get_conversation_projection(
         verify_customer_identity=False,
     )
     activity_events = _conversation_activity(db, conversation_id)
+    takeover_team_options = list_service_team_options(db)
+    active_takeover_team_ids = {option.id for option in takeover_team_options}
+    primary_takeover_team_id = _uuid(timeline.primary_service_team_id)
+    if primary_takeover_team_id not in active_takeover_team_ids:
+        primary_takeover_team_id = None
+    takeover_team_id = primary_takeover_team_id or (
+        takeover_team_options[0].id if len(takeover_team_options) == 1 else None
+    )
     return InboxConversationProjection(
         timeline=timeline,
         subscriber_summary=summary,
@@ -1362,6 +1373,12 @@ def get_conversation_projection(
                 ownership.can_take_over
                 and actor_person_id is not None
                 and has_takeover_permissions
+                and takeover_team_options
+            ),
+            takeover_team_id=takeover_team_id,
+            takeover_team_options=takeover_team_options,
+            takeover_needs_team_select=(
+                takeover_team_id is None and bool(takeover_team_options)
             ),
             can_reply=not ownership.ai_owned
             and not is_resolved

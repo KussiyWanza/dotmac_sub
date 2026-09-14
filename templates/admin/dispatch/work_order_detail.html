@@ -48,13 +48,13 @@
 {% endcall %}
 {% call card('Expense claims', color='emerald') %}
 <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-<div><p class="text-sm text-slate-600 dark:text-slate-300">Create a reimbursable expense for this exact work order. Approval and payment remain in ERP.</p><p class="mt-1 text-xs text-slate-500">Only claims you created are shown here.</p></div>
-{% if action_permitted(request, expense_panel.create_action) %}<a href="#new-expense-claim" class="shrink-0 rounded-xl bg-emerald-600 px-3 py-2 text-center text-sm font-semibold text-white hover:bg-emerald-700">New Expense Claim</a>{% else %}<button type="button" disabled aria-disabled="true" aria-describedby="expense-creation-unavailable" class="shrink-0 cursor-not-allowed rounded-xl bg-slate-200 px-3 py-2 text-center text-sm font-semibold text-slate-600 dark:bg-slate-700 dark:text-slate-300">New Expense Claim</button>{% endif %}
+<div><p class="text-sm text-slate-600 dark:text-slate-300">Create a reimbursable expense for this exact work order. Manager approval releases it to ERP for reimbursement.</p><p class="mt-1 text-xs text-slate-500">Only claims you created are shown here.</p></div>
+{% if action_permitted(request, expense_panel.create_action) %}<button type="button" aria-controls="new-expense-claim" aria-expanded="{{ 'true' if expense_panel.form_open else 'false' }}" data-open-expense-form class="shrink-0 rounded-xl bg-emerald-600 px-3 py-2 text-center text-sm font-semibold text-white hover:bg-emerald-700">New Expense Claim</button>{% else %}<button type="button" disabled aria-disabled="true" aria-controls="new-expense-claim" aria-expanded="false" aria-describedby="expense-creation-unavailable" class="shrink-0 cursor-not-allowed rounded-xl bg-slate-200 px-3 py-2 text-center text-sm font-semibold text-slate-600 dark:bg-slate-700 dark:text-slate-300">New Expense Claim</button>{% endif %}
 </div>
 {% if expense_panel.claims %}<div class="space-y-3">{% for claim in expense_panel.claims %}
 <article class="rounded-xl border border-slate-200 p-4 dark:border-slate-700">
 <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><h3 class="font-semibold text-slate-900 dark:text-white">{{ claim.purpose }}</h3><p class="mt-1 text-sm text-slate-500">{{ claim.expense_date | app_datetime('%d %b %Y', 'Date unavailable') }} · {{ claim.currency }} {{ '%.2f'|format(claim.total_amount) }}</p></div>{{ status_presentation_badge(claim.status, size='sm') }}</div>
-<dl class="mt-3 grid gap-2 text-sm sm:grid-cols-2"><div><dt class="font-semibold text-slate-500">ERP delivery</dt><dd>{{ claim.delivery_label }}</dd></div><div><dt class="font-semibold text-slate-500">ERP claim</dt><dd>{{ claim.erp_claim_number or 'Not assigned' }}{% if claim.erp_claim_status %} · {{ claim.erp_claim_status|replace('_', ' ')|title }}{% endif %}</dd></div></dl>
+<dl class="mt-3 grid gap-2 text-sm sm:grid-cols-2"><div><dt class="font-semibold text-slate-500">ERP delivery</dt><dd>{{ claim.delivery_label }}{% if claim.delivery_detail %}<span class="mt-1 block text-xs text-slate-500">{{ claim.delivery_detail }}</span>{% endif %}</dd></div><div><dt class="font-semibold text-slate-500">ERP claim</dt><dd>{{ claim.erp_claim_number or 'Not assigned' }}{% if claim.erp_claim_status %} · {{ claim.erp_claim_status|replace('_', ' ')|title }}{% endif %}</dd></div></dl>
 {% if claim.rejection_reason %}<p class="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-200"><strong>Rejected:</strong> {{ claim.rejection_reason }}</p>{% endif %}
 </article>
 {% endfor %}</div>{% else %}<p class="rounded-xl bg-slate-50 p-4 text-sm text-slate-500 dark:bg-slate-800/50">You have not created an expense claim for this work order.</p>{% endif %}
@@ -67,11 +67,22 @@
 <input type="hidden" name="client_ref" value="{{ expense_panel.form.request_id }}">
 {% if expense_panel.error_for('form') %}<p class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800" role="alert">{{ expense_panel.error_for('form') }}</p>{% endif %}
 <div class="grid gap-4 sm:grid-cols-2">
-<label class="text-sm font-semibold">Purpose <span class="text-rose-600" aria-hidden="true">*</span><input name="purpose" value="{{ expense_panel.form.purpose }}" required maxlength="500" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900" aria-describedby="expense-purpose-error">{% if expense_panel.error_for('purpose') %}<span id="expense-purpose-error" class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('purpose') }}</span>{% endif %}</label>
+<label class="text-sm font-semibold">Purpose <span class="text-rose-600" aria-hidden="true">*</span><input name="purpose" value="{{ expense_panel.form.purpose }}" required maxlength="500" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900" aria-describedby="expense-purpose-error" data-expense-purpose>{% if expense_panel.error_for('purpose') %}<span id="expense-purpose-error" class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('purpose') }}</span>{% endif %}</label>
 <label class="text-sm font-semibold">Expense date <span class="text-rose-600" aria-hidden="true">*</span><input type="date" name="expense_date" value="{{ expense_panel.form.expense_date }}" required class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900">{% if expense_panel.error_for('expense_date') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('expense_date') }}</span>{% endif %}</label>
 <label class="text-sm font-semibold">Currency <span class="text-rose-600" aria-hidden="true">*</span><input name="currency" value="{{ expense_panel.form.currency }}" required minlength="3" maxlength="3" autocomplete="off" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 uppercase dark:bg-slate-900">{% if expense_panel.error_for('currency') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('currency') }}</span>{% endif %}</label>
 <label class="text-sm font-semibold sm:col-span-2">Notes<textarea name="notes" maxlength="2000" rows="2" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900">{{ expense_panel.form.notes }}</textarea>{% if expense_panel.error_for('notes') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('notes') }}</span>{% endif %}</label>
 </div>
+<fieldset class="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900"><legend class="px-1 font-semibold">Approval and payment destination</legend>
+<div class="grid gap-4 sm:grid-cols-2">
+<label class="text-sm font-semibold sm:col-span-2">Expense approver <span class="text-rose-600" aria-hidden="true">*</span><select name="selected_approver_id" required class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"><option value="">Select approver</option>{% for approver in expense_panel.approvers %}<option value="{{ approver.erp_employee_id }}" {% if expense_panel.form.selected_approver_id == approver.erp_employee_id|string %}selected{% endif %}>{{ approver.display_name }} · {{ approver.email }}</option>{% endfor %}</select>{% if expense_panel.error_for('selected_approver_id') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('selected_approver_id') }}</span>{% endif %}</label>
+<div class="sm:col-span-2 space-y-2"><p class="text-sm font-semibold">Payment destination <span class="text-rose-600" aria-hidden="true">*</span></p>
+<label class="flex items-start gap-2 rounded-lg border border-slate-200 p-3"><input type="radio" name="payment_destination_mode" value="erp_profile" {% if expense_panel.form.payment_destination_mode == 'erp_profile' and expense_panel.profile_destination.available %}checked{% endif %} {% if not expense_panel.profile_destination.available %}disabled{% endif %} data-destination-mode><span><strong>Use ERP profile</strong>{% if expense_panel.profile_destination.available %}<span class="block text-xs text-slate-500">{{ expense_panel.profile_destination.beneficiary_name }} · {{ expense_panel.profile_destination.bank_name }} · {{ expense_panel.profile_destination.masked_account_number }}</span>{% else %}<span class="block text-xs text-amber-700">ERP bank profile is incomplete.</span>{% endif %}</span></label>
+<label class="flex items-start gap-2 rounded-lg border border-slate-200 p-3"><input type="radio" name="payment_destination_mode" value="expense_override" {% if expense_panel.form.payment_destination_mode == 'expense_override' or not expense_panel.profile_destination.available %}checked{% endif %} data-destination-mode><span><strong>Use different details for this expense</strong><span class="block text-xs text-slate-500">This does not change the technician's ERP profile.</span></span></label>{% if expense_panel.error_for('payment_destination_mode') %}<span class="text-xs text-rose-700">{{ expense_panel.error_for('payment_destination_mode') }}</span>{% endif %}</div>
+<div class="contents" data-destination-override>
+<label class="text-sm font-semibold">Bank <span class="text-rose-600">*</span><select name="bank_code" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"><option value="">Select bank</option>{% for bank in expense_panel.banks %}<option value="{{ bank.bank_code }}" {% if expense_panel.form.bank_code == bank.bank_code %}selected{% endif %}>{{ bank.bank_name }}</option>{% endfor %}</select>{% if expense_panel.error_for('bank_code') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('bank_code') }}</span>{% endif %}</label>
+<label class="text-sm font-semibold">Account number <span class="text-rose-600">*</span><input name="account_number" inputmode="numeric" autocomplete="off" minlength="6" maxlength="30" value="" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900">{% if expense_panel.error_for('account_number') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('account_number') }}</span>{% endif %}</label>
+<label class="text-sm font-semibold sm:col-span-2">Beneficiary name <span class="text-rose-600">*</span><input name="beneficiary_name" maxlength="150" value="{{ expense_panel.form.beneficiary_name }}" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900">{% if expense_panel.error_for('beneficiary_name') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('beneficiary_name') }}</span>{% endif %}</label>
+</div></div></fieldset>
 <div><div class="flex flex-wrap items-center justify-between gap-3"><div><h3 class="font-semibold">Expense items</h3><p class="text-xs text-slate-500">Add at least one item. Category limits and receipt rules come from ERP. When a receipt is required, provide either a receipt URL or an uploaded file.</p></div><button type="button" class="rounded-lg border border-emerald-300 px-3 py-2 text-sm font-semibold text-emerald-800 dark:text-emerald-200" data-add-expense-line>Add item</button></div>
 {% if expense_panel.error_for('lines') %}<p class="mt-2 text-sm text-rose-700" role="alert">{{ expense_panel.error_for('lines') }}</p>{% endif %}
 <div class="mt-3 space-y-3" data-expense-lines>{% for line in expense_panel.form.lines %}
@@ -115,6 +126,7 @@
 <button class="w-full rounded-xl bg-cyan-600 px-4 py-2.5 text-sm font-semibold text-white">Assign technician</button></form>
 {% elif can(request, queue_action.permission) %}<p class="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">{{ queue_action.reason }}</p>{% endif %}
 {% endcall %}</aside></div></div>
+<script src="/static/js/work-order-expense-form.js"></script>
 <script>
 (() => {
   const form = document.querySelector('[data-expense-form]');
@@ -126,6 +138,13 @@
   const currency = form.querySelector('[name="currency"]');
   const currencyLabel = form.querySelector('[data-expense-currency]');
   const submit = form.querySelector('[data-expense-submit]');
+  const destinationModes = [...form.querySelectorAll('[data-destination-mode]')];
+  const destinationOverride = form.querySelector('[data-destination-override]');
+  const refreshDestination = () => {
+    const override = form.querySelector('[name="payment_destination_mode"]:checked')?.value === 'expense_override';
+    destinationOverride.hidden = !override;
+    destinationOverride.querySelectorAll('input, select').forEach(input => { input.required = override; input.disabled = !override; });
+  };
   const refresh = () => {
     const rows = [...lines.querySelectorAll('[data-expense-line]')];
     let sum = 0;
@@ -168,8 +187,9 @@
   lines.addEventListener('input', refresh);
   lines.addEventListener('change', refresh);
   currency.addEventListener('input', refresh);
+  destinationModes.forEach(input => input.addEventListener('change', refreshDestination));
   form.addEventListener('submit', () => { if (form.checkValidity()) { submit.disabled = true; submit.textContent = 'Submitting…'; } });
-  refresh();
+  refreshDestination(); refresh();
 })();
 </script>
 {% endblock %}

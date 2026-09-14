@@ -176,12 +176,19 @@ classifier-attempt status (`invalid_output`, `unavailable`, or
 `no_accepted_intent`), and the more precise safe failure kind
 (`invalid_model_output`, `schema_validation_failure`, `classifier_unavailable`,
 or `no_accepted_intent`). Deterministic and accepted model facts are merged
-before this branch. An explicit deterministic `human_requested` fact takes
-precedence and requests immediate handoff; otherwise both `custom_v1` and
-`langgraph_v1` select `ask_question`, phrase the configured generic
-clarification through the existing customer-response composer, and enter
-`awaiting_customer`. Composer failure uses that same configured question as its
-safe fallback.
+before this branch. DeepSeek structured output is normalized only for the known
+`null`-for-default variation: non-null enum facts become `unknown`, non-null
+affect enums become `none`, and non-null booleans become `false`. Extra keys,
+arbitrary strings, numeric strings and other contract violations remain invalid.
+An explicit deterministic `human_requested` fact takes precedence and requests
+immediate handoff. Strong bounded connectivity facts may select the matching
+technical inquiry plan without granting the provider routing, tool, queue or
+handoff authority. Otherwise both `custom_v1` and `langgraph_v1` select one
+natural clarification through the existing customer-response composer and enter
+`awaiting_customer`. The category-enumeration prompt is not a default and is
+available only when policy explicitly enables it. Composer failure uses natural
+bounded fallback copy and still satisfies any issue or frustration
+acknowledgement obligation.
 
 A later customer message is classified with the existing session state. Each
 classifier-failure turn consumes the existing configured clarification-turn
@@ -196,8 +203,10 @@ are genuinely unavailable or exhausted.
 
 The generation-attempt record, session state, selected inbound metadata, and
 structured worker logs retain only safe classifier evidence: provider/model,
-attempt status, validation/failure reason, retry count and limit, exhaustion,
-selected engine/action, graph node trace, and recovery or final handoff reason.
+attempt status, sanitized validation location/type/expected type/actual
+structural type, retry count and limit, exhaustion, selected engine/action,
+graph node trace, response source, validator result/reason, selected question,
+acknowledgement obligations, and recovery or final handoff reason.
 Raw customer content and full model output are not added to logs. Celery workers
 install the application JSON formatter so these structured fields are emitted
 to the configured log aggregation backend rather than discarded by a plain
@@ -217,6 +226,14 @@ provider webhooks are suppressed by the inbound message path before the session
 processor sees work; processor retries use the welcome and per-inbound AI
 message dedupe keys and mark `processed_inbound:<message_id>` only after the
 classification/engine path reaches a durable outcome.
+
+A greeting-only first inbound is still marked processed after the welcome is
+queued, but it does not consume classifier-failure budget or emit a second menu.
+The session enters `awaiting_customer` naturally. Bounded deterministic
+normalization recognizes common connectivity-down phrases and compact durations
+such as `7dys`, `2hrs`, `1wk`, and `since yesterday`; normalized facts remain in
+the authoritative session state even when classification is unavailable, and
+the planner skips questions for facts already known.
 
 The conversational intake extension stores durable lifecycle in
 `ai_intake_sessions`. `ai_intake_configs` remains the compatibility row used by existing routes, but customer-visible AI messages attach to immutable

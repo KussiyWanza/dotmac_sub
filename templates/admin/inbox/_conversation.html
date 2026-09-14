@@ -62,12 +62,19 @@
             </div>
 
             {% if action_eligibility.can_take_over %}
-            <form method="post" action="/admin/inbox/{{ timeline.id }}/take-over" class="hidden lg:block" onsubmit="return confirm('Take over this conversation from AI Intake? AI replies for this session will stop.')">
+            <form method="post" action="/admin/inbox/{{ timeline.id }}/take-over" class="hidden items-center gap-2 lg:flex" onsubmit="return confirm('Take over this conversation from AI Intake? AI replies for this session will stop and the conversation will be assigned to you.')">
                 {% include "components/forms/csrf_input.html" %}
                 <input type="hidden" name="expected_ai_session_id" value="{{ action_eligibility.ai_session_id }}">
                 <input type="hidden" name="expected_ai_session_state" value="{{ action_eligibility.ai_session_state }}">
                 <input type="hidden" name="idempotency_key" value="takeover:{{ timeline.id }}:{{ action_eligibility.ai_session_id }}">
-                {% if timeline.primary_service_team_id %}<input type="hidden" name="service_team_id" value="{{ timeline.primary_service_team_id }}">{% endif %}
+                {% if action_eligibility.takeover_needs_team_select %}
+                <select name="service_team_id" required aria-label="Service team for conversation takeover" class="h-10 max-w-44 rounded-lg border-slate-300 text-xs font-semibold text-slate-700 focus:border-indigo-500 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
+                    <option value="">Choose a team</option>
+                    {% for team in action_eligibility.takeover_team_options %}<option value="{{ team.id }}">{{ team.name }}</option>{% endfor %}
+                </select>
+                {% else %}
+                <input type="hidden" name="service_team_id" value="{{ action_eligibility.takeover_team_id }}">
+                {% endif %}
                 <button type="submit" class="min-h-10 rounded-lg bg-indigo-600 px-3 text-xs font-semibold text-white hover:bg-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">Take Over Conversation</button>
             </form>
             {% elif assign_to_me.can %}
