@@ -112,6 +112,22 @@ def test_only_approved_coordinators_use_nested_adjustment_staging() -> None:
     }
 
 
+def test_legacy_renewal_reversal_participant_is_narrowly_gated() -> None:
+    participant = "stage_account_adjustment_reversal_for_renewal_owner("
+    callers = {
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "app").rglob("*.py")
+        if path != OWNER and participant in path.read_text(encoding="utf-8")
+    }
+    owner = _source(OWNER)
+
+    assert callers == {"app/services/prepaid_service_renewals.py"}
+    assert (
+        'owner_command_active(db, owner="financial.prepaid_service_renewals")' in owner
+    )
+    assert "return _stage_reversal(db, command)" in owner
+
+
 def test_ledger_and_database_own_the_monetary_invariants() -> None:
     owner = _source(OWNER)
     ledger = _source("app/services/billing/ledger.py")
