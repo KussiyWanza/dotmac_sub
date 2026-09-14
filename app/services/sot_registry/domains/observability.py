@@ -260,9 +260,10 @@ DOMAIN = DomainSOT(
             ),
             depends_on=("observability.recording",),
             notes=(
-                "Records request ID, application caller, SQLSTATE, safe missing "
-                "identifier, and a statement fingerprint. SQL text, parameters, "
-                "and result data are never logged."
+                "Records request or Celery task ownership, transaction age, "
+                "application caller, SQLSTATE, safe missing identifier, and a "
+                "statement fingerprint. SQL text, parameters, and result data "
+                "are never logged."
             ),
             contract=ServiceContract(
                 concerns=(
@@ -297,7 +298,10 @@ DOMAIN = DomainSOT(
                         name="request correlation context",
                         owner="observability.recording",
                         kind=AuthorityKind.OBSERVATION,
-                        source="request ID context and application call stack",
+                        source=(
+                            "request ID context, current Celery task identity, "
+                            "and application call stack"
+                        ),
                     ),
                 ),
                 transaction=TransactionContract(
@@ -346,7 +350,7 @@ DOMAIN = DomainSOT(
             notes=(
                 "Measures from the first SQLAlchemy root-transaction statement "
                 "through completion. Metrics have no request or customer labels; "
-                "structured logs retain only the request correlation ID."
+                "structured logs retain only request and Celery task correlation."
             ),
             contract=ServiceContract(
                 concerns=(
