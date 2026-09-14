@@ -22,8 +22,16 @@ from app.models.sales import Lead, LeadStatus, Pipeline, PipelineStage
 from app.models.service_team import ServiceTeam, ServiceTeamMember
 from app.models.subscriber import Reseller, Subscriber
 from app.models.system_user import SystemUser
-from app.models.team_inbox import InboxConversation
-from app.services import conversation_lead_relationships, web_sales
+from app.models.team_inbox import (
+    InboxConversation,
+    InboxMessage,
+    InboxMessageDirection,
+)
+from app.services import (
+    conversation_lead_relationships,
+    team_inbox_participants,
+    web_sales,
+)
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
 from app.services.sales import lead_authoring
@@ -564,6 +572,23 @@ def test_inbox_authoring_creates_party_lead_and_origin_link_atomically(db_sessio
         is_active=True,
     )
     db_session.add(conversation)
+    db_session.flush()
+    message = InboxMessage(
+        conversation_id=conversation.id,
+        channel_type="email",
+        direction=InboxMessageDirection.inbound.value,
+        from_address=conversation.contact_address,
+        body="Do you cover my area?",
+        received_at=datetime.now(UTC),
+        metadata_={"provider": "smtp", "provider_account_scope": "sales"},
+    )
+    db_session.add(message)
+    db_session.flush()
+    team_inbox_participants.record_message_participants(
+        db_session,
+        conversation=conversation,
+        message=message,
+    )
     db_session.commit()
 
     outcome = _author(
@@ -580,6 +605,20 @@ def test_inbox_authoring_creates_party_lead_and_origin_link_atomically(db_sessio
     lead = db_session.get(Lead, outcome.lead_id)
     assert lead is not None
     assert lead.metadata_["origin_conversation_id"] == str(conversation.id)
+    point = (
+        db_session.query(PartyContactPoint)
+        .filter_by(
+            party_id=outcome.party_id,
+            channel_type="email",
+            normalized_value=conversation.contact_address,
+            is_active=True,
+        )
+        .one()
+    )
+    participant = team_inbox_participants.list_participants(
+        db_session, conversation_id=conversation.id
+    )[0]
+    assert participant.party_contact_point_id == str(point.id)
 
 
 def test_pipeline_stage_mismatch_rolls_back_person_and_lead(db_session):
