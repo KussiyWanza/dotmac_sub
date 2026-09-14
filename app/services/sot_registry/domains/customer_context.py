@@ -1511,7 +1511,7 @@ DOMAIN = DomainSOT(
                 test_refs=(
                     "tests/test_reseller_portal_services.py",
                     "tests/test_api_reseller_self_scoped.py",
-                    "tests/architecture/test_reseller_ticket_projection.py",
+                    "tests/architecture/test_crm_web_retirement.py",
                 ),
             ),
         ),
