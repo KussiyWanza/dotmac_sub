@@ -1371,7 +1371,7 @@ DOMAIN = DomainSOT(
         ),
         SOTService(
             name="customer.reseller_ticket_projection",
-            module="app.services.reseller_portal",
+            module="app.services.reseller_ticket_projection",
             owns=("reseller-scoped native support ticket count and list projection",),
             depends_on=(
                 "customer.identity_scope",

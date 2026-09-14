@@ -18,6 +18,7 @@ from app.services import (
     customer_work_order_selfcare,
     reseller_crm_views,
     reseller_portal,
+    reseller_ticket_projection,
 )
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
@@ -191,9 +192,9 @@ def reseller_dashboard(
         for account in summary.get("accounts", [])
         if account.get("id")
     ]
-    ticket_count = reseller_portal.native_open_ticket_count(
+    ticket_count = reseller_ticket_projection.native_open_ticket_count(
         db,
-        query=reseller_portal.ResellerTicketCountQuery(
+        query=reseller_ticket_projection.ResellerTicketCountQuery(
             reseller_id=UUID(str(context["reseller"].id)),
             account_ids=tuple(account_ids),
         ),
@@ -1034,9 +1035,9 @@ def reseller_account_tickets(
             status_code=404,
         )
 
-    tickets = reseller_portal.native_account_ticket_summaries(
+    tickets = reseller_ticket_projection.native_account_ticket_summaries(
         db,
-        query=reseller_portal.ResellerAccountTicketsQuery(
+        query=reseller_ticket_projection.ResellerAccountTicketsQuery(
             reseller_id=UUID(str(context["reseller"].id)),
             account_id=UUID(account_id),
         ),

@@ -45,6 +45,7 @@ from app.services import (
     quotes_mirror,
     reseller_crm_views,
     reseller_portal,
+    reseller_ticket_projection,
     team_inbox_widget,
 )
 from app.services.auth_dependencies import require_user_auth
@@ -293,9 +294,9 @@ def my_reseller_dashboard(
         for account in summary.get("accounts", [])
         if account.get("id")
     ]
-    ticket_count = reseller_portal.native_open_ticket_count(
+    ticket_count = reseller_ticket_projection.native_open_ticket_count(
         db,
-        query=reseller_portal.ResellerTicketCountQuery(
+        query=reseller_ticket_projection.ResellerTicketCountQuery(
             reseller_id=UUID(reseller_id),
             account_ids=tuple(account_ids),
         ),
@@ -715,9 +716,9 @@ def my_reseller_account_tickets(
     if not detail:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    tickets = reseller_portal.native_account_ticket_summaries(
+    tickets = reseller_ticket_projection.native_account_ticket_summaries(
         db,
-        query=reseller_portal.ResellerAccountTicketsQuery(
+        query=reseller_ticket_projection.ResellerAccountTicketsQuery(
             reseller_id=UUID(reseller_id),
             account_id=UUID(account_id),
         ),

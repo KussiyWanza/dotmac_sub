@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from app.services import reseller_portal
+from app.services import reseller_portal, reseller_ticket_projection
 from tests.reseller_status_helpers import (
     confirm_current_status_action,
     confirm_status_action,
@@ -140,18 +140,18 @@ def test_native_reseller_ticket_projection_uses_support_records(
     db_session.commit()
 
     assert (
-        reseller_portal.native_open_ticket_count(
+        reseller_ticket_projection.native_open_ticket_count(
             db_session,
-            query=reseller_portal.ResellerTicketCountQuery(
+            query=reseller_ticket_projection.ResellerTicketCountQuery(
                 reseller_id=reseller_account.reseller_id,
                 account_ids=(reseller_account.id,),
             ),
         ).value
         == 1
     )
-    summaries = reseller_portal.native_account_ticket_summaries(
+    summaries = reseller_ticket_projection.native_account_ticket_summaries(
         db_session,
-        query=reseller_portal.ResellerAccountTicketsQuery(
+        query=reseller_ticket_projection.ResellerAccountTicketsQuery(
             reseller_id=reseller_account.reseller_id,
             account_id=reseller_account.id,
         ),
@@ -162,9 +162,9 @@ def test_native_reseller_ticket_projection_uses_support_records(
     }
     assert all(item.status_presentation for item in summaries)
     assert (
-        reseller_portal.native_account_ticket_summaries(
+        reseller_ticket_projection.native_account_ticket_summaries(
             db_session,
-            query=reseller_portal.ResellerAccountTicketsQuery(
+            query=reseller_ticket_projection.ResellerAccountTicketsQuery(
                 reseller_id=uuid.uuid4(),
                 account_id=reseller_account.id,
             ),

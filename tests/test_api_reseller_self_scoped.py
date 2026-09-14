@@ -201,10 +201,11 @@ def test_account_tickets_404_for_foreign_account(monkeypatch):
 
 
 def test_account_tickets_uses_native_projection(monkeypatch):
+    reseller_id = uuid.uuid4()
     monkeypatch.setattr(
         reseller_api.reseller_portal,
         "reseller_id_for_subscriber",
-        lambda db, sid: "res-1",
+        lambda db, sid: str(reseller_id),
     )
     monkeypatch.setattr(
         reseller_api.reseller_portal,
@@ -220,7 +221,7 @@ def test_account_tickets_uses_native_projection(monkeypatch):
         }
     )
     monkeypatch.setattr(
-        reseller_api.reseller_portal,
+        reseller_api.reseller_ticket_projection,
         "native_account_ticket_summaries",
         lambda db, *, query: (ticket,),
     )
