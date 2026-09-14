@@ -51,7 +51,7 @@ def test_customer_inbound_and_expiry_converge_on_open_unassigned_window(engine) 
             conversation_id=conversation.id,
             channel_type="whatsapp",
             direction=InboxMessageDirection.inbound.value,
-            body_text="Initial enquiry",
+            body="Initial enquiry",
             received_at=now - timedelta(hours=25),
             metadata_={"reply_window_qualifying": True},
         )

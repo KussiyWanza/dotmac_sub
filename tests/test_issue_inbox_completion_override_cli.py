@@ -92,9 +92,11 @@ def _admin_system_user(db_session, *, bind_party: bool = False) -> SystemUser:
         user.party_binding_reason = "Explicit staff Party binding fixture"
     db_session.add(user)
     db_session.flush()
-    role = Role(name=f"pytest-admin-{uuid4().hex}", is_active=True)
-    db_session.add(role)
-    db_session.flush()
+    role = db_session.query(Role).filter_by(name="admin").first()
+    if role is None:
+        role = Role(name="admin", is_active=True)
+        db_session.add(role)
+        db_session.flush()
     permission = (
         db_session.query(Permission).filter_by(key=cli.OVERRIDE_GRANT_SCOPE).first()
     )
@@ -102,7 +104,13 @@ def _admin_system_user(db_session, *, bind_party: bool = False) -> SystemUser:
         permission = Permission(key=cli.OVERRIDE_GRANT_SCOPE, is_active=True)
         db_session.add(permission)
         db_session.flush()
-    db_session.add(RolePermission(role_id=role.id, permission_id=permission.id))
+    role_permission = (
+        db_session.query(RolePermission)
+        .filter_by(role_id=role.id, permission_id=permission.id)
+        .first()
+    )
+    if role_permission is None:
+        db_session.add(RolePermission(role_id=role.id, permission_id=permission.id))
     db_session.add(SystemUserRole(system_user_id=user.id, role_id=role.id))
     db_session.flush()
     return user

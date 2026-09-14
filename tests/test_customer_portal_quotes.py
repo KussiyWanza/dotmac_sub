@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -72,7 +73,7 @@ def test_quotes_template_surfaces_approved_deposit_payment_action():
 
     quote_id = uuid4()
     html = quotes.templates.env.get_template("customer/quotes/index.html").render(
-        request={},
+        request=SimpleNamespace(state=SimpleNamespace(csrf_token="test-csrf-token")),
         customer={"email": "customer@example.com"},
         active_page="quotes",
         quote_read_state="current",

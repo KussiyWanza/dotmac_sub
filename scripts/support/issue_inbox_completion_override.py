@@ -24,6 +24,8 @@ import argparse
 import json
 from uuid import UUID
 
+from sqlalchemy.orm import Session
+
 from app.models.system_user import SystemUser
 from app.models.team_inbox import InboxConversation
 from app.services import team_inbox_commands
@@ -37,6 +39,10 @@ from app.services.team_inbox_completion_override import (
     IssueCompletionOverrideCommand,
     compute_live_evidence,
     issue_override_grant,
+)
+from app.services.workqueue.permissions import (
+    WorkqueuePrincipal,
+    principal_from_auth,
 )
 
 
@@ -73,6 +79,25 @@ def _resolve_permission_granted(db, *, actor_system_user_id: UUID | None) -> boo
         "roles": set(roles),
     }
     return has_permission(auth, db, OVERRIDE_GRANT_SCOPE)
+
+
+def _resolve_workqueue_principal(
+    db: Session, *, actor_system_user_id: UUID | None
+) -> WorkqueuePrincipal | None:
+    """Build the authenticated inbox principal used by the status owner."""
+
+    system_user = _resolve_system_user(db, actor_system_user_id)
+    if system_user is None or actor_system_user_id is None:
+        return None
+    roles = system_user_role_names(db, actor_system_user_id)
+    return principal_from_auth(
+        db,
+        {
+            "principal_id": str(actor_system_user_id),
+            "principal_type": "system_user",
+            "roles": set(roles),
+        },
+    )
 
 
 def _resolve_actor_person_id(db, *, actor_system_user_id: UUID | None) -> UUID | None:
@@ -215,6 +240,9 @@ def _run_resolve(
     actor_person_id = _resolve_actor_person_id(
         db, actor_system_user_id=actor_system_user_id
     )
+    principal = _resolve_workqueue_principal(
+        db, actor_system_user_id=actor_system_user_id
+    )
     db_session_adapter.release_read_transaction(db)
 
     if not permission_granted:
@@ -231,10 +259,16 @@ def _run_resolve(
                 "recorded as the resolving actor."
             ),
         }
+    if principal is None:
+        return {
+            "error": "actor_system_user_not_found",
+            "message": "The acting staff account is missing or inactive.",
+        }
 
     try:
         outcome = team_inbox_commands.update_status(
             db,
+            principal=principal,
             conversation_id=conversation_id,
             status_value="resolved",
             actor_person_id=actor_person_id,
