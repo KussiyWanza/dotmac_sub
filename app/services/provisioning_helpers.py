@@ -619,7 +619,11 @@ def _ensure_ip_assignment_for_version(
             dns_primary=pool_to_use.dns_primary if pool_to_use else None,
             dns_secondary=pool_to_use.dns_secondary if pool_to_use else None,
         )
-        assignment = network_service.ip_assignments.create(db, assignment_payload)
+        assignment = network_service.ip_assignments.create(
+            db,
+            assignment_payload,
+            commit=False,
+        )
 
     setattr(subscription, f"{version_key}_address", address.address)
     return assignment, address

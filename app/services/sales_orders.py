@@ -1013,7 +1013,10 @@ def _build_staged_device_intent(
     from app.models.catalog import AccessCredential, ConnectionType, SubscriptionAddOn
     from app.services.connection_type_provisioning import resolve_connection_type
     from app.services.ipv6_pd import pd_enabled, resolve_pd_pool
-    from app.services.pppoe_credentials import auto_generate_pppoe_credential
+    from app.services.pppoe_credentials import (
+        EnsurePppoeCredentialCommand,
+        ensure_pppoe_credential,
+    )
 
     subscription_id = subscription.id
     subscriber_id = subscription.subscriber_id
@@ -1026,18 +1029,18 @@ def _build_staged_device_intent(
         .first()
     )
     if credential is None:
-        credential = auto_generate_pppoe_credential(
+        outcome = ensure_pppoe_credential(
             db,
-            str(subscriber_id),
-            radius_profile_id=(
-                str(subscription.radius_profile_id)
-                if getattr(subscription, "radius_profile_id", None)
-                else None
+            EnsurePppoeCredentialCommand(
+                subscriber_id=subscriber_id,
+                subscription_id=subscription_id,
+                radius_profile_id=subscription.radius_profile_id,
             ),
-            subscription_id=str(subscription_id),
         )
-    if credential is not None and not str(getattr(subscription, "login", "") or ""):
-        subscription.login = credential.username
+        credential = db.get(AccessCredential, outcome.credential_id)
+        if credential is None:
+            raise RuntimeError("Ensured PPPoE credential could not be reloaded.")
+    subscription.login = credential.username
 
     nas = getattr(subscription, "provisioning_nas_device", None)
     connection_type = resolve_connection_type(db, subscription, nas)
@@ -1054,7 +1057,7 @@ def _build_staged_device_intent(
         "wan.mode": wan_mode,
         "wan.ip_protocol": ip_protocol,
     }
-    if connection_type == ConnectionType.pppoe and credential is not None:
+    if connection_type == ConnectionType.pppoe:
         desired_config.update(
             {
                 "wan.pppoe_username": credential.username,
@@ -1099,7 +1102,7 @@ def _build_staged_device_intent(
             "version": 1,
             "subscription_id": str(subscription_id),
             "connection_type": connection_type.value,
-            "radius_username": credential.username if credential is not None else None,
+            "radius_username": credential.username,
             "ipv4": {
                 "source": "ipam",
                 "assignment_scope": "subscription",

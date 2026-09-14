@@ -127,7 +127,7 @@ class ProvisioningHandler:
         the IPv4 assignment and ``subscriptions.ipv4_address`` are never restored
         on reactivation. The RADIUS refresh then rebuilds the reply WITHOUT
         Framed-IP-Address and the BNG tears the session down ~130ms after auth
-        (the "paid -> went offline" 30s flap). ``ensure_ip_assignments_for_subscription``
+        (the "paid -> went offline" 30s flap). ``ensure_ipv4_assignment_for_subscription``
         reactivates the inactive IPv4 assignment and re-sets ipv4_address; the
         RADIUS refresh enqueued by the enforcement handler on the same event then
         regenerates the reply WITH Framed-IP-Address.
@@ -136,7 +136,7 @@ class ProvisioningHandler:
         if not subscription_id:
             return
         try:
-            provisioning_service.ensure_ip_assignments_for_subscription(
+            provisioning_service.ensure_ipv4_assignment_for_subscription(
                 db, str(subscription_id)
             )
         except Exception as exc:
@@ -158,7 +158,7 @@ class ProvisioningHandler:
             return
         # Projection failures propagate so the event remains retryable and the
         # exact service order cannot be confirmed prematurely.
-        provisioning_service.ensure_ip_assignments_for_subscription(
+        provisioning_service.ensure_ipv4_assignment_for_subscription(
             db, str(subscription_id)
         )
         # Step 2: Sync RADIUS credentials so subscriber can authenticate
@@ -174,7 +174,7 @@ class ProvisioningHandler:
         subscription_id = event.subscription_id or event.payload.get("subscription_id")
         if not subscription_id:
             raise ValueError("Activation request is missing subscription_id")
-        provisioning_service.ensure_ip_assignments_for_subscription(
+        provisioning_service.ensure_ipv4_assignment_for_subscription(
             db, str(subscription_id)
         )
         self._sync_radius_on_activation(db, str(subscription_id))

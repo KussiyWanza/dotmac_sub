@@ -11,15 +11,26 @@ from __future__ import annotations
 import logging
 import secrets
 import string
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from app.models.catalog import AccessCredential, ConnectionType
+from sqlalchemy import select
+
+from app.models.catalog import (
+    AccessCredential,
+    ConnectionType,
+    RadiusProfile,
+    Subscription,
+)
 from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.subscription_engine import SettingValueType
 from app.services import numbering, settings_spec
 from app.services.credential_crypto import encrypt_credential
 from app.services.customer_identifiers import pppoe_username_from_subscriber_number
+from app.services.domain_errors import DomainError
+from app.services.events import EventType, emit_event
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -28,6 +39,75 @@ logger = logging.getLogger(__name__)
 
 # DocumentSequence key for the fallback username (non-canonical subscribers).
 SEQUENCE_KEY = "pppoe_username"
+_OWNER = "access.pppoe_credentials"
+
+
+class PppoeCredentialError(DomainError):
+    """Stable failure at the PPPoE credential owner boundary."""
+
+
+class PppoeCredentialDisposition(StrEnum):
+    created = "created"
+    reused = "reused"
+    rebound_legacy = "rebound_legacy"
+    reactivated = "reactivated"
+
+
+@dataclass(frozen=True, slots=True)
+class EnsurePppoeCredentialCommand:
+    """Typed request to ensure one subscriber/service PPPoE identity."""
+
+    subscriber_id: UUID
+    subscription_id: UUID | None = None
+    radius_profile_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EnsurePppoeCredentialOutcome:
+    """Secret-free result of ensuring a PPPoE credential."""
+
+    credential_id: UUID
+    username: str
+    disposition: PppoeCredentialDisposition
+    changed: bool
+
+
+def _error(code: str, message: str) -> PppoeCredentialError:
+    return PppoeCredentialError(
+        code=f"{_OWNER}.{code}",
+        message=message,
+        details={},
+        retryable=False,
+    )
+
+
+def _stage_credential_event(
+    db: Session,
+    *,
+    command: EnsurePppoeCredentialCommand,
+    outcome: EnsurePppoeCredentialOutcome,
+) -> EnsurePppoeCredentialOutcome:
+    if not outcome.changed:
+        return outcome
+    emit_event(
+        db,
+        EventType.access_credential_ensured,
+        {
+            "schema_version": 1,
+            "credential_id": str(outcome.credential_id),
+            "subscriber_id": str(command.subscriber_id),
+            "subscription_id": str(command.subscription_id)
+            if command.subscription_id
+            else None,
+            "radius_profile_id": str(command.radius_profile_id)
+            if command.radius_profile_id
+            else None,
+            "disposition": outcome.disposition.value,
+        },
+        account_id=command.subscriber_id,
+        subscription_id=command.subscription_id,
+    )
+    return outcome
 
 
 def _generate_random_password(length: int) -> str:
@@ -86,7 +166,7 @@ def _resolve_radius_setting(db: Session, key: str) -> object | None:
     return value
 
 
-def _generate_pppoe_username(db: Session, subscriber_id: str) -> str | None:
+def _generate_pppoe_username(db: Session, subscriber_id: UUID) -> str | None:
     from app.models.subscriber import Subscriber
 
     subscriber = db.get(Subscriber, subscriber_id)
@@ -116,77 +196,134 @@ def _generate_pppoe_username_sequence(db: Session) -> str | None:
     )
 
 
-def auto_generate_pppoe_credential(
+def ensure_pppoe_credential(
     db: Session,
-    subscriber_id: str,
-    *,
-    radius_profile_id: str | None = None,
-    subscription_id: str | None = None,
-) -> AccessCredential | None:
-    """Auto-generate a PPPoE AccessCredential if none exists.
+    command: EnsurePppoeCredentialCommand,
+) -> EnsurePppoeCredentialOutcome:
+    """Ensure one active PPPoE credential and its exact service binding.
 
-    If the subscriber has no active AccessCredential, generates one with the
-    canonical PPPoE username (``10`` + subscriber canonical id) and a random
-    encrypted password.
-
-    Args:
-        db: Database session.
-        subscriber_id: The subscriber UUID.
-        radius_profile_id: Optional RADIUS profile to assign.
-
-    Returns:
-        The newly created AccessCredential, or None if one already exists.
+    This participant is idempotent and flush-only. The lifecycle, catalog, or
+    provisioning coordinator that admitted ``command`` owns transaction
+    completion. Credential secrets never leave this boundary.
     """
-    subscription_key = UUID(subscription_id) if subscription_id else None
+    from app.models.subscriber import Subscriber
 
-    # Check for existing active credentials
+    subscriber = db.scalar(
+        select(Subscriber)
+        .where(Subscriber.id == command.subscriber_id)
+        .with_for_update()
+    )
+    if subscriber is None:
+        raise _error("subscriber_missing", "The target subscriber was not found.")
+
+    subscription = None
+    if command.subscription_id is not None:
+        subscription = db.scalar(
+            select(Subscription)
+            .where(Subscription.id == command.subscription_id)
+            .with_for_update()
+        )
+        if subscription is None:
+            raise _error(
+                "subscription_missing", "The target subscription was not found."
+            )
+        if subscription.subscriber_id != command.subscriber_id:
+            raise _error(
+                "subscriber_mismatch",
+                "The target subscription no longer belongs to the subscriber.",
+            )
+
+    if command.radius_profile_id is not None:
+        profile = db.get(RadiusProfile, command.radius_profile_id)
+        if profile is None or not profile.is_active:
+            raise _error(
+                "radius_profile_unavailable",
+                "The target RADIUS profile is unavailable.",
+            )
+
     existing_query = db.query(AccessCredential).filter(
-        AccessCredential.subscriber_id == subscriber_id,
+        AccessCredential.subscriber_id == command.subscriber_id,
         AccessCredential.is_active.is_(True),
     )
-    if subscription_key is not None:
-        existing = existing_query.filter(
-            AccessCredential.subscription_id == subscription_key
-        ).first()
-        if existing is None:
-            legacy = existing_query.filter(
-                AccessCredential.subscription_id.is_(None)
-            ).all()
-            if len(legacy) == 1:
-                legacy[0].subscription_id = subscription_key
-                db.flush()
-                return legacy[0]
-    else:
-        existing = existing_query.first()
-    if existing:
-        logger.debug(
-            "Subscriber %s already has active credential %s, skipping PPPoE auto-gen",
-            subscriber_id,
-            existing.username,
+    if command.subscription_id is not None:
+        existing = (
+            existing_query.filter(
+                AccessCredential.subscription_id == command.subscription_id
+            )
+            .with_for_update()
+            .first()
         )
-        return None
+        if existing is None:
+            legacy = (
+                existing_query.filter(AccessCredential.subscription_id.is_(None))
+                .with_for_update()
+                .all()
+            )
+            if len(legacy) == 1:
+                existing = legacy[0]
+                existing.subscription_id = command.subscription_id
+                existing.radius_profile_id = command.radius_profile_id
+                existing.connection_type = ConnectionType.pppoe
+                if subscription is not None:
+                    subscription.login = existing.username
+                db.flush()
+                return _stage_credential_event(
+                    db,
+                    command=command,
+                    outcome=EnsurePppoeCredentialOutcome(
+                        credential_id=existing.id,
+                        username=existing.username,
+                        disposition=PppoeCredentialDisposition.rebound_legacy,
+                        changed=True,
+                    ),
+                )
+    else:
+        existing = existing_query.with_for_update().first()
+    if existing:
+        changed = existing.connection_type != ConnectionType.pppoe
+        changed = changed or (
+            command.radius_profile_id is not None
+            and existing.radius_profile_id != command.radius_profile_id
+        )
+        changed = changed or (
+            subscription is not None and subscription.login != existing.username
+        )
+        existing.connection_type = ConnectionType.pppoe
+        if command.radius_profile_id is not None:
+            existing.radius_profile_id = command.radius_profile_id
+        if subscription is not None:
+            subscription.login = existing.username
+        db.flush()
+        return _stage_credential_event(
+            db,
+            command=command,
+            outcome=EnsurePppoeCredentialOutcome(
+                credential_id=existing.id,
+                username=existing.username,
+                disposition=PppoeCredentialDisposition.reused,
+                changed=changed,
+            ),
+        )
 
     has_other_service_credential = (
-        subscription_key is not None
+        command.subscription_id is not None
         and existing_query.filter(
             AccessCredential.subscription_id.is_not(None),
-            AccessCredential.subscription_id != subscription_key,
+            AccessCredential.subscription_id != command.subscription_id,
         ).first()
         is not None
     )
     username = (
         _generate_pppoe_username_sequence(db)
         if has_other_service_credential
-        else _generate_pppoe_username(db, subscriber_id)
+        else _generate_pppoe_username(db, command.subscriber_id)
     )
     if not username:
-        logger.warning(
-            "PPPoE username derivation returned None for subscriber %s",
-            subscriber_id,
+        raise _error(
+            "username_unavailable",
+            "A PPPoE username could not be allocated for the subscription.",
         )
-        return None
 
-    # Generate and encrypt password
     password_length_raw = _resolve_radius_setting(db, "pppoe_default_password_length")
     password_length = _resolve_int_setting(password_length_raw, 12)
     password_length = max(8, min(64, password_length))
@@ -195,36 +332,64 @@ def auto_generate_pppoe_credential(
     encrypted_password = encrypt_credential(plain_password)
 
     credential = (
-        db.query(AccessCredential).filter(AccessCredential.username == username).first()
+        db.query(AccessCredential)
+        .filter(AccessCredential.username == username)
+        .with_for_update()
+        .first()
     )
-    if credential is not None and str(credential.subscriber_id) != str(subscriber_id):
-        raise ValueError(
-            f"Derived PPPoE username {username} is already used by another subscriber."
+    if credential is not None and credential.subscriber_id != command.subscriber_id:
+        raise _error(
+            "username_conflict",
+            "The derived PPPoE username is already assigned to another subscriber.",
         )
 
+    disposition = PppoeCredentialDisposition.reactivated
     if credential is None:
         credential = AccessCredential(
-            subscriber_id=subscriber_id,
-            subscription_id=subscription_key,
+            subscriber_id=command.subscriber_id,
+            subscription_id=command.subscription_id,
             username=username,
             is_active=True,
             connection_type=ConnectionType.pppoe,
         )
         db.add(credential)
+        disposition = PppoeCredentialDisposition.created
 
     credential.secret_hash = encrypted_password
-    credential.subscription_id = subscription_key
+    credential.subscription_id = command.subscription_id
     credential.is_active = True
     credential.connection_type = ConnectionType.pppoe
-    if radius_profile_id:
-        # The column's GUID type coerces str/UUID; assign raw so a malformed
-        # profile id doesn't turn into an activation-blocking ValueError here.
-        credential.radius_profile_id = radius_profile_id  # type: ignore[assignment]
+    credential.radius_profile_id = command.radius_profile_id
+    if subscription is not None:
+        subscription.login = username
 
     db.flush()
     logger.info(
-        "Auto-generated PPPoE credential %s for subscriber %s",
-        username,
-        subscriber_id,
+        "Ensured PPPoE credential",
+        extra={
+            "credential_id": str(credential.id),
+            "subscription_id": str(command.subscription_id)
+            if command.subscription_id
+            else None,
+            "disposition": disposition.value,
+        },
     )
-    return credential
+    return _stage_credential_event(
+        db,
+        command=command,
+        outcome=EnsurePppoeCredentialOutcome(
+            credential_id=credential.id,
+            username=credential.username,
+            disposition=disposition,
+            changed=True,
+        ),
+    )
+
+
+__all__ = [
+    "EnsurePppoeCredentialCommand",
+    "EnsurePppoeCredentialOutcome",
+    "PppoeCredentialDisposition",
+    "PppoeCredentialError",
+    "ensure_pppoe_credential",
+]
