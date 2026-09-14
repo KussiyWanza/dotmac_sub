@@ -886,7 +886,8 @@
 {% block scripts %}
 {{ super() }}
 {% if can(request, "attendance:self:use") %}
-<script src="/static/js/admin-attendance-reminder.js"></script>
+<script src="/static/js/admin-attendance-reminder.js"
+        data-attendance-subject="{{ ((request.state.auth|default({})).get('principal_id', '')) | e }}"></script>
 {% endif %}
 <script src="/static/js/session-refresh.js?v=20260914a"></script>
 <script src="/static/js/admin-workflow-help.js?v=20260910a"></script>
