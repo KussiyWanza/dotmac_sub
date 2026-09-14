@@ -178,6 +178,53 @@ def test_complete_customer_can_resolve(db_session):
     assert conversation.status == "resolved"
 
 
+def test_explicit_lead_context_outranks_customer_role_for_same_party(db_session):
+    conversation, customer = _customer_conversation(
+        db_session,
+        name="",
+        phone="",
+        address="",
+    )
+    party = Party(
+        party_type=PartyType.person.value,
+        display_name="Existing Customer Prospect",
+    )
+    db_session.add(party)
+    db_session.flush()
+    customer.party_id = party.id
+    customer.party_bound_at = datetime.now(UTC)
+    customer.party_binding_source = "pytest"
+    customer.party_binding_reason = "Same Party Customer and Lead context"
+    lead = Lead(
+        party_id=party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="New service opportunity for existing Customer",
+        title="Second location",
+    )
+    db_session.add(lead)
+    db_session.flush()
+    db_session.add(
+        InboxConversationLeadLink(
+            conversation_id=conversation.id,
+            lead_id=lead.id,
+            party_id=party.id,
+            link_source="reviewed_selection",
+            link_reason="Conversation explicitly handled as sales",
+            command_id=uuid4(),
+        )
+    )
+    db_session.flush()
+
+    verdict = team_inbox_customer_completion.resolution_readiness(
+        db_session, conversation
+    )
+
+    assert verdict.classification.value == "lead"
+    assert verdict.can_agent_resolve is True
+    assert verdict.fields == ()
+
+
 def test_unreviewed_phone_match_is_narrowed_by_exact_observed_name(db_session):
     customer = Subscriber(
         first_name="Ada",

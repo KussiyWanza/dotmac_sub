@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from functools import partial
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import and_, false, or_, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -20,8 +22,18 @@ from app.models.party import (
     PartyRelationshipStatus,
     PartyRelationshipType,
 )
+from app.models.sales import Lead, LeadStatus
 from app.models.subscriber import Reseller, Subscriber
-from app.models.team_inbox import InboxContactLink, InboxConversation
+from app.models.team_inbox import (
+    InboxContactLink,
+    InboxConversation,
+    InboxConversationLeadLink,
+    InboxConversationParticipant,
+    InboxMessage,
+    InboxMessageDirection,
+    InboxParticipantAdmissionSource,
+)
+from app.services import party as party_service
 from app.services import team_inbox_participants
 from app.services.common import coerce_uuid
 from app.services.domain_errors import DomainError
@@ -31,9 +43,12 @@ from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
     execute_owner_command,
+    execute_owner_savepoint,
     owner_command_active,
 )
 from app.services.team_inbox_channel_receive import _normalize_contact
+
+logger = logging.getLogger(__name__)
 
 
 class ContactLinkError(DomainError, ValueError):
@@ -94,6 +109,129 @@ class LinkConversationContactCommand:
 class CustomerLinkOptionSource(StrEnum):
     suggested = "suggested"
     search = "search"
+
+
+class IdentityEvidenceDisposition(StrEnum):
+    """Authoritative endpoint evidence, deliberately separate from discovery."""
+
+    no_match = "no_match"
+    exact_match = "exact_match"
+    ambiguous_match = "ambiguous_match"
+
+
+class IdentityEvidenceSubjectKind(StrEnum):
+    customer = "customer"
+    reseller = "reseller"
+    lead_party = "lead_party"
+    party = "party"
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedInboundIdentity:
+    channel_type: str
+    normalized_endpoint: str
+    provider: str | None
+    provider_account_id: str | None
+    external_subject_id: str | None
+
+    @property
+    def provider_account_scope(self) -> str:
+        return self.provider_account_id or "default"
+
+
+@dataclass(frozen=True, slots=True)
+class IdentityEvidenceSubject:
+    kind: IdentityEvidenceSubjectKind
+    party_id: UUID | None
+    subject_id: UUID
+    party_contact_point_id: UUID | None = None
+    lead_ids: tuple[UUID, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class IdentityEvidence:
+    disposition: IdentityEvidenceDisposition
+    identity: ObservedInboundIdentity
+    subjects: tuple[IdentityEvidenceSubject, ...]
+    authoritative_party_ids: tuple[UUID, ...]
+    conflict_reason: str | None = None
+
+    @property
+    def exact_party_id(self) -> UUID | None:
+        if (
+            self.disposition is IdentityEvidenceDisposition.exact_match
+            and len(self.authoritative_party_ids) == 1
+        ):
+            return self.authoritative_party_ids[0]
+        return None
+
+    @property
+    def exact_party_contact_point_id(self) -> UUID | None:
+        if self.exact_party_id is None:
+            return None
+        point_ids = {
+            item.party_contact_point_id
+            for item in self.subjects
+            if item.party_id == self.exact_party_id
+            and item.party_contact_point_id is not None
+        }
+        return min(point_ids, default=None, key=str)
+
+
+class LeadEndpointRepairDisposition(StrEnum):
+    already_correct = "already_correct"
+    safe_bind_existing_point = "safe_bind_existing_point"
+    safe_create_point = "safe_create_point"
+    conflict_requires_review = "conflict_requires_review"
+
+
+@dataclass(frozen=True, slots=True)
+class LeadEndpointRepairFinding:
+    conversation_id: UUID
+    lead_id: UUID
+    party_id: UUID
+    channel_type: str
+    inbound_endpoint: str
+    provider_account_scope: str
+    existing_party_contact_points: tuple[UUID, ...]
+    disposition: LeadEndpointRepairDisposition
+    proposed_action: str
+
+
+@dataclass(frozen=True, slots=True)
+class RepairInboxLeadEndpointsCommand:
+    context: CommandContext
+    dry_run: bool = True
+    limit: int = 5000
+
+
+@dataclass(frozen=True, slots=True)
+class RepairInboxLeadEndpointsOutcome:
+    examined: int
+    already_correct: int
+    safe_candidates: int
+    repaired: int
+    conflicts: int
+    errors: int
+    findings: tuple[LeadEndpointRepairFinding, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LeadIdentityCollision:
+    channel_type: str
+    normalized_endpoint: str
+    provider: str | None
+    provider_account_id: str | None
+    external_subject_id: str | None
+    party_ids: tuple[UUID, ...]
+    lead_ids: tuple[UUID, ...]
+    disposition: LeadEndpointRepairDisposition
+
+
+@dataclass(frozen=True, slots=True)
+class LeadIdentityCollisionPreview:
+    examined_contact_points: int
+    collisions: tuple[LeadIdentityCollision, ...]
 
 
 _INBOX_PARTY_CONTACT_CHANNELS = {
@@ -337,6 +475,11 @@ def contact_link_candidates(
     db: Session,
     terms: list[str],
 ) -> dict[str, list[dict[str, str]]]:
+    """Return UI discovery suggestions only.
+
+    These rows are never identity evidence. Call ``conversation_identity_evidence``
+    for Create-Lead eligibility and other identity decisions.
+    """
     subscribers: list[Subscriber] = []
     resellers: list[Reseller] = []
     organizations: list[Organization] = []
@@ -435,6 +578,592 @@ def contact_link_candidates(
             for row in organizations
         ],
     }
+
+
+_PROVIDER_SCOPED_IDENTITY_CHANNELS = frozenset(
+    {
+        PartyContactPointType.facebook_messenger.value,
+        PartyContactPointType.instagram_dm.value,
+    }
+)
+_OPEN_LEAD_STATUSES = tuple(
+    status.value
+    for status in LeadStatus
+    if status not in {LeadStatus.won, LeadStatus.lost}
+)
+
+
+def _message_provider_identity(
+    message: InboxMessage | None,
+) -> tuple[str | None, str | None]:
+    metadata = dict(message.metadata_ or {}) if message is not None else {}
+    provider = str(metadata.get("provider") or "").strip() or None
+    provider_account_id = (
+        str(
+            metadata.get("provider_account_scope")
+            or metadata.get("provider_account_id")
+            or metadata.get("page_or_account_id")
+            or metadata.get("page_id")
+            or metadata.get("instagram_account_id")
+            or metadata.get("phone_number_id")
+            or ""
+        ).strip()
+        or None
+    )
+    return provider, provider_account_id
+
+
+def observed_inbound_identity(
+    db: Session,
+    conversation: InboxConversation,
+) -> ObservedInboundIdentity:
+    """Return the exact inbound endpoint represented by a conversation.
+
+    Provider display names and nearby records are intentionally excluded. For
+    opaque Meta identities the provider account is part of the identity.
+    """
+
+    normalized_endpoint = _normalize_contact(
+        db, conversation.channel_type, conversation.contact_address
+    )
+    if not normalized_endpoint:
+        raise ContactLinkError(
+            "Conversation does not have a usable inbound endpoint.",
+            suffix="identity_endpoint_unavailable",
+        )
+    latest_inbound = db.scalar(
+        select(InboxMessage)
+        .where(
+            InboxMessage.conversation_id == conversation.id,
+            InboxMessage.direction == InboxMessageDirection.inbound.value,
+        )
+        .order_by(
+            InboxMessage.received_at.desc().nullslast(),
+            InboxMessage.created_at.desc(),
+            InboxMessage.id.desc(),
+        )
+        .limit(1)
+    )
+    provider, provider_account_id = _message_provider_identity(latest_inbound)
+    if provider_account_id is None:
+        provider_account_id = db.scalar(
+            select(InboxConversationParticipant.provider_account_scope)
+            .where(
+                InboxConversationParticipant.conversation_id == conversation.id,
+                InboxConversationParticipant.channel_type == conversation.channel_type,
+                InboxConversationParticipant.normalized_endpoint == normalized_endpoint,
+                InboxConversationParticipant.admission_source
+                == InboxParticipantAdmissionSource.inbound_from.value,
+                InboxConversationParticipant.is_active.is_(True),
+            )
+            .order_by(InboxConversationParticipant.admitted_at.desc())
+            .limit(1)
+        )
+    if provider_account_id == "default":
+        provider_account_id = None
+    return ObservedInboundIdentity(
+        channel_type=conversation.channel_type,
+        normalized_endpoint=normalized_endpoint,
+        provider=provider,
+        provider_account_id=provider_account_id,
+        external_subject_id=(
+            normalized_endpoint
+            if conversation.channel_type in _PROVIDER_SCOPED_IDENTITY_CHANNELS
+            else None
+        ),
+    )
+
+
+def _identity_contact_channels(channel_type: str) -> tuple[str, ...]:
+    if channel_type == PartyContactPointType.whatsapp.value:
+        return (
+            PartyContactPointType.whatsapp.value,
+            PartyContactPointType.phone.value,
+        )
+    mapped = _INBOX_PARTY_CONTACT_CHANNELS.get(channel_type)
+    return (mapped,) if mapped is not None else ()
+
+
+def endpoint_identity_evidence(
+    db: Session,
+    identity: ObservedInboundIdentity,
+) -> IdentityEvidence:
+    """Resolve canonical Party ownership for one exact endpoint.
+
+    A single Party may legitimately hold Customer and Lead roles. Ambiguity is
+    therefore based on distinct Party owners, not the number of roles or Leads.
+    """
+
+    channels = _identity_contact_channels(identity.channel_type)
+    if not channels:
+        return IdentityEvidence(
+            IdentityEvidenceDisposition.no_match,
+            identity,
+            (),
+            (),
+        )
+    if identity.channel_type in _PROVIDER_SCOPED_IDENTITY_CHANNELS and not (
+        identity.provider
+        and identity.provider_account_id
+        and identity.external_subject_id
+    ):
+        return IdentityEvidence(
+            IdentityEvidenceDisposition.ambiguous_match,
+            identity,
+            (),
+            (),
+            "provider_scope_incomplete",
+        )
+
+    statement = (
+        select(PartyContactPoint)
+        .join(Party, Party.id == PartyContactPoint.party_id)
+        .where(
+            PartyContactPoint.channel_type.in_(channels),
+            PartyContactPoint.is_active.is_(True),
+            Party.status.notin_(
+                (
+                    PartyIdentityStatus.merged.value,
+                    PartyIdentityStatus.archived.value,
+                )
+            ),
+        )
+    )
+    if identity.channel_type in _PROVIDER_SCOPED_IDENTITY_CHANNELS:
+        statement = statement.where(
+            PartyContactPoint.provider == identity.provider,
+            PartyContactPoint.provider_account_id == identity.provider_account_id,
+            PartyContactPoint.external_subject_id == identity.external_subject_id,
+        )
+    else:
+        statement = statement.where(
+            PartyContactPoint.normalized_value == identity.normalized_endpoint
+        )
+    points = tuple(
+        db.scalars(
+            statement.order_by(PartyContactPoint.created_at, PartyContactPoint.id)
+        ).all()
+    )
+    party_ids = tuple(sorted({point.party_id for point in points}, key=str))
+    if not party_ids:
+        return IdentityEvidence(
+            IdentityEvidenceDisposition.no_match,
+            identity,
+            (),
+            (),
+        )
+
+    leads_by_party: dict[UUID, tuple[UUID, ...]] = {}
+    lead_rows = tuple(
+        db.execute(
+            select(Lead.party_id, Lead.id)
+            .where(
+                Lead.party_id.in_(party_ids),
+                Lead.is_active.is_(True),
+                Lead.status.in_(_OPEN_LEAD_STATUSES),
+            )
+            .order_by(Lead.party_id, Lead.updated_at.desc(), Lead.id)
+        ).all()
+    )
+    for party_id in party_ids:
+        leads_by_party[party_id] = tuple(
+            lead_id
+            for candidate_party_id, lead_id in lead_rows
+            if candidate_party_id == party_id
+        )
+
+    point_by_party = {
+        party_id: next(point for point in points if point.party_id == party_id)
+        for party_id in party_ids
+    }
+    subscribers = tuple(
+        db.scalars(select(Subscriber).where(Subscriber.party_id.in_(party_ids))).all()
+    )
+    resellers = tuple(
+        db.scalars(select(Reseller).where(Reseller.party_id.in_(party_ids))).all()
+    )
+    subjects: list[IdentityEvidenceSubject] = []
+    for party_id in party_ids:
+        point_id = point_by_party[party_id].id
+        lead_ids = leads_by_party[party_id]
+        party_subscribers = tuple(
+            row for row in subscribers if row.party_id == party_id and row.is_active
+        )
+        party_resellers = tuple(
+            row for row in resellers if row.party_id == party_id and row.is_active
+        )
+        subjects.extend(
+            IdentityEvidenceSubject(
+                IdentityEvidenceSubjectKind.customer,
+                party_id,
+                row.id,
+                point_id,
+                lead_ids,
+            )
+            for row in party_subscribers
+        )
+        subjects.extend(
+            IdentityEvidenceSubject(
+                IdentityEvidenceSubjectKind.reseller,
+                party_id,
+                row.id,
+                point_id,
+                lead_ids,
+            )
+            for row in party_resellers
+        )
+        if lead_ids:
+            subjects.append(
+                IdentityEvidenceSubject(
+                    IdentityEvidenceSubjectKind.lead_party,
+                    party_id,
+                    party_id,
+                    point_id,
+                    lead_ids,
+                )
+            )
+        if not party_subscribers and not party_resellers and not lead_ids:
+            subjects.append(
+                IdentityEvidenceSubject(
+                    IdentityEvidenceSubjectKind.party,
+                    party_id,
+                    party_id,
+                    point_id,
+                )
+            )
+    return IdentityEvidence(
+        (
+            IdentityEvidenceDisposition.exact_match
+            if len(party_ids) == 1
+            else IdentityEvidenceDisposition.ambiguous_match
+        ),
+        identity,
+        tuple(subjects),
+        party_ids,
+        None if len(party_ids) == 1 else "multiple_authoritative_parties",
+    )
+
+
+def conversation_identity_evidence(
+    db: Session,
+    conversation: InboxConversation,
+) -> IdentityEvidence:
+    """Combine exact canonical endpoint ownership with recorded resolver facts."""
+
+    identity = observed_inbound_identity(db, conversation)
+    canonical = endpoint_identity_evidence(db, identity)
+    metadata = dict(conversation.metadata_ or {})
+    resolution = metadata.get("contact_resolution")
+    resolution_data = resolution if isinstance(resolution, dict) else {}
+    if str(resolution_data.get("status") or "") == "ambiguous":
+        return IdentityEvidence(
+            IdentityEvidenceDisposition.ambiguous_match,
+            identity,
+            canonical.subjects,
+            canonical.authoritative_party_ids,
+            "recorded_contact_resolution_ambiguous",
+        )
+    return canonical
+
+
+def lock_conversation_identity_evidence(
+    db: Session,
+    conversation: InboxConversation,
+) -> IdentityEvidence:
+    """Serialize exact endpoint ownership decisions for the current transaction."""
+
+    identity = observed_inbound_identity(db, conversation)
+    if db.get_bind().dialect.name == "postgresql":
+        digest = hashlib.sha256(
+            ":".join(
+                (
+                    "team-inbox-party-identity",
+                    identity.channel_type,
+                    identity.provider or "",
+                    identity.provider_account_id or "",
+                    identity.external_subject_id or "",
+                    identity.normalized_endpoint,
+                )
+            ).encode()
+        ).digest()[:8]
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"),
+            {"key": int.from_bytes(digest, byteorder="big", signed=True)},
+        )
+    return conversation_identity_evidence(db, conversation)
+
+
+def _lead_endpoint_repair_finding(
+    db: Session,
+    *,
+    link: InboxConversationLeadLink,
+    conversation: InboxConversation,
+) -> LeadEndpointRepairFinding:
+    identity = observed_inbound_identity(db, conversation)
+    evidence = endpoint_identity_evidence(db, identity)
+    party_points = tuple(
+        db.scalars(
+            select(PartyContactPoint.id)
+            .where(
+                PartyContactPoint.party_id == link.party_id,
+                PartyContactPoint.is_active.is_(True),
+            )
+            .order_by(PartyContactPoint.created_at, PartyContactPoint.id)
+        ).all()
+    )
+    if evidence.exact_party_id == link.party_id:
+        point_id = evidence.exact_party_contact_point_id
+        participant_bound = (
+            point_id is not None
+            and db.scalar(
+                select(InboxConversationParticipant.id)
+                .where(
+                    InboxConversationParticipant.conversation_id == conversation.id,
+                    InboxConversationParticipant.party_contact_point_id == point_id,
+                    InboxConversationParticipant.is_active.is_(True),
+                )
+                .limit(1)
+            )
+            is not None
+        )
+        disposition = (
+            LeadEndpointRepairDisposition.already_correct
+            if participant_bound
+            else LeadEndpointRepairDisposition.safe_bind_existing_point
+        )
+        action = (
+            "none"
+            if participant_bound
+            else "bind the existing exact Party contact point to the conversation"
+        )
+    elif evidence.disposition is IdentityEvidenceDisposition.no_match:
+        disposition = LeadEndpointRepairDisposition.safe_create_point
+        action = "create the exact Party contact point and bind it to the conversation"
+    else:
+        disposition = LeadEndpointRepairDisposition.conflict_requires_review
+        action = "human review required; no automatic Party merge or repoint"
+    return LeadEndpointRepairFinding(
+        conversation_id=conversation.id,
+        lead_id=link.lead_id,
+        party_id=link.party_id,
+        channel_type=identity.channel_type,
+        inbound_endpoint=identity.normalized_endpoint,
+        provider_account_scope=identity.provider_account_scope,
+        existing_party_contact_points=party_points,
+        disposition=disposition,
+        proposed_action=action,
+    )
+
+
+def _repair_lead_endpoint(
+    db: Session,
+    *,
+    link: InboxConversationLeadLink,
+    conversation: InboxConversation,
+) -> bool:
+    evidence = lock_conversation_identity_evidence(db, conversation)
+    identity = evidence.identity
+    if evidence.exact_party_id == link.party_id:
+        point_id = evidence.exact_party_contact_point_id
+        if point_id is None:
+            return False
+    elif evidence.disposition is IdentityEvidenceDisposition.no_match:
+        mapped_channel = _INBOX_PARTY_CONTACT_CHANNELS.get(identity.channel_type)
+        if mapped_channel is None:
+            return False
+        social = identity.channel_type in _PROVIDER_SCOPED_IDENTITY_CHANNELS
+        point = party_service.add_contact_point(
+            db,
+            party_id=link.party_id,
+            channel_type=mapped_channel,
+            normalized_value=identity.normalized_endpoint,
+            display_value=identity.normalized_endpoint,
+            scope_key=(
+                f"{identity.provider}:{identity.provider_account_id}"
+                if social
+                else "default"
+            ),
+            provider=identity.provider if social else None,
+            provider_account_id=identity.provider_account_id if social else None,
+            external_subject_id=identity.external_subject_id if social else None,
+            metadata={
+                "captured_by": OWNER,
+                "origin_conversation_id": str(conversation.id),
+                "identity_provenance": "reviewed_inbox_lead_endpoint_repair",
+            },
+        )
+        point_id = point.id
+    else:
+        return False
+    team_inbox_participants.bind_endpoint_to_contact_point(
+        db,
+        team_inbox_participants.BindEndpointContactPointCommand(
+            conversation_id=conversation.id,
+            channel_type=identity.channel_type,
+            normalized_endpoint=identity.normalized_endpoint,
+            provider_account_scope=identity.provider_account_scope,
+            party_contact_point_id=point_id,
+            relationship_type=team_inbox_participants.InboxParticipantRelationship.contact,
+            source=OWNER,
+            reason="Reviewed Inbox Lead endpoint identity repair",
+        ),
+    )
+    return True
+
+
+def repair_inbox_lead_endpoints(
+    db: Session,
+    command: RepairInboxLeadEndpointsCommand,
+) -> RepairInboxLeadEndpointsOutcome:
+    """Diagnose or explicitly repair Inbox-origin Leads missing endpoint binding."""
+
+    def operation() -> RepairInboxLeadEndpointsOutcome:
+        links = tuple(
+            db.scalars(
+                select(InboxConversationLeadLink)
+                .where(
+                    InboxConversationLeadLink.is_active.is_(True),
+                    InboxConversationLeadLink.link_source.in_(
+                        ("inbox_lead_authoring", "inbox_lead_intake")
+                    ),
+                )
+                .order_by(
+                    InboxConversationLeadLink.linked_at,
+                    InboxConversationLeadLink.id,
+                )
+                .limit(max(1, min(int(command.limit), 10000)))
+            ).all()
+        )
+        findings: list[LeadEndpointRepairFinding] = []
+        repaired = errors = 0
+        for link in links:
+            conversation = db.get(InboxConversation, link.conversation_id)
+            if conversation is None:
+                errors += 1
+                continue
+            try:
+                finding = _lead_endpoint_repair_finding(
+                    db, link=link, conversation=conversation
+                )
+                findings.append(finding)
+                if not command.dry_run and finding.disposition in {
+                    LeadEndpointRepairDisposition.safe_bind_existing_point,
+                    LeadEndpointRepairDisposition.safe_create_point,
+                }:
+                    changed = execute_owner_savepoint(
+                        db,
+                        partial(
+                            _repair_lead_endpoint,
+                            db,
+                            link=link,
+                            conversation=conversation,
+                        ),
+                    )
+                    repaired += int(changed)
+            except Exception:  # noqa: BLE001 - repair reports isolated row failures
+                errors += 1
+                logger.exception(
+                    "team_inbox_lead_endpoint_repair_failed",
+                    extra={
+                        "event": "team_inbox_lead_endpoint_repair_failed",
+                        "conversation_id": str(link.conversation_id),
+                        "lead_id": str(link.lead_id),
+                    },
+                )
+        already = sum(
+            item.disposition is LeadEndpointRepairDisposition.already_correct
+            for item in findings
+        )
+        safe = sum(
+            item.disposition
+            in {
+                LeadEndpointRepairDisposition.safe_bind_existing_point,
+                LeadEndpointRepairDisposition.safe_create_point,
+            }
+            for item in findings
+        )
+        conflicts = sum(
+            item.disposition is LeadEndpointRepairDisposition.conflict_requires_review
+            for item in findings
+        )
+        return RepairInboxLeadEndpointsOutcome(
+            examined=len(links),
+            already_correct=already,
+            safe_candidates=safe,
+            repaired=repaired,
+            conflicts=conflicts,
+            errors=errors,
+            findings=tuple(findings),
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_CONTACT_LINK_COMMAND,
+        context=command.context,
+        operation=operation,
+    )
+
+
+def lead_identity_collision_diagnostics(
+    db: Session, *, limit: int = 10000
+) -> LeadIdentityCollisionPreview:
+    """Report exact endpoint ownership collisions without merging Parties."""
+
+    rows = tuple(
+        db.execute(
+            select(PartyContactPoint, Lead.id)
+            .join(Lead, Lead.party_id == PartyContactPoint.party_id)
+            .where(
+                PartyContactPoint.is_active.is_(True),
+                Lead.is_active.is_(True),
+                PartyContactPoint.channel_type.in_(
+                    (
+                        PartyContactPointType.phone.value,
+                        PartyContactPointType.whatsapp.value,
+                        PartyContactPointType.email.value,
+                        PartyContactPointType.facebook_messenger.value,
+                        PartyContactPointType.instagram_dm.value,
+                    )
+                ),
+            )
+            .order_by(PartyContactPoint.id, Lead.id)
+            .limit(max(1, min(int(limit), 50000)))
+        ).all()
+    )
+    grouped: dict[
+        tuple[str, str, str | None, str | None, str | None],
+        tuple[set[UUID], set[UUID]],
+    ] = {}
+    for point, lead_id in rows:
+        social = point.channel_type in _PROVIDER_SCOPED_IDENTITY_CHANNELS
+        key = (
+            point.channel_type,
+            point.normalized_value,
+            point.provider if social else None,
+            point.provider_account_id if social else None,
+            point.external_subject_id if social else None,
+        )
+        parties, leads = grouped.setdefault(key, (set(), set()))
+        parties.add(point.party_id)
+        leads.add(lead_id)
+    collisions = tuple(
+        LeadIdentityCollision(
+            channel_type=key[0],
+            normalized_endpoint=key[1],
+            provider=key[2],
+            provider_account_id=key[3],
+            external_subject_id=key[4],
+            party_ids=tuple(sorted(parties, key=str)),
+            lead_ids=tuple(sorted(leads, key=str)),
+            disposition=LeadEndpointRepairDisposition.conflict_requires_review,
+        )
+        for key, (parties, leads) in grouped.items()
+        if len(parties) > 1
+    )
+    return LeadIdentityCollisionPreview(
+        examined_contact_points=len(rows),
+        collisions=collisions,
+    )
 
 
 def _target(
@@ -671,11 +1400,44 @@ def bind_contact_link_party_contact_point(
     return link
 
 
-def _contact_route_lock_key(channel_type: str, normalized_contact: str) -> int:
+def _contact_route_lock_key(identity: ObservedInboundIdentity) -> int:
     digest = hashlib.sha256(
-        f"team-inbox-contact-link:{channel_type}:{normalized_contact}".encode()
+        (
+            "team-inbox-contact-link:"
+            f"{identity.channel_type}:{identity.normalized_endpoint}:"
+            f"{identity.provider or ''}:{identity.provider_account_id or ''}:"
+            f"{identity.external_subject_id or ''}"
+        ).encode()
     ).digest()[:8]
     return int.from_bytes(digest, byteorder="big", signed=True)
+
+
+def scoped_contact_link_clauses(
+    identity: ObservedInboundIdentity,
+) -> tuple[ColumnElement[bool], ...]:
+    clauses: list[ColumnElement[bool]] = [
+        InboxContactLink.channel_type == identity.channel_type,
+        InboxContactLink.normalized_contact == identity.normalized_endpoint,
+        InboxContactLink.is_active.is_(True),
+    ]
+    if identity.channel_type in _PROVIDER_SCOPED_IDENTITY_CHANNELS:
+        if not (
+            identity.provider
+            and identity.provider_account_id
+            and identity.external_subject_id
+        ):
+            clauses.append(false())
+        else:
+            clauses.extend(
+                (
+                    InboxContactLink.provider == identity.provider,
+                    InboxContactLink.provider_account_id
+                    == identity.provider_account_id,
+                    InboxContactLink.external_subject_id
+                    == identity.external_subject_id,
+                )
+            )
+    return tuple(clauses)
 
 
 def lock_conversation_contact_route(
@@ -694,10 +1456,11 @@ def lock_conversation_contact_route(
     if not normalized_contact:
         raise ContactLinkError("Conversation contact address cannot be normalized.")
     channel_type = snapshot.channel_type
+    identity = observed_inbound_identity(db, snapshot)
     if db.get_bind().dialect.name == "postgresql":
         db.execute(
             text("SELECT pg_advisory_xact_lock(:key)"),
-            {"key": _contact_route_lock_key(channel_type, normalized_contact)},
+            {"key": _contact_route_lock_key(identity)},
         )
     conversation = db.scalar(
         select(InboxConversation)
@@ -720,6 +1483,11 @@ def lock_conversation_contact_route(
             "The conversation contact route changed. Refresh and try again.",
             suffix="stale_contact_route",
         )
+    if observed_inbound_identity(db, conversation) != identity:
+        raise ContactLinkError(
+            "The provider identity scope changed. Refresh and try again.",
+            suffix="stale_contact_route",
+        )
     return conversation, normalized_contact
 
 
@@ -739,6 +1507,7 @@ def link_conversation_contact(
         db,
         conversation_id=command.conversation_id,
     )
+    identity = observed_inbound_identity(db, conversation)
     subscriber, reseller = _target(
         db,
         subscriber_id=(
@@ -757,11 +1526,7 @@ def link_conversation_contact(
     deactivated: list[UUID] = []
     active_link: InboxContactLink | None = db.scalar(
         select(InboxContactLink)
-        .where(
-            InboxContactLink.channel_type == conversation.channel_type,
-            InboxContactLink.normalized_contact == normalized_contact,
-            InboxContactLink.is_active.is_(True),
-        )
+        .where(*scoped_contact_link_clauses(identity))
         .with_for_update()
     )
     if command.expected_active_link_id is not None and (
@@ -795,6 +1560,9 @@ def link_conversation_contact(
         contact_link = InboxContactLink(
             channel_type=conversation.channel_type,
             normalized_contact=normalized_contact,
+            provider=identity.provider,
+            provider_account_id=identity.provider_account_id,
+            external_subject_id=identity.external_subject_id,
             subscriber_id=subscriber.id if subscriber is not None else None,
             reseller_id=reseller.id if reseller is not None else None,
             linked_by_person_id=command.actor_person_id,
@@ -856,6 +1624,11 @@ def link_conversation_contact(
             .all()
         )
         for historical in historical_rows:
+            if (
+                identity.channel_type in _PROVIDER_SCOPED_IDENTITY_CHANNELS
+                and observed_inbound_identity(db, historical) != identity
+            ):
+                continue
             historical.subscriber_id = subscriber.id
             historical_metadata = dict(historical.metadata_ or {})
             historical_resolution = dict(

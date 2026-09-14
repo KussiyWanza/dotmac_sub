@@ -94,10 +94,18 @@
             {% if action_eligibility.can_change_status %}
             <div class="relative" x-data="{ open: false }">
                 <button type="button" @click="open = !open" @click.outside="open = false" class="inline-flex min-h-10 items-center gap-1 rounded-lg border border-slate-300 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800" :aria-expanded="open.toString()">Status<svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg></button>
-                <div x-show="open" x-cloak class="absolute right-0 z-30 mt-2 w-40 rounded-lg border border-slate-200 bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-slate-900" role="menu">
+                <div x-show="open" x-cloak class="absolute right-0 z-30 mt-2 {% if resolution_readiness and resolution_readiness.requires_resolution_reason %}w-64{% else %}w-40{% endif %} rounded-lg border border-slate-200 bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-slate-900" role="menu">
                     {% for item in ['open', 'pending', 'snoozed', 'resolved'] %}
                     <form method="post" action="/admin/inbox/{{ timeline.id }}/status">
-                        {% include "components/forms/csrf_input.html" %}<input type="hidden" name="status_value" value="{{ item }}"><button type="submit" {% if item == 'resolved' and resolution_readiness and not resolution_readiness.can_agent_resolve %}disabled title="Complete the required Customer information before resolving"{% endif %} class="min-h-10 w-full rounded-md px-3 text-left text-xs font-medium capitalize hover:bg-amber-50 disabled:cursor-not-allowed disabled:text-slate-400 disabled:hover:bg-transparent dark:hover:bg-slate-800" role="menuitem">{{ item }}{% if item == 'resolved' and resolution_readiness and not resolution_readiness.can_agent_resolve %} · Blocked{% endif %}</button></form>
+                        {% include "components/forms/csrf_input.html" %}<input type="hidden" name="status_value" value="{{ item }}">
+                        {% if item == 'resolved' and resolution_readiness and resolution_readiness.requires_resolution_reason %}
+                        <label class="block px-2 pt-1 text-[10px] font-semibold text-slate-500">Resolution reason
+                            <select name="resolution_reason" required class="mt-1 h-9 w-full rounded-md border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950">
+                                {% for value, label in resolution_readiness.allowed_resolution_reasons %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+                            </select>
+                        </label>
+                        {% endif %}
+                        <button type="submit" {% if item == 'resolved' and resolution_readiness and not resolution_readiness.can_agent_resolve %}disabled title="Complete the required Customer information before resolving"{% endif %} class="min-h-10 w-full rounded-md px-3 text-left text-xs font-medium capitalize hover:bg-amber-50 disabled:cursor-not-allowed disabled:text-slate-400 disabled:hover:bg-transparent dark:hover:bg-slate-800" role="menuitem">{{ item }}{% if item == 'resolved' and resolution_readiness and not resolution_readiness.can_agent_resolve %} · Blocked{% endif %}</button></form>
                     {% endfor %}
                 </div>
             </div>

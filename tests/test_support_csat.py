@@ -19,7 +19,18 @@ from app.models.team_inbox import (
 from app.schemas.support import TicketSatisfactionRequest, TicketUpdate
 from app.services import support, support_csat, team_inbox_commands
 from app.services.domain_errors import DomainError
+from app.services.workqueue.permissions import WorkqueuePrincipal
 from app.web.admin import reports as report_routes
+
+
+def _admin_principal(actor_id) -> WorkqueuePrincipal:
+    return WorkqueuePrincipal(
+        person_id=actor_id,
+        roles=frozenset({"admin"}),
+        scopes=frozenset(),
+        can_view=True,
+        can_act=True,
+    )
 
 
 def _ticket(
@@ -243,24 +254,28 @@ def test_inbox_resolution_creates_one_request_and_reresolution_creates_second(
 
     changed = team_inbox_commands.update_status(
         db_session,
+        principal=_admin_principal(agent_id),
         conversation_id=conversation.id,
         status_value=InboxConversationStatus.resolved.value,
         actor_person_id=agent_id,
     )
     repeated = team_inbox_commands.update_status(
         db_session,
+        principal=_admin_principal(agent_id),
         conversation_id=conversation.id,
         status_value=InboxConversationStatus.resolved.value,
         actor_person_id=agent_id,
     )
     team_inbox_commands.update_status(
         db_session,
+        principal=_admin_principal(agent_id),
         conversation_id=conversation.id,
         status_value=InboxConversationStatus.open.value,
         actor_person_id=agent_id,
     )
     team_inbox_commands.update_status(
         db_session,
+        principal=_admin_principal(agent_id),
         conversation_id=conversation.id,
         status_value=InboxConversationStatus.resolved.value,
         actor_person_id=agent_id,

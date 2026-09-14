@@ -414,7 +414,11 @@ implementation.
   both template types are published. Manual Lead actions require
   `crm:lead:write`, a reply-capable supported channel, and owner-resolved proof
   that the sender is neither a customer nor a customer contact; ambiguous
-  identity fails closed. The Lead action is rendered beside the conversation
+  identity fails closed. Exact identity evidence is distinct from manual
+  discovery suggestions: unrelated recent records never block Create Lead or
+  appear as possible exact matches. The Lead action shows the normalized
+  inbound endpoint that will be bound, including provider/account scope for an
+  opaque social subject. The Lead action is rendered beside the conversation
   composer. The catalogue action is visible for every conversation and enables
   only plan families with a currently published PDF and a reply-capable thread.
 - State semantics: issued, effectively expired, revoked, completed, and failed
@@ -495,6 +499,12 @@ implementation.
   The bounded newest-first list shows endpoint, channel, status, and last
   activity and routes each row to the exact prior Inbox conversation.
   Assignment does not narrow this customer history.
+- Resolve eligibility and team scope come from the command/status owners, not
+  template conditions. Expired WhatsApp threads show their expired channel
+  state separately from unresolved/resolved status, require an explicit reason
+  for direct or bulk Resolve, and never require temporary assignment. Resolved
+  expired rows leave the default unresolved view but remain searchable in
+  resolved/history projections.
 
 ## Inbox Email Recipient And Copy Contract
 

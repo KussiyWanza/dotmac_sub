@@ -31,8 +31,10 @@ from app.services import (
     inbox_lead_actions,
     projects,
     support,
+    team_inbox_contact_links,
     team_inbox_customer_completion,
     team_inbox_participants,
+    team_inbox_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -187,9 +189,7 @@ class InboxContactContext:
     project_tasks: ContextSection[ProjectTaskSummary]
     profile_action: inbox_lead_actions.InboxResolvedAction
     lead_action: inbox_lead_actions.InboxResolvedAction
-    resolution_readiness: (
-        team_inbox_customer_completion.InboxCustomerResolutionReadiness
-    )
+    resolution_readiness: team_inbox_status.InboxResolutionReadiness
     customer_values: dict[
         team_inbox_customer_completion.CustomerProfileField, str | None
     ]
@@ -480,13 +480,18 @@ def _conversation_history_scope(
     ).strip()
     active_link = None
     if normalized_endpoint and conversation.channel_type:
-        active_link = (
-            db.query(InboxContactLink)
-            .filter(InboxContactLink.channel_type == conversation.channel_type)
-            .filter(InboxContactLink.normalized_contact == normalized_endpoint)
-            .filter(InboxContactLink.is_active.is_(True))
-            .one_or_none()
-        )
+        try:
+            identity = team_inbox_contact_links.observed_inbound_identity(
+                db, conversation
+            )
+        except team_inbox_contact_links.ContactLinkError:
+            identity = None
+        if identity is not None:
+            active_link = (
+                db.query(InboxContactLink)
+                .filter(*team_inbox_contact_links.scoped_contact_link_clauses(identity))
+                .one_or_none()
+            )
     if active_link is not None:
         if active_link.subscriber_id is not None:
             return ConversationHistoryScope(
@@ -987,9 +992,7 @@ def build_contact_context(
         ),
         profile_action=profile_action,
         lead_action=lead_action,
-        resolution_readiness=team_inbox_customer_completion.resolution_readiness(
-            db, conversation
-        ),
+        resolution_readiness=team_inbox_status.resolution_readiness(db, conversation),
         customer_values=team_inbox_customer_completion.canonical_customer_values(
             db, conversation
         ),

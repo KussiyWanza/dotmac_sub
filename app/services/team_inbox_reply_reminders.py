@@ -11,12 +11,14 @@ from sqlalchemy.orm import Session
 from app.models.notification import NotificationChannel
 from app.models.system_user import SystemUser
 from app.models.team_inbox import (
+    InboxConversation,
     InboxConversationAssignment,
     InboxMessage,
     InboxMessageDirection,
     InboxReplyReminder,
 )
 from app.schemas.notification import NotificationCreate
+from app.services import team_inbox_assignment
 from app.services.notification import Notifications
 from app.services.owner_commands import (
     CommandContext,
@@ -63,7 +65,11 @@ def sweep_reply_reminders(
         scheduled = sent = resolved = 0
         assignments = (
             db.query(InboxConversationAssignment)
-            .filter(InboxConversationAssignment.is_active.is_(True))
+            .join(
+                InboxConversation,
+                InboxConversation.id == InboxConversationAssignment.conversation_id,
+            )
+            .filter(*team_inbox_assignment.countable_active_assignment_clauses(now=now))
             .order_by(InboxConversationAssignment.assigned_at.asc())
             .limit(command.limit)
             .with_for_update(skip_locked=True)

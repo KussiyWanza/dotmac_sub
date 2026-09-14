@@ -40,7 +40,11 @@ from app.models.sales import (
 )
 from app.models.service_team import ServiceTeam
 from app.models.system_user import SystemUser
-from app.models.team_inbox import InboxConversation, InboxMessage
+from app.models.team_inbox import (
+    InboxConversation,
+    InboxMessage,
+    InboxParticipantRelationship,
+)
 from app.schemas.lead_intake import (
     AiLeadIntakeClassification,
     LeadIntakeSubmission,
@@ -1337,11 +1341,18 @@ def submit_form(
         conversation = _unknown_conversation(db, invitation.conversation_id)
         team_inbox_participants.bind_endpoint_to_contact_point(
             db,
-            conversation_id=conversation.id,
-            channel_type=invitation.channel_type,
-            normalized_endpoint=invitation.normalized_endpoint,
-            provider_account_scope=invitation.provider_account_scope,
-            party_contact_point_id=contact_point.id,
+            team_inbox_participants.BindEndpointContactPointCommand(
+                conversation_id=conversation.id,
+                channel_type=invitation.channel_type,
+                normalized_endpoint=invitation.normalized_endpoint,
+                provider_account_scope=invitation.provider_account_scope,
+                party_contact_point_id=contact_point.id,
+                relationship_type=InboxParticipantRelationship.contact,
+                source="sales.lead_intake",
+                reason=(
+                    "Customer completed the single-use form issued to this exact endpoint"
+                ),
+            ),
         )
         team_inbox_operations.route_to_service_team(
             db,
