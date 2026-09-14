@@ -799,6 +799,14 @@ class InboxContactLink(Base):
             name="ck_inbox_contact_links_one_target",
         ),
         CheckConstraint(
+            "channel_type NOT IN ('facebook_messenger', 'instagram_dm') OR "
+            "((provider IS NULL AND provider_account_id IS NULL AND "
+            "external_subject_id IS NULL) OR "
+            "(provider IS NOT NULL AND provider_account_id IS NOT NULL AND "
+            "external_subject_id IS NOT NULL))",
+            name="ck_inbox_contact_links_provider_identity_scope",
+        ),
+        CheckConstraint(
             "(party_contact_point_id IS NULL AND "
             "party_contact_point_bound_at IS NULL AND "
             "party_contact_point_binding_source IS NULL AND "
@@ -825,12 +833,52 @@ class InboxContactLink(Base):
             "is_active",
         ),
         Index(
-            "uq_inbox_contact_links_active_contact",
+            "uq_inbox_contact_links_active_unscoped_contact",
             "channel_type",
             "normalized_contact",
             unique=True,
-            sqlite_where=text("is_active IS TRUE"),
-            postgresql_where=text("is_active IS TRUE"),
+            sqlite_where=text(
+                "is_active IS TRUE AND channel_type NOT IN "
+                "('facebook_messenger', 'instagram_dm')"
+            ),
+            postgresql_where=text(
+                "is_active IS TRUE AND channel_type NOT IN "
+                "('facebook_messenger', 'instagram_dm')"
+            ),
+        ),
+        Index(
+            "uq_inbox_contact_links_active_provider_identity",
+            "channel_type",
+            "provider",
+            "provider_account_id",
+            "external_subject_id",
+            unique=True,
+            sqlite_where=text(
+                "is_active IS TRUE AND channel_type IN "
+                "('facebook_messenger', 'instagram_dm') AND provider IS NOT NULL "
+                "AND provider_account_id IS NOT NULL AND external_subject_id IS NOT NULL"
+            ),
+            postgresql_where=text(
+                "is_active IS TRUE AND channel_type IN "
+                "('facebook_messenger', 'instagram_dm') AND provider IS NOT NULL "
+                "AND provider_account_id IS NOT NULL AND external_subject_id IS NOT NULL"
+            ),
+        ),
+        Index(
+            "uq_inbox_contact_links_active_legacy_social_contact",
+            "channel_type",
+            "normalized_contact",
+            unique=True,
+            sqlite_where=text(
+                "is_active IS TRUE AND channel_type IN "
+                "('facebook_messenger', 'instagram_dm') AND provider IS NULL "
+                "AND provider_account_id IS NULL AND external_subject_id IS NULL"
+            ),
+            postgresql_where=text(
+                "is_active IS TRUE AND channel_type IN "
+                "('facebook_messenger', 'instagram_dm') AND provider IS NULL "
+                "AND provider_account_id IS NULL AND external_subject_id IS NULL"
+            ),
         ),
     )
 
@@ -839,6 +887,9 @@ class InboxContactLink(Base):
     )
     channel_type: Mapped[str] = mapped_column(String(40), nullable=False)
     normalized_contact: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider: Mapped[str | None] = mapped_column(String(80))
+    provider_account_id: Mapped[str | None] = mapped_column(String(200))
+    external_subject_id: Mapped[str | None] = mapped_column(String(200))
     party_contact_point_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("party_contact_points.id", ondelete="RESTRICT"),
@@ -1840,6 +1891,19 @@ class InboxStatusTransitionEvent(Base):
             "'strongly_inferred', 'weakly_inferred', 'unknown')",
             name="ck_inbox_status_event_evidence_grade",
         ),
+        CheckConstraint(
+            "resolution_reason IS NULL OR resolution_reason IN ("
+            "'customer_stopped_responding', 'whatsapp_window_expired', "
+            "'issue_completed_before_expiry', 'duplicate_conversation', "
+            "'no_further_action_required', 'spam_irrelevant', 'other')",
+            name="ck_inbox_status_event_resolution_reason",
+        ),
+        CheckConstraint(
+            "channel_state_at_resolution IS NULL OR "
+            "channel_state_at_resolution IN ("
+            "'active_window', 'expired', 'unavailable', 'not_applicable')",
+            name="ck_inbox_status_event_resolution_channel_state",
+        ),
         Index(
             "ix_inbox_status_event_conversation_time", "conversation_id", "occurred_at"
         ),
@@ -1864,6 +1928,8 @@ class InboxStatusTransitionEvent(Base):
     status: Mapped[str] = mapped_column(String(40), nullable=False)
     actor_person_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     reason_code: Mapped[str] = mapped_column(String(80), nullable=False)
+    resolution_reason: Mapped[str | None] = mapped_column(String(80))
+    channel_state_at_resolution: Mapped[str | None] = mapped_column(String(40))
     source: Mapped[InboxAuditSource] = mapped_column(
         Enum(InboxAuditSource), nullable=False
     )
