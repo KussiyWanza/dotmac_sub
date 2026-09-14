@@ -9,6 +9,7 @@ import '../../core/semantic_colors.dart';
 import '../../models/page.dart' as models;
 import '../../models/ticket.dart';
 import '../../providers/data_providers.dart';
+import '../../providers/ticket_conversation_controller.dart';
 import '../../widgets/async_value_view.dart';
 import '../../widgets/attachment_picker.dart';
 import '../../widgets/status_chip.dart';
@@ -62,11 +63,12 @@ class _TicketDetailScreenState extends ConsumerState<TicketDetailScreen> {
   }
 
   Future<void> _refreshConversation() async {
-    ref.invalidate(ticketCommentsProvider(widget.ticketId));
     ref.invalidate(ticketProvider(widget.ticketId));
     await Future.wait<void>([
       _ignoreRefreshFailure(
-        ref.read(ticketCommentsProvider(widget.ticketId).future),
+        ref
+            .read(ticketConversationProvider(widget.ticketId).notifier)
+            .refreshComments(),
       ),
       _ignoreRefreshFailure(ref.read(ticketProvider(widget.ticketId).future)),
     ]);
@@ -186,7 +188,7 @@ class _TicketDetailScreenState extends ConsumerState<TicketDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final ticket = ref.watch(ticketProvider(widget.ticketId));
-    final comments = ref.watch(ticketCommentsProvider(widget.ticketId));
+    final conversation = ref.watch(ticketConversationProvider(widget.ticketId));
 
     return Scaffold(
       appBar: AppBar(
@@ -304,9 +306,10 @@ class _TicketDetailScreenState extends ConsumerState<TicketDetailScreen> {
                       'Conversation',
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
+                    _LiveCommentStatus(status: conversation.liveStatus),
                     const SizedBox(height: 8),
                     _TicketComments(
-                      comments: comments,
+                      comments: conversation.comments,
                       onRetry: _refreshConversation,
                     ),
                   ],
@@ -369,6 +372,49 @@ class _TicketDetailScreenState extends ConsumerState<TicketDetailScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _LiveCommentStatus extends StatelessWidget {
+  const _LiveCommentStatus({required this.status});
+
+  final TicketLiveCommentStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    final message = switch (status) {
+      TicketLiveCommentStatus.reconnecting =>
+        'Reconnecting to live comments\u2026',
+      TicketLiveCommentStatus.unavailable =>
+        'Live comment updates unavailable. Pull to refresh.',
+      TicketLiveCommentStatus.connecting ||
+      TicketLiveCommentStatus.connected ||
+      TicketLiveCommentStatus.paused =>
+        null,
+    };
+    if (message == null) return const SizedBox.shrink();
+
+    final scheme = Theme.of(context).colorScheme;
+    return Semantics(
+      liveRegion: true,
+      child: Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Row(
+          children: [
+            Icon(Icons.sync, size: 16, color: scheme.onSurfaceVariant),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                message,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

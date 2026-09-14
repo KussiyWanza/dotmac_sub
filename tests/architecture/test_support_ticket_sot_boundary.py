@@ -41,6 +41,25 @@ def _source(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
 
 
+def test_support_ticket_realtime_publication_is_transport_neutral() -> None:
+    lifecycle = _source("app/services/support.py")
+    service = SERVICES_BY_NAME["support.ticket_lifecycle"]
+    contract = service.contract
+
+    assert "app.websocket" not in lifecycle
+    assert "publish_topic_event" in lifecycle
+    assert "run_after_commit" in lifecycle
+    assert "runtime.realtime_projection" in service.depends_on
+    assert contract is not None
+    realtime_policy = next(
+        concern
+        for concern in contract.concerns
+        if concern.name
+        == "customer-visible ticket comment realtime invalidation policy"
+    )
+    assert "best-effort realtime projection transport" in realtime_policy.input_names
+
+
 def test_support_services_have_complete_registered_contracts() -> None:
     assert CONTRACTED_OWNERS <= SERVICES_BY_NAME.keys()
     for name in CONTRACTED_OWNERS:

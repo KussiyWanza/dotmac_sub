@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:dotmac_portal/src/app.dart';
 import 'package:dotmac_portal/src/core/api_exception.dart';
@@ -5,6 +7,8 @@ import 'package:dotmac_portal/src/features/support/ticket_detail_screen.dart';
 import 'package:dotmac_portal/src/models/page.dart' as models;
 import 'package:dotmac_portal/src/models/ticket.dart';
 import 'package:dotmac_portal/src/providers/data_providers.dart';
+import 'package:dotmac_portal/src/providers/ticket_conversation_controller.dart';
+import 'package:dotmac_portal/src/repositories/app_realtime_socket.dart';
 import 'package:dotmac_portal/src/repositories/support_repository.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -62,9 +66,35 @@ class _FakeSupportRepository extends SupportRepository {
   }
 }
 
-Widget _app(_FakeSupportRepository repository) => ProviderScope(
+class _IdleRealtimeSocket implements AppRealtimeSocket {
+  @override
+  Stream<AppRealtimeSignal> get signals => const Stream.empty();
+
+  @override
+  Future<void> close() async {}
+
+  @override
+  Future<void> connect() async {}
+
+  @override
+  Future<void> dispose() async {}
+}
+
+class _FailingRealtimeSocket extends _IdleRealtimeSocket {
+  @override
+  Future<void> connect() => Future.error(StateError('offline'));
+}
+
+Widget _app(
+  _FakeSupportRepository repository, {
+  AppRealtimeSocketFactory socketFactory = _IdleRealtimeSocket.new,
+  TicketConversationTiming timing = const TicketConversationTiming(),
+}) =>
+    ProviderScope(
       overrides: [
         supportRepositoryProvider.overrideWithValue(repository),
+        appRealtimeSocketFactoryProvider.overrideWithValue(socketFactory),
+        ticketConversationTimingProvider.overrideWithValue(timing),
       ],
       child: MaterialApp(
         theme: dotmacThemeFor(Brightness.light),
@@ -149,5 +179,27 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Retry'), findsOneWidget);
+  });
+
+  testWidgets('prolonged socket failure shows the manual-refresh fallback', (
+    tester,
+  ) async {
+    final repository = _FakeSupportRepository([]);
+    await tester.pumpWidget(
+      _app(
+        repository,
+        socketFactory: _FailingRealtimeSocket.new,
+        timing: const TicketConversationTiming(
+          unavailableAfter: Duration(milliseconds: 10),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 11));
+
+    expect(
+      find.text('Live comment updates unavailable. Pull to refresh.'),
+      findsOneWidget,
+    );
   });
 }

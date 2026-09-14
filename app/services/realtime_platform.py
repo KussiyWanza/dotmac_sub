@@ -39,6 +39,7 @@ class EventType(str, Enum):
     HEARTBEAT = "heartbeat"
     OPERATION_STATUS = "operation_status"
     WORKQUEUE_CHANGED = "workqueue_changed"
+    SUPPORT_TICKET_COMMENT_CHANGED = "support_ticket_comment_changed"
 
 
 class RealtimeEvent(BaseModel):
