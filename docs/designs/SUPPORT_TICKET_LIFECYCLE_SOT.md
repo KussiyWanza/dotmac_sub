@@ -271,6 +271,15 @@ staff command explicitly publishes them. Portal adapters consume these stored
 decisions; they never infer publication from subscriber linkage, CRM metadata,
 or the absence of an internal-note checkbox.
 
+Customer-facing comment projections carry the closed `TicketCommentAuthorType`
+vocabulary (`customer`, `staff`, `system`) alongside the stored publication
+decision. Web and mobile adapters may render that provenance as audience-safe
+labels such as **You** and **Support Team**, but never infer authorship from
+layout, identifiers, message text, or transport origin. Manual refresh and any
+future push/WebSocket signals are observation triggers only; clients reconcile
+from the authoritative Support comment query before changing the displayed
+timeline.
+
 CRM ticket import is retired as an authority. Any residual retry or historical
 observation is provenance-only and is forced internal; it cannot publish
 narrative into the customer portal.
