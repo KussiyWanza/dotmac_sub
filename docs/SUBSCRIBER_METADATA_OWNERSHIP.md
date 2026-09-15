@@ -94,6 +94,22 @@ that closed set of declared keys; it does not resubmit or silently remove unrela
 historical metadata while the preference facts await extraction to
 `customer.notification_policy`.
 
+The merge is staged in the existing subscriber update payload, not written to
+an ORM row before validation. Lifecycle and billing-approval refusals leave the
+row clean even before rollback. An explicitly supplied `metadata_` replacement
+still passes the closed-key guard and keeps its replacement semantics; the typed
+preference values are applied over that replacement in the same update. An
+absent or null preference patch leaves existing metadata unchanged.
+
+The optional `SubscriberUpdate.notification_preferences` API field is additive.
+Its seven boolean fields reject extra keys. Regenerate the OpenAPI contract
+manifest with `python scripts/update_openapi_contract.py` to record this
+intentional shape; no route or existing required field changes. Regression
+coverage lives in `test_subscriber_metadata_key_closure.py`
+and `test_customer_portal_notifications.py`; the exact frozen import-key fixture
+is retained in the existing `test_crm_portal_services.py` compatibility surface.
+The cohort writer-site and vocabulary-freeze baselines are unchanged.
+
 **Two deletion lineages, one lifecycle.** `account_deletion` writes
 `account_deletion_*`; `web_system_restore_tool` writes `recovery_deleted_*`.
 They record the same event — this account was deleted — in different key

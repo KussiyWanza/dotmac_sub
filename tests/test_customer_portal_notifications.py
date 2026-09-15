@@ -545,45 +545,6 @@ class TestPortalNotificationDropdown:
 
 
 class TestCustomerProfileNotifications:
-    def test_profile_save_preserves_undeclared_historical_metadata(
-        self, db_session, subscriber
-    ) -> None:
-        from app.services.web_customer_actions import update_customer_profile
-
-        historical = {
-            "crm_billing_snapshot": {"balance": "1200.00"},
-            "crm_sync": {"last_success_at": "2026-06-01T12:00:00+00:00"},
-            "email_reconciliation_corrected_at": "2026-04-01T09:00:00+00:00",
-            "email_reconciliation_original_email": "legacy@example.com",
-            "email_reconciliation_reason": "duplicate",
-            "splynx_billing_type": "prepaid",
-            "splynx_category": "person",
-            "splynx_login": "legacy-login",
-            "splynx_partner_percent": "0",
-        }
-        subscriber.metadata_ = dict(historical)
-        db_session.commit()
-
-        updated = update_customer_profile(
-            db_session,
-            subscriber_id=str(subscriber.id),
-            first_name="Updated",
-            last_name="Customer",
-            email=subscriber.email,
-            phone="+2348000000012",
-            billing_notifications=False,
-            sms_updates=True,
-        )
-
-        assert updated is not None
-        assert updated.first_name == "Updated"
-        assert updated.phone == "+2348000000012"
-        assert {
-            key: (updated.metadata_ or {}).get(key) for key in historical
-        } == historical
-        assert (updated.metadata_ or {}).get("billing_notifications") is False
-        assert (updated.metadata_ or {}).get("sms_updates") is True
-
     def test_update_customer_profile_persists_preferences_and_emits_subscriber_updated(
         self, db_session, subscriber
     ) -> None:
