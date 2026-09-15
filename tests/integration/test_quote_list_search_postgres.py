@@ -307,6 +307,35 @@ def test_status_lead_and_combined_search_filters_share_one_scope(
     assert search_status.total_count == search_lead.total_count == 1
 
 
+def test_created_date_range_drives_postgres_rows_and_count(
+    db_session,
+    quote_search_graph: QuoteSearchGraph,
+) -> None:
+    quote_search_graph.quote.created_at = datetime(2026, 8, 10, 0, 0, tzinfo=UTC)
+    quote_search_graph.other_quote.created_at = datetime(
+        2026, 8, 12, 23, 59, tzinfo=UTC
+    )
+    quote_search_graph.party_first_quote.created_at = datetime(
+        2026, 8, 13, 0, 0, tzinfo=UTC
+    )
+    db_session.flush()
+
+    result = sales.quotes.query(
+        db_session,
+        sales.QuoteListQueryInput(
+            date_preset="custom",
+            date_from="2026-08-10",
+            date_to="2026-08-12",
+        ),
+    )
+
+    assert {item.id for item in result.items} == {
+        quote_search_graph.quote.id,
+        quote_search_graph.other_quote.id,
+    }
+    assert result.total_count == 2
+
+
 def test_invalid_stale_empty_and_literal_like_search_are_canonicalized(
     db_session,
     quote_search_graph: QuoteSearchGraph,
