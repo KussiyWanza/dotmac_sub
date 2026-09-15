@@ -88,10 +88,14 @@ behavior and accessibility, not the product's visual theme.
 
 The customer CSV export consumes the same canonical list scope and stable sort
 as the current filtered customer view. The default full export contains identity,
-contact, account, subscription,
-service-access, IP, NAS, POP, and contact-completeness columns. The admin export
-menu may project any selected subset of those columns in the browser, but it
-must not scrape the paginated table or derive additional domain state.
+contact, account, subscription, service-access, IP, NAS, POP,
+contact-completeness, open-ticket identifiers, successful-payment total, and
+last-billing-date columns. Open tickets use the support owner's active status
+scope, payments include active succeeded records, and the last billing date is
+the newest active invoice's issue date with its creation date as the legacy
+fallback. The admin export menu may project any selected subset of those columns
+in the browser, but it must not scrape the paginated table or derive additional
+domain state.
 
 ### Portal Account Health contract
 

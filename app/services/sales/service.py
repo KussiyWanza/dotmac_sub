@@ -79,6 +79,10 @@ from app.services.sales import pipeline_configuration
 
 _logger = logging.getLogger(__name__)
 
+# Existing RBAC contract values used by native sales adapters and projections.
+LEAD_READ_PERMISSION = "crm:lead:read"
+LEAD_WRITE_PERMISSION = "crm:lead:write"
+
 
 def _stage_quote_audit(
     db: Session,

@@ -56,6 +56,7 @@ from app.services import (
     auth_cache,
     auth_session_refresh,
     auth_token_signing,
+    customer_login_identity,
     staff_party_authentication,
     team_inbox_assignment,
 )
@@ -780,18 +781,29 @@ def _resolve_login_credential(
     provider: AuthProvider,
     identifier: str,
 ) -> UserCredential | None:
-    """Resolve active credential by login identity.
+    """Resolve an active login credential, including the safe customer alias."""
 
-    Login identity is the credential ``username`` (customers and resellers) or,
-    for admins, the ``system_users.email``. Subscriber email is deliberately NOT
-    a login key: it is non-unique contact information (many customers share an
-    address), so matching on it would be ambiguous.
-    """
+    credential, _customer_email_alias = _resolve_login_credential_match(
+        db,
+        provider=provider,
+        identifier=identifier,
+    )
+    return credential
+
+
+def _resolve_login_credential_match(
+    db: Session,
+    *,
+    provider: AuthProvider,
+    identifier: str,
+) -> tuple[UserCredential | None, bool]:
+    """Resolve a credential and identify contact-email alias use."""
+
     normalized_identifier = identifier.strip()
     if not normalized_identifier:
-        return None
+        return None, False
 
-    return cast(
+    direct_credential = cast(
         UserCredential | None,
         db.query(UserCredential)
         .outerjoin(SystemUser, SystemUser.id == UserCredential.system_user_id)
@@ -804,6 +816,39 @@ def _resolve_login_credential(
         .order_by(UserCredential.created_at.desc())
         .first(),
     )
+    if direct_credential is not None:
+        is_customer_email_login = (
+            provider is AuthProvider.local
+            and direct_credential.subscriber_id is not None
+            and "@" in normalized_identifier
+        )
+        return direct_credential, is_customer_email_login
+
+    if provider is not AuthProvider.local:
+        return None, False
+
+    resolution = customer_login_identity.resolve_customer_login_identity(
+        db,
+        customer_login_identity.ResolveCustomerLoginIdentity(
+            identifier=normalized_identifier
+        ),
+    )
+    refusal = customer_login_identity.resolution_error(resolution)
+    if refusal is not None:
+        raise refusal
+    if (
+        resolution.status
+        is not customer_login_identity.CustomerLoginResolutionStatus.matched
+        or resolution.credential_id is None
+    ):
+        return None, False
+
+    credential = db.get(UserCredential, resolution.credential_id)
+    is_email_alias = resolution.source in {
+        customer_login_identity.CustomerLoginMatchSource.case_insensitive_email_username,
+        customer_login_identity.CustomerLoginMatchSource.unique_customer_email,
+    }
+    return credential, is_email_alias
 
 
 def _principal_for_credential(
@@ -1191,11 +1236,16 @@ class AuthFlow(ListResponseMixin):
             ) from exc
         if resolved_provider not in (AuthProvider.radius, AuthProvider.local):
             raise HTTPException(status_code=400, detail="Unsupported auth provider")
-        credential = _resolve_login_credential(
-            db,
-            provider=resolved_provider,
-            identifier=username,
-        )
+        try:
+            credential, customer_email_alias = _resolve_login_credential_match(
+                db,
+                provider=resolved_provider,
+                identifier=username,
+            )
+        except customer_login_identity.CustomerLoginIdentityError as exc:
+            if exc.code == customer_login_identity.AMBIGUOUS_EMAIL_CODE:
+                raise HTTPException(status_code=409, detail=exc.message) from exc
+            raise HTTPException(status_code=401, detail="Invalid credentials") from exc
 
         # Check the lock before verifying the password: a locked account must
         # answer identically to right and wrong passwords (no correctness
@@ -1237,8 +1287,10 @@ class AuthFlow(ListResponseMixin):
             pass
         else:
             access_result = None
-            if resolved_provider == AuthProvider.local and (
-                credential is None or credential.subscriber_id is not None
+            if (
+                resolved_provider == AuthProvider.local
+                and not customer_email_alias
+                and (credential is None or credential.subscriber_id is not None)
             ):
                 access_result = _resolve_access_credential_login(
                     db, identifier=username, password=password

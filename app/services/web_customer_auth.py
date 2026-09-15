@@ -9,14 +9,13 @@ import pyotp
 from fastapi import HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jose import JWTError
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.csrf import renew_csrf_cookie
 
 logger = logging.getLogger(__name__)
 
-from app.models.auth import AuthProvider, MFAMethod, UserCredential
+from app.models.auth import MFAMethod, UserCredential
 from app.models.catalog import AccessCredential
 from app.models.domain_settings import SettingDomain
 from app.models.radius import RadiusUser
@@ -25,6 +24,7 @@ from app.services import auth_flow as auth_flow_service
 from app.services import (
     credential_recovery,
     customer_credential_enrollment,
+    customer_login_identity,
     customer_portal,
     radius_auth,
 )
@@ -408,19 +408,28 @@ def customer_login_submit(
         subscription_id = None
         authenticated_locally = False
         local_password_failed = False
+        local_login_is_email_alias = False
 
-        # Case-insensitive: usernames are email addresses (the invite flow
-        # stores the subscriber email verbatim, which may be mixed-case).
+        local_resolution = customer_login_identity.resolve_customer_login_identity(
+            db,
+            customer_login_identity.ResolveCustomerLoginIdentity(
+                identifier=normalized_username
+            ),
+        )
+        refusal = customer_login_identity.resolution_error(local_resolution)
+        if refusal is not None:
+            raise refusal
         local_credential = (
-            db.query(UserCredential)
-            .filter(func.lower(UserCredential.username) == normalized_username.lower())
-            .filter(UserCredential.provider == AuthProvider.local)
-            .filter(UserCredential.subscriber_id.is_not(None))
-            .first()
+            db.get(UserCredential, local_resolution.credential_id)
+            if local_resolution.status
+            is customer_login_identity.CustomerLoginResolutionStatus.matched
+            and local_resolution.credential_id is not None
+            else None
+        )
+        local_login_is_email_alias = (
+            local_credential is not None and "@" in normalized_username
         )
         if local_credential:
-            if not local_credential.is_active:
-                raise ValueError("Account disabled. Please contact support.")
             now = datetime.now(UTC)
             locked_until = local_credential.locked_until
             if locked_until and locked_until.tzinfo is None:
@@ -454,6 +463,9 @@ def customer_login_submit(
                 if local_credential and local_password_failed:
                     _record_customer_local_login_failure(db, local_credential)
                 raise ValueError("Invalid username or password")
+
+            if local_password_failed and local_login_is_email_alias:
+                raise_invalid_login()
 
             # The RADIUS/PPPoE path has no per-credential lockout columns, so
             # throttle total attempts per username instead (in-memory,
@@ -626,7 +638,9 @@ def customer_login_submit(
     except Exception as exc:
         error_msg = "Invalid username or password"
         message = str(exc).lower()
-        if "account locked" in message:
+        if isinstance(exc, customer_login_identity.CustomerLoginIdentityError):
+            error_msg = exc.message
+        elif "account locked" in message:
             error_msg = str(exc)
         elif "account disabled" in message:
             error_msg = str(exc)

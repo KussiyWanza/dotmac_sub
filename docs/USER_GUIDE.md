@@ -391,6 +391,16 @@ Use templates and queue history together. If a subscriber says they were not not
 
 ![Portal Dashboard](guide_screenshots/41_portal_dashboard.png)
 
+### Login
+
+Customers may sign in with their customer number or PPPoE username. A contact
+email also works with the portal password when it belongs to only one customer
+account with an active portal credential. Email matching ignores letter case.
+
+If the email is shared by more than one customer, the portal does not choose an
+account. Use the customer number instead. Suspended customers may still sign in;
+disabled and canceled customers may not.
+
 ### Features
 
 | Feature | Description |
@@ -411,6 +421,7 @@ For suspended subscribers: restricted dashboard with outstanding balance, warnin
 ### Portal Support Checklist
 
 - Confirm the subscriber can log in with the correct identifier and password
+- For a shared contact email, ask the customer to use their customer number
 - Verify invoices are issued before troubleshooting online payment
 - Check that the plan is marked visible if self-service change is expected
 - Confirm portal warnings match the subscriber's actual balance and status

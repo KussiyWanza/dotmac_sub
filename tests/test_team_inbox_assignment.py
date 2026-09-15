@@ -424,6 +424,11 @@ def test_admin_capacity_setting_is_consumed_by_assignment_runtime(db_session):
         form={spec.key: "25"},
         specs=[spec],
         service=service,
+        context=CommandContext.system(
+            actor="pytest:settings-admin",
+            scope="control:settings:write",
+            reason="test admin capacity setting update",
+        ),
     )
 
     assert errors == []
