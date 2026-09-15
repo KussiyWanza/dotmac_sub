@@ -1710,7 +1710,12 @@ HELP_NAVIGATION: tuple[AdminHelpNavigationSection, ...] = (
     AdminHelpNavigationSection(
         "reports",
         "Reports",
-        ("reports-overview", "ncc-complaints-report", "support-csat-report"),
+        (
+            "reports-overview",
+            "ticket-sla-report",
+            "ncc-complaints-report",
+            "support-csat-report",
+        ),
         any_permissions=(
             "reports:billing:read",
             "reports:network:read",
