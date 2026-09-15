@@ -963,6 +963,24 @@ function customersPage(bulkContract) {
                 label: 'Contact completeness',
                 description: 'Email and phone availability',
                 csvHeader: 'contact_completeness'
+            },
+            {
+                sourceColumn: 'open_ticket_ids',
+                label: 'Open ticket IDs',
+                description: 'Active support ticket identifiers',
+                csvHeader: 'open_ticket_ids'
+            },
+            {
+                sourceColumn: 'total_payment',
+                label: 'Total payment',
+                description: 'Sum of successful customer payments',
+                csvHeader: 'total_payment'
+            },
+            {
+                sourceColumn: 'last_billing_date',
+                label: 'Last billing date',
+                description: 'Most recent invoice billing date',
+                csvHeader: 'last_billing_date'
             }
         ],
         availableNotificationChannels: {{ bulk_notification_channels | tojson }},

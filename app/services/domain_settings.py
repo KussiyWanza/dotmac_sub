@@ -1,4 +1,5 @@
 import builtins
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException
@@ -8,10 +9,17 @@ from sqlalchemy.orm import Session
 from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.subscription_engine import SettingValueType
 from app.schemas.settings import DomainSettingCreate, DomainSettingUpdate
+from app.services.audit_adapter import AuditActor, stage_audit_event
 from app.services.common import (
     apply_ordering,
     apply_pagination,
     coerce_uuid,
+)
+from app.services.domain_errors import DomainError
+from app.services.owner_commands import (
+    CommandContext,
+    OwnerCommandDefinition,
+    execute_owner_command,
 )
 from app.services.response import ListResponseMixin
 
@@ -19,6 +27,47 @@ from app.services.response import ListResponseMixin
 # setting is stored as ciphertext and the encryption key is what lives there.
 from app.services.secrets import is_openbao_ref
 from app.services.setting_domain_registry import is_declared
+
+ADMIN_SETTINGS_FORM_WRITE_SCOPE = "control:settings:write"
+
+_APPLY_ADMIN_SETTINGS_FORM_COMMAND = OwnerCommandDefinition(
+    owner="control.settings_form_updates",
+    concern="atomic administrative setting form updates",
+    name="apply_admin_settings_form_updates",
+)
+
+
+class AdminSettingsFormUpdateError(DomainError):
+    """Safe, transport-neutral failure for the admin settings form."""
+
+
+def _admin_settings_error(
+    suffix: str, message: str, **details: object
+) -> AdminSettingsFormUpdateError:
+    return AdminSettingsFormUpdateError(
+        code=f"control.settings_form_updates.{suffix}",
+        message=message,
+        details=details,
+        retryable=False,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class AdminSettingWrite:
+    domain: SettingDomain
+    key: str
+    payload: DomainSettingUpdate
+
+
+@dataclass(frozen=True, slots=True)
+class ApplyAdminSettingsFormCommand:
+    context: CommandContext
+    updates: tuple[AdminSettingWrite, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ApplyAdminSettingsFormOutcome:
+    updated_keys: tuple[str, ...]
 
 
 class DomainSettings(ListResponseMixin):
@@ -342,10 +391,15 @@ class DomainSettings(ListResponseMixin):
             data = payload.model_dump(exclude_unset=True)
             data.pop("domain", None)
             data.pop("key", None)
-            pending_value = data.get(
-                "value_json",
-                data.get("value_text", setting.value_json or setting.value_text),
-            )
+            pending_value = data.get("value_json")
+            if pending_value is None:
+                pending_value = data.get("value_text")
+            if pending_value is None:
+                pending_value = (
+                    setting.value_json
+                    if setting.value_json is not None
+                    else setting.value_text
+                )
             self._validate_relationship_change(db, self.domain, key, pending_value)
             for field, value in data.items():
                 setattr(setting, field, value)
@@ -435,6 +489,115 @@ class DomainSettings(ListResponseMixin):
         setting.is_active = False
         db.commit()
         # Invalidate cache for this setting
+
+
+def _audit_actor(context: CommandContext) -> AuditActor:
+    prefix, separator, identifier = context.actor.partition(":")
+    actor_id = identifier if separator and identifier else context.actor
+    if prefix == "api_key":
+        return AuditActor.api_key(actor_id)
+    if prefix == "user":
+        return AuditActor.user(actor_id)
+    if prefix == "service":
+        return AuditActor.service(actor_id)
+    return AuditActor.system(actor_id)
+
+
+def _setting_value(payload: DomainSettingUpdate) -> object:
+    if payload.value_json is not None:
+        return payload.value_json
+    if payload.value_text is not None:
+        return payload.value_text
+    raise _admin_settings_error(
+        "invalid_update",
+        "A submitted setting has no value.",
+    )
+
+
+def _apply_admin_settings_form_operation(
+    db: Session,
+    command: ApplyAdminSettingsFormCommand,
+) -> ApplyAdminSettingsFormOutcome:
+    from app.services import settings_spec
+
+    if command.context.scope != ADMIN_SETTINGS_FORM_WRITE_SCOPE:
+        raise _admin_settings_error(
+            "invalid_scope",
+            "System-settings write permission is required.",
+        )
+    if not command.updates:
+        raise _admin_settings_error(
+            "invalid_update",
+            "No settings were submitted for update.",
+        )
+
+    seen: set[tuple[SettingDomain, str]] = set()
+    services: list[tuple[DomainSettings, AdminSettingWrite]] = []
+    try:
+        # Validate every submitted change before staging any ORM mutation.
+        for update in command.updates:
+            identity = (update.domain, update.key)
+            if identity in seen:
+                raise _admin_settings_error(
+                    "invalid_update",
+                    "A setting was submitted more than once.",
+                    domain=str(update.domain),
+                    key=update.key,
+                )
+            seen.add(identity)
+            spec = settings_spec.get_spec(update.domain, update.key)
+            if spec is None or update.payload.value_type != spec.value_type:
+                raise _admin_settings_error(
+                    "invalid_update",
+                    "A submitted setting does not match its registered type.",
+                    domain=str(update.domain),
+                    key=update.key,
+                )
+            service = DomainSettings(update.domain)
+            service._validate_relationship_change(
+                db,
+                update.domain,
+                update.key,
+                _setting_value(update.payload),
+            )
+            services.append((service, update))
+
+        for service, update in services:
+            service.stage_upsert_by_key(db, update.key, update.payload)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else "Invalid setting value."
+        raise _admin_settings_error("invalid_update", detail) from exc
+
+    identities = sorted(f"{update.domain}.{update.key}" for update in command.updates)
+    stage_audit_event(
+        db,
+        action="control.settings_form_updated",
+        entity_type="domain_settings",
+        actor=_audit_actor(command.context),
+        request_id=str(command.context.correlation_id),
+        metadata={
+            "schema_version": 1,
+            "setting_count": len(identities),
+            "setting_keys": identities,
+            "command_id": str(command.context.command_id),
+            "correlation_id": str(command.context.correlation_id),
+        },
+    )
+    return ApplyAdminSettingsFormOutcome(updated_keys=tuple(identities))
+
+
+def apply_admin_settings_form_updates(
+    db: Session,
+    command: ApplyAdminSettingsFormCommand,
+) -> ApplyAdminSettingsFormOutcome:
+    """Atomically persist one fully validated admin settings submission."""
+
+    return execute_owner_command(
+        db,
+        definition=_APPLY_ADMIN_SETTINGS_FORM_COMMAND,
+        context=command.context,
+        operation=lambda: _apply_admin_settings_form_operation(db, command),
+    )
 
 
 settings = DomainSettings()

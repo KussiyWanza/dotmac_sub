@@ -57,7 +57,8 @@ def test_help_center_uses_docs_layout_without_new_article_content() -> None:
     assert "On this page" in template
     assert "help-current-section" in template
     assert 'data-help-section="Overview"' in template
-    assert 'data-help-section="Steps"' in template
+    assert 'data-help-section="{{ action.title }}"' in template
+    assert 'id="action-{{ action.id }}"' in template
     assert "lg:hidden" in template
     assert "xl:block" in template
 
