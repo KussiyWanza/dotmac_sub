@@ -231,11 +231,14 @@ depend on HTTP request/response or exception types.
   to the Quote's `json` metadata column. The exact same predicate tuple drives
   count and rows before stable created/updated ordering, Quote-ID tie-breaking,
   and pagination.
-- Filters and state: status and Lead filters work independently and combine
+- Filters and state: status, Lead, and Quote-created date filters work
+  independently and combine
   with search using AND semantics. Unknown status, malformed/stale Lead,
-  sort, direction, page, and page-size values canonicalize to the owner-defined
-  safe URL. Search/filter/sort/page-size state remains URL-addressable; changing
-  the form resets page to one and Reset clears the complete scope.
+  date preset, incomplete or reversed custom range, sort, direction, page, and
+  page-size values canonicalize to the owner-defined safe URL. Date presets cover
+  the current UTC calendar day plus the preceding 6 or 29 days; a custom start and
+  end are inclusive. Search/filter/sort/page-size state remains URL-addressable;
+  changing the form resets page to one and Reset clears the complete scope.
 - States and recovery: empty and database-failure states are distinct. A failed
   read reports that Quotes could not be loaded and no CRM data was changed,
   offers a retry using safe normalized list state, emits a structured diagnostic

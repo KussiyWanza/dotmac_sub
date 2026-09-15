@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 from uuid import UUID
 
@@ -47,7 +47,13 @@ def _client(db_session) -> TestClient:
 def test_quote_list_definition_declares_its_capabilities():
     definition = web_sales.QUOTE_LIST_DEFINITION
     assert set(definition.sortable_keys) == {"created_at", "updated_at"}
-    assert set(definition.filterable_keys) == {"status", "lead_id"}
+    assert set(definition.filterable_keys) == {
+        "status",
+        "lead_id",
+        "date_preset",
+        "date_from",
+        "date_to",
+    }
     assert definition.default_sort == "created_at"
 
 
@@ -145,6 +151,80 @@ def test_status_lead_and_whitespace_only_filters_do_not_enter_search_branch(
     assert whitespace.query.search_term is None
 
 
+def test_quote_list_custom_date_range_is_inclusive(db_session, subscriber):
+    db_session.add_all(
+        [
+            Quote(
+                id=UUID(int=101),
+                subscriber_id=subscriber.id,
+                created_at=datetime(2026, 8, 10, 0, 0, tzinfo=UTC),
+            ),
+            Quote(
+                id=UUID(int=102),
+                subscriber_id=subscriber.id,
+                created_at=datetime(2026, 8, 12, 23, 59, tzinfo=UTC),
+            ),
+            Quote(
+                id=UUID(int=103),
+                subscriber_id=subscriber.id,
+                created_at=datetime(2026, 8, 13, 0, 0, tzinfo=UTC),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    result = sales.quotes.query(
+        db_session,
+        sales.QuoteListQueryInput(
+            date_preset="custom",
+            date_from="2026-08-10",
+            date_to="2026-08-12",
+        ),
+    )
+
+    assert [quote.id.int for quote in result.items] == [102, 101]
+    assert result.total_count == 2
+    assert result.query.date_from.isoformat() == "2026-08-10"
+    assert result.query.date_to.isoformat() == "2026-08-12"
+
+
+def test_quote_list_relative_date_presets_use_calendar_days(db_session, subscriber):
+    now = datetime.now(UTC)
+    recent = Quote(subscriber_id=subscriber.id, created_at=now - timedelta(days=5))
+    older = Quote(subscriber_id=subscriber.id, created_at=now - timedelta(days=20))
+    oldest = Quote(subscriber_id=subscriber.id, created_at=now - timedelta(days=40))
+    db_session.add_all([recent, older, oldest])
+    db_session.commit()
+
+    last_seven = sales.quotes.query(
+        db_session, sales.QuoteListQueryInput(date_preset="last_7_days")
+    )
+    last_thirty = sales.quotes.query(
+        db_session, sales.QuoteListQueryInput(date_preset="last_30_days")
+    )
+
+    assert recent in last_seven.items
+    assert older not in last_seven.items
+    assert recent in last_thirty.items
+    assert older in last_thirty.items
+    assert oldest not in last_thirty.items
+
+
+def test_invalid_custom_date_range_canonicalizes_to_all_time(db_session):
+    result = sales.quotes.query(
+        db_session,
+        sales.QuoteListQueryInput(
+            date_preset="custom",
+            date_from="2026-08-12",
+            date_to="2026-08-10",
+        ),
+    )
+
+    assert result.query.date_preset is None
+    assert result.query.date_from is None
+    assert result.query.date_to is None
+
+
 def test_quote_list_http_preserves_visible_filter_sort_and_pagination_state(
     db_session,
 ):
@@ -164,6 +244,9 @@ def test_quote_list_http_preserves_visible_filter_sort_and_pagination_state(
                 "search": "HTTP Quote State",
                 "status": "sent",
                 "lead_id": str(lead.id),
+                "date_preset": "custom",
+                "date_from": "2026-01-01",
+                "date_to": "2026-12-31",
                 "sort": "updated_at",
                 "dir": "asc",
                 "page": 1,
@@ -184,6 +267,12 @@ def test_quote_list_http_preserves_visible_filter_sort_and_pagination_state(
     assert "search=HTTP+Quote+State" in response.text
     assert "status=sent" in response.text
     assert f"lead_id={lead.id}" in response.text
+    assert 'value="custom" selected' in response.text
+    assert 'name="date_from" value="2026-01-01"' in response.text
+    assert 'name="date_to" value="2026-12-31"' in response.text
+    assert "date_preset=custom" in response.text
+    assert "date_from=2026-01-01" in response.text
+    assert "date_to=2026-12-31" in response.text
     assert 'href="/admin/sales/quotes"' in response.text
 
 
