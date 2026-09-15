@@ -2341,6 +2341,8 @@ class Quotes(ListResponseMixin):
             search_term=normalize_quote_search(search),
             status=_enum_str(status, QuoteStatus, "status") if status else None,
             lead_id=coerce_uuid(lead_id) if lead_id else None,
+            created_from=None,
+            created_to_exclusive=None,
             is_active=True if is_active is None else is_active,
         )
         query = db.query(Quote).filter(*_quote_list_predicates(filters))
