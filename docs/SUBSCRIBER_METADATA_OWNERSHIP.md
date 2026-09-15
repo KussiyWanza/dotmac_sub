@@ -88,6 +88,12 @@ Facts nothing else records. Losing them loses the fact.
 | `portal_read_notification_keys` | `customer_portal_notifications` | **`customer.portal_notifications`** | unbounded list — see below |
 | 7 × `*_notifications`, `sms_updates` | `web_customer_actions` | **`customer.notification_policy`** (exists) | booleans |
 
+Customer profile saves pass notification preferences through the typed
+`SubscriberNotificationPreferencesUpdate` patch. `customer.accounts` merges only
+that closed set of declared keys; it does not resubmit or silently remove unrelated
+historical metadata while the preference facts await extraction to
+`customer.notification_policy`.
+
 **Two deletion lineages, one lifecycle.** `account_deletion` writes
 `account_deletion_*`; `web_system_restore_tool` writes `recovery_deleted_*`.
 They record the same event — this account was deleted — in different key
