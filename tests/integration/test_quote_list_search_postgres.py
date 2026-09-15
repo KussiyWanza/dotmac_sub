@@ -434,3 +434,19 @@ def test_base_unfiltered_quote_list_continues_to_work(
     assert quote_search_graph.other_quote in result.items
     assert quote_search_graph.party_first_quote in result.items
     assert result.total_count >= len(result.items) >= 3
+
+
+def test_quote_maximum_custom_end_canonicalizes_without_overflow(
+    db_session, quote_search_graph
+):
+    all_time = sales.quotes.query(db_session, sales.QuoteListQueryInput())
+    invalid = sales.quotes.query(
+        db_session,
+        sales.QuoteListQueryInput(
+            date_preset="custom", date_from="2026-01-01", date_to="9999-12-31"
+        ),
+    )
+    assert invalid.query.date_preset is None
+    assert invalid.query.date_from is invalid.query.date_to is None
+    assert invalid.total_count == all_time.total_count
+    assert [row.id for row in invalid.items] == [row.id for row in all_time.items]

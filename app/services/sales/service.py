@@ -338,19 +338,28 @@ class QuoteListDatePreset(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class QuoteListDateRange:
+    """Inclusive UTC Quote creation dates; an empty value means All time."""
+
+    preset: QuoteListDatePreset | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class QuoteListQueryInput:
     """Raw adapter values for the authoritative Quote list query."""
 
     search_term: str | None = None
     status: str | None = None
     lead_id: str | None = None
-    date_preset: str | None = None
-    date_from: str | None = None
-    date_to: str | None = None
     sort_field: str | None = None
     sort_direction: str | None = None
     page: int = 1
     page_size: int = 25
+    date_preset: str | None = None
+    date_from: str | None = None
+    date_to: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -360,13 +369,13 @@ class QuoteListQuery:
     search_term: str | None
     status: QuoteStatus | None
     lead_id: uuid.UUID | None
-    date_preset: QuoteListDatePreset | None
-    date_from: date | None
-    date_to: date | None
     sort_field: QuoteListSortField
     sort_direction: QuoteListSortDirection
     page: int
     page_size: int
+    date_preset: QuoteListDatePreset | None = None
+    date_from: date | None = None
+    date_to: date | None = None
 
     @property
     def offset(self) -> int:
@@ -450,14 +459,43 @@ def _optional_enum_filter(
         return None
 
 
-def _optional_date_filter(value: str | None) -> date | None:
-    candidate = str(value or "").strip()
-    if not candidate:
-        return None
+def normalize_quote_date_range(
+    request: QuoteListQueryInput,
+    *,
+    today: date | None = None,
+) -> QuoteListDateRange:
+    """Resolve creation dates once, including database-unavailable retry views.
+
+    Presets are UTC calendar days including today, not rolling 24-hour windows.
+    Malformed, incomplete, reversed, and unrepresentable ranges become All time.
+    Explicit dates never override a relative preset or activate an absent preset.
+    """
     try:
-        return date.fromisoformat(candidate)
+        preset = QuoteListDatePreset((request.date_preset or "").strip())
     except ValueError:
-        return None
+        return QuoteListDateRange()
+    if preset in (QuoteListDatePreset.LAST_7_DAYS, QuoteListDatePreset.LAST_30_DAYS):
+        current_day = today if today is not None else datetime.now(UTC).date()
+        days = 7 if preset is QuoteListDatePreset.LAST_7_DAYS else 30
+        first_day = date.fromordinal(max(1, current_day.toordinal() - days + 1))
+        if current_day == date.max:
+            return QuoteListDateRange()
+        return QuoteListDateRange(preset, first_day, current_day)
+    raw_from = (request.date_from or "").strip()
+    raw_to = (request.date_to or "").strip()
+    try:
+        start = date.fromisoformat(raw_from)
+        end = date.fromisoformat(raw_to)
+    except ValueError:
+        return QuoteListDateRange()
+    if (
+        start.isoformat() != raw_from
+        or end.isoformat() != raw_to
+        or start > end
+        or end == date.max
+    ):
+        return QuoteListDateRange()
+    return QuoteListDateRange(preset, start, end)
 
 
 def normalize_lead_date_range(
@@ -546,35 +584,15 @@ def _normalize_quote_list_query(
         if selected_lead is None or not selected_lead.is_active:
             lead_id = None
 
-    date_preset = _optional_enum_filter(request.date_preset, QuoteListDatePreset)
-    date_from: date | None = None
-    date_to: date | None = None
-    today = datetime.now(UTC).date()
-    if date_preset is QuoteListDatePreset.LAST_7_DAYS:
-        date_from = today - timedelta(days=6)
-        date_to = today
-    elif date_preset is QuoteListDatePreset.LAST_30_DAYS:
-        date_from = today - timedelta(days=29)
-        date_to = today
-    elif date_preset is QuoteListDatePreset.CUSTOM:
-        requested_from = _optional_date_filter(request.date_from)
-        requested_to = _optional_date_filter(request.date_to)
-        if requested_from is not None and requested_to is not None:
-            if requested_from <= requested_to:
-                date_from = requested_from
-                date_to = requested_to
-            else:
-                date_preset = None
-        else:
-            date_preset = None
+    date_range = normalize_quote_date_range(request)
 
     return QuoteListQuery(
         search_term=normalize_quote_search(request.search_term),
         status=_optional_enum_filter(request.status, QuoteStatus),
         lead_id=lead_id,
-        date_preset=date_preset,
-        date_from=date_from,
-        date_to=date_to,
+        date_preset=date_range.preset,
+        date_from=date_range.date_from,
+        date_to=date_range.date_to,
         sort_field=(
             _optional_enum_filter(request.sort_field, QuoteListSortField)
             or QuoteListSortField.CREATED_AT

@@ -2954,6 +2954,26 @@ def deactivate_quote(
     sales_service.quotes.delete(db, quote_id, context=context)
 
 
+def _quote_date_filters(
+    date_range: sales_service.QuoteListDateRange,
+) -> dict[str, str | None]:
+    """Serialize owner dates; relative bookmarks keep only their preset."""
+    custom = date_range.preset is sales_service.QuoteListDatePreset.CUSTOM
+    return {
+        "date_preset": date_range.preset.value if date_range.preset else None,
+        "date_from": (
+            date_range.date_from.isoformat()
+            if custom and date_range.date_from is not None
+            else None
+        ),
+        "date_to": (
+            date_range.date_to.isoformat()
+            if custom and date_range.date_to is not None
+            else None
+        ),
+    }
+
+
 def build_quotes_list_context(
     db: Session,
     *,
@@ -2994,13 +3014,13 @@ def build_quotes_list_context(
     normalized_filters = {
         "status": normalized.status.value if normalized.status is not None else None,
         "lead_id": str(normalized.lead_id) if normalized.lead_id is not None else None,
-        "date_preset": (
-            normalized.date_preset.value
-            if normalized.date_preset is not None
-            else None
+        **_quote_date_filters(
+            sales_service.QuoteListDateRange(
+                preset=normalized.date_preset,
+                date_from=normalized.date_from,
+                date_to=normalized.date_to,
+            )
         ),
-        "date_from": normalized.date_from.isoformat() if normalized.date_from else None,
-        "date_to": normalized.date_to.isoformat() if normalized.date_to else None,
     }
     list_query = QUOTE_LIST_DEFINITION.build_query(
         search=normalized.search_term,
@@ -3071,9 +3091,9 @@ def build_quotes_failure_context(
     *,
     status: str | None,
     lead_id: str | None,
-    date_preset: str | None,
-    date_from: str | None,
-    date_to: str | None,
+    date_preset: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     search: str | None,
     sort_by: str | None,
     sort_dir: str | None,
@@ -3084,22 +3104,14 @@ def build_quotes_failure_context(
 
     normalized_status = _clean_choice(status, quote_status_values())
     normalized_lead_id = _clean_uuid(lead_id)
-    normalized_date_preset = _clean_choice(
-        date_preset, tuple(item.value for item in sales_service.QuoteListDatePreset)
+    date_range = sales_service.normalize_quote_date_range(
+        sales_service.QuoteListQueryInput(
+            date_preset=date_preset,
+            date_from=date_from,
+            date_to=date_to,
+        )
     )
-    normalized_date_from = sales_service._optional_date_filter(date_from)
-    normalized_date_to = sales_service._optional_date_filter(date_to)
-    if normalized_date_preset != sales_service.QuoteListDatePreset.CUSTOM.value:
-        normalized_date_from = None
-        normalized_date_to = None
-    elif (
-        normalized_date_from is None
-        or normalized_date_to is None
-        or normalized_date_from > normalized_date_to
-    ):
-        normalized_date_preset = None
-        normalized_date_from = None
-        normalized_date_to = None
+    date_filters = _quote_date_filters(date_range)
     safe_sort = (
         sort_by
         if sort_by in QUOTE_LIST_DEFINITION.sortable_keys
@@ -3116,11 +3128,7 @@ def build_quotes_failure_context(
         filters={
             "status": normalized_status,
             "lead_id": normalized_lead_id,
-            "date_preset": normalized_date_preset,
-            "date_from": (
-                normalized_date_from.isoformat() if normalized_date_from else None
-            ),
-            "date_to": normalized_date_to.isoformat() if normalized_date_to else None,
+            **date_filters,
         },
         sort_by=safe_sort,
         sort_dir=safe_dir,
@@ -3139,9 +3147,9 @@ def build_quotes_failure_context(
         "total_pages": page_meta.total_pages,
         "status": normalized_status or "",
         "lead_id": normalized_lead_id or "",
-        "date_preset": normalized_date_preset or "",
-        "date_from": normalized_date_from.isoformat() if normalized_date_from else "",
-        "date_to": normalized_date_to.isoformat() if normalized_date_to else "",
+        "date_preset": date_filters["date_preset"] or "",
+        "date_from": date_filters["date_from"] or "",
+        "date_to": date_filters["date_to"] or "",
         "search": list_query.search or "",
         "quote_statuses": quote_status_values(),
         "leads": [],
