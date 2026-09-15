@@ -209,6 +209,33 @@ class LeadPipelineSummary:
     currency: str
 
 
+class LeadListDatePreset(StrEnum):
+    LAST_7_DAYS = "last_7_days"
+    LAST_30_DAYS = "last_30_days"
+    CUSTOM = "custom"
+
+
+@dataclass(frozen=True, slots=True)
+class LeadListDateRange:
+    """Inclusive UTC creation dates; an empty value means All time."""
+
+    preset: LeadListDatePreset | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+
+    @property
+    def created_from(self) -> datetime | None:
+        if self.date_from is None:
+            return None
+        return datetime.combine(self.date_from, time.min, tzinfo=UTC)
+
+    @property
+    def created_to_exclusive(self) -> datetime | None:
+        if self.date_to is None:
+            return None
+        return datetime.combine(self.date_to + timedelta(days=1), time.min, tzinfo=UTC)
+
+
 class LeadListSortField(StrEnum):
     CREATED_AT = "created_at"
     UPDATED_AT = "updated_at"
@@ -233,6 +260,9 @@ class LeadListQueryInput:
     sort_direction: str | None = None
     page: int = 1
     page_size: int = 25
+    date_preset: str | None = None
+    date_from: str | None = None
+    date_to: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +279,7 @@ class LeadListQuery:
     sort_direction: LeadListSortDirection
     page: int
     page_size: int
+    date_range: LeadListDateRange = LeadListDateRange()
 
     @property
     def offset(self) -> int:
@@ -360,6 +391,7 @@ class _LeadListFilters:
     owner_agent_id: uuid.UUID | None
     lead_source: str | None
     is_active: bool
+    date_range: LeadListDateRange = LeadListDateRange()
 
 
 @dataclass(frozen=True, slots=True)
@@ -428,6 +460,45 @@ def _optional_date_filter(value: str | None) -> date | None:
         return None
 
 
+def normalize_lead_date_range(
+    request: LeadListQueryInput,
+    *,
+    today: date | None = None,
+) -> LeadListDateRange:
+    """Resolve creation dates once, including database-unavailable retry views.
+
+    Presets are UTC calendar days including today, not rolling 24-hour windows.
+    Malformed, incomplete, reversed, and unrepresentable ranges become All time.
+    Explicit dates never override a relative preset or activate an absent preset.
+    """
+    try:
+        preset = LeadListDatePreset((request.date_preset or "").strip())
+    except ValueError:
+        return LeadListDateRange()
+    if preset in (LeadListDatePreset.LAST_7_DAYS, LeadListDatePreset.LAST_30_DAYS):
+        current_day = today if today is not None else datetime.now(UTC).date()
+        days = 7 if preset is LeadListDatePreset.LAST_7_DAYS else 30
+        first_day = date.fromordinal(max(1, current_day.toordinal() - days + 1))
+        if current_day == date.max:
+            return LeadListDateRange()
+        return LeadListDateRange(preset, first_day, current_day)
+    raw_from = (request.date_from or "").strip()
+    raw_to = (request.date_to or "").strip()
+    try:
+        start = date.fromisoformat(raw_from)
+        end = date.fromisoformat(raw_to)
+    except ValueError:
+        return LeadListDateRange()
+    if (
+        start.isoformat() != raw_from
+        or end.isoformat() != raw_to
+        or start > end
+        or end == date.max
+    ):
+        return LeadListDateRange()
+    return LeadListDateRange(preset, start, end)
+
+
 def _normalize_lead_list_query(
     db: Session,
     request: LeadListQueryInput,
@@ -445,6 +516,7 @@ def _normalize_lead_list_query(
             stage_id = None
 
     return LeadListQuery(
+        date_range=normalize_lead_date_range(request),
         search_term=normalize_lead_search(request.search_term),
         status=_optional_enum_filter(request.status, LeadStatus),
         pipeline_id=pipeline_id,
@@ -688,6 +760,12 @@ def _lead_list_predicates(
         predicates.append(Lead.status == filters.status)
     if filters.lead_source is not None:
         predicates.append(func.lower(Lead.lead_source) == filters.lead_source.lower())
+    created_from = filters.date_range.created_from
+    created_to_exclusive = filters.date_range.created_to_exclusive
+    if created_from is not None:
+        predicates.append(Lead.created_at >= created_from)
+    if created_to_exclusive is not None:
+        predicates.append(Lead.created_at < created_to_exclusive)
     if filters.search_term is not None:
         predicates.append(_lead_search_predicate(filters.search_term))
     return tuple(predicates)
@@ -702,6 +780,7 @@ def _lead_list_filters(query: LeadListQuery) -> _LeadListFilters:
         owner_agent_id=query.owner_agent_id,
         lead_source=query.lead_source.value if query.lead_source is not None else None,
         is_active=True,
+        date_range=query.date_range,
     )
 
 

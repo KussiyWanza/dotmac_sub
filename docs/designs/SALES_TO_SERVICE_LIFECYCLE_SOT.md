@@ -207,6 +207,29 @@ depend on HTTP request/response or exception types.
   history, import/export, bulk Lead commands, aging analytics, or parallel
   Lead persistence is introduced by these screens.
 
+### Lead creation-date filters
+
+At `/admin/sales/leads`, All time preserves the existing active-Lead scope.
+Last 7 days and Last 30 days include today's UTC calendar date plus the
+preceding 6 or 29 dates. Custom range requires ISO start and end dates and
+includes both endpoints, using `created_at >= start midnight` and
+`created_at < midnight after end`. Filtering is by Lead creation, not update,
+expected close, Quote, or conversion date.
+
+The typed `sales.service` query owns normalization and combines this condition
+with all existing filters using AND. The same predicates drive paginated rows,
+exact count, matching open/won totals, and matching pipeline value. Relative
+URLs store only the preset, so bookmarks remain relative; custom URLs retain
+both dates. Sorting and page-size navigation retain the scope, Filter resets
+to page one, and Reset clears all filters. Database-failure retry retains the
+date scope without database reads. Legacy callers default to All time.
+
+Unknown presets, malformed, incomplete, reversed, and unsupported custom dates
+canonicalize to All time. An end date of 9999-12-31 is unsupported because its
+exclusive next-day bound cannot be represented. Native browser controls guide
+valid input, but the backend owns validation even without JavaScript. Existing
+permissions and empty/error states remain unchanged. No schema change is needed.
+
 ## Selfcare CRM Quotes list page contract
 
 - Screen identifier and route: `sales-quotes-list` at
