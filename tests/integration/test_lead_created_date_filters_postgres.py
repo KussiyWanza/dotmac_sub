@@ -11,24 +11,6 @@ from app.services import sales
 def test_date_scope_keeps_unique_rows_counts_summaries_and_pages(db_session):
     start = datetime(2026, 9, 1, tzinfo=UTC)
     next_day = start + timedelta(days=1)
-    party = Party(
-        display_name="Dated PostgreSQL contact", party_type="person", status="active"
-    )
-    db_session.add(party)
-    db_session.flush()
-    for channel, value in [
-        ("email", "date-one@example.com"),
-        ("phone", "+2348035550102"),
-    ]:
-        db_session.add(
-            PartyContactPoint(
-                party_id=party.id,
-                channel_type=channel,
-                normalized_value=value,
-                display_value=value,
-                is_active=True,
-            )
-        )
     expected = []
     moments = [
         start - timedelta(microseconds=1),
@@ -38,6 +20,28 @@ def test_date_scope_keeps_unique_rows_counts_summaries_and_pages(db_session):
         next_day,
     ]
     for index, created in enumerate(moments):
+        # The migrated schema permits one open Lead per Party and pipeline.
+        # Use independent prospects instead of violating that business invariant.
+        party = Party(
+            display_name=f"Dated PostgreSQL contact {index}",
+            party_type="person",
+            status="active",
+        )
+        db_session.add(party)
+        db_session.flush()
+        for channel, value in [
+            ("email", f"date-{index}@example.com"),
+            ("phone", f"+234803555{index:04d}"),
+        ]:
+            db_session.add(
+                PartyContactPoint(
+                    party_id=party.id,
+                    channel_type=channel,
+                    normalized_value=value,
+                    display_value=value,
+                    is_active=True,
+                )
+            )
         lead = Lead(
             party_id=party.id,
             party_bound_at=start,
