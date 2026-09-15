@@ -60,6 +60,7 @@ class EmailTransportHeaders:
     in_reply_to: str | None = None
     references: tuple[str, ...] = ()
     x_dotmac_probe: str | None = None
+    x_dotmac_probe_id: str | None = None
 
     def __post_init__(self) -> None:
         values = (
@@ -67,6 +68,7 @@ class EmailTransportHeaders:
             self.in_reply_to,
             *self.references,
             self.x_dotmac_probe,
+            self.x_dotmac_probe_id,
         )
         if any("\r" in value or "\n" in value for value in values if value):
             raise ValueError("Email transport header values cannot contain newlines")
@@ -81,6 +83,8 @@ class EmailTransportHeaders:
             items.append(("References", " ".join(self.references)))
         if self.x_dotmac_probe:
             items.append(("X-Dotmac-Probe", self.x_dotmac_probe))
+        if self.x_dotmac_probe_id:
+            items.append(("X-Dotmac-Probe-ID", self.x_dotmac_probe_id))
         return tuple(items)
 
 

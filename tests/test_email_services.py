@@ -254,6 +254,7 @@ def test_send_email_preserves_operational_headers(db_session, monkeypatch):
                 "<customer-1@example.com>",
             ),
             x_dotmac_probe="team_inbox_smtp_e2e",
+            x_dotmac_probe_id="probe-id-1",
         ),
     )
 
@@ -263,6 +264,7 @@ def test_send_email_preserves_operational_headers(db_session, monkeypatch):
     assert "In-Reply-To: <customer-1@example.com>" in message
     assert "References: <customer-root@example.com> <customer-1@example.com>" in message
     assert "X-Dotmac-Probe: team_inbox_smtp_e2e" in message
+    assert "X-Dotmac-Probe-ID: probe-id-1" in message
 
 
 def test_send_email_with_tracking(db_session, monkeypatch):

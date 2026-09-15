@@ -178,6 +178,7 @@ class InboundMessageObservation:
     in_reply_to: str | None = None
     references: str | None = None
     smtp_probe: bool = False
+    smtp_probe_id: str | None = None
     campaign_attributed: bool = False
     # Transport-authentication evidence exactly as the sending relay wrote it.
     # Ingestion is the only moment it exists — nothing can recover an SPF or
@@ -306,6 +307,7 @@ _INBOUND_OPTIONAL_FIELDS = (
     "fallback_service_team_id",
     "in_reply_to",
     "references",
+    "smtp_probe_id",
     "provider_account_id",
     "external_account_id",
     "page_id",

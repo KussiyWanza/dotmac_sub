@@ -183,6 +183,9 @@ def _message_payload(
         in_reply_to=str(data["in_reply_to"]) if data.get("in_reply_to") else None,
         references=str(data["references"]) if data.get("references") else None,
         smtp_probe=data.get("smtp_probe") is True,
+        smtp_probe_id=(
+            str(data["smtp_probe_id"]) if data.get("smtp_probe_id") else None
+        ),
         campaign_attributed=data.get("campaign_attributed") is True,
         authentication=(
             data["authentication"]
@@ -343,6 +346,7 @@ def process_provider_observation(
                             "smtp_probe": "team_inbox_smtp_e2e"
                             if payload.smtp_probe
                             else None,
+                            "smtp_probe_id": payload.smtp_probe_id,
                             # Carried onto the message so the evidence sits
                             # beside the claim it would be used to judge.
                             "authentication": payload.authentication,
