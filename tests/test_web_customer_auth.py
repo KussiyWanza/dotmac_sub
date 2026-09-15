@@ -9,7 +9,7 @@ from starlette.requests import Request
 
 from app.models.auth import AuthProvider, UserCredential
 from app.models.catalog import AccessCredential
-from app.models.subscriber import UserType
+from app.models.subscriber import Subscriber, SubscriberStatus, UserType
 from app.models.system_user import SystemUser
 from app.services import customer_portal
 from app.services import web_customer_auth as web_customer_auth_service
@@ -255,6 +255,134 @@ def test_customer_login_ignores_staff_local_credential(db_session, monkeypatch):
     assert credential.last_login_at is None
 
 
+def test_customer_login_unique_email_uses_portal_password(
+    db_session, subscriber, monkeypatch
+):
+    monkeypatch.setattr(
+        web_customer_auth_service.radius_auth,
+        "authenticate",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("radius unavailable")),
+    )
+    subscriber.email = "Portal.Customer@Example.com"
+    credential = UserCredential(
+        subscriber_id=subscriber.id,
+        provider=AuthProvider.local,
+        username="105000110",
+        password_hash=hash_password("portal-secret"),
+        is_active=True,
+    )
+    db_session.add(credential)
+    db_session.commit()
+
+    response = web_customer_auth_service.customer_login_submit(
+        _request(),
+        db_session,
+        "portal.customer@example.COM",
+        "portal-secret",
+        False,
+        "/portal/dashboard",
+    )
+
+    assert response.status_code == 303
+    assert customer_portal.SESSION_COOKIE_NAME in _response_cookies(response)
+    assert credential.username == "105000110"
+
+
+def test_customer_login_shared_email_asks_for_customer_number(
+    db_session, subscriber, monkeypatch
+):
+    monkeypatch.setattr(
+        web_customer_auth_service.radius_auth,
+        "authenticate",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("radius unavailable")),
+    )
+    shared_email = "shared-portal@example.com"
+    subscriber.email = shared_email
+    other = Subscriber(
+        first_name="Shared",
+        last_name="Customer",
+        email=shared_email,
+        status=SubscriberStatus.active,
+        is_active=True,
+        reseller_id=subscriber.reseller_id,
+    )
+    db_session.add(other)
+    db_session.flush()
+    db_session.add_all(
+        [
+            UserCredential(
+                subscriber_id=subscriber.id,
+                provider=AuthProvider.local,
+                username="105000111",
+                password_hash=hash_password("portal-secret"),
+                is_active=True,
+            ),
+            UserCredential(
+                subscriber_id=other.id,
+                provider=AuthProvider.local,
+                username="105000112",
+                password_hash=hash_password("portal-secret"),
+                is_active=True,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = web_customer_auth_service.customer_login_submit(
+        _request(),
+        db_session,
+        shared_email,
+        "portal-secret",
+        False,
+        "/portal/dashboard",
+    )
+
+    assert response.status_code == 401
+    assert "use your customer number" in response.body.decode().lower()
+    assert customer_portal.SESSION_COOKIE_NAME not in _response_cookies(response)
+
+
+def test_existing_email_username_wrong_password_does_not_try_pppoe(
+    db_session, subscriber, monkeypatch
+):
+    radius_attempted = False
+
+    def _unexpected_radius_attempt(**_kwargs):
+        nonlocal radius_attempted
+        radius_attempted = True
+        return None
+
+    monkeypatch.setattr(
+        web_customer_auth_service.radius_auth,
+        "authenticate",
+        _unexpected_radius_attempt,
+    )
+    subscriber.email = "existing-login@example.com"
+    credential = UserCredential(
+        subscriber_id=subscriber.id,
+        provider=AuthProvider.local,
+        username=subscriber.email,
+        password_hash=hash_password("portal-secret"),
+        is_active=True,
+    )
+    db_session.add(credential)
+    db_session.commit()
+
+    response = web_customer_auth_service.customer_login_submit(
+        _request(),
+        db_session,
+        subscriber.email,
+        "wrong-password",
+        False,
+        "/portal/dashboard",
+    )
+
+    db_session.refresh(credential)
+    assert response.status_code == 401
+    assert credential.failed_login_attempts == 1
+    assert radius_attempted is False
+
+
 def test_customer_login_records_local_failure_when_pppoe_fallback_fails(
     db_session, subscriber, monkeypatch
 ):
@@ -359,10 +487,11 @@ def test_customer_login_redirects_to_mfa_when_enabled(
 ):
     monkeypatch.setenv("JWT_SECRET", "test-secret")
     monkeypatch.setenv("TOTP_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    subscriber.email = "mfa-customer@example.com"
     credential = UserCredential(
         subscriber_id=subscriber.id,
         provider=AuthProvider.local,
-        username="mfa-customer@example.com",
+        username="105000113",
         password_hash=hash_password("secret"),
         is_active=True,
     )
@@ -380,7 +509,7 @@ def test_customer_login_redirects_to_mfa_when_enabled(
     response = web_customer_auth_service.customer_login_submit(
         _request(),
         db_session,
-        "mfa-customer@example.com",
+        "MFA-CUSTOMER@EXAMPLE.COM",
         "secret",
         True,
         "/portal/billing",

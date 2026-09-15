@@ -44,6 +44,7 @@ from app.services import (
 )
 from app.services import branding_storage as branding_storage_service
 from app.services import control_registry as control_registry_service
+from app.services import domain_settings as domain_settings_service
 from app.services import email as email_service
 from app.services import file_upload as file_upload_service
 from app.services import import_runs as import_runs_service
@@ -3625,13 +3626,18 @@ def settings_update(
 ):
     """Update system settings for a domain."""
     domain_value = domain or form.get("domain")
-    settings_context, errors = (
-        web_system_settings_forms_service.process_settings_update(
-            db=db,
-            domain_value=domain_value,
-            form=form,
-        )
+    result = web_system_settings_forms_service.process_settings_update(
+        db=db,
+        domain_value=domain_value,
+        form=form,
+        context=_system_command_context(
+            request,
+            reason="Update admin system settings",
+            idempotency_key=f"system-settings:{domain_value or 'unknown'}:{uuid4()}",
+            scope=domain_settings_service.ADMIN_SETTINGS_FORM_WRITE_SCOPE,
+        ),
     )
+    errors = result.errors
     if domain_value == "notification":
         if not errors:
             return RedirectResponse(url="/admin/system/email?saved=1", status_code=303)
@@ -3643,12 +3649,13 @@ def settings_update(
     context = web_system_settings_views_service.build_settings_page_context(
         request,
         db,
-        settings_context=settings_context,
+        settings_context=result.settings_context,
         extra={"errors": errors, "saved": not errors},
     )
     return templates.TemplateResponse(
         "admin/system/settings.html",
         context,
+        status_code=400 if errors else 200,
     )
 
 

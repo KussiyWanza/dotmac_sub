@@ -533,7 +533,12 @@ Check that credentials are synced:
 
 ### Step 5: Customer Self-Service
 
-Customer logs in at `/portal` with PPPoE username + password:
+Customer logs in at `/portal` with their customer number or PPPoE username.
+They may also use their contact email with the portal password when that email
+belongs to only one customer account. If an email is shared, direct the customer
+to use their customer number. Suspended customers may still log in; disabled or
+canceled customers may not.
+
 - Views subscription, speed, billing
 - Pays online via Paystack
 - Changes plan (with proration)

@@ -8,6 +8,7 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from enum import StrEnum
 from ipaddress import IPv4Address as ParsedIPv4Address
 from typing import Any, Literal, cast
@@ -20,6 +21,7 @@ from sqlalchemy import select as db_select
 from sqlalchemy.orm import Query, Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.models.billing import Invoice, Payment, PaymentStatus
 from app.models.catalog import (
     BillingMode,
     NasDevice,
@@ -49,15 +51,21 @@ from app.models.subscriber import (
     SubscriberStatus,
     UserType,
 )
+from app.models.support import Ticket
 from app.schemas.infrastructure import (
     InfrastructureReference,
     InfrastructureSearch,
     InfrastructureType,
 )
 from app.services import infrastructure_catalogue
+from app.services import support as support_service
 from app.services.billing_profile import effective_billing_mode_clause
 from app.services.billing_settings import COLLECTIBLE_SERVICE_STATUSES
 from app.services.customer_account_visibility import splynx_deleted_import_clause
+from app.services.customer_support_links import (
+    ticket_customer_any_link_filter,
+    ticket_customer_linked_ids,
+)
 from app.services.list_query import (
     ListDefinition,
     ListFieldDefinition,
@@ -238,6 +246,9 @@ class CustomerExportRow:
     nas_devices: str
     locations: str
     contact_completeness: str
+    open_ticket_ids: str
+    total_payment: str
+    last_billing_date: str
 
     def values(self) -> tuple[str, ...]:
         return (
@@ -257,6 +268,9 @@ class CustomerExportRow:
             self.nas_devices,
             self.locations,
             self.contact_completeness,
+            self.open_ticket_ids,
+            self.total_payment,
+            self.last_billing_date,
         )
 
 
@@ -264,6 +278,15 @@ class CustomerExportRow:
 class CustomerCsvExport:
     content: str
     filename: str
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerExportFacts:
+    """Cross-domain facts projected into one customer export row."""
+
+    open_ticket_ids: tuple[str, ...]
+    total_payment: Decimal
+    last_billing_at: datetime | None
 
 
 CUSTOMER_EXPORT_HEADERS: tuple[str, ...] = (
@@ -283,6 +306,9 @@ CUSTOMER_EXPORT_HEADERS: tuple[str, ...] = (
     "nas_devices",
     "locations",
     "contact_completeness",
+    "open_ticket_ids",
+    "total_payment",
+    "last_billing_date",
 )
 
 
@@ -1292,10 +1318,76 @@ def _customer_contact_completeness(customer: Subscriber) -> str:
     return "No email or phone"
 
 
+def _customer_export_facts(
+    db: Session,
+    *,
+    customer_ids: tuple[UUID, ...],
+) -> dict[UUID, CustomerExportFacts]:
+    """Load support and billing export facts in bounded, set-based queries."""
+
+    if not customer_ids:
+        return {}
+
+    open_ticket_ids: dict[UUID, set[str]] = {
+        customer_id: set() for customer_id in customer_ids
+    }
+    tickets = (
+        db.query(Ticket)
+        .filter(Ticket.is_active.is_(True))
+        .filter(Ticket.status.in_(support_service.active_ticket_status_values()))
+        .filter(ticket_customer_any_link_filter(Ticket, customer_ids))
+        .all()
+    )
+    for ticket in tickets:
+        ticket_id = str(ticket.number or ticket.id)
+        for linked_id in ticket_customer_linked_ids(ticket):
+            if isinstance(linked_id, UUID) and linked_id in open_ticket_ids:
+                open_ticket_ids[linked_id].add(ticket_id)
+
+    total_payments = {
+        account_id: Decimal(str(total or 0))
+        for account_id, total in (
+            db.query(
+                Payment.account_id,
+                func.coalesce(func.sum(Payment.amount), Decimal("0.00")),
+            )
+            .filter(Payment.account_id.in_(customer_ids))
+            .filter(Payment.is_active.is_(True))
+            .filter(Payment.status == PaymentStatus.succeeded)
+            .group_by(Payment.account_id)
+            .all()
+        )
+        if account_id is not None
+    }
+    last_billing_dates = {
+        account_id: billed_at
+        for account_id, billed_at in (
+            db.query(
+                Invoice.account_id,
+                func.max(func.coalesce(Invoice.issued_at, Invoice.created_at)),
+            )
+            .filter(Invoice.account_id.in_(customer_ids))
+            .filter(Invoice.is_active.is_(True))
+            .group_by(Invoice.account_id)
+            .all()
+        )
+    }
+
+    return {
+        customer_id: CustomerExportFacts(
+            open_ticket_ids=tuple(sorted(open_ticket_ids[customer_id])),
+            total_payment=total_payments.get(customer_id, Decimal("0.00")),
+            last_billing_at=last_billing_dates.get(customer_id),
+        )
+        for customer_id in customer_ids
+    }
+
+
 def _customer_export_row(
     customer: Subscriber,
     *,
     customer_location: str | None,
+    facts: CustomerExportFacts,
 ) -> CustomerExportRow:
     subscriptions = sorted(
         customer.subscriptions or (),
@@ -1376,6 +1468,11 @@ def _customer_export_row(
         nas_devices=nas_devices,
         locations=locations,
         contact_completeness=_customer_contact_completeness(customer),
+        open_ticket_ids=_joined_export_values(list(facts.open_ticket_ids)),
+        total_payment=f"{facts.total_payment:.2f}",
+        last_billing_date=(
+            facts.last_billing_at.date().isoformat() if facts.last_billing_at else ""
+        ),
     )
 
 
@@ -1432,10 +1529,13 @@ def build_customer_csv_export(
         if location_ids
         else {}
     )
+    customer_ids = tuple(customer.id for customer in customers)
+    export_facts = _customer_export_facts(db, customer_ids=customer_ids)
     rows = tuple(
         _customer_export_row(
             customer,
             customer_location=location_names.get(customer.pop_site_id),
+            facts=export_facts[customer.id],
         )
         for customer in customers
     )

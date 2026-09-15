@@ -756,16 +756,20 @@ DOMAIN = DomainSOT(
                 "customer.accounts",
                 "access.subscription_lifecycle",
                 "financial.billing_profile",
+                "financial.invoices",
+                "financial.payments",
                 "financial.subscription_billing_treatments",
                 "service_intent.catalog_policy",
                 "network.identity",
                 "network.ip_assignment_lifecycle",
+                "support.ticket_lifecycle",
             ),
             notes=(
                 "The admin list and CSV export share one normalized scope and "
                 "stable ordering contract. CSV rows project committed customer, "
-                "subscription, catalog, access identity, IP assignment, NAS, and "
-                "POP facts without mutating or re-owning them. Customer rows "
+                "subscription, catalog, access identity, IP assignment, NAS, POP, "
+                "support-ticket, payment, and invoice facts without mutating or "
+                "re-owning them. Customer rows "
                 "retain the full account name while the list presentation limits "
                 "visible names to four words and exposes the full text when cut. "
                 "Billing cohorts consume the canonical billing profile and "
@@ -788,6 +792,16 @@ DOMAIN = DomainSOT(
                             "canonical catalog offers",
                             "canonical network access identities",
                             "canonical service IP assignments",
+                        )
+                        + (
+                            (
+                                "canonical support ticket lifecycle records",
+                                "canonical customer payment records",
+                                "canonical customer invoice records",
+                            )
+                            if concern
+                            == "admin customer complete CSV scope and analytical projection"
+                            else ()
                         ),
                     )
                     for concern in (
@@ -868,6 +882,33 @@ DOMAIN = DomainSOT(
                         source=(
                             "desired subscription IPv4, active IPAM assignments, "
                             "and active ONT static IP assignments"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical support ticket lifecycle records",
+                        owner="support.ticket_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Ticket active flag, lifecycle status, human identifier, "
+                            "and canonical customer links"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical customer payment records",
+                        owner="financial.payments",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Payment active flag, lifecycle status, customer account "
+                            "link, and amount"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical customer invoice records",
+                        owner="financial.invoices",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Invoice active flag, customer account link, issued_at, "
+                            "and created_at"
                         ),
                     ),
                 ),

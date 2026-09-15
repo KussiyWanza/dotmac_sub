@@ -1,12 +1,13 @@
 """Identity / email decoupling (Layers 1+2).
 
-Email is contact information, not an identity: it is non-unique, and it is no
-longer a login key. Login identity lives in ``user_credentials.username`` (and
-RADIUS), admin identity in ``system_users.email``, ownership in
-``subscribers.reseller_id``.
+Email is non-unique contact information, not canonical identity. A unique
+eligible customer email may be used as a safe alias for the canonical local
+credential; shared email must never select an account.
 """
 
 from __future__ import annotations
+
+import pytest
 
 from app.models.auth import AuthProvider, UserCredential
 from app.models.subscriber import Subscriber
@@ -17,6 +18,10 @@ from app.services.auth_flow import (
     hash_password,
     request_password_reset,
     set_subscriber_email,
+)
+from app.services.customer_login_identity import (
+    AMBIGUOUS_EMAIL_CODE,
+    CustomerLoginIdentityError,
 )
 from app.services.validation_api import validate_email_unique
 
@@ -63,10 +68,10 @@ def test_validate_email_unique_never_blocks(db_session):
     assert message is None
 
 
-# --- Layer 2: email is not a login key -------------------------------------
+# --- Layer 2: email is only an unambiguous login alias ---------------------
 
 
-def test_login_resolves_by_username_not_subscriber_email(db_session):
+def test_login_resolves_by_username_and_refuses_shared_subscriber_email(db_session):
     shared = "shared@example.com"
     a = _sub(db_session, shared)
     b = _sub(db_session, shared)
@@ -87,13 +92,12 @@ def test_login_resolves_by_username_not_subscriber_email(db_session):
         == b.id
     )
 
-    # The shared subscriber email is NOT a login key — no match.
-    assert (
+    # Shared contact email is not allowed to select either credential.
+    with pytest.raises(CustomerLoginIdentityError) as exc:
         _resolve_login_credential(
             db_session, provider=AuthProvider.local, identifier=shared
         )
-        is None
-    )
+    assert exc.value.code == AMBIGUOUS_EMAIL_CODE
 
 
 def test_admin_system_user_still_logs_in_by_email(db_session):

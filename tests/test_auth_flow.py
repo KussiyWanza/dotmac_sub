@@ -24,7 +24,7 @@ from app.models.auth import Session as AuthSession
 from app.models.catalog import AccessCredential
 from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.notification import CommunicationIntentRecord, Notification
-from app.models.subscriber import SubscriberStatus, UserType
+from app.models.subscriber import Subscriber, SubscriberStatus, UserType
 from app.models.subscription_engine import SettingValueType
 from app.models.system_user import SystemUser
 from app.models.team_inbox import (
@@ -208,34 +208,157 @@ def test_login_rejects_unsupported_provider(db_session, person):
     assert exc.value.status_code == 400
 
 
-def test_login_local_uses_username_not_subscriber_email(
+def test_login_local_accepts_unique_customer_email_without_changing_username(
     db_session, person, monkeypatch
 ):
-    # Subscriber email is non-unique contact info, not a login key. Login must
-    # use the credential username; the subscriber email must NOT authenticate.
     monkeypatch.setenv("JWT_SECRET", "test-secret")
     person.email = "person-login@example.com"
+    person.subscriber_number = "105000101"
     credential = UserCredential(
         person_id=person.id,
         provider=AuthProvider.local,
-        username="admin-username",
+        username=person.subscriber_number,
+        password_hash=hash_password("secret"),
+        is_active=True,
+    )
+    db_session.add(credential)
+    db_session.commit()
+    original_email = person.email
+    original_password_hash = credential.password_hash
+
+    request = _make_request()
+    tokens = AuthFlow.login(
+        db_session, person.subscriber_number, "secret", request, None
+    )
+    assert tokens.get("access_token")
+    assert tokens.get("refresh_token")
+
+    email_tokens = AuthFlow.login(
+        db_session,
+        "PERSON-LOGIN@EXAMPLE.COM",
+        "secret",
+        _make_request(),
+        None,
+    )
+    assert email_tokens.get("access_token")
+    db_session.refresh(person)
+    db_session.refresh(credential)
+    assert credential.username == "105000101"
+    assert person.email == original_email
+    assert credential.password_hash == original_password_hash
+
+
+def test_login_local_shared_customer_email_requires_customer_number(
+    db_session, person, monkeypatch
+):
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    shared_email = "shared-login@example.com"
+    person.email = shared_email
+    first_credential = UserCredential(
+        person_id=person.id,
+        provider=AuthProvider.local,
+        username="105000102",
+        password_hash=hash_password("secret"),
+        is_active=True,
+    )
+    other = Subscriber(
+        first_name="Other",
+        last_name="Customer",
+        email=shared_email,
+        status=SubscriberStatus.active,
+        is_active=True,
+    )
+    db_session.add_all([first_credential, other])
+    db_session.flush()
+    db_session.add(
+        UserCredential(
+            subscriber_id=other.id,
+            provider=AuthProvider.local,
+            username="105000103",
+            password_hash=hash_password("secret"),
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        AuthFlow.login(db_session, shared_email, "secret", _make_request(), None)
+
+    assert exc.value.status_code == 409
+    assert "use your customer number" in str(exc.value.detail).lower()
+    assert db_session.query(AuthSession).count() == 0
+
+
+def test_login_local_email_wrong_password_preserves_lockout_tracking(
+    db_session, person, monkeypatch
+):
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    person.email = "wrong-password@example.com"
+    credential = UserCredential(
+        person_id=person.id,
+        provider=AuthProvider.local,
+        username="105000104",
         password_hash=hash_password("secret"),
         is_active=True,
     )
     db_session.add(credential)
     db_session.commit()
 
-    request = _make_request()
-    tokens = AuthFlow.login(db_session, "admin-username", "secret", request, None)
-    assert tokens.get("access_token")
-    assert tokens.get("refresh_token")
-
-    # The subscriber email no longer resolves to a login.
     with pytest.raises(HTTPException) as exc:
-        AuthFlow.login(
-            db_session, "person-login@example.com", "secret", _make_request(), None
-        )
+        AuthFlow.login(db_session, person.email, "wrong", _make_request(), None)
+
+    db_session.refresh(credential)
     assert exc.value.status_code == 401
+    assert credential.failed_login_attempts == 1
+    assert db_session.query(AuthSession).count() == 0
+
+
+def test_login_local_email_allows_suspended_customer(db_session, person, monkeypatch):
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    person.email = "suspended-login@example.com"
+    person.status = SubscriberStatus.suspended
+    credential = UserCredential(
+        person_id=person.id,
+        provider=AuthProvider.local,
+        username="105000105",
+        password_hash=hash_password("secret"),
+        is_active=True,
+    )
+    db_session.add(credential)
+    db_session.commit()
+
+    tokens = AuthFlow.login(db_session, person.email, "secret", _make_request(), None)
+
+    assert tokens.get("access_token")
+    assert db_session.query(AuthSession).count() == 1
+
+
+@pytest.mark.parametrize(
+    "subscriber_status",
+    [SubscriberStatus.disabled, SubscriberStatus.canceled],
+)
+def test_login_local_email_blocks_disabled_or_canceled_customer(
+    db_session, person, subscriber_status, monkeypatch
+):
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    person.email = f"{subscriber_status.value}-login@example.com"
+    person.status = subscriber_status
+    db_session.add(
+        UserCredential(
+            person_id=person.id,
+            provider=AuthProvider.local,
+            username=f"105-{subscriber_status.value}",
+            password_hash=hash_password("secret"),
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        AuthFlow.login(db_session, person.email, "secret", _make_request(), None)
+
+    assert exc.value.status_code == 401
+    assert db_session.query(AuthSession).count() == 0
 
 
 def test_login_radius_uses_username_not_subscriber_email(
