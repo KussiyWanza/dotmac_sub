@@ -286,10 +286,18 @@ def _comment_to_dict(comment: Any, customer_subscriber_ids: set[str]) -> dict[st
 def _ticket_list_base(request: Request, customer: dict) -> dict[str, Any]:
     from app.services import web_support_tickets
 
+    support_current_path = "/portal/support"
+    if request is not None:
+        support_current_path = request.url.path
+        if request.url.query:
+            support_current_path = f"{support_current_path}?{request.url.query}"
+
     return {
         "request": request,
         "customer": customer,
         "active_page": "support",
+        "support_current_path": support_current_path,
+        "support_return_path": "/portal/support",
         "priority_display": TICKET_PRIORITY_DISPLAY,
         "priority_colors": TICKET_PRIORITY_COLORS,
         "max_attachment_bytes": web_support_tickets.MAX_ATTACHMENT_BYTES,

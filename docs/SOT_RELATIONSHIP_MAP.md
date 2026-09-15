@@ -21,6 +21,28 @@ The manifest has one canonical graph. Domain, capability/module, and journey
 hierarchies are derived navigation views; they do not own parallel dependency
 lists or service declarations.
 
+## Lead creation-date query ownership
+
+`sales.service` owns `LeadListDateRange` and `normalize_lead_date_range`.
+`Lead.created_at` is the authoritative timestamp. One normalized UTC date
+scope flows through the existing Lead predicates to rows, count, and summary.
+The web adapter serializes that scope for navigation and database-failure retry;
+it does not calculate a second date window. No database writes, new authority,
+or schema migration are introduced. See the Leads page contract in
+`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md` and
+`tests/architecture/test_lead_created_date_ownership.py`.
+
+## Quote creation-date query ownership
+
+`sales.service` owns `QuoteListDateRange` and `normalize_quote_date_range`.
+The normal query and database-unavailable retry adapter use this same public
+owner; adapters do not import private date parsers or interpret date ranges.
+Invalid and unrepresentable dates canonicalize to All time before timestamp
+bounds are constructed. Relative bookmarks carry only their preset.
+Enforcement: `tests/architecture/test_sales_quote_list_query_boundary.py`,
+`tests/test_web_sales_quotes_list.py`, and the migrated PostgreSQL quote-list
+acceptance tests. No new writer, owner, schema, or permission is introduced.
+
 ## What counts as an adapter
 
 An adapter must be identifiable by a RULE, not by inspection (ADR-0010 in

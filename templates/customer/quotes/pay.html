@@ -36,12 +36,13 @@
         <div class="mt-4 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 dark:border-sky-900/50 dark:bg-sky-900/20 dark:text-sky-100">
             If checkout does not complete, do not retry immediately after a charge. Use the payment reference on the result page or contact support.
         </div>
-        <p x-show="errorMessage" x-cloak class="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300" x-text="errorMessage"></p>
+        <p x-show="errorMessage" x-cloak role="alert" aria-live="assertive" class="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300" x-text="errorMessage"></p>
         <div class="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
             <button
                 type="button"
                 @click="startPayment()"
                 :disabled="processing"
+                :aria-busy="processing.toString()"
                 class="inline-flex items-center justify-center rounded-xl bg-[var(--color-brand-600)] px-8 py-3.5 text-sm font-semibold text-white shadow-lg transition hover:bg-[var(--color-brand-700)] disabled:cursor-not-allowed disabled:opacity-60">
                 <span x-text="processing ? 'Processing...' : 'Pay {{ payment.currency }} {{ "{:,.2f}".format(payment.payable_amount) }}'"></span>
             </button>

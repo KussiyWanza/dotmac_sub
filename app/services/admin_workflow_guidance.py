@@ -743,7 +743,7 @@ HELP_ONLY_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         "Sales and account staff",
         "Move leads, quotes, and funded orders through the correct sales workflow.",
         (),
-        "Open Leads to find, create, qualify, assign, or update a prospect.",
+        "Open Leads to find, create, qualify, assign, or update a prospect. Use Created date to select All time, Last 7 days, Last 30 days, or Custom range, then click Filter. Custom ranges require both dates and include both endpoints; all dates use UTC. Reset clears the filters.",
         "Open Quotes to prepare and send reviewed commercial terms for a Lead or Customer.",
         "Open Sales Orders to review funding and hand approved work to the service workflow.",
         "Verify the customer or lead identity before changing stage, pricing, or ownership.",

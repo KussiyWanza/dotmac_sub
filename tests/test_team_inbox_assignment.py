@@ -438,6 +438,13 @@ def test_admin_capacity_setting_is_consumed_by_assignment_runtime(db_session):
     )
 
 
+def test_integer_admin_settings_use_text_storage_shape():
+    spec = settings_spec.get_spec(SettingDomain.billing, "topup_max_amount")
+    assert spec is not None
+
+    assert settings_spec.normalize_for_db(spec, 999999999) == ("999999999", None)
+
+
 def test_assign_conversation_queues_when_no_agent_available(db_session):
     team = _team(db_session)
     _member(db_session, team, status=InboxAgentPresenceStatus.away.value)

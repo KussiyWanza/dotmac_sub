@@ -29,7 +29,7 @@ native models (``app/models/sales.py``), with the deltas applied:
 import logging
 import uuid
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from enum import Enum, StrEnum
 from typing import TypeVar
@@ -209,6 +209,33 @@ class LeadPipelineSummary:
     currency: str
 
 
+class LeadListDatePreset(StrEnum):
+    LAST_7_DAYS = "last_7_days"
+    LAST_30_DAYS = "last_30_days"
+    CUSTOM = "custom"
+
+
+@dataclass(frozen=True, slots=True)
+class LeadListDateRange:
+    """Inclusive UTC creation dates; an empty value means All time."""
+
+    preset: LeadListDatePreset | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+
+    @property
+    def created_from(self) -> datetime | None:
+        if self.date_from is None:
+            return None
+        return datetime.combine(self.date_from, time.min, tzinfo=UTC)
+
+    @property
+    def created_to_exclusive(self) -> datetime | None:
+        if self.date_to is None:
+            return None
+        return datetime.combine(self.date_to + timedelta(days=1), time.min, tzinfo=UTC)
+
+
 class LeadListSortField(StrEnum):
     CREATED_AT = "created_at"
     UPDATED_AT = "updated_at"
@@ -233,6 +260,9 @@ class LeadListQueryInput:
     sort_direction: str | None = None
     page: int = 1
     page_size: int = 25
+    date_preset: str | None = None
+    date_from: str | None = None
+    date_to: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +279,7 @@ class LeadListQuery:
     sort_direction: LeadListSortDirection
     page: int
     page_size: int
+    date_range: LeadListDateRange = LeadListDateRange()
 
     @property
     def offset(self) -> int:
@@ -300,6 +331,21 @@ class QuoteListSortDirection(StrEnum):
     DESC = "desc"
 
 
+class QuoteListDatePreset(StrEnum):
+    LAST_7_DAYS = "last_7_days"
+    LAST_30_DAYS = "last_30_days"
+    CUSTOM = "custom"
+
+
+@dataclass(frozen=True, slots=True)
+class QuoteListDateRange:
+    """Inclusive UTC Quote creation dates; an empty value means All time."""
+
+    preset: QuoteListDatePreset | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class QuoteListQueryInput:
     """Raw adapter values for the authoritative Quote list query."""
@@ -311,6 +357,9 @@ class QuoteListQueryInput:
     sort_direction: str | None = None
     page: int = 1
     page_size: int = 25
+    date_preset: str | None = None
+    date_from: str | None = None
+    date_to: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,6 +373,9 @@ class QuoteListQuery:
     sort_direction: QuoteListSortDirection
     page: int
     page_size: int
+    date_preset: QuoteListDatePreset | None = None
+    date_from: date | None = None
+    date_to: date | None = None
 
     @property
     def offset(self) -> int:
@@ -348,6 +400,7 @@ class _LeadListFilters:
     owner_agent_id: uuid.UUID | None
     lead_source: str | None
     is_active: bool
+    date_range: LeadListDateRange = LeadListDateRange()
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,6 +408,8 @@ class _QuoteListFilters:
     search_term: str | None
     status: str | None
     lead_id: uuid.UUID | None
+    created_from: datetime | None
+    created_to_exclusive: datetime | None
     is_active: bool
 
 
@@ -404,6 +459,84 @@ def _optional_enum_filter(
         return None
 
 
+def normalize_quote_date_range(
+    request: QuoteListQueryInput,
+    *,
+    today: date | None = None,
+) -> QuoteListDateRange:
+    """Resolve creation dates once, including database-unavailable retry views.
+
+    Presets are UTC calendar days including today, not rolling 24-hour windows.
+    Malformed, incomplete, reversed, and unrepresentable ranges become All time.
+    Explicit dates never override a relative preset or activate an absent preset.
+    """
+    try:
+        preset = QuoteListDatePreset((request.date_preset or "").strip())
+    except ValueError:
+        return QuoteListDateRange()
+    if preset in (QuoteListDatePreset.LAST_7_DAYS, QuoteListDatePreset.LAST_30_DAYS):
+        current_day = today if today is not None else datetime.now(UTC).date()
+        days = 7 if preset is QuoteListDatePreset.LAST_7_DAYS else 30
+        first_day = date.fromordinal(max(1, current_day.toordinal() - days + 1))
+        if current_day == date.max:
+            return QuoteListDateRange()
+        return QuoteListDateRange(preset, first_day, current_day)
+    raw_from = (request.date_from or "").strip()
+    raw_to = (request.date_to or "").strip()
+    try:
+        start = date.fromisoformat(raw_from)
+        end = date.fromisoformat(raw_to)
+    except ValueError:
+        return QuoteListDateRange()
+    if (
+        start.isoformat() != raw_from
+        or end.isoformat() != raw_to
+        or start > end
+        or end == date.max
+    ):
+        return QuoteListDateRange()
+    return QuoteListDateRange(preset, start, end)
+
+
+def normalize_lead_date_range(
+    request: LeadListQueryInput,
+    *,
+    today: date | None = None,
+) -> LeadListDateRange:
+    """Resolve creation dates once, including database-unavailable retry views.
+
+    Presets are UTC calendar days including today, not rolling 24-hour windows.
+    Malformed, incomplete, reversed, and unrepresentable ranges become All time.
+    Explicit dates never override a relative preset or activate an absent preset.
+    """
+    try:
+        preset = LeadListDatePreset((request.date_preset or "").strip())
+    except ValueError:
+        return LeadListDateRange()
+    if preset in (LeadListDatePreset.LAST_7_DAYS, LeadListDatePreset.LAST_30_DAYS):
+        current_day = today if today is not None else datetime.now(UTC).date()
+        days = 7 if preset is LeadListDatePreset.LAST_7_DAYS else 30
+        first_day = date.fromordinal(max(1, current_day.toordinal() - days + 1))
+        if current_day == date.max:
+            return LeadListDateRange()
+        return LeadListDateRange(preset, first_day, current_day)
+    raw_from = (request.date_from or "").strip()
+    raw_to = (request.date_to or "").strip()
+    try:
+        start = date.fromisoformat(raw_from)
+        end = date.fromisoformat(raw_to)
+    except ValueError:
+        return LeadListDateRange()
+    if (
+        start.isoformat() != raw_from
+        or end.isoformat() != raw_to
+        or start > end
+        or end == date.max
+    ):
+        return LeadListDateRange()
+    return LeadListDateRange(preset, start, end)
+
+
 def _normalize_lead_list_query(
     db: Session,
     request: LeadListQueryInput,
@@ -421,6 +554,7 @@ def _normalize_lead_list_query(
             stage_id = None
 
     return LeadListQuery(
+        date_range=normalize_lead_date_range(request),
         search_term=normalize_lead_search(request.search_term),
         status=_optional_enum_filter(request.status, LeadStatus),
         pipeline_id=pipeline_id,
@@ -450,10 +584,15 @@ def _normalize_quote_list_query(
         if selected_lead is None or not selected_lead.is_active:
             lead_id = None
 
+    date_range = normalize_quote_date_range(request)
+
     return QuoteListQuery(
         search_term=normalize_quote_search(request.search_term),
         status=_optional_enum_filter(request.status, QuoteStatus),
         lead_id=lead_id,
+        date_preset=date_range.preset,
+        date_from=date_range.date_from,
+        date_to=date_range.date_to,
         sort_field=(
             _optional_enum_filter(request.sort_field, QuoteListSortField)
             or QuoteListSortField.CREATED_AT
@@ -639,6 +778,12 @@ def _lead_list_predicates(
         predicates.append(Lead.status == filters.status)
     if filters.lead_source is not None:
         predicates.append(func.lower(Lead.lead_source) == filters.lead_source.lower())
+    created_from = filters.date_range.created_from
+    created_to_exclusive = filters.date_range.created_to_exclusive
+    if created_from is not None:
+        predicates.append(Lead.created_at >= created_from)
+    if created_to_exclusive is not None:
+        predicates.append(Lead.created_at < created_to_exclusive)
     if filters.search_term is not None:
         predicates.append(_lead_search_predicate(filters.search_term))
     return tuple(predicates)
@@ -653,6 +798,7 @@ def _lead_list_filters(query: LeadListQuery) -> _LeadListFilters:
         owner_agent_id=query.owner_agent_id,
         lead_source=query.lead_source.value if query.lead_source is not None else None,
         is_active=True,
+        date_range=query.date_range,
     )
 
 
@@ -688,6 +834,10 @@ def _quote_list_predicates(
         predicates.append(Quote.status == filters.status)
     if filters.lead_id is not None:
         predicates.append(Quote.lead_id == filters.lead_id)
+    if filters.created_from is not None:
+        predicates.append(Quote.created_at >= filters.created_from)
+    if filters.created_to_exclusive is not None:
+        predicates.append(Quote.created_at < filters.created_to_exclusive)
     if filters.search_term is not None:
         predicates.append(_quote_search_predicate(filters.search_term))
     return tuple(predicates)
@@ -698,6 +848,16 @@ def _quote_list_filters(query: QuoteListQuery) -> _QuoteListFilters:
         search_term=query.search_term,
         status=query.status.value if query.status is not None else None,
         lead_id=query.lead_id,
+        created_from=(
+            datetime.combine(query.date_from, time.min, tzinfo=UTC)
+            if query.date_from is not None
+            else None
+        ),
+        created_to_exclusive=(
+            datetime.combine(query.date_to + timedelta(days=1), time.min, tzinfo=UTC)
+            if query.date_to is not None
+            else None
+        ),
         is_active=True,
     )
 
@@ -2181,6 +2341,8 @@ class Quotes(ListResponseMixin):
             search_term=normalize_quote_search(search),
             status=_enum_str(status, QuoteStatus, "status") if status else None,
             lead_id=coerce_uuid(lead_id) if lead_id else None,
+            created_from=None,
+            created_to_exclusive=None,
             is_active=True if is_active is None else is_active,
         )
         query = db.query(Quote).filter(*_quote_list_predicates(filters))

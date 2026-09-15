@@ -6019,8 +6019,9 @@ def normalize_for_db(
     if spec.value_type == SettingValueType.integer:
         parsed = _coerce_int_value(value)
         if parsed is None:
-            # Should be prevented by validation in callers, but avoid crashing on bad inputs.
-            return None, value
+            # Integer settings are stored in the non-JSON column. Preserve
+            # that shape even for unexpected internal values.
+            return str(value), None
         return str(parsed), None
     if spec.value_type == SettingValueType.string:
         return str(value), None
