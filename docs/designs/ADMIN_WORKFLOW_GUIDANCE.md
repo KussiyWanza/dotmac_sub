@@ -26,7 +26,22 @@ categories alphabetically.
 
 Guided Admin pages use one shared circular help control immediately beside the
 main page title. The shared layout attaches the control to the first main
-heading, including pages with custom headers. Clicking or tapping it opens the
-guide in a centered modal. The modal traps keyboard focus while open and closes
-from its close control, the backdrop, or the Escape key. Hover is supplementary
-and never the only way to open help.
+heading, including pages with custom headers. Clicking or tapping it opens a
+centered **Page Overview** modal. The modal lists only the registered actions
+permitted by the current request's cached role permissions and explains in a
+small badge that other actions may be hidden and that record state can still
+affect availability. This filtering performs no additional database read and
+never replaces route or command authorization.
+
+Each page action has a stable identifier, plain-language title, permission key,
+and ordered instructions. The modal loads only action titles. Its single
+**Open full help** link selects the exact guide by stable identifier. The Help
+Center organizes every clickable Admin-sidebar destination as an expandable
+section, with its meaningful list, creation, detail, or workflow pages beneath
+it. Selecting a page renders its action instructions in the middle column and
+the same action titles as in-page links in the right column. Help-only guides
+do not make the shared layout add a contextual help control to new pages.
+
+The modal traps keyboard focus while open and closes from its close control,
+the backdrop, or the Escape key. Hover is supplementary and never the only way
+to open help.

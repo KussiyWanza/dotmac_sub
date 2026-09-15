@@ -1,9 +1,13 @@
+import re
 from pathlib import Path
 
 from app.services.admin_workflow_guidance import (
+    HELP_NAVIGATION,
+    HELP_ONLY_GUIDANCE,
     WORKFLOW_GUIDANCE,
     guidance_categories,
     guidance_for_path,
+    help_actions_for,
     search_guidance,
 )
 from scripts.architecture.workflow_guidance_gate import validation_errors
@@ -284,9 +288,59 @@ def test_admin_guidance_uses_one_accessible_centered_modal() -> None:
     assert 'aria-modal="true"' in control
     assert 'x-trap.inert.noscroll="workflowHelpOpen"' in control
     assert "items-center justify-center" in control
+    assert 'button_class="h-10 w-10"' in control
+    assert "h-7 w-7" in control
+    assert "bg-slate-100" in control
+    assert "dark:bg-slate-800" in control
     assert "{{ workflow_guide.purpose }}" in control
-    assert "{% for step in workflow_guide.steps %}" in control
+    assert "Page Overview" in control
+    assert "admin_help_actions_for(workflow_guide)" in control
+    assert "Showing actions available to your role" in control
+    assert "if not action.permission or can(request, action.permission)" in control
+    assert "?article={{ workflow_guide.id|urlencode }}" in control
     assert "billingHelpOpen" not in billing
+
+
+def test_every_help_guide_has_complete_action_sections() -> None:
+    guides = (*WORKFLOW_GUIDANCE, *HELP_ONLY_GUIDANCE)
+    assert len(guides) == 50
+    for guide in guides:
+        actions = help_actions_for(guide)
+        assert actions, guide.id
+        assert len({action.id for action in actions}) == len(actions)
+        covered_steps = tuple(step for action in actions for step in action.steps)
+        assert sorted(covered_steps) == sorted(guide.steps), guide.id
+        assert all(action.title and action.steps for action in actions)
+
+
+def test_help_navigation_matches_sidebar_destinations_without_adding_icons() -> None:
+    labels = {section.label for section in HELP_NAVIGATION}
+    sidebar = Path("templates/components/navigation/admin_sidebar.html").read_text(
+        encoding="utf-8"
+    )
+    sidebar_labels = set(re.findall(r'(?<!sub)nav_link\("([^"]+)"', sidebar))
+    sidebar_labels.remove("Help center")
+    sidebar_labels.add("Vendors")
+
+    assert labels == sidebar_labels
+    guide_ids = {guide.id for guide in (*WORKFLOW_GUIDANCE, *HELP_ONLY_GUIDANCE)}
+    navigation_guide_ids = {
+        guide_id for section in HELP_NAVIGATION for guide_id in section.guide_ids
+    }
+    assert navigation_guide_ids == guide_ids
+    assert guidance_for_path("/admin/workqueue") is None
+    assert guidance_for_path("/admin/surveys") is None
+
+
+def test_help_center_uses_sidebar_sections_and_action_anchors() -> None:
+    help_template = Path("templates/admin/help/index.html").read_text(encoding="utf-8")
+
+    assert "<details" in help_template
+    assert "group.articles" in help_template
+    assert "selected_article.actions" in help_template
+    assert 'href="#action-{{ action.id }}"' in help_template
+    assert 'id="action-{{ action.id }}"' in help_template
+    assert "Showing actions available to your role" not in help_template
 
 
 def test_customer_list_uses_shared_workflow_help_placement() -> None:

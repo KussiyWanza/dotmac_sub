@@ -1981,8 +1981,10 @@ DOMAIN = DomainSOT(
             owns=("Admin workflow guidance projection",),
             notes=(
                 "One read-only, versioned-in-code projection supplies staff workflow "
-                "explanations through explicit prefix or segment-template route "
-                "selectors. It never decides action eligibility or writes state."
+                "explanations, permission-linked action guides, and the Admin-sidebar "
+                "Help hierarchy. Contextual controls still use explicit prefix or "
+                "segment-template route selectors. Help-only pages never add a new "
+                "control. The projection never decides eligibility or writes state."
             ),
             contract=ServiceContract(
                 concerns=(
@@ -1997,7 +1999,7 @@ DOMAIN = DomainSOT(
                         name="Admin workflow guidance registry",
                         owner="ui.admin_workflow_guidance",
                         kind=AuthorityKind.CONTROL_INPUT,
-                        source="Typed WORKFLOW_GUIDANCE content and route selectors in app.services.admin_workflow_guidance.",
+                        source="Typed WORKFLOW_GUIDANCE, HELP_ONLY_GUIDANCE, action, permission, and Help-navigation declarations in app.services.admin_workflow_guidance.",
                     ),
                 ),
                 transaction=TransactionContract(
