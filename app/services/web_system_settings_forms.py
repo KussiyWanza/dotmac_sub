@@ -80,6 +80,17 @@ def upsert_settings_from_specs(
                 dict[object, object] | list[object] | bool | int | str | None,
                 value_json_raw,
             )
+            # Non-JSON settings must always use the text column. Keep this
+            # boundary defensive so a deployed spec mismatch cannot produce
+            # a validation 500 for a valid integer setting submission.
+            if spec.value_type in {
+                settings_spec.SettingValueType.integer,
+                settings_spec.SettingValueType.string,
+            }:
+                value_text = str(
+                    value_json_raw if value_json_raw is not None else value
+                )
+                value_json = None
 
         payload = DomainSettingUpdate(
             value_type=spec.value_type,
