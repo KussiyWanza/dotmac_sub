@@ -1296,6 +1296,11 @@ _ACTION_SPECS: dict[str, tuple[_ActionSpec, ...]] = {
             permission="support:ticket:update",
         ),
     ),
+    "ticket-sla-report": (
+        _action("read-current-sla", "Read the current SLA workload", 0),
+        _action("open-sla-drilldown", "Open a matching ticket queue", 1),
+        _action("review-sla-history", "Review historical SLA evidence", 2),
+    ),
     "ncc-complaints-report": (
         _action("select-report-week", "Select the reporting week", 0),
         _action("validate-complaints", "Validate complaint rows", 1),
@@ -1758,6 +1763,7 @@ HELP_GUIDE_VIEW_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "vendor-records": ("inventory:read",),
     "vendor-reviews": ("inventory:read", "finance:ap:read"),
     "vendor-routes": ("network:fiber:read",),
+    "ticket-sla-report": ("reports:support:read",),
     "ncc-complaints-report": ("reports:ncc:read",),
     "support-csat-report": ("reports:support:read",),
 }
