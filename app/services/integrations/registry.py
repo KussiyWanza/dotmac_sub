@@ -20,6 +20,10 @@ from app.services.integrations.manifest import (
 
 logger = logging.getLogger(__name__)
 
+# Existing Admin binding for the installed Meta messaging connector.
+META_CONNECTION_ADMIN_PATH = "/admin/crm/meta"
+META_CONNECTION_READ_PERMISSION = "crm:conversation:read"
+
 
 @dataclass(frozen=True, slots=True)
 class ConnectorRegistryEntry:

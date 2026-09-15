@@ -6,11 +6,10 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.audit import AuditActorType
 from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.subscription_engine import SettingValueType
 from app.schemas.settings import DomainSettingCreate, DomainSettingUpdate
-from app.services.audit_adapter import stage_audit_event
+from app.services.audit_adapter import AuditActor, stage_audit_event
 from app.services.common import (
     apply_ordering,
     apply_pagination,
@@ -492,16 +491,16 @@ class DomainSettings(ListResponseMixin):
         # Invalidate cache for this setting
 
 
-def _audit_actor(context: CommandContext) -> tuple[AuditActorType, str]:
+def _audit_actor(context: CommandContext) -> AuditActor:
     prefix, separator, identifier = context.actor.partition(":")
     actor_id = identifier if separator and identifier else context.actor
     if prefix == "api_key":
-        return AuditActorType.api_key, actor_id
+        return AuditActor.api_key(actor_id)
     if prefix == "user":
-        return AuditActorType.user, actor_id
+        return AuditActor.user(actor_id)
     if prefix == "service":
-        return AuditActorType.service, actor_id
-    return AuditActorType.system, actor_id
+        return AuditActor.service(actor_id)
+    return AuditActor.system(actor_id)
 
 
 def _setting_value(payload: DomainSettingUpdate) -> object:
@@ -569,14 +568,12 @@ def _apply_admin_settings_form_operation(
         detail = exc.detail if isinstance(exc.detail, str) else "Invalid setting value."
         raise _admin_settings_error("invalid_update", detail) from exc
 
-    actor_type, actor_id = _audit_actor(command.context)
     identities = sorted(f"{update.domain}.{update.key}" for update in command.updates)
     stage_audit_event(
         db,
         action="control.settings_form_updated",
         entity_type="domain_settings",
-        actor_type=actor_type,
-        actor_id=actor_id,
+        actor=_audit_actor(command.context),
         request_id=str(command.context.correlation_id),
         metadata={
             "schema_version": 1,

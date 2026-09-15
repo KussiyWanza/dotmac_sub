@@ -11,6 +11,12 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from app.services.integrations.registry import (
+    META_CONNECTION_ADMIN_PATH,
+    META_CONNECTION_READ_PERMISSION,
+)
+from app.services.sales.service import LEAD_READ_PERMISSION, LEAD_WRITE_PERMISSION
+
 
 @dataclass(frozen=True, slots=True)
 class AdminWorkflowGuidance:
@@ -942,7 +948,7 @@ HELP_ONLY_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         "Manage the Meta connection",
         "Communications and system administrators",
         "Connect and monitor approved Facebook and Instagram messaging accounts.",
-        ("/admin/crm/meta",),
+        (META_CONNECTION_ADMIN_PATH,),
         "Review the current Meta application, Page, Instagram account, token health, and last activity.",
         "Start or renew the connection only with the approved business account and required permissions.",
         "Confirm the selected assets before completing the connection.",
@@ -1143,19 +1149,21 @@ _ACTION_SPECS: dict[str, tuple[_ActionSpec, ...]] = {
         _action("verify-project", "Verify the project", 7),
     ),
     "sales-quotes": (
-        _action("create-quote", "Create a quote", 0, 1, 2, permission="crm:lead:write"),
+        _action(
+            "create-quote", "Create a quote", 0, 1, 2, permission=LEAD_WRITE_PERMISSION
+        ),
         _action(
             "review-estimate",
             "Review an installation estimate",
             3,
             4,
-            permission="crm:lead:write",
+            permission=LEAD_WRITE_PERMISSION,
         ),
         _action(
             "send-accept-quote",
             "Send and accept a quote",
             5,
-            permission="crm:lead:write",
+            permission=LEAD_WRITE_PERMISSION,
         ),
     ),
     "sales-orders": (
@@ -1403,8 +1411,8 @@ _ACTION_SPECS: dict[str, tuple[_ActionSpec, ...]] = {
         ),
     ),
     "sales-overview": (
-        _action("manage-leads", "Manage leads", 0, permission="crm:lead:write"),
-        _action("manage-quotes", "Manage quotes", 1, permission="crm:lead:write"),
+        _action("manage-leads", "Manage leads", 0, permission=LEAD_WRITE_PERMISSION),
+        _action("manage-quotes", "Manage quotes", 1, permission=LEAD_WRITE_PERMISSION),
         _action("review-sales-orders", "Review sales orders", 2),
         _action("verify-sales-identity", "Verify sales identity", 3),
     ),
@@ -1425,7 +1433,7 @@ _ACTION_SPECS: dict[str, tuple[_ActionSpec, ...]] = {
             "convert-referral",
             "Update or convert a referral",
             2,
-            permission="crm:lead:write",
+            permission=LEAD_WRITE_PERMISSION,
         ),
         _action("verify-referral", "Verify conversion and reward state", 3),
     ),
@@ -1634,7 +1642,7 @@ HELP_NAVIGATION: tuple[AdminHelpNavigationSection, ...] = (
         "sales",
         "Sales",
         ("sales-overview", "sales-quotes", "sales-orders"),
-        "crm:lead:read",
+        LEAD_READ_PERMISSION,
     ),
     AdminHelpNavigationSection(
         "service-requests",
@@ -1643,7 +1651,7 @@ HELP_NAVIGATION: tuple[AdminHelpNavigationSection, ...] = (
         "provisioning:read",
     ),
     AdminHelpNavigationSection(
-        "referrals", "Referrals", ("referrals",), "crm:lead:read"
+        "referrals", "Referrals", ("referrals",), LEAD_READ_PERMISSION
     ),
     AdminHelpNavigationSection(
         "projects",
@@ -1746,7 +1754,10 @@ HELP_NAVIGATION: tuple[AdminHelpNavigationSection, ...] = (
         "settings", "Settings", ("settings", "smtp-senders"), "system:settings:read"
     ),
     AdminHelpNavigationSection(
-        "meta", "Meta connection", ("meta-connection",), "crm:conversation:read"
+        "meta",
+        "Meta connection",
+        ("meta-connection",),
+        META_CONNECTION_READ_PERMISSION,
     ),
 )
 

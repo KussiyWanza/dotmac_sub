@@ -6,7 +6,6 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models.subscription_engine import SettingValueType
@@ -15,7 +14,10 @@ from app.services import db_session_adapter, domain_settings, settings_spec
 from app.services import web_system_settings_views as web_system_settings_views_service
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
-from app.services.settings_api_custom import _normalize_spec_setting
+from app.services.settings_api_custom import (
+    SettingNormalizationError,
+    _normalize_spec_setting,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,11 +90,8 @@ def _prepare_settings_from_specs(
                 spec.key,
                 _raw_update_payload(spec, value),
             )
-        except HTTPException as exc:
-            detail = (
-                exc.detail if isinstance(exc.detail, str) else "Invalid setting value."
-            )
-            errors.append(f"{spec.key}: {detail}")
+        except SettingNormalizationError as exc:
+            errors.append(f"{spec.key}: {exc.message}")
             continue
         except (TypeError, ValueError):
             errors.append(f"{spec.key}: Invalid setting value.")
@@ -128,9 +127,6 @@ def _apply_prepared_settings(
         )
     except DomainError as exc:
         return (exc.message,)
-    except HTTPException as exc:
-        detail = exc.detail if isinstance(exc.detail, str) else "Invalid setting value."
-        return (detail,)
     except Exception as exc:
         logger.error(
             "Admin settings form update failed",
