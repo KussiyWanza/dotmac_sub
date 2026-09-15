@@ -276,6 +276,10 @@ def test_admin_guidance_uses_one_accessible_centered_modal() -> None:
     billing = Path("templates/admin/billing/index.html").read_text(encoding="utf-8")
 
     assert "{% block workflow_guidance %}" in layout
+    assert (
+        '{% from "components/ui/workflow_help.html" import workflow_help_control with context %}'
+        in layout
+    )
     assert "data-admin-workflow-help-staging" in layout
     assert "admin-workflow-help.js" in layout
     assert "data-admin-workflow-help-control" in control

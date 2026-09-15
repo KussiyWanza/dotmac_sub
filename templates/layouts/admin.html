@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "components/ui/workflow_help.html" import workflow_help_control %}
+{% from "components/ui/workflow_help.html" import workflow_help_control with context %}
 {% if admin_workflow_guidance_for_path is defined and request is defined and request and request.url %}
 {% set workflow_guide = admin_workflow_guidance_for_path(request.url.path) %}
 {% else %}
