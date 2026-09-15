@@ -1529,6 +1529,7 @@ def deliver_inbound_smtp_health_probe(
     recipient: str,
     message_id: str,
     marker: str,
+    probe_id: str,
 ) -> bool:
     """Deliver one fixed operational probe through the canonical email path."""
     if not communication_eligibility.may_send(
@@ -1556,6 +1557,7 @@ def deliver_inbound_smtp_health_probe(
         headers=email_service.EmailTransportHeaders(
             message_id=message_id,
             x_dotmac_probe=marker,
+            x_dotmac_probe_id=probe_id,
         ),
     )
 

@@ -129,10 +129,11 @@ def test_probe_header_survives_owner_ingestion(db_session):
         )
     )
     db_session.commit()
-    message, external_message_id = smtp_runtime.build_probe_message(
+    message, probe_id = smtp_runtime.build_probe_message(
         sender="probe-sender@example.com",
         recipient="probe@dotmac.io",
     )
+    message.replace_header("Message-ID", "<provider-rewritten@example.com>")
 
     result = team_inbox_smtp_inbound.handle_smtp_message(
         db_session,
@@ -144,13 +145,14 @@ def test_probe_header_survives_owner_ingestion(db_session):
     row = db_session.get(InboxMessage, result.message_id)
 
     assert result.kind == "received"
-    assert row.external_message_id == external_message_id
+    assert row.external_message_id == "<provider-rewritten@example.com>"
     assert row.metadata_["smtp_probe"] == smtp_runtime.PROBE_HEADER_VALUE
+    assert row.metadata_["smtp_probe_id"] == probe_id
     db_session.commit()
 
     delivered = team_inbox_health.verify_smtp_probe_delivery(
         db_session,
-        external_message_id=external_message_id,
+        probe_id=probe_id,
     )
     db_session.refresh(row)
 
@@ -159,7 +161,7 @@ def test_probe_header_survives_owner_ingestion(db_session):
 
 
 def test_probe_submission_uses_canonical_email_owner(monkeypatch):
-    message, external_message_id = smtp_runtime.build_probe_message(
+    message, probe_id = smtp_runtime.build_probe_message(
         sender="unused@example.com",
         recipient="probe@dotmac.io",
     )
@@ -191,8 +193,9 @@ def test_probe_submission_uses_canonical_email_owner(monkeypatch):
     )
     assert closed == [True]
     assert calls[0]["recipient"] == "probe@dotmac.io"
-    assert calls[0]["message_id"] == external_message_id
+    assert calls[0]["message_id"] == str(message["Message-ID"])
     assert calls[0]["marker"] == smtp_runtime.PROBE_HEADER_VALUE
+    assert calls[0]["probe_id"] == probe_id
 
 
 def test_e2e_probe_requires_recipient_allowlist(monkeypatch):

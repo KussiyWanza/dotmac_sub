@@ -66,18 +66,20 @@ def smtp_readiness(
 
 
 def build_probe_message(*, sender: str, recipient: str) -> tuple[EmailMessage, str]:
-    """Build one traceable probe message and return it with its Message-ID."""
-    message_id = f"<dotmac-smtp-probe-{uuid.uuid4()}@sub.local>"
+    """Build one traceable probe message and return its provider-stable ID."""
+    probe_id = str(uuid.uuid4())
+    message_id = f"<dotmac-smtp-probe-{probe_id}@sub.local>"
     message = EmailMessage()
     message["From"] = sender
     message["To"] = recipient
     message["Subject"] = "[Dotmac probe] Team inbox SMTP delivery"
     message["Message-ID"] = message_id
     message["X-Dotmac-Probe"] = PROBE_HEADER_VALUE
+    message["X-Dotmac-Probe-ID"] = probe_id
     message.set_content(
         "Synthetic deployment probe. This message verifies SMTP-to-inbox delivery."
     )
-    return message, message_id
+    return message, probe_id
 
 
 def send_probe_message(
@@ -103,13 +105,14 @@ def send_probe_message(
             recipient=str(message["To"]),
             message_id=str(message["Message-ID"]),
             marker=str(message["X-Dotmac-Probe"]),
+            probe_id=str(message["X-Dotmac-Probe-ID"]),
         )
     finally:
         db.close()
 
 
 def wait_for_probe_delivery(
-    message_id: str,
+    probe_id: str,
     *,
     timeout: float = 120.0,
     poll_interval: float = 0.25,
@@ -126,7 +129,7 @@ def wait_for_probe_delivery(
         try:
             delivered = team_inbox_health.verify_smtp_probe_delivery(
                 db,
-                external_message_id=message_id,
+                probe_id=probe_id,
             )
             if delivered is not None:
                 return delivered
@@ -156,7 +159,7 @@ def run_e2e_probe(
         )
         return EXIT_CONFIGURATION_ERROR
 
-    message, message_id = build_probe_message(
+    message, probe_id = build_probe_message(
         sender="smtp-probe@observability.invalid",
         recipient=resolved_recipient,
     )
@@ -169,11 +172,11 @@ def run_e2e_probe(
         logger.error("team_inbox_smtp_probe_submit_failed")
         return EXIT_RUNTIME_FAILURE
 
-    delivered = wait_for_probe_delivery(message_id, timeout=timeout)
+    delivered = wait_for_probe_delivery(probe_id, timeout=timeout)
     if delivered is None:
         logger.error(
-            "team_inbox_smtp_probe_delivery_timeout external_message_id=%s",
-            message_id,
+            "team_inbox_smtp_probe_delivery_timeout probe_id=%s",
+            probe_id,
         )
         return EXIT_RUNTIME_FAILURE
     if emit_result:

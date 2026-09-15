@@ -4607,10 +4607,14 @@ DOMAIN = DomainSOT(
                 ),
                 inputs=(
                     AuthorityInput(
-                        name="exact synthetic SMTP message",
+                        name="exact synthetic provider-stable probe ID",
                         owner="communications.team_inbox_threads",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                        source="Exact runtime-generated Message-ID and bounded probe marker on the committed Inbox message.",
+                        source=(
+                            "Exact runtime-generated probe ID and bounded probe marker "
+                            "on the committed Inbox message, independent of a "
+                            "provider-rewritten Message-ID."
+                        ),
                     ),
                 ),
                 transaction_mode=TransactionMode.OWNER_MANAGED,

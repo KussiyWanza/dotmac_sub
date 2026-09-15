@@ -282,6 +282,9 @@ def parse_rfc822_email(
     smtp_probe = decode_header_value(message.get("X-Dotmac-Probe"))
     if smtp_probe:
         metadata["smtp_probe"] = smtp_probe
+    smtp_probe_id = decode_header_value(message.get("X-Dotmac-Probe-ID"))
+    if smtp_probe_id:
+        metadata["smtp_probe_id"] = smtp_probe_id
     if html_body:
         metadata["html_body"] = html_body
     metadata["body_text"] = body

@@ -113,20 +113,25 @@ files are harmless; it prevents the subtraction from changing silently.
 | `tests/test_ai_gateway.py` | `<module>` | `outbound_transport` | `8592de9de918a715812dd3b241f2f00930b30bc617bdf2674fdfc16abb797399` |
 | `tests/test_crm_client_resilience.py` | `<module>` | `outbound_transport` | `58bc472074bb7bec95639e2575065066c05d8043983fa49bb10f3858d29320b0` |
 | `tests/test_crm_ticket_pull.py` | `test_latest_crm_updated_at_watermark` | `sync_checkpoint` | `03c45fad7c1a26e5c6ade4222d19ad0190ce37795403d89308d1c3fd23143aeb` |
-| `tests/test_email_services.py` | `test_send_email_auth_failure_logs` | `outbound_transport` | `e21f75d7c74d8996bad3d29f4876bcce708c336102a88f3bd2474350f929b10e` |
-| `tests/test_email_services.py` | `test_smtp_connection_auth_failure_logs` | `outbound_transport` | `e21f75d7c74d8996bad3d29f4876bcce708c336102a88f3bd2474350f929b10e` |
+| `tests/test_email_services.py` | `test_send_email_auth_failure_logs` | `outbound_transport` | `d04fece5c83bd35cca1931fa0675b17849f4e0d8a0a67fe652d5586269c45b31` |
+| `tests/test_email_services.py` | `test_smtp_connection_auth_failure_logs` | `outbound_transport` | `d04fece5c83bd35cca1931fa0675b17849f4e0d8a0a67fe652d5586269c45b31` |
 | `tests/test_genieacs_services.py` | `<module>` | `outbound_transport` | `cfc1341f06e824ad2bfc34a59d5adece457c40bea620b65d7badd43779956d99` |
 | `tests/test_integration_meta_social.py` | `test_typed_facade_returns_sanitized_outcome` | `outbound_transport` | `358e9784cd774b9cdd9e693c57365fc3842862f6cf7d8653bf3c4fcf53a13959` |
 | `tests/test_meta_oauth.py` | `test_provider_rejection_records_only_sanitized_evidence` | `outbound_transport` | `d081abb25b5f09a8dc4658709a0103d25b9d866728c1dc80594621e32fb3a582` |
 | `tests/test_nextcloud_talk_staff_notifications.py` | `<module>` | `delivery_retry` | `e6a540dee1e6ddfb5448aef0a667aef1f3b7bf54e955fbcd9bd7ae86e2dbd315` |
 | `tests/test_router_management_connection.py` | `test_execute_honors_tunable_overrides` | `delivery_retry` | `c887e359adc3583a9c7332c37a3fb951afdad207057a5e96fb02cd136463d31e` |
 | `tests/test_team_inbox_meta_social_webhook.py` | `<module>` | `provider_credential` | `2cfb33c493921333d14bb1a84b0426ad12e15e535a8f752d0add3ff9e9d33002` |
-| `tests/test_team_inbox_smtp_runtime.py` | `test_readiness_uses_smtp_noop` | `outbound_transport` | `2df88d6ae0dba969bd2097a5459861379cf68d42b8542974efb0382c0a92e7f7` |
+| `tests/test_team_inbox_smtp_runtime.py` | `test_readiness_uses_smtp_noop` | `outbound_transport` | `93abe275aa5f06c2edbe1286e2e1918d61e9cc2a4888101c70134c7cc8bc08b9` |
 | `tests/test_team_inbox_whatsapp_webhook.py` | `<module>` | `provider_credential` | `6b5ec793e3c6236cda3fd4a2acac14846cc9c8970a068551ed3b3bb8bfb2c3fc` |
 
 The 2026-09-05 review re-recorded `test_coverage_metrics.py` after its LLDP
 wrapper assertions moved to the typed detached-poll contracts. The file remains
 test-only, and its existing HTTP error fixture does not add a runtime transport.
+
+The 2026-09-15 review re-recorded the email-service and SMTP-readiness tests
+after they began preserving and verifying the stable probe identifier alongside
+provider-rewritten Message-IDs. The affected symbols remain test-only and do
+not add a runtime transport.
 
 ## Review rule
 
