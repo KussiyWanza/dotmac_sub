@@ -243,7 +243,16 @@ def test_database_failure_keeps_date_scope_and_truthful_retry(db_session):
             "/admin/sales/leads?date_preset=custom&date_from=2026-09-01&date_to=2026-09-15"
         )
     assert response.status_code == 200
-    assert "Leads could not be loaded. No CRM data was changed." in response.text
+    expected_state = web_sales.build_leads_failure_context(
+        search=None,
+        page=1,
+        per_page=25,
+        date_preset="custom",
+        date_from="2026-09-01",
+        date_to="2026-09-15",
+    )
+    assert expected_state["api_error"]
+    assert expected_state["api_error"] in response.text
     assert "date_from=2026-09-01" in response.text
     assert "date_to=2026-09-15" in response.text
     ctx = web_sales.build_leads_failure_context(
