@@ -123,11 +123,15 @@ def _attach_globals(templates: Jinja2Templates) -> None:
     # the route still authorizes. Usage: {% if can(request, "reports:billing:export") %}
     # or, for an Action contract: {% if action_permitted(request, action) %}
     templates.env.globals.setdefault("can", can)
-    from app.services.admin_workflow_guidance import guidance_for_path
+    from app.services.admin_workflow_guidance import (
+        guidance_for_path,
+        help_actions_for,
+    )
 
     templates.env.globals.setdefault(
         "admin_workflow_guidance_for_path", guidance_for_path
     )
+    templates.env.globals.setdefault("admin_help_actions_for", help_actions_for)
     templates.env.globals.setdefault("action_permitted", action_permitted)
 
     templates.env.globals.setdefault(
