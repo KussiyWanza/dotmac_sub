@@ -415,7 +415,11 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert "stale.xhr.abort()" in javascript
     assert "event.detail.shouldSwap = false" in javascript
     assert "if (this.filterLoading) return" in javascript
-    assert 'document.body.addEventListener("htmx:sendAbort", release)' in javascript
+    # Aborted navigation must release loading state as a failure, never success.
+    assert (
+        'document.body.addEventListener("htmx:sendAbort", (event) => '
+        "release(event, true), );"
+    ) in " ".join(javascript.split())
     assert (
         "SAFE_INLINE_VIDEO_CONTENT_TYPES"
         in Path("app/services/team_inbox_projection.py").read_text()
