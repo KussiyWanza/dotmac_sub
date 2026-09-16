@@ -13,6 +13,25 @@
     soundEnabled: "dotmac.inbox.soundEnabled",
     draftPrefix: "dotmac.inbox.draft.",
   };
+  /**
+   * Browser-only list transport. Server projections still own rows and counts.
+   * @typedef {"push"|"replace"|"none"} InboxHistoryMode
+   * @typedef {"operator_filter"|"search"|"pagination"|"history"|"manual_refresh"|"poll"|"read_state"|"realtime"|"reply"|"external"} InboxListIntent
+   * @typedef {Object} InboxListNavigation
+   * @property {string} url
+   * @property {InboxListIntent} intent
+   * @property {InboxHistoryMode} historyMode
+   * @property {string} target
+   * @property {string|undefined} select
+   * @property {string} swap
+   * @typedef {Object} InboxListRequest
+   * @property {number} sequence
+   * @property {InboxListIntent} intent
+   * @property {boolean} operator
+   * @property {InboxListNavigation|null} navigation
+   * @property {boolean} applied
+   * @property {boolean} settled
+   */
   const INBOX_FRAGMENT_VERSION = "20260910b";
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
   const parseStoredBoolean = (key, fallback) => {
@@ -263,6 +282,8 @@
       pendingListRequest: null,
       listRequestError: "",
       lastSuccessfulListUrl: window.location.href,
+      /** @type {InboxListNavigation|null} */
+      failedListNavigation: null,
       detailRequestSequence: 0,
       activeDetailRequest: null,
       pendingDetailRequest: null,
@@ -390,7 +411,7 @@
           return "Inbox updated just now";
         }
         if (this.inboxRefreshState === "error") {
-          return "Couldn’t update — retrying";
+          return "Couldn’t update conversations — retry available";
         }
         return "Waiting for new activity";
       },
@@ -412,7 +433,7 @@
       },
 
       activeFilterChips() {
-        const filters = new URLSearchParams(window.location.search);
+        const filters = new URL(this.lastSuccessfulListUrl).searchParams;
         const chips = [];
         const add = (key, label, keys = [key]) => {
           if (filters.has(key)) chips.push({ key, label, keys });
@@ -480,7 +501,7 @@
       },
 
       removeActiveFilter(chip) {
-        const url = new URL(window.location.href);
+        const url = this.listNavigationUrl();
         (chip?.keys || []).forEach((key) => url.searchParams.delete(key));
         url.searchParams.delete("page");
         if (this.selectedId) {
@@ -543,6 +564,9 @@
               sequence: ++this.listRequestSequence,
               intent: "external",
               operator: false,
+              navigation: null,
+              applied: false,
+              settled: false,
             };
             this.pendingListRequest = null;
             if (
@@ -553,6 +577,20 @@
               this.activeListRequest = null;
               stale.xhr.abort();
             }
+            if (!request.navigation) {
+              request.navigation = {
+                url: new URL(
+                  event.detail?.pathInfo?.finalRequestPath || path,
+                  window.location.origin,
+                ).href,
+                intent: request.intent,
+                historyMode: "none",
+                target: `#${target}`,
+                select: target === "inbox-conversation-queue" ? `#${target}` : undefined,
+                swap: target === "inbox-conversation-queue" ? "outerHTML" : "innerHTML",
+              };
+            }
+            event.detail.xhr.__inboxListRequest = request;
             event.detail.xhr.__inboxListSequence = request.sequence;
             event.detail.xhr.__inboxListIntent = request.intent;
             this.activeListRequest = {
@@ -626,21 +664,18 @@
         });
         const release = (event, failed = false) => {
           const sequence = event.detail?.xhr?.__inboxListSequence;
-          const requestFailed = failed || event.detail?.successful === false;
-          if (sequence === this.activeListRequest?.sequence) {
-            const wasOperator = this.activeListRequest.operator;
-            this.activeListRequest = null;
-            this.inboxRefreshFinished(requestFailed);
-            if (wasOperator) this.filterLoading = false;
-          }
-          if (event.detail?.xhr === this.activeFilterXhr) {
-            this.activeFilterXhr = null;
-            this.filterLoading = false;
-            this.pendingStatusFilter = null;
-          }
-          if (requestFailed && sequence === this.listRequestSequence) {
-            this.listRequestError = "Could not update conversations. Try again.";
-            history.replaceState({}, "", this.lastSuccessfulListUrl);
+          // HTMX emits afterRequest BEFORE timeout/sendAbort/sendError, with
+          // no `successful` value and status 0. Never call that a successful swap.
+          const requestFailed =
+            failed ||
+            event.detail?.successful === false ||
+            event.detail?.xhr?.status === 0;
+          const listRequest = event.detail?.xhr?.__inboxListRequest;
+          if (listRequest && sequence === this.listRequestSequence) {
+            this.finishListRequest(
+              listRequest,
+              requestFailed || event.detail?.xhr?.status === 204,
+            );
           }
           const detailSequence = event.detail?.xhr?.__inboxDetailSequence;
           if (
@@ -676,7 +711,15 @@
           if (key) this.inFlight.delete(key);
         };
         document.body.addEventListener("htmx:afterRequest", release);
-        document.body.addEventListener("htmx:sendAbort", release);
+        document.body.addEventListener("htmx:sendAbort", (event) =>
+          release(event, true),
+        );
+        document.body.addEventListener("htmx:swapError", (event) =>
+          release(event, true),
+        );
+        document.body.addEventListener("htmx:onLoadError", (event) =>
+          release(event, true),
+        );
         document.body.addEventListener("htmx:timeout", (event) =>
           release(event, true),
         );
@@ -690,6 +733,31 @@
           const sequence = event.detail?.xhr?.__inboxListSequence;
           if (sequence && sequence !== this.listRequestSequence) {
             event.detail.shouldSwap = false;
+            return;
+          }
+          const listRequest = event.detail?.xhr?.__inboxListRequest;
+          if (listRequest?.settled) {
+            event.detail.shouldSwap = false;
+            return;
+          }
+          if (listRequest && !event.detail.shouldSwap) {
+            this.finishListRequest(listRequest, true);
+          }
+          if (listRequest && event.detail.shouldSwap) {
+            const fragment = new DOMParser().parseFromString(
+              event.detail.xhr.responseText,
+              "text/html",
+            );
+            const selector =
+              event.detail.target?.id === "inbox-conversation-queue"
+                ? "#inbox-conversation-queue"
+                : "[data-inbox-sidebar-content]";
+            // An expired-login page or a wrong fragment must not erase the list
+            // or turn a changed URL into false evidence of a loaded filter.
+            if (!fragment.querySelector(selector)) {
+              event.detail.shouldSwap = false;
+              this.finishListRequest(listRequest, true);
+            }
           }
           const detailSequence = event.detail?.xhr?.__inboxDetailSequence;
           const detailConversationId =
@@ -751,8 +819,42 @@
             target.id === "inbox-sidebar-content" ||
             target.id === "inbox-conversation-queue"
           ) {
-            this.lastSuccessfulListUrl = window.location.href;
-            this.listRequestError = "";
+            const request = event.detail?.xhr?.__inboxListRequest;
+            if (
+              !request ||
+              request.sequence !== this.listRequestSequence ||
+              request.settled
+            ) return;
+            request.applied = true;
+            const url = new URL(request.navigation.url);
+            if (request.intent === "history") {
+              const selected =
+                url.searchParams.get("conversation_id") || url.searchParams.get("c");
+              this.selectedId = selected || "";
+              this.clearTypingPresence();
+              if (selected) {
+                this.refreshThread(selected, true, {
+                  intent: "history",
+                  blocking: true,
+                });
+              } else this.showList();
+            } else if (this.selectedId) {
+              // A thread may have changed while this independent list was loading.
+              const key = url.searchParams.has("conversation_id")
+                ? "conversation_id" : "c";
+              url.searchParams.delete(key === "c" ? "conversation_id" : "c");
+              url.searchParams.set(key, this.selectedId);
+            }
+            if (url.href !== window.location.href) {
+              if (request.navigation.historyMode === "push") {
+                history.pushState({}, "", url);
+              } else if (request.navigation.historyMode === "replace") {
+                history.replaceState({}, "", url);
+              }
+            }
+            this.lastSuccessfulListUrl = url.href;
+            window.__inboxReturnUrl = `${url.pathname}${url.search}`;
+            this.finishListRequest(request);
             this.syncSelectedCheckboxes();
             this.updateSelectedHighlight();
             this.subscribeVisibleTopics();
@@ -767,6 +869,8 @@
           );
           if (
             !link ||
+            event.defaultPrevented ||
+            event.button !== 0 ||
             link.closest(".conversation-item") ||
             link.hasAttribute("hx-get") ||
             event.metaKey ||
@@ -788,21 +892,16 @@
         });
         window.addEventListener("popstate", () => {
           const url = new URL(window.location.href);
-          const selected =
-            url.searchParams.get("conversation_id") || url.searchParams.get("c");
-          this.selectedId = selected || "";
-          this.clearTypingPresence();
+          const conversationId = this.conversationIdFromPath(url.pathname);
+          if (conversationId) {
+            url.pathname = "/admin/inbox";
+            url.searchParams.delete("conversation_id");
+            url.searchParams.set("c", conversationId);
+          }
           this.requestInboxList(url, {
             intent: "history",
-            historyMode: "none",
+            historyMode: conversationId ? "replace" : "none",
           });
-          if (selected) {
-            this.refreshThread(selected, true, {
-              intent: "history",
-              blocking: true,
-            });
-          }
-          else this.showList();
         });
       },
 
@@ -813,21 +912,19 @@
         this.beginListRequest("operator_filter", true);
         if (status !== null) {
           this.pendingStatusFilter = status;
-          const url = new URL(window.location.href);
-          url.searchParams.delete("open_only");
-          url.searchParams.delete("has_ticket");
-          url.searchParams.delete("view");
-          if (status) url.searchParams.set("status", status);
-          else url.searchParams.delete("status");
-          history.replaceState({}, "", url);
+          // Declarative HTMX navigation commits its URL only with its swap.
         }
       },
 
+      /** @param {InboxListIntent} intent @param {boolean} operator @returns {InboxListRequest} */
       beginListRequest(intent, operator = false) {
         const request = {
           sequence: ++this.listRequestSequence,
           intent,
           operator,
+          navigation: null,
+          applied: false,
+          settled: false,
         };
         if (this.activeListRequest) {
           const stale = this.activeListRequest;
@@ -840,22 +937,100 @@
         return request;
       },
 
+      /** @returns {URL} Browser intent only; it does not decide server membership. */
+      listNavigationUrl() {
+        const url = new URL(
+          this.pendingListRequest?.navigation?.url ||
+            this.activeListRequest?.navigation?.url ||
+            window.__inboxReturnUrl || this.lastSuccessfulListUrl,
+          window.location.origin,
+        );
+        url.pathname = "/admin/inbox";
+        return url;
+      },
+
+      /** @param {InboxListRequest} request @param {boolean} failed */
+      finishListRequest(request, failed = false) {
+        if (request.sequence !== this.listRequestSequence || request.settled) return;
+        // Transport completion alone is not render completion (including delayed
+        // swaps). Only afterSwap or an explicit failure may finish the loader.
+        if (!failed && !request.applied) return;
+        request.settled = true;
+        if (this.activeListRequest?.sequence === request.sequence) {
+          this.activeListRequest = null;
+        }
+        if (this.pendingListRequest?.sequence === request.sequence) {
+          this.pendingListRequest = null;
+        }
+        this.activeFilterXhr = null;
+        this.filterLoading = false;
+        this.pendingStatusFilter = null;
+        this.inboxRefreshFinished(failed);
+        this.listRequestError = failed
+          ? "Could not update conversations. Try again." : "";
+        this.failedListNavigation = failed ? request.navigation : null;
+        if (failed && request.intent === "history") {
+          history.replaceState({}, "", this.lastSuccessfulListUrl);
+        }
+      },
+
+      retryListRequest() {
+        const navigation = this.failedListNavigation;
+        if (navigation) {
+          this.requestInboxList(navigation.url, {
+            ...navigation,
+            // A failed popstate restored the visible URL. Its retry must now
+            // replace that entry when it succeeds, not leave old URL/new rows.
+            historyMode: navigation.intent === "history"
+              ? "replace" : navigation.historyMode,
+          });
+        } else this.refreshSidebar();
+      },
+
+      /**
+       * @param {URL|string} urlValue
+       * @param {Partial<InboxListNavigation>} options
+       */
       requestInboxList(urlValue, options = {}) {
         const url =
           urlValue instanceof URL
             ? urlValue
             : new URL(urlValue, window.location.origin);
         const intent = options.intent || "operator_filter";
-        const operator = !["poll", "read_state", "realtime"].includes(intent);
-        if (!operator && this.activeListRequest?.operator) return;
-        this.beginListRequest(intent, operator);
-        if (options.historyMode === "push") history.pushState({}, "", url);
-        if (options.historyMode === "replace") history.replaceState({}, "", url);
-        window.htmx.ajax("GET", `${url.pathname}${url.search}`, {
+        const backgroundIntents = ["poll", "read_state", "realtime"];
+        const operator = !backgroundIntents.includes(intent);
+        const failedOperator =
+          this.failedListNavigation &&
+          !backgroundIntents.includes(this.failedListNavigation.intent);
+        if (!operator && (
+          this.activeListRequest?.operator ||
+          this.pendingListRequest?.operator ||
+          failedOperator
+        )) return;
+        const request = this.beginListRequest(intent, operator);
+        request.navigation = {
+          url: url.href,
+          intent,
+          historyMode: options.historyMode || "none",
           target: options.target || "#inbox-sidebar-content",
           select: options.select,
           swap: options.swap || "innerHTML",
-        });
+        };
+        try {
+          const source = document.querySelector("#inbox-sidebar-content");
+          const target = document.querySelector(request.navigation.target);
+          if (!source || !target) throw new Error("Inbox list target is unavailable");
+          // Give list requests a stable source, distinct from thread requests
+          // which otherwise share HTMX's default body-level transport queue.
+          window.htmx.ajax("GET", `${url.pathname}${url.search}`, {
+            source,
+            target: request.navigation.target,
+            select: request.navigation.select,
+            swap: request.navigation.swap,
+          }).catch(() => this.finishListRequest(request, true));
+        } catch (_error) {
+          this.finishListRequest(request, true);
+        }
       },
 
       conversationIdFromPath(path) {
@@ -995,7 +1170,7 @@
       },
 
       navigateFilter(changes, clearAll = false, clearScope = null) {
-        const url = new URL(window.location.href);
+        const url = this.listNavigationUrl();
         const lifecycleKeys = [
           "status",
           "view",
@@ -1062,7 +1237,7 @@
       },
 
       searchConversations(value) {
-        const url = new URL(window.location.href);
+        const url = this.listNavigationUrl();
         const search = String(value || "").trim();
         if (search) url.searchParams.set("search", search);
         else url.searchParams.delete("search");
@@ -1150,7 +1325,7 @@
       },
 
       assignmentFilterActive(value) {
-        const filters = new URLSearchParams(window.location.search);
+        const filters = new URL(this.lastSuccessfulListUrl).searchParams;
         const assignee = filters.get("assigned_person_id") || "";
         if (value === "mine") return Boolean(this.actorId) && assignee === this.actorId;
         if (value === "agent") {
@@ -1208,7 +1383,7 @@
       },
 
       savedViewIsActive(payload) {
-        const filters = new URLSearchParams(window.location.search);
+        const filters = new URL(this.lastSuccessfulListUrl).searchParams;
         const keys = [
           "status",
           "view",
@@ -1775,7 +1950,7 @@
       },
 
       refreshSidebar(intent = "manual_refresh") {
-        const url = new URL(window.location.href);
+        const url = this.listNavigationUrl();
         if (this.selectedId) {
           url.searchParams.set("conversation_id", this.selectedId);
         }
@@ -1795,7 +1970,6 @@
         if (this.selectedId) {
           url.searchParams.set("c", this.selectedId);
         }
-        window.__inboxReturnUrl = `${url.pathname}${url.search}`;
         this.newListActivityAvailable = false;
         this.requestInboxList(url, {
           intent,
@@ -1810,7 +1984,6 @@
         const url = new URL(urlValue, window.location.origin);
         url.searchParams.delete("conversation_id");
         if (this.selectedId) url.searchParams.set("c", this.selectedId);
-        window.__inboxReturnUrl = `${url.pathname}${url.search}`;
         this.requestInboxList(url, {
           intent: "pagination",
           historyMode: "push",

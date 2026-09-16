@@ -219,6 +219,31 @@ if transport cancellation loses a race. Background work yields to operator
 navigation. The UI exposes immediate accessible busy/error state and restores
 the last successfully rendered URL after a real request failure.
 
+Programmatic list navigation records a typed browser intent separately from the
+applied view. The URL, active assignment chips, and queue return URL are committed
+only after the matching, latest fragment swaps successfully. Selecting a filter
+from a direct conversation URL still requests `/admin/inbox`, not the conversation
+detail endpoint. Pagination has one click owner: the delegated link handler
+ignores a click already handled by the pagination control. List transport uses the
+stable sidebar as its HTMX source so it does not queue behind thread transport.
+
+HTMX transport completion is not proof that rows rendered. A status-zero
+completion, timeout, abort, HTTP error, wrong/login fragment, or rendering failure
+leaves the previous list and its applied navigation state intact and reports an
+error, never "updated". Late responses from settled or superseded requests cannot
+swap. Retry is visible outside the collapsed filters and replays the failed
+intent; background refresh cannot erase a failed operator's retry. History
+retries replace the restored entry rather than adding another history entry.
+These client guards do not cure a slow server query or change server-side
+assignment, counts, permissions, or queue ownership.
+
+`tests/js/inbox_navigation.test.js` exercises the checked-in controller with
+explicit DOM/transport doubles, including cancellation and timeout event ordering.
+`tests/test_admin_inbox_navigation_js.py` includes it in the non-integration CI
+lane and fails rather than skips when Node is unavailable. These regressions
+supplement, not replace, live browser acceptance of rows, filters, pagination,
+Back/Forward, and an unsent reply during a delayed list response.
+
 Sidebar- and queue-targeted requests preserve the selected conversation
 identifier but do not rebuild its detail projection, the new-conversation
 template catalog, or the manager dashboard. A normal full-page request remains
@@ -272,8 +297,8 @@ bounded, auditable, and safe to repeat.
 ## Loading and failure behaviour
 
 - A stable, non-blocking activity row sits between search and the Stats and
-  Filters disclosure. It reports waiting, checking, just-updated, and retrying
-  states for every coordinated list request without covering or disabling the
+  Filters disclosure. It reports waiting, checking, just-updated, and explicit
+  failure/retry-available states for every coordinated list request without covering or disabling the
   queue.
 - List, thread, and contact context load independently.
 - After an unread thread opens successfully, the operator read command returns
