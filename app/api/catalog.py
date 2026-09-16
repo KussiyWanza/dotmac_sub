@@ -1,7 +1,9 @@
-from fastapi import APIRouter, Depends, Query, status
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
-from app.db import get_db
+from app.db import finish_read_transaction, get_db
 from app.schemas.catalog import (
     AccessCredentialCreate,
     AccessCredentialRead,
@@ -63,17 +65,233 @@ from app.schemas.catalog import (
 )
 from app.schemas.common import ListResponse
 from app.services import catalog as catalog_service
-from app.services.auth_dependencies import require_method_permission, require_permission
+from app.services.auth_dependencies import (
+    _request_id,
+    load_permission_keys,
+    require_method_permission,
+    require_permission,
+    require_user_auth,
+)
+from app.services.catalog import offer_access_requirement
+from app.services.catalog.offer_access_requirement import OfferAccessRequirementError
 
 router = APIRouter(
-    dependencies=[Depends(require_method_permission("catalog:read", "catalog:write"))]
+    dependencies=[
+        Depends(
+            require_method_permission(
+                "catalog:read", offer_access_requirement.WRITE_PERMISSION
+            )
+        )
+    ]
 )
 
-_require_billing_catalog_write = require_permission("catalog:billing_write")
+#: The offer-version ADMISSION routes (``POST``/``PATCH /offer-versions``)
+#: live on their OWN router, deliberately carrying NO blanket dependency —
+#: unlike ``router`` above. Round 12 finding 2: the main router's blanket
+#: ``catalog:write`` gate (``require_method_permission``) independently
+#: applies the ERP staff leave-write restriction via its own, older
+#: plumbing, so a leave-restricted staff request was refused THERE, before
+#: ``_require_offer_version_admission`` — and therefore the single
+#: authorization owner, ``authorize_offer_version_admission`` — was ever
+#: reached. Mounting these two routes on a router with no blanket gate
+#: means their ONLY dependency is ``_require_offer_version_admission``,
+#: which fully delegates the whole decision (compound permission AND
+#: leave-restriction) to that one owner — the real HTTP request path now
+#: has exactly one decision-maker, not an earlier one and a later one that
+#: happen to agree. Mounted in ``app/main.py``'s router table under the
+#: same ``/api/v1`` prefix and the same ``"user"`` (bare authentication)
+#: dependency mode as ``router`` — see that table for the mount entry.
+admission_router = APIRouter()
+
+_require_billing_catalog_write = require_permission(
+    offer_access_requirement.BILLING_WRITE_PERMISSION
+)
+
+
+def _require_offer_version_admission(
+    request: Request,
+    auth: dict = Depends(require_user_auth),
+    db: Session = Depends(get_db),
+) -> dict:
+    """The route's admission-authorization gate.
+
+    Authenticates the caller, then DELEGATES the entire decision — the
+    compound ``catalog:write AND (catalog:billing_write OR catalog:
+    offer_version:admission)`` rule AND the ERP staff leave-write
+    restriction — to ``offer_access_requirement.authorize_offer_version_
+    admission``, the ONE owner of this decision. This command's own
+    in-transaction re-check (``verify_admission_authorization``) delegates
+    to the exact same owner function, so there is one decision, not two
+    independently-maintained ones that could drift apart (the prior shape —
+    this route composing ``require_any_permission`` while the command called
+    a bare permission primitive — silently disagreed about an active staff
+    leave restriction: refused over HTTP, allowed direct to the command).
+
+    This is the ONLY gate on this route (round 12 finding 2 fix): the two
+    offer-version admission routes are mounted on ``admission_router``
+    (above), deliberately carrying NO blanket router-level dependency,
+    specifically so ``router``'s own pre-existing ``catalog:write`` gate
+    (``require_method_permission``) — which independently applies the same
+    staff leave-restriction via its own, older plumbing — cannot run ahead
+    of this function and produce an earlier, separately-mechanized refusal
+    for the same underlying reason. Every mutating route on ``router``
+    itself still carries that blanket gate unchanged; only these two routes
+    are exempt from it, because they have their own complete gate instead.
+
+    The route's cached/session ``auth`` dict is translated into the typed
+    ``AdmissionAuthorizationClaims`` boundary here — the one, explicit
+    translation point from this route's shape into what the owner accepts.
+    """
+
+    credential_kind = auth.get("credential_kind")
+    claims = offer_access_requirement.AdmissionAuthorizationClaims(
+        principal_id=str(auth.get("principal_id")),
+        principal_type=str(auth.get("principal_type") or "subscriber"),
+        roles=frozenset(auth.get("roles") or ()),
+        scopes=frozenset(auth.get("scopes") or ()),
+        # Round 13 finding 2: carried through so a kernel machine
+        # credential (credential_kind == "machine", stamped by
+        # auth_dependencies._machine_principal) reaches the owner's
+        # shadow/would-refuse branch instead of being enforced against and
+        # refused before MachineCredentialPrincipal is ever constructed.
+        credential_kind=credential_kind,
+    )
+    if credential_kind != "machine":
+        # load_permission_keys queries live RBAC tables purely to cache
+        # the principal's effective permission set for UI hiding — there
+        # is no UI to cache for a machine caller. Round 15 finding 1:
+        # skipped specifically for "machine", because
+        # effective_permission_keys' non-system_user branch queries
+        # SubscriberRole/SubscriberPermission keyed by principal_id — for
+        # a machine credential that is an unrelated table this route has
+        # no business touching at all, and an outage or lock on it must
+        # never block or 500 an admission the shadow path exists to let
+        # through regardless. Skipping this call is what makes that true:
+        # after this point, the ONLY thing a machine claim's authorization
+        # decision touches is the pure, in-memory scope check inside
+        # authorize_offer_version_admission's shadow branch.
+        load_permission_keys(auth, db)
+    try:
+        offer_access_requirement.authorize_offer_version_admission(
+            db, claims, request_id=_request_id(request)
+        )
+    except OfferAccessRequirementError as exc:
+        offer_access_requirement.record_leave_denial_evidence(db, exc)
+        raise _offer_access_requirement_http_error(exc) from exc
+    finish_read_transaction(db)
+    return auth
 
 
 def _actor(auth: dict) -> tuple[str | None, str | None]:
     return auth.get("principal_id"), auth.get("principal_type")
+
+
+def _admission_principal(
+    auth: dict,
+) -> offer_access_requirement.AdmissionPrincipal:
+    """The typed principal for an admission/update reached through this route.
+
+    The route dependency above already authorized the request; this
+    resolves the principal for BOTH audit/attribution AND the command's own
+    defense-in-depth RBAC re-check
+    (``offer_access_requirement.verify_admission_authorization``). An
+    authenticated route caller is always a real system_user, api_key, or
+    subscriber principal, so this fails closed rather than falling back to
+    ``SystemAdmission`` (that fallback is reserved for internal/test callers
+    that invoke the service layer directly, bypassing this route entirely —
+    see ``app/services/catalog/offers.py``'s
+    ``OfferVersions._resolve_admission_principal``).
+
+    Applied identically to BOTH the POST (create) and PATCH (update) offer-
+    version routes below.
+
+    A subscriber principal IS a real, supported way to reach this route: a
+    subscriber can be mapped to the ``admin`` role (or any role holding the
+    compound admission permission) via the seeded role-assignment path
+    (``scripts/seed/seed_rbac.py``, ``app/services/subscriber_assignments.py``,
+    ``app/services/auth_flow.py``'s login role resolution). Retiring that
+    access is a separate, deliberate census/migration — not something this
+    resolver silently forecloses by refusing the principal type.
+
+    A kernel machine credential (``auth_dependencies._machine_principal``)
+    and a legacy local API key (``_api_key_principal``) both authenticate as
+    ``principal_type == "api_key"``, for backward compatibility with every
+    existing permission check — but they are different principal KINDS with
+    different live-verification stories (a local ``ApiKey`` row this module
+    can re-read live, versus a kernel credential it cannot), so they must not
+    share one lookup. ``credential_kind`` on the auth dict (set at
+    authentication time) distinguishes them: ``"machine"`` resolves to
+    ``MachineCredentialPrincipal`` (shadow/would-refuse only — see its own
+    docstring), anything else resolves to ``ApiKeyPrincipal`` (enforced).
+    """
+
+    principal_id = auth.get("principal_id")
+    principal_type = auth.get("principal_type")
+    if principal_type == "system_user" and principal_id:
+        return offer_access_requirement.StaffPrincipal(
+            system_user_id=UUID(str(principal_id))
+        )
+    if principal_type == "api_key" and principal_id:
+        if auth.get("credential_kind") == "machine":
+            return offer_access_requirement.MachineCredentialPrincipal(
+                credential_id=UUID(str(principal_id)),
+                scopes=tuple(auth.get("scopes") or ()),
+            )
+        return offer_access_requirement.ApiKeyPrincipal(
+            api_key_id=UUID(str(principal_id))
+        )
+    if principal_type == "subscriber" and principal_id:
+        return offer_access_requirement.SubscriberPrincipal(
+            subscriber_id=UUID(str(principal_id))
+        )
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "Offer version admission requires an authenticated staff, "
+            "API-key, or subscriber principal."
+        ),
+    )
+
+
+def _offer_access_requirement_http_error(
+    exc: OfferAccessRequirementError,
+) -> HTTPException:
+    """Map a domain error to an ``HTTPException`` whose ``detail`` still
+    carries the stable machine ``code`` (matching the shape several other
+    API modules already use, e.g. ``app/api/me.py``,
+    ``app/api/billing_treatments.py``: ``{"code": ..., "message": ...}``) —
+    a bare string ``detail`` loses the code, and the global HTTP-exception
+    handler (``app/errors.py``) then falls back to a generic ``http_409``/
+    ``http_403`` instead of the real domain code.
+    """
+
+    def _http(status_code: int) -> HTTPException:
+        return HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": exc.message},
+        )
+
+    if exc.code.endswith("invalid_access_requirement"):
+        return _http(422)
+    if exc.code.endswith(
+        ("immutable_access_requirement", "immutable_offer_version_identity")
+    ):
+        return _http(409)
+    if exc.code.endswith(("offer_not_found", "offer_version_not_found")):
+        return _http(404)
+    if exc.code.endswith("permission_denied"):
+        return _http(403)
+    if exc.code.endswith(
+        (
+            "duplicate_version_number",
+            "admission_integrity_violation",
+            "idempotency_conflict",
+        )
+    ):
+        return _http(409)
+    if exc.code.endswith(("idempotency_key_too_long", "review_reference_too_long")):
+        return _http(422)
+    return _http(400)
 
 
 @router.post(
@@ -741,7 +959,7 @@ def delete_subscription_add_on(
     catalog_service.subscription_add_ons.delete(db, subscription_add_on_id)
 
 
-@router.post(
+@admission_router.post(
     "/offer-versions",
     response_model=OfferVersionRead,
     status_code=status.HTTP_201_CREATED,
@@ -750,12 +968,24 @@ def delete_subscription_add_on(
 def create_offer_version(
     payload: OfferVersionCreate,
     db: Session = Depends(get_db),
-    auth: dict = Depends(_require_billing_catalog_write),
+    auth: dict = Depends(_require_offer_version_admission),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
-    actor_id, actor_type = _actor(auth)
-    return catalog_service.offer_versions.create(
-        db, payload, actor_id=actor_id, actor_type=actor_type
-    )
+    # Resolved and passed explicitly (never re-derived from actor_id/
+    # actor_type strings) so a MachineCredentialPrincipal's captured scopes
+    # actually reach the command — actor_id/actor_type alone cannot carry
+    # them, and cannot distinguish a machine credential from a legacy API
+    # key in the first place (see _admission_principal's docstring).
+    principal = _admission_principal(auth)  # fails closed if unattributable
+    try:
+        return catalog_service.offer_versions.create(
+            db,
+            payload,
+            principal=principal,
+            idempotency_key=idempotency_key,
+        )
+    except OfferAccessRequirementError as exc:
+        raise _offer_access_requirement_http_error(exc) from exc
 
 
 @router.get(
@@ -786,7 +1016,7 @@ def list_offer_versions(
     )
 
 
-@router.patch(
+@admission_router.patch(
     "/offer-versions/{version_id}",
     response_model=OfferVersionRead,
     tags=["offer-versions"],
@@ -795,12 +1025,29 @@ def update_offer_version(
     version_id: str,
     payload: OfferVersionUpdate,
     db: Session = Depends(get_db),
-    auth: dict = Depends(_require_billing_catalog_write),
+    auth: dict = Depends(_require_offer_version_admission),
 ):
-    actor_id, actor_type = _actor(auth)
-    return catalog_service.offer_versions.update(
-        db, version_id, payload, actor_id=actor_id, actor_type=actor_type
-    )
+    # Resolved and passed explicitly (not discarded) — round 13 finding 3:
+    # the route's own dependency authorizes ADMISSION only. The mutation
+    # itself must recheck through the same owner, immediately before it
+    # mutates, inside its own transaction — offer_access_requirement.
+    # update_offer_version (a registered owner command as of round 16) does
+    # that recheck; this is the typed principal it re-verifies against the
+    # live database, the same shape _admission_principal's docstring
+    # promises for POST. Audit attribution is derived from this principal
+    # inside the command itself, not from separate actor_id/actor_type
+    # arguments.
+    principal = _admission_principal(auth)
+    try:
+        return catalog_service.offer_versions.update(
+            db,
+            version_id,
+            payload,
+            principal=principal,
+        )
+    except OfferAccessRequirementError as exc:
+        offer_access_requirement.record_leave_denial_evidence(db, exc)
+        raise _offer_access_requirement_http_error(exc) from exc
 
 
 @router.delete(
@@ -809,14 +1056,29 @@ def update_offer_version(
     tags=["offer-versions"],
 )
 def delete_offer_version(
+    request: Request,
     version_id: str,
     db: Session = Depends(get_db),
     auth: dict = Depends(_require_billing_catalog_write),
 ):
     actor_id, actor_type = _actor(auth)
-    catalog_service.offer_versions.delete(
-        db, version_id, actor_id=actor_id, actor_type=actor_type
-    )
+    # Round 15 finding 2: deactivation is a mutation of an already-admitted
+    # row exactly like PATCH, and Michael's ruling covers "every mutation" —
+    # resolved and passed explicitly so OfferVersions.delete can recheck
+    # through the same owner immediately before it deactivates the row.
+    principal = _admission_principal(auth)
+    try:
+        catalog_service.offer_versions.delete(
+            db,
+            version_id,
+            actor_id=actor_id,
+            actor_type=actor_type,
+            principal=principal,
+            request_id=_request_id(request),
+        )
+    except OfferAccessRequirementError as exc:
+        offer_access_requirement.record_leave_denial_evidence(db, exc)
+        raise _offer_access_requirement_http_error(exc) from exc
 
 
 @router.post(

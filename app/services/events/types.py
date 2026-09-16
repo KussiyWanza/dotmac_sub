@@ -210,6 +210,10 @@ class EventType(enum.Enum):
     catalog_offer_reseller_availability_changed = (
         "catalog.offer_reseller_availability_changed"
     )
+    catalog_offer_access_requirement_classified = (
+        "catalog.offer_access_requirement_classified"
+    )
+    catalog_offer_version_admitted = "catalog.offer_version_admitted"
     ncc_weekly_delivery_configuration_changed = (
         "ncc.weekly_delivery_configuration_changed"
     )

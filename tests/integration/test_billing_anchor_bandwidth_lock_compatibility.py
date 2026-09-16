@@ -12,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models.bandwidth import BandwidthSample
 from app.models.catalog import (
+    AccessRequirement,
     AccessType,
     PriceBasis,
     ServiceType,
@@ -30,6 +31,7 @@ from app.services.account_lifecycle import (
     BillingAnchorProjectionSource,
     stage_subscription_billing_anchor,
 )
+from app.services.catalog.offer_access_requirement import SystemAdmission
 from app.services.subscriber import _default_reseller_id
 
 
@@ -58,16 +60,20 @@ def test_anchor_projection_does_not_block_bandwidth_foreign_key_insert(engine):
                 price_basis=PriceBasis.flat,
             ),
         )
+        offer_id = offer.id
+        setup.commit()
         catalog_service.offer_versions.create(
             setup,
             OfferVersionCreate(
-                offer_id=offer.id,
+                access_requirement=AccessRequirement.unclassified,
+                offer_id=offer_id,
                 version_number=1,
                 name=f"Anchor Lock Compatibility {suffix} v1",
                 service_type=ServiceType.residential,
                 access_type=AccessType.fiber,
                 price_basis=PriceBasis.flat,
             ),
+            principal=SystemAdmission(reason="test fixture"),
         )
         subscription = catalog_service.subscriptions.create(
             setup,

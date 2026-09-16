@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models.audit import AuditEvent
 from app.models.catalog import (
+    AccessRequirement,
     AccessType,
     PriceBasis,
     ServiceType,
@@ -26,6 +27,7 @@ from app.schemas.catalog import (
 )
 from app.services import catalog as catalog_service
 from app.services import service_extensions
+from app.services.catalog.offer_access_requirement import SystemAdmission
 from app.services.owner_commands import CommandContext
 from app.services.subscriber import _default_reseller_id
 
@@ -52,16 +54,20 @@ def test_concurrent_apply_admits_one_transition_and_one_evidence_set(engine):
                 price_basis=PriceBasis.flat,
             ),
         )
+        offer_id = offer.id
+        setup.commit()
         catalog_service.offer_versions.create(
             setup,
             OfferVersionCreate(
-                offer_id=offer.id,
+                access_requirement=AccessRequirement.unclassified,
+                offer_id=offer_id,
                 version_number=1,
                 name=f"Extension Concurrency {suffix} v1",
                 service_type=ServiceType.residential,
                 access_type=AccessType.fiber,
                 price_basis=PriceBasis.flat,
             ),
+            principal=SystemAdmission(reason="test fixture"),
         )
         subscription = catalog_service.subscriptions.create(
             setup,

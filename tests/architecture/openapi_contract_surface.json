@@ -16369,6 +16369,7 @@
   },
   "POST /api/v1/offer-versions": {
    "params": [
+    "header:Idempotency-Key",
     "header:authorization",
     "header:x-api-key"
    ],
@@ -19266,6 +19267,7 @@
   "AccessCredentialCreate": "01515a969e02",
   "AccessCredentialRead": "4ad2a941f5bb",
   "AccessCredentialUpdate": "2635aeef4b64",
+  "AccessRequirement": "d25ad17f0ff6",
   "AccessType": "4deda2aa0100",
   "AccountAdjustmentConfirm": "d97984ed4382",
   "AccountAdjustmentPreviewRead": "d0f4baecc976",
@@ -20193,12 +20195,12 @@
   "OfferValidationPrice": "28c463fa2ba5",
   "OfferValidationRequest": "ca191dd147a7",
   "OfferValidationResponse": "c123f21da732",
-  "OfferVersionCreate": "a10855934a4b",
+  "OfferVersionCreate": "477cd5d5da42",
   "OfferVersionPriceCreate": "2e5db28ea0fc",
   "OfferVersionPriceRead": "e2d4b1465627",
   "OfferVersionPriceUpdate": "76a6a7553426",
-  "OfferVersionRead": "0e8e6d32a5a2",
-  "OfferVersionUpdate": "b47aa4d646f1",
+  "OfferVersionRead": "25b4f9e6e327",
+  "OfferVersionUpdate": "11490ba66298",
   "OidcMobileExchangeRequest": "cf1ec8732fcf",
   "OidcMobileExchangeResponse": "801d35afc466",
   "OidcMobileStartRequest": "e9bf9b017c67",

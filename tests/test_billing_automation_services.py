@@ -150,7 +150,7 @@ class TestResolvePrice:
         # Create offer version with price
         offer_version = OfferVersion(
             offer_id=subscription.offer_id,
-            version_number=1,
+            version_number=2,
             name="Test Version",
             service_type=ServiceType.residential,
             access_type=AccessType.fiber,

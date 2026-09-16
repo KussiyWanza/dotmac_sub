@@ -298,7 +298,13 @@ def _kernel_tenant_metadata():
     return metadata
 
 
-from app.models.catalog import AccessType, PriceBasis, RegionZone, ServiceType
+from app.models.catalog import (
+    AccessRequirement,
+    AccessType,
+    PriceBasis,
+    RegionZone,
+    ServiceType,
+)
 from app.models.subscriber import Subscriber
 from app.schemas.catalog import (
     CatalogOfferCreate,
@@ -316,6 +322,7 @@ from app.services import network as network_service
 from app.services import network_monitoring as network_monitoring_service
 from app.services import radius as radius_service
 from app.services import tr069 as tr069_service
+from app.services.catalog.offer_access_requirement import SystemAdmission
 from scripts.ci.migrated_test_database import (
     DatabaseContractError,
     parse_test_database_target,
@@ -636,17 +643,23 @@ def catalog_offer(db_session):
             price_basis=PriceBasis.flat,
         ),
     )
-    # Create offer version linking to offer
+    # The version is a registered owner command. Settle the preceding offer
+    # creation before entering it, and capture the FK before commit can expire
+    # the ORM instance and start a new caller transaction on attribute access.
+    offer_id = offer.id
+    db_session.commit()
     catalog_service.offer_versions.create(
         db_session,
         OfferVersionCreate(
-            offer_id=offer.id,
+            access_requirement=AccessRequirement.unclassified,
+            offer_id=offer_id,
             version_number=1,
             name="Standard Internet v1",
             service_type=ServiceType.residential,
             access_type=AccessType.fiber,
             price_basis=PriceBasis.flat,
         ),
+        principal=SystemAdmission(reason="conftest.catalog_offer fixture"),
     )
     return offer
 
