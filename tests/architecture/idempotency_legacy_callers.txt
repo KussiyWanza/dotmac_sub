@@ -7,6 +7,7 @@ app/services/billing/consolidated_payments.py
 app/services/billing/credit_notes.py
 app/services/billing/invoices.py
 app/services/billing/payments.py
+app/services/catalog/offer_access_requirement.py
 app/services/crm_subscriber_provisioning.py
 app/services/customer_portal_flow_addons.py
 app/services/customer_portal_flow_payments.py

@@ -96,7 +96,6 @@ def test_billing_catalog_api_mutations_require_narrow_permission():
         ("/offer-prices", "POST"),
         ("/offer-prices/{price_id}", "PATCH"),
         ("/add-on-prices/{price_id}", "PATCH"),
-        ("/offer-versions", "POST"),
         ("/offer-version-prices/{price_id}", "PATCH"),
     ):
         assert _route_has_permission(
@@ -105,6 +104,32 @@ def test_billing_catalog_api_mutations_require_narrow_permission():
             method,
             "catalog:billing_write",
         )
+
+
+def test_offer_version_admission_route_uses_the_compound_admission_gate():
+    """``POST /offer-versions`` is not on ``api_catalog.router`` (checked
+    above): it is mounted on ``api_catalog.admission_router``, its own
+    router with no blanket dependency, both mounted under the ``/api/v1``
+    prefix in ``app/main.py``'s ``_DEFERRED_API_ROUTER_SPECS`` table (real
+    runtime path: ``POST /api/v1/offer-versions`` — the app-level FastAPI
+    router prepends the prefix when it includes ``admission_router``; the
+    unprefixed sub-router path stored on the route object itself, checked
+    here, is still ``"/offer-versions"``, unchanged).
+
+    Its ONLY gate, ``_require_offer_version_admission``, fully delegates to
+    ``offer_access_requirement.authorize_offer_version_admission``, the one
+    owner of the compound ``catalog:write AND (catalog:billing_write OR
+    catalog:offer_version:admission)`` rule plus the ERP staff leave-write
+    restriction (see that dependency's own docstring). Because the
+    permission decision is made inside a delegated call rather than a
+    ``Depends(require_permission(...))`` closure, ``_route_has_permission``'s
+    closure scrape cannot see it — so this test pins the route to the exact
+    named gate function that owns the decision instead, rather than
+    weakening the contract to "some dependency is present".
+    """
+    route = _get_route(api_catalog.admission_router, "/offer-versions", "POST")
+    dependency_calls = {dependency.call for dependency in route.dependant.dependencies}
+    assert api_catalog._require_offer_version_admission in dependency_calls
 
 
 def test_dashboard_routes_require_any_domain_read_permission():

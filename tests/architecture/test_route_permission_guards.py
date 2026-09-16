@@ -19,8 +19,12 @@ permission dependency" class of bug build-failing rather than shippable.
 
 from __future__ import annotations
 
+import ast
+import inspect
+
 from fastapi import FastAPI
 
+from app.api import catalog as api_catalog
 from app.main import (
     _CORE_ROUTER_SPECS,
     _DEFERRED_API_ROUTER_SPECS,
@@ -37,6 +41,9 @@ _GUARD_NAMES = {
     "require_audit_auth",
     "require_scoped_permission",  # forward-compat (P1)
     "_require_scoped_permission",
+    # Offer admission is a compound owner decision, not a blanket
+    # catalog:write gate. Its delegation is asserted below against code.
+    "_require_offer_version_admission",
 }
 
 # Self-scoped / public surfaces that legitimately need no staff permission.
@@ -92,6 +99,20 @@ def _dependency_calls(dependant) -> set[str]:
 
 def _is_allowlisted(path: str) -> bool:
     return any(path.startswith(p) for p in _ALLOWLIST_PREFIXES)
+
+
+def test_offer_admission_guard_delegates_to_the_single_decision_owner() -> None:
+    """The named mounted guard must execute the owner, not merely exist."""
+    source = inspect.getsource(api_catalog._require_offer_version_admission)
+    tree = ast.parse(source)
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "offer_access_requirement"
+        and node.func.attr == "authorize_offer_version_admission"
+        for node in ast.walk(tree)
+    )
 
 
 def test_all_api_routes_declare_an_authorization_guard():

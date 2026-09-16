@@ -116,6 +116,15 @@ _DEFERRED_API_ROUTER_SPECS = [
     ("app.api.billing_treatments", "router", "api", "user"),
     ("app.api.files", "router", "api", "admin"),
     ("app.api.catalog", "router", "api", "user"),
+    # Offer-version admission (POST/PATCH /offer-versions) lives on its own
+    # router with NO blanket router-level dependency, deliberately: unlike
+    # "router" above, its ONLY gate is _require_offer_version_admission,
+    # which fully delegates to the owning service's authorization function
+    # (the single decision owner — round 12 finding 2). Mounted with the
+    # same "user" (bare authentication) dependency
+    # mode as "router" — this table entry adds no additional permission or
+    # leave-restriction gate of its own, on purpose.
+    ("app.api.catalog", "admission_router", "api", "user"),
     ("app.api.auth", "router", "api", "admin"),
     ("app.api.auth_flow", "router", "api", "none"),
     # Pre-authentication continuation, same class as `POST /auth/login`, so the

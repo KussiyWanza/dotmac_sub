@@ -32,6 +32,327 @@ DOMAIN = DomainSOT(
             owns=("catalog policy lookup", "offer policy interpretation"),
         ),
         SOTService(
+            name="service_intent.offer_access_requirement",
+            module="app.services.catalog.offer_access_requirement",
+            owns=(
+                "access-classified offer-version admission",
+                "immutable access requirement for an exact offer version",
+                "reviewed classification of legacy/unclassified versions",
+                "mutation of an already-admitted offer version",
+            ),
+            depends_on=(
+                "service_intent.catalog_policy",
+                "service_intent.catalog_billing_governance",
+                "control.settings_spec",
+                "auth.permission_gate",
+                "observability.audit_log",
+                "events.dispatcher",
+            ),
+            notes=(
+                "Release 1 of an expand/contract rollout: offer_versions."
+                "access_requirement is required and explicit on every new "
+                "admission, with unclassified an accepted explicit value and "
+                "a temporary DB default that exists only to initialize "
+                "historical rows. Release 2 (rejecting unclassified at "
+                "admission and dropping the DB default) is separate, later "
+                "work. service_intent.catalog_policy and "
+                "app/services/catalog/policies.py are a deliberately separate, "
+                "untouched owner; this module never imports or writes them. "
+                "See docs/designs/CATALOG_ACCESS_REQUIREMENT_AUTHORITY.md."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="access-classified offer-version admission",
+                        role=OwnerRole.AUTHORITATIVE_RECORD,
+                        input_names=(
+                            "explicit access-requirement classification",
+                            "canonical offer identity",
+                        ),
+                        canonical_writer="service_intent.offer_access_requirement",
+                    ),
+                    ConcernContract(
+                        name=(
+                            "immutable access requirement for an exact offer version"
+                        ),
+                        role=OwnerRole.AUTHORITATIVE_RECORD,
+                        input_names=("canonical offer-version record",),
+                        canonical_writer="service_intent.offer_access_requirement",
+                    ),
+                    ConcernContract(
+                        name=(
+                            "reviewed classification of legacy/unclassified versions"
+                        ),
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=(
+                            "authenticated reviewed classification command",
+                            "canonical offer-version record",
+                        ),
+                        canonical_writer="service_intent.offer_access_requirement",
+                    ),
+                    ConcernContract(
+                        name="mutation of an already-admitted offer version",
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=(
+                            "authenticated offer-version mutation command",
+                            "canonical offer-version record",
+                        ),
+                        canonical_writer="service_intent.offer_access_requirement",
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="explicit access-requirement classification",
+                        owner="service_intent.offer_access_requirement",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "OfferVersionCreate.access_requirement supplied "
+                            "explicitly by a caller satisfying the compound "
+                            "requirement catalog:write AND (catalog:"
+                            "billing_write OR the narrower catalog:offer_"
+                            "version:admission) — both keys are decided by "
+                            "ONE owner, authorize_offer_version_admission, "
+                            "which the route (app/api/catalog.py's "
+                            "_require_offer_version_admission, on "
+                            "admission_router — deliberately carrying NO "
+                            "blanket router-level gate of its own, unlike "
+                            "the rest of that file) and the command's own "
+                            "verify_admission_authorization both delegate "
+                            "to, so the two admission permissions are an "
+                            "OR-alternative to EACH OTHER, never a pure "
+                            "standalone alternative to catalog:write itself. "
+                            "The command re-derives and checks this "
+                            "identical decision itself, inside its own "
+                            "transaction, for the system_user/api_key/"
+                            "subscriber/machine-credential principal "
+                            "supplied (defense in depth on top of the "
+                            "route, not a substitute for it — a machine "
+                            "credential stays shadow-only, evaluated and "
+                            "logged, never enforced) — a subscriber "
+                            "principal mapped to a role holding the "
+                            "compound permission (the seeded "
+                            "subscriber-admin path) is a supported caller, "
+                            "not a refused one. The authenticated principal "
+                            "remains recorded audit/attribution evidence as "
+                            "well; no application-level fallback for the "
+                            "value itself"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical offer identity",
+                        owner="service_intent.catalog_policy",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Exact CatalogOffer identity referenced by offer_id",
+                    ),
+                    AuthorityInput(
+                        name="canonical offer-version record",
+                        owner="service_intent.offer_access_requirement",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "offer_versions.access_requirement, immutable once "
+                            "set to a real classification"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="authenticated reviewed classification command",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "Typed target offer version, proposed real "
+                            "classification, authenticated principal, reason, "
+                            "review reference, preview fingerprint, and "
+                            "idempotency key gated by "
+                            "catalog:offer_access_requirement:classify"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="authenticated offer-version mutation command",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "Typed target offer version, the field changes "
+                            "requested (OfferVersionUpdate, exclude_unset), "
+                            "and the authenticated AdmissionPrincipal, gated "
+                            "by the identical compound catalog:write AND "
+                            "(catalog:billing_write OR catalog:offer_version:"
+                            "admission) decision admission uses — "
+                            "update_offer_version (app/services/catalog/"
+                            "offer_access_requirement.py) is a registered "
+                            "owner command in its own right: "
+                            "OfferVersions.update (app/services/catalog/"
+                            "offers.py) is a thin adapter that builds this "
+                            "command and returns its result, it does not "
+                            "mutate the row or complete the transaction "
+                            "itself."
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.OWNER_MANAGED,
+                    boundary=(
+                        "admit_offer_version, "
+                        "classify_offer_version_access_requirement, and "
+                        "update_offer_version each enter their own root "
+                        "owner transaction and perform the real persistence "
+                        "themselves — OfferVersions.create/update are thin "
+                        "adapters that build the command and return the "
+                        "result; neither constructs the row, mutates it, "
+                        "nor completes the transaction itself."
+                    ),
+                    locking=(
+                        "The reviewed classification command locks the exact "
+                        "offer version before comparing its reviewed "
+                        "fingerprint; RBAC permission is re-verified fresh "
+                        "inside that same transaction, immediately before the "
+                        "write, never trusted from an earlier check alone. "
+                        "This narrows but does NOT eliminate the window "
+                        "between that permission read and the commit: no "
+                        "RBAC row (system_users, roles, role_permissions, "
+                        "permissions) is locked, so a grant revoked in the "
+                        "instant between this re-check and the commit is not "
+                        "caught. This command's only caller is a "
+                        "trust-the-operator CLI with no pre-authorizing "
+                        "route, not an authentication boundary — closing the "
+                        "residual window would require row-locking that "
+                        "entire RBAC surface, judged disproportionate to the "
+                        "risk. Admission holds a transaction-scoped advisory "
+                        "lock keyed on (offer_id, version_number), and after "
+                        "acquiring it, re-verifies the identical authorization "
+                        "decision itself (verify_admission_authorization, "
+                        "delegating to the single owner authorize_offer_"
+                        "version_admission — the compound catalog:write AND "
+                        "(catalog:billing_write OR catalog:offer_version:"
+                        "admission) rule AND the ERP staff leave-write "
+                        "restriction), against the live database, for the "
+                        "supplied principal, TWICE (once after acquiring the "
+                        "locks, once again immediately before the INSERT) — "
+                        "defense in depth on top of the route's own gate, "
+                        "which delegates to the identical owner rather than "
+                        "deciding independently; authorization is no longer "
+                        "decided ONLY at the route, and the two adapters "
+                        "cannot silently disagree. The SAME residual window "
+                        "applies here as above: the advisory lock serializes "
+                        "concurrent admissions of the same target, not the "
+                        "principal's own RBAC rows, so a grant revoked "
+                        "between the second re-check and this transaction's "
+                        "commit is not caught — narrowed to a one-commit-wide "
+                        "window, not eliminated, for the identical "
+                        "disproportionate-cost reason; the admitting "
+                        "principal is always recorded, so the result is "
+                        "correctable, not silently unrecoverable."
+                    ),
+                    idempotency=(
+                        "One classification row per offer version, globally "
+                        "unique on idempotency key; an exact-key, exact-target, "
+                        "exact-fingerprint replay returns the recorded outcome "
+                        "instead of retransitioning the row, and a key reused "
+                        "for a different version or target is a typed conflict. "
+                        "Admission accepts an optional caller-supplied "
+                        "idempotency key (the shared idempotency_keys ledger, "
+                        "scope offer_version_admission): an exact-key replay "
+                        "with a matching (offer_id, version_number, payload) "
+                        "fingerprint returns the original row instead of a "
+                        "duplicate_version_number conflict; a key reused with a "
+                        "different target or payload is a typed "
+                        "idempotency_conflict. A caller that supplies no key "
+                        "gets a fresh one per request and is not idempotent."
+                    ),
+                    retries=(
+                        "A stale classification preview fails closed and is "
+                        "retried only from a fresh preview; an admission retry "
+                        "is safe only when it reuses its original idempotency "
+                        "key; every other refusal is terminal for that command."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        *owner_command_boundary_error_codes(
+                            "service_intent.offer_access_requirement"
+                        ),
+                        "service_intent.offer_access_requirement.invalid_access_requirement",
+                        "service_intent.offer_access_requirement.immutable_access_requirement",
+                        "service_intent.offer_access_requirement.invalid_worklist_page",
+                        "service_intent.offer_access_requirement.missing_review_reference",
+                        "service_intent.offer_access_requirement.review_reference_too_long",
+                        "service_intent.offer_access_requirement.review_reference_mismatch",
+                        "service_intent.offer_access_requirement.invalid_target_classification",
+                        "service_intent.offer_access_requirement.offer_not_found",
+                        "service_intent.offer_access_requirement.offer_version_not_found",
+                        "service_intent.offer_access_requirement.already_classified",
+                        "service_intent.offer_access_requirement.duplicate_version_number",
+                        "service_intent.offer_access_requirement.admission_integrity_violation",
+                        "service_intent.offer_access_requirement.missing_idempotency_key",
+                        "service_intent.offer_access_requirement.idempotency_key_too_long",
+                        "service_intent.offer_access_requirement.missing_reason",
+                        "service_intent.offer_access_requirement.idempotency_conflict",
+                        "service_intent.offer_access_requirement.permission_denied",
+                        "service_intent.offer_access_requirement.stale_preview",
+                        "service_intent.offer_access_requirement.immutable_offer_version_identity",
+                    ),
+                    mapping_owner="app.api.catalog",
+                    retryable_codes=(
+                        "service_intent.offer_access_requirement.stale_preview",
+                    ),
+                    fail_closed_on=(
+                        "an already-classified target (real-to-real or "
+                        "real-to-unclassified)",
+                        "a proposed target of unclassified",
+                        "a stale reviewed fingerprint",
+                        "a missing offer version",
+                        "a missing idempotency key or reason",
+                        "an idempotency key reused with different command inputs",
+                        "an ungranted or revoked classify permission, "
+                        "re-verified inside the command's own transaction",
+                        "an ungranted or revoked compound admission "
+                        "permission (catalog:write AND (catalog:billing_"
+                        "write OR catalog:offer_version:admission)), "
+                        "re-verified inside admit_offer_version's own "
+                        "transaction for the supplied principal",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=(
+                        "catalog.offer_access_requirement_classified",
+                        "catalog.offer_version_admitted",
+                    ),
+                    schema_version=1,
+                    delivery_owner="events.dispatcher",
+                    compatibility=(
+                        "catalog.offer_access_requirement_classified carries "
+                        "the exact offer version, previous and new access "
+                        "requirement, review reference, command/correlation "
+                        "identifiers, and authenticated principal. "
+                        "catalog.offer_version_admitted carries the exact "
+                        "offer/offer-version identity, version number, "
+                        "admitted access requirement, command/correlation "
+                        "identifiers, and authenticated principal; it is "
+                        "staged only for a genuinely NEW admission, never "
+                        "re-emitted for an idempotency-key replay."
+                    ),
+                    replay=(
+                        "An exact idempotency-key and target replay returns "
+                        "the recorded outcome and never re-emits a second "
+                        "transition for the same offer version, nor a "
+                        "second catalog.offer_version_admitted event for the "
+                        "same admission."
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.NATIVE,
+                    new_owner="service_intent.offer_access_requirement",
+                ),
+                steward="commercial operations",
+                design_refs=(
+                    "docs/designs/CATALOG_ACCESS_REQUIREMENT_AUTHORITY.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_offer_access_requirement.py",
+                    "tests/architecture/test_offer_access_requirement_boundary.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="service_intent.ip_block_catalog",
             module="app.services.catalog.ip_block_choices",
             owns=(
