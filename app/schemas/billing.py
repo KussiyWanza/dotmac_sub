@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -274,6 +275,12 @@ class InvoiceSyncRead(BaseModel):
     lines: list[InvoiceSyncLineRead] = Field(default_factory=list)
 
 
+#: A `canonical_digest` result is always exactly 64 lowercase hex characters
+#: (sha256 hex digest). Rejected, not normalised: an uppercase or short value
+#: means the caller is not forwarding Sub's digest verbatim.
+_SHA256_HEX_PATTERN = re.compile(r"[0-9a-f]{64}")
+
+
 class InvoiceAccountingSyncDisposition(StrEnum):
     """Whether ERP may post, must quarantine, or should ignore an invoice."""
 
@@ -360,6 +367,16 @@ class InvoiceAccountingSyncRead(BaseModel):
     disposition: InvoiceAccountingSyncDisposition
     issues: list[InvoiceAccountingSyncIssueRead] = Field(default_factory=list)
     lines: list[InvoiceAccountingSyncLineRead] = Field(default_factory=list)
+    digest_version: int
+    projection_digest: str
+
+    @model_validator(mode="after")
+    def _check_projection_digest(self) -> InvoiceAccountingSyncRead:
+        if not _SHA256_HEX_PATTERN.fullmatch(self.projection_digest):
+            raise ValueError(
+                "projection_digest must be exactly 64 lowercase hex characters"
+            )
+        return self
 
 
 class CreditNoteBase(BaseModel):
