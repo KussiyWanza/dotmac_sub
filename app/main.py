@@ -1486,6 +1486,7 @@ _API_SYNC_FEED_PATHS = frozenset(
         "/api/v1/billing-accounts/sync",
         "/api/v1/credit-notes/sync",
         "/api/v1/invoices/sync",
+        "/api/v1/invoices/accounting-sync/v2",
         "/api/v1/payment-channels/sync",
         "/api/v1/payments/sync",
         "/api/v1/resellers/sync",

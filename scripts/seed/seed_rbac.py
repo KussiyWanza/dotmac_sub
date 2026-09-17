@@ -21,6 +21,11 @@ ADMIN_ONLY_PERMISSION_KEYS = {
     # so "accept inbound observations" cannot be attached to an ordinary role;
     # the read-only mirror scope beside it stays assignable on purpose.
     "integration:observations:write",
+    # Egress authority for a future ERP accounting-sync machine principal.
+    # Kept out of the ordinary role builder for the same reason as the
+    # ingress scope above: this is a credential scope for a machine caller,
+    # not a permission an admin attaches to a human role.
+    "integration:accounting_sync:read",
     "reseller:impersonate",
     "system:db_admin",
     "system:read",
@@ -63,6 +68,10 @@ DEFAULT_PERMISSIONS = [
     (
         "integration:observations:mirror",
         "Integrator inbound observation parity evidence, read-only",
+    ),
+    (
+        "integration:accounting_sync:read",
+        "Integrator outbound accounting-sync feed access (Sub->ERP)",
     ),
     # Auth & System
     ("auth:manage", "Manage authentication settings"),

@@ -74,7 +74,11 @@ BASELINE = Path("tests/architecture/session_construction_baseline.txt")
 #: +2 from tests/integration/test_team_inbox_contact_link_concurrency.py: two
 #: PostgreSQL concurrency proofs for reviewed endpoint links and first-inbound
 #: identity claims, each with its own `sessionmaker`.
-TEST_FIXTURE_BASELINE_TOTAL = 131
+#: +1 from tests/integration/test_invoice_accounting_sync_keyset_postgres.py: a
+#: real dual-session PostgreSQL proof that the accounting-sync feed's keyset
+#: cursor does not skip a stationary row under a genuinely concurrent,
+#: independently-committing writer, with its own `sessionmaker`.
+TEST_FIXTURE_BASELINE_TOTAL = 132
 
 
 def _baseline() -> dict[str, int]:

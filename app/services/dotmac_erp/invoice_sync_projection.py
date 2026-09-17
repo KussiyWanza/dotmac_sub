@@ -50,6 +50,8 @@ class InvoiceAccountingSyncQuery:
     updated_since: datetime | None
     limit: int
     offset: int
+    after_updated_at: datetime | None = None
+    after_id: UUID | None = None
 
 
 def _issue(
@@ -313,6 +315,8 @@ def list_invoice_accounting_sync(
         updated_since=query.updated_since,
         limit=query.limit,
         offset=query.offset,
+        after_updated_at=query.after_updated_at,
+        after_id=query.after_id,
     ).all()
     items = [project_invoice_for_accounting(invoice) for invoice in invoices]
     return ListResponse[InvoiceAccountingSyncRead](

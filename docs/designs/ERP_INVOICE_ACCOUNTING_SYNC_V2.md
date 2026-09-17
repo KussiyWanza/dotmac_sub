@@ -11,10 +11,20 @@ journals, tax transactions, and financial statements. The version-2 feed is a
 read-only resolver between those owners; it does not post accounting and it
 never changes an Invoice.
 
-The endpoint is `GET /api/v1/invoices/accounting-sync/v2`. It is additive and
-uses the same `billing:invoice:read` permission as the existing
-`GET /api/v1/invoices/sync` feed. The existing feed stays unchanged during
-shadow validation.
+The endpoint is `GET /api/v1/invoices/accounting-sync/v2`. It is additive.
+
+Authorization: the v2 endpoint accepts EITHER the existing
+`billing:invoice:read` permission OR the narrower
+`integration:accounting_sync:read` scope (for a future ERP accounting-sync
+machine principal — kept out of the ordinary role builder, see
+`scripts/seed/seed_rbac.py`). Holding `integration:accounting_sync:read`
+alone does not grant access to the legacy `GET /api/v1/invoices/sync` feed,
+which keeps requiring `billing:invoice:read` only and gained no new scope.
+
+The legacy feed's authorization is unchanged; its query surface is not: both
+`GET /api/v1/invoices/sync` and `GET /api/v1/invoices/accounting-sync/v2` now
+also accept the optional `after_updated_at`/`after_id` keyset-cursor pair
+described below.
 
 The durable `integration.dotmac_erp_billing_adapter` outbox remains the target
 cross-application boundary under ADR 0007. This pull feed exists to stop the
@@ -100,6 +110,27 @@ guessing. Account, status, active-state, limit, and offset filters are typed and
 bounded. A typed `invoice_id` filter permits one explicit operator replay
 without rewinding the global cursor or scanning another customer's invoices.
 The query takes no locks and writes no data.
+
+Paging supports two modes, both accepted by `GET /invoices/accounting-sync/v2`
+(and the legacy `GET /invoices/sync` feed, which shares the same underlying
+`apply_sync_page` helper):
+
+- **Offset** (default, unchanged): `limit`/`offset`, as above.
+- **Keyset cursor** (additive, optional): `after_updated_at`/`after_id`,
+  supplied together — never one without the other (HTTP 422 otherwise).
+  Paging advances by `(updated_at, id) > (after_updated_at, after_id)`
+  instead of `OFFSET`, so a concurrent update to an unrelated row cannot
+  re-sort it across a page boundary and skip a row the walk has not reached
+  yet — the concrete hazard offset paging has under concurrent writes.
+
+Revision semantics under the keyset cursor: `updated_at` is mutable, so the
+cursor cannot promise "each row exactly once" across a walk that overlaps
+concurrent writes — a row genuinely modified after being observed legitimately
+reappears with its new revision later in the walk, and this is intended, not
+a bug (ERP is idempotent on the source invoice id plus its source
+`updated_at`). What the cursor does guarantee is narrower and is the actual
+fix: a row whose own `(updated_at, id)` never changes during the walk is
+never skipped.
 
 ERP must treat `blocked` as a durable data outcome, not as a transient exception:
 record the issue keyed by source invoice and source revision, advance the pull
