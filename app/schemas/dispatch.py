@@ -279,7 +279,6 @@ class WorkOrderHeaderCreate(WorkOrderHeaderBase):
         description="Optional stable work-order id; generated as sub-<uuid> when omitted.",
     )
 
-
 class WorkOrderHeaderUpdate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -327,6 +326,9 @@ class WorkOrderHeaderUpdate(BaseModel):
 class WorkOrderHeaderRead(WorkOrderHeaderBase):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
+    # Shared infrastructure jobs are represented by the read model with no
+    # individual subscriber. Customer creation remains subscriber-required.
+    subscriber_id: UUID | None = None
     id: UUID
     public_id: str
     # Native support provenance is read-only at generic dispatch boundaries.

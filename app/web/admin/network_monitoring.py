@@ -1,8 +1,10 @@
 """Admin network monitoring and alarms web routes."""
 
 import uuid
+from datetime import datetime
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Form, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -408,7 +410,9 @@ def cabinet_notice_submit(
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("monitoring:read"))],
 )
-def outages_console(request: Request, db: Session = Depends(get_db)):
+def outages_console(
+    request: Request, error: str | None = None, db: Session = Depends(get_db)
+):
     """Manual outage console: declare against infrastructure, list/resolve open
     incidents. No auto-detection, no notification sending."""
     from app.models.network import FdhCabinet
@@ -423,12 +427,18 @@ def outages_console(request: Request, db: Session = Depends(get_db)):
     )
     from app.services.topology.outage import (
         is_stale_open,
+        latest_scope_revision,
         list_operator_open_incidents,
     )
     from app.services.topology.outage_tickets import infrastructure_link_for
+    from app.services.topology.outage_work_order_handoff import (
+        issue_action,
+        list_for_incident,
+    )
     from app.services.topology.reachability import reachability_overview
 
     context = _base_context(request, db, active_page="monitoring")
+    context["error"] = error
     # Root-cause view of everything currently down: devices behind a down
     # parent are unreachable, not independent outages (one failure, not N).
     context["reachability"] = reachability_overview(db)
@@ -459,6 +469,12 @@ def outages_console(request: Request, db: Session = Depends(get_db)):
                 "impact": summarize_incident_impact(db, inc),
                 # The one canonical infrastructure ticket, when bound.
                 "infrastructure_link": infrastructure_link_for(db, inc.id),
+                "latest_scope_revision": latest_scope_revision(db, inc.id),
+                "infrastructure_work_orders": list_for_incident(db, inc.id),
+                "issue_work_order_action": issue_action(
+                    db, inc, actor_id=_actor_id(request)
+                ),
+                "issue_work_order_key": str(uuid.uuid4()),
                 "delivery_audit": delivery_audit_for_entity(
                     db,
                     entity_type="outage",
@@ -468,6 +484,92 @@ def outages_console(request: Request, db: Session = Depends(get_db)):
         )
     context["incidents"] = rows
     return templates.TemplateResponse("admin/network/outages.html", context)
+
+
+@router.post(
+    "/outages/{incident_id}/work-orders",
+    dependencies=[
+        Depends(require_permission("monitoring:write")),
+        Depends(require_permission("operations:dispatch:write")),
+    ],
+)
+def outages_issue_work_order(
+    incident_id: str,
+    request: Request,
+    title: str = Form(...),
+    reason: str = Form(...),
+    description: str | None = Form(default=None),
+    priority: str = Form(default="high"),
+    work_type: str = Form(default="repair"),
+    address: str | None = Form(default=None),
+    scheduled_start: str | None = Form(default=None),
+    scheduled_end: str | None = Form(default=None),
+    estimated_duration_minutes: int | None = Form(default=None),
+    access_notes: str | None = Form(default=None),
+    expected_scope_revision_sequence: int | None = Form(default=None),
+    idempotency_key: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    """Issue shared-outage field work through its owning coordinator."""
+    from app.schemas.network import InfrastructureWorkOrderIssueRequest
+    from app.services.domain_errors import DomainError
+    from app.services.owner_commands import CommandContext
+    from app.services.topology.outage_work_order_handoff import (
+        HandoffActorType,
+        OutageWorkOrderIssueCommand,
+        issue_work_order,
+    )
+
+    actor_id = _actor_id(request)
+    key = str(idempotency_key or uuid.uuid4()).strip()
+
+    def _datetime(value: str | None) -> datetime | None:
+        text = (value or "").strip()
+        return datetime.fromisoformat(text.replace("Z", "+00:00")) if text else None
+
+    try:
+        incident_uuid = uuid.UUID(incident_id)
+        if actor_id is None:
+            raise ValueError("An authenticated operator is required")
+        payload = InfrastructureWorkOrderIssueRequest(
+            title=title,
+            reason=reason,
+            description=description,
+            priority=priority,
+            work_type=work_type,
+            address=address,
+            scheduled_start=_datetime(scheduled_start),
+            scheduled_end=_datetime(scheduled_end),
+            estimated_duration_minutes=estimated_duration_minutes,
+            access_notes=access_notes,
+            expected_scope_revision_sequence=expected_scope_revision_sequence,
+        )
+        context = CommandContext.system(
+            actor=str(actor_id),
+            scope="network.outage_work_order:issue",
+            reason=reason,
+            idempotency_key=key,
+        )
+        issue_work_order(
+            db,
+            OutageWorkOrderIssueCommand(
+                incident_id=incident_uuid,
+                request=payload,
+                actor_id=actor_id,
+                actor_type=HandoffActorType.SYSTEM_USER,
+                permissions=frozenset(
+                    {"monitoring:write", "operations:dispatch:write"}
+                ),
+                context=context,
+                request_id=str(context.command_id),
+            ),
+        )
+    except (ValueError, TypeError, DomainError, HTTPException) as exc:
+        message = quote(str(getattr(exc, "message", exc)), safe="")
+        return RedirectResponse(
+            f"/admin/network/outages?error={message}", status_code=303
+        )
+    return RedirectResponse("/admin/network/outages", status_code=303)
 
 
 @router.post(

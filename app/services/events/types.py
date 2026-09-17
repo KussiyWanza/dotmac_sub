@@ -395,6 +395,9 @@ class EventType(enum.Enum):
     ticket_resolution_disputed = "ticket.resolution_disputed"
     ticket_merged = "ticket.merged"
     ticket_work_order_issued = "ticket.work_order_issued"
+    outage_infrastructure_work_order_issued = (
+        "outage.infrastructure_work_order_issued"
+    )
     work_order_field_outcome_recorded = "work_order.field_outcome_recorded"
     customer_password_changed = "customer.password_changed"  # noqa: S105
 

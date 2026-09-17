@@ -515,7 +515,9 @@ class FieldJobs:
             {
                 "destination_type": "customer",
                 "destination_id": str(row.subscriber_id) if row.subscriber_id else None,
-                "label": "Customer site",
+                "label": "Infrastructure site"
+                if row.work_order_kind == "infrastructure"
+                else "Customer site",
                 "latitude": location.latitude,
                 "longitude": location.longitude,
                 "address_text": location.address_text,

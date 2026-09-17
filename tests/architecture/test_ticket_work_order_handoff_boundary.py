@@ -26,7 +26,10 @@ def test_only_handoff_owner_passes_native_origin_to_work_order_command():
         ):
             callsites.append(path.relative_to(ROOT).as_posix())
 
-    assert callsites == ["app/services/ticket_work_order_handoff.py"]
+    assert callsites == [
+        "app/services/ticket_work_order_handoff.py",
+        "app/services/topology/outage_work_order_handoff.py",
+    ]
 
 
 def test_generic_dispatch_write_contract_cannot_change_native_ticket_origin():

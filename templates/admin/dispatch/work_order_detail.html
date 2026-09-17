@@ -12,7 +12,8 @@
 <div class="grid gap-6 xl:grid-cols-12"><div class="space-y-6 xl:col-span-8">
 {% call card('Work order details', color='cyan') %}
 <dl class="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-<div><dt class="text-xs font-semibold uppercase text-slate-500">Subscriber</dt><dd class="mt-1 font-medium">{{ subscriber_label }}</dd></div>
+<div><dt class="text-xs font-semibold uppercase text-slate-500">Subscriber</dt><dd class="mt-1 font-medium">{% if work_order_kind == 'infrastructure' %}Infrastructure — no individual subscriber{% else %}{{ subscriber_label }}{% endif %}</dd></div>
+<div><dt class="text-xs font-semibold uppercase text-slate-500">Work order kind</dt><dd class="mt-1 font-medium">{{ work_order_kind }}</dd></div>
 <div><dt class="text-xs font-semibold uppercase text-slate-500">Type</dt><dd class="mt-1">{{ (work_order.work_type or 'work')|replace('_', ' ')|title }}</dd></div>
 <div><dt class="text-xs font-semibold uppercase text-slate-500">Priority</dt><dd class="mt-1">{{ (work_order.priority or 'normal')|title }}</dd></div>
 <div><dt class="text-xs font-semibold uppercase text-slate-500">Schedule</dt><dd class="mt-1">{{ work_order.scheduled_start | app_datetime('%d %b %Y %H:%M', 'Unscheduled') }}</dd></div>
@@ -30,7 +31,8 @@
 {% if origin_ticket %}<a href="/admin/support/tickets/{{ origin_ticket.id }}" class="rounded-xl border border-amber-200 p-4 hover:bg-amber-50"><span class="block text-xs font-semibold uppercase text-amber-700">Ticket</span><strong>{{ origin_ticket.number or origin_ticket.id }}</strong><span class="mt-1 block text-sm text-slate-500">{{ origin_ticket.title }}</span></a>{% endif %}
 {% if project %}<a href="/admin/projects/{{ project.id }}" class="rounded-xl border border-emerald-200 p-4 hover:bg-emerald-50"><span class="block text-xs font-semibold uppercase text-emerald-700">Project</span><strong>{{ project_label }}</strong></a>{% endif %}
 {% if project_task %}<a href="/admin/projects/tasks/{{ project_task.number or project_task.id }}" class="rounded-xl border border-blue-200 p-4 hover:bg-blue-50"><span class="block text-xs font-semibold uppercase text-blue-700">Project task</span><strong>{{ project_task.number or project_task.title }}</strong><span class="mt-1 block text-sm text-slate-500">{{ project_task.title }}</span></a>{% endif %}
-{% if not origin_ticket and not project and not project_task %}<p class="text-sm text-slate-500">This work order was created directly from dispatch.</p>{% endif %}
+{% if outage_incident %}<div class="mt-4 rounded-xl border border-indigo-200 bg-indigo-50 p-4 text-sm text-indigo-800 dark:border-indigo-900/50 dark:bg-indigo-900/20 dark:text-indigo-200">Shared outage work for incident <a class="underline" href="/admin/network/outages">{{ outage_incident.id }}</a>. Audience revision {{ outage_work_order_link.scope_revision_sequence }}; customer membership remains owned by the outage record.</div>{% endif %}
+{% if not origin_ticket and not project and not project_task and not outage_incident %}<p class="text-sm text-slate-500">This work order was created directly from dispatch.</p>{% endif %}
 </div>{% endcall %}
 {% if can(request, 'operations:dispatch:write') %}{% call card('Edit planning details', color='slate') %}
 <form method="post" action="/admin/dispatch/work-orders/{{ work_order.public_id }}" class="grid gap-4 sm:grid-cols-2">{% include "components/forms/csrf_input.html" %}
