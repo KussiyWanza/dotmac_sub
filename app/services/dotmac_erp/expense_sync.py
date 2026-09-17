@@ -398,6 +398,25 @@ def _extract_claim_status(response: dict | None) -> str | None:
     return status[:40] if status else None
 
 
+def _apply_erp_expense_payment_outcome(
+    request: FieldExpenseRequest,
+    *,
+    claim_status: str,
+    observed_at: datetime,
+) -> None:
+    """Project ERP's confirmed expense-claim payment fact onto the local row.
+
+    ERP owns the paid fact — payment intent, transfer execution, settlement,
+    and reconciliation all happen there. This is Sub's only writer of the
+    resulting local ``approved -> paid`` projection; it never decides that an
+    expense was paid on its own, and it is a no-op for every other local
+    status (submitted, rejected, canceled, or already paid).
+    """
+    if claim_status == "paid" and request.status == "approved":
+        request.paid_at = request.paid_at or observed_at
+        request.status = "paid"
+
+
 def apply_claim_response(request: FieldExpenseRequest, response: dict | None) -> None:
     """Write an ERP claim response back onto a ``FieldExpenseRequest``.
 
@@ -453,9 +472,9 @@ def apply_claim_response(request: FieldExpenseRequest, response: dict | None) ->
 
     request.expense_claim_status = claim_status
     now = datetime.now(UTC)
-    if claim_status == "paid" and request.status == "approved":
-        request.paid_at = request.paid_at or now
-        request.status = "paid"
+    _apply_erp_expense_payment_outcome(
+        request, claim_status=claim_status, observed_at=now
+    )
 
 
 def _apply_payment_projection(
@@ -516,25 +535,24 @@ def _poll_unlinked_expense_claims(
     failed after delivery. Keyed on Sub's own request id, same as the linked
     poll below — see ``client.get_expense_claim_status``'s docstring.
 
-    OWNERSHIP GUARD: ``flow_owned_by_sub`` is checked once up front, since
-    ownership is a per-flow switch, not per-row. A status poll is a real ERP
-    API call about a row that may belong to a flow ownership has since moved
-    back to CRM — skipped, not polled, when not owned. Skipped rows are
-    counted separately from ``processed``/``updated`` so the caller's own
-    sweep numbers stay honest.
+    OWNERSHIP GUARD: ``flow_owned_by_sub`` is re-checked on EVERY iteration,
+    not once up front, since each ``get_expense_claim_status`` call below is a
+    real, potentially slow ERP network round trip — a flip mid-batch must
+    stop the remaining rows in this same run rather than only being caught on
+    the next scheduled poll. Skipped rows are counted separately from
+    ``processed``/``updated`` so the caller's own sweep numbers stay honest.
     """
     processed = 0
     updated = 0
     skipped_not_owned = 0
     errors: list[str] = []
-    owned = flow_owned_by_sub(db, FieldErpSyncFlow.expense_claim)
     for row in outbox.unlinked_delivered_events(
         db, flow=FieldErpSyncFlow.expense_claim, limit=limit
     ):
         request = db.get(FieldExpenseRequest, row.entity_id)
         if request is None or request.expense_claim_reference:
             continue
-        if not owned:
+        if not flow_owned_by_sub(db, FieldErpSyncFlow.expense_claim):
             skipped_not_owned += 1
             logger.info(
                 "expense_sync: skipping unlinked status poll for %s — sub does "
@@ -621,7 +639,28 @@ def refresh_expense_claim_statuses(
         skipped_not_owned += unlinked_skipped_not_owned
         errors.extend(unlinked_errors)
 
+        # OWNERSHIP GUARD: same per-flow gate as `_poll_unlinked_expense_claims`
+        # and `repair_expense_claim_writebacks` above — a status poll is a real
+        # ERP API call, and ownership can move back to CRM after a claim was
+        # linked. Checked TWICE per row, not once before the loop: once before
+        # the network call (so a flip already in effect skips the call
+        # entirely), and once again after the call returns and before the
+        # response is applied (so a flip that happens WHILE that row's own
+        # network call was in flight still blocks the write — the unlinked
+        # path gets this second check for free from `_dispatch_flow_writeback`
+        # since it routes through the dispatch layer; this loop calls
+        # `apply_claim_response` directly, so it needs its own explicit
+        # post-call recheck). Skipped, not applied, when not owned either
+        # time; counted separately so this sweep's own numbers stay honest.
         for request in pending:
+            if not flow_owned_by_sub(db, FieldErpSyncFlow.expense_claim):
+                skipped_not_owned += 1
+                logger.info(
+                    "expense_sync: skipping linked status poll for %s — sub "
+                    "does not own flow 'expense_claim' (sync_flow_ownership)",
+                    request.id,
+                )
+                continue
             processed += 1
             try:
                 response = owned_client.get_expense_claim_status(str(request.id))
@@ -629,10 +668,21 @@ def refresh_expense_claim_statuses(
                 db.rollback()
                 errors.append(f"{request.id}: {exc}")
                 logger.warning(
-                    "expense_sync: status refresh failed for %s: %s", request.id, exc
+                    "expense_sync: status refresh failed for %s: %s",
+                    request.id,
+                    exc,
                 )
                 continue
             if not response:
+                continue
+            if not flow_owned_by_sub(db, FieldErpSyncFlow.expense_claim):
+                skipped_not_owned += 1
+                logger.info(
+                    "expense_sync: skipping linked status write-back for %s — "
+                    "sub no longer owns flow 'expense_claim' (sync_flow_ownership) "
+                    "as of after the ERP call returned",
+                    request.id,
+                )
                 continue
             before = request.expense_claim_status
             apply_claim_response(request, response)
@@ -679,14 +729,17 @@ def repair_expense_claim_writebacks(db: Session, *, limit: int = 100) -> dict:
     Michael's explicit confirmation rather than resolved here, since the
     runbook's prohibition is a data-safety rule this change does not own.
 
-    OWNERSHIP GUARD: ``flow_owned_by_sub`` is checked once up front (ownership
-    is a per-flow switch, not per-row). Re-applying a stored response is a
-    state mutation implying ERP involvement — skipped, not repaired, for
-    every row when sub does not currently own this flow, and counted under
+    OWNERSHIP GUARD: ``flow_owned_by_sub`` is re-checked on EVERY row, not
+    once up front. This function makes no live ERP call, but it does a real
+    DB write/commit per row across a batch (up to 500), and ownership is an
+    authoritative input to this projection — a flip mid-batch must stop the
+    remaining rows in this same run rather than only being caught on the
+    next scheduled sweep. Re-applying a stored response is a state mutation
+    implying ERP involvement — skipped, not repaired, per row when sub does
+    not own this flow at that row's turn, and counted under
     ``skipped_not_owned`` so this sweep's own numbers stay honest.
     """
     limit = max(1, min(int(limit or 100), 500))
-    owned = flow_owned_by_sub(db, FieldErpSyncFlow.expense_claim)
     rows = (
         db.query(FieldErpSyncEvent)
         .filter(FieldErpSyncEvent.flow == FieldErpSyncFlow.expense_claim.value)
@@ -714,15 +767,16 @@ def repair_expense_claim_writebacks(db: Session, *, limit: int = 100) -> dict:
     processed = 0
     repaired = 0
     skipped_not_owned = 0
-    if not owned:
-        logger.info(
-            "expense_sync: skipping write-back repair — sub does not own flow "
-            "'expense_claim' (sync_flow_ownership)"
-        )
-        result["skipped_not_owned"] = len(rows)
-        return result
 
     for row in rows:
+        if not flow_owned_by_sub(db, FieldErpSyncFlow.expense_claim):
+            skipped_not_owned += 1
+            logger.info(
+                "expense_sync: skipping write-back repair for %s — sub does "
+                "not own flow 'expense_claim' (sync_flow_ownership)",
+                row.id,
+            )
+            continue
         erp_id = _extract_claim_id(row.erp_response)
         if not erp_id:
             continue

@@ -894,6 +894,7 @@ SERVICES: tuple[SOTService, ...] = (
             "field expense lifecycle ERP delivery staging",
             "dead expense delivery recovery",
             "dead expense payment delivery recovery",
+            "ERP expense-claim payment outcome observation",
             "field expense payment initiation and ERP delivery staging",
             "field expense vendor picker",
             "requester-owned field expense history",
@@ -1023,6 +1024,16 @@ SERVICES: tuple[SOTService, ...] = (
                     role=OwnerRole.COMMAND_WRITER,
                     input_names=(
                         "canonical approved expense request",
+                        "expense ERP delivery cutover control",
+                    ),
+                    canonical_writer="operations.expense_requests",
+                ),
+                ConcernContract(
+                    name="ERP expense-claim payment outcome observation",
+                    role=OwnerRole.RECONCILER,
+                    input_names=(
+                        "canonical field expense request state",
+                        "ERP expense claim and payment status observation",
                         "expense ERP delivery cutover control",
                     ),
                     canonical_writer="operations.expense_requests",
@@ -1248,7 +1259,15 @@ SERVICES: tuple[SOTService, ...] = (
                 locking=(
                     "Submission locks the scoped active work order; approval, "
                     "rejection, and payment initiation lock the active expense "
-                    "request before their transitions."
+                    "request before their transitions. The ERP expense-claim "
+                    "payment outcome reconciler is caller-committed and takes no "
+                    "row lock of its own; it relies on the per-flow ownership "
+                    "gate (checked before and after each row's ERP call, or once "
+                    "per row in the repair sweep) rather than database-level "
+                    "locking to bound its write window — see the debt register "
+                    "for the row-locking/command-wrapping gap this leaves, "
+                    "shared identically with material's equivalent automated "
+                    "write-back path."
                 ),
                 idempotency=(
                     "A unique client reference replays only when the normalized "
@@ -1352,6 +1371,7 @@ SERVICES: tuple[SOTService, ...] = (
                     input_names=(
                         "canonical approved expense request",
                         "expense ERP delivery cutover control",
+                        "ERP expense claim and payment status observation",
                     ),
                     writer="operations.expense_requests",
                     freshness=(
@@ -1364,7 +1384,9 @@ SERVICES: tuple[SOTService, ...] = (
                     ),
                     drift_signal=(
                         "ERP reports a payment intent or paid claim state that differs "
-                        "from the request's erp_payment metadata projection."
+                        "from the request's erp_payment metadata projection, or ERP "
+                        "reports the claim's payment as paid while the request's own "
+                        "status/paid_at pair still shows it unpaid."
                     ),
                     rebuild_operation=(
                         "Poll the ERP expense-claim status endpoint by the stable Sub "
