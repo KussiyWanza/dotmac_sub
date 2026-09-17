@@ -20,6 +20,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.models.billing import (
     Invoice,
@@ -174,6 +175,33 @@ def _fixture_lines(db_session, invoice: Invoice, tax_rate: TaxRate) -> None:
     db_session.flush()
 
 
+_NAIVE_DATETIME_ATTRS = ("issued_at", "due_at", "paid_at", "updated_at")
+
+
+def _normalize_sqlite_naive_timestamps(invoice: Invoice) -> None:
+    """Re-attach UTC to an Invoice's timestamps after a SQLite reload.
+
+    SQLite's DATETIME column drops tzinfo on round-trip (unlike PostgreSQL,
+    whose ``DateTime(timezone=True)`` columns are always aware — see
+    ``tests/test_invoice_accounting_sync_v2.py``'s identical comment).
+    ``canonical_datetime`` correctly REJECTS a naive value in production,
+    since a naive value there would mean a real offset was silently dropped;
+    this test-only helper reflects that the SQLite unit lane's wall-clock
+    value was always UTC to begin with, so it is safe to re-attach here.
+
+    Uses ``set_committed_value`` rather than plain attribute assignment so
+    this normalization is never mistaken by SQLAlchemy for a pending change
+    — a plain ``invoice.issued_at = ...`` would mark the attribute dirty and
+    could trigger a spurious ``UPDATE`` (and therefore an unwanted
+    ``onupdate`` bump of ``updated_at``) on the next unrelated flush.
+    """
+
+    for attr in _NAIVE_DATETIME_ATTRS:
+        value = getattr(invoice, attr)
+        if value is not None and value.tzinfo is None:
+            set_committed_value(invoice, attr, value.replace(tzinfo=UTC))
+
+
 def _build_fixture_invoice(db_session) -> Invoice:
     subscriber = _fixture_subscriber(db_session)
     tax_rate = _fixture_tax_rate(db_session)
@@ -181,6 +209,7 @@ def _build_fixture_invoice(db_session) -> Invoice:
     _fixture_lines(db_session, invoice, tax_rate)
     db_session.commit()
     db_session.refresh(invoice)
+    _normalize_sqlite_naive_timestamps(invoice)
     return invoice
 
 
@@ -226,6 +255,7 @@ def test_digest_unchanged_when_only_subscriber_profile_changes(db_session) -> No
     invoice.account.city = "Kano"
     db_session.flush()
     db_session.refresh(invoice)
+    _normalize_sqlite_naive_timestamps(invoice)
 
     after = project_invoice_for_accounting(invoice)
 
@@ -242,6 +272,7 @@ def test_digest_unchanged_when_only_updated_at_changes(db_session) -> None:
     invoice.updated_at = before.updated_at + timedelta(hours=1)
     db_session.flush()
     db_session.refresh(invoice)
+    _normalize_sqlite_naive_timestamps(invoice)
 
     after = project_invoice_for_accounting(invoice)
 
@@ -413,7 +444,34 @@ def _mutate_line_tax_rate_id(kwargs: dict) -> dict:
     return kwargs
 
 
-def _mutate_issues_and_disposition(kwargs: dict) -> dict:
+def _mutate_issues_only(kwargs: dict) -> dict:
+    """Append a new issue while holding ``lines`` byte-identical to the base.
+
+    Isolates ``issues`` from ``lines``: a mutation that also appended a line
+    (as a combined scenario does) would still move the digest even if
+    ``issues`` were accidentally dropped from the covered-fact domain,
+    because the added line alone would change it.
+    """
+    issues = list(kwargs["issues"])
+    issues.append(
+        InvoiceAccountingSyncIssueRead(
+            code=InvoiceAccountingSyncIssueCode.NO_ACTIVE_LINES,
+        )
+    )
+    kwargs["issues"] = issues
+    return kwargs
+
+
+def _mutate_disposition_only(kwargs: dict) -> dict:
+    """Change ``disposition`` alone, holding ``issues``/``lines`` identical."""
+    kwargs["disposition"] = InvoiceAccountingSyncDisposition.READY
+    return kwargs
+
+
+def _mutate_issues_and_disposition_via_extra_line(kwargs: dict) -> dict:
+    """End-to-end scenario: a mismatched extra line adds both an issue and
+    moves the disposition. Kept alongside the two isolated mutations above,
+    not instead of them, for realistic line+issue coverage."""
     mismatched_line_id = uuid4()
     lines = list(kwargs["lines"])
     lines.append(
@@ -455,7 +513,9 @@ def _mutate_issues_and_disposition(kwargs: dict) -> dict:
         _mutate_memo,
         _mutate_line_description,
         _mutate_line_tax_rate_id,
-        _mutate_issues_and_disposition,
+        _mutate_issues_only,
+        _mutate_disposition_only,
+        _mutate_issues_and_disposition_via_extra_line,
     ],
     ids=[
         "status",
@@ -465,7 +525,9 @@ def _mutate_issues_and_disposition(kwargs: dict) -> dict:
         "memo",
         "line_description",
         "line_tax_rate_id",
-        "issues_and_disposition",
+        "issues_only",
+        "disposition_only",
+        "issues_and_disposition_via_extra_line",
     ],
 )
 def test_changing_one_covered_fact_changes_the_digest(mutate) -> None:
@@ -543,3 +605,69 @@ def test_replace_admin_draft_lines_description_only_edit_advances_updated_at(
     db_session.refresh(invoice)
 
     assert invoice.updated_at > before_updated_at
+
+
+# --------------------------------------------------------------------------
+# The accounting-sync-v2 route now carries a digest built from THREE separate
+# SQL statements (header, account, lines via selectinload). Under READ
+# COMMITTED a commit landing between them could leave `updated_at` stale
+# while the digest moved — the same "one revision key, two projections"
+# contradiction this task exists to close, just from a within-process race.
+# The route must pin one REPEATABLE READ, READ ONLY snapshot before any of
+# those statements run.
+# --------------------------------------------------------------------------
+
+
+def test_begin_read_only_snapshot_pins_repeatable_read_read_only_on_postgresql() -> (
+    None
+):
+    """Direct behavioral proof of the seam the route below relies on.
+
+    ``begin_read_only_snapshot`` is existing, unmodified infrastructure
+    (``app.db``) — this proves what it actually does to a session's
+    connection when the bind reports as PostgreSQL, without needing a real
+    PostgreSQL server.
+    """
+    from app.db import READ_ONLY_SNAPSHOT_OPTIONS, begin_read_only_snapshot
+
+    class _FakeDialect:
+        name = "postgresql"
+
+    class _FakeBind:
+        dialect = _FakeDialect()
+
+    class _RecordingSession:
+        def __init__(self) -> None:
+            self.connection_calls: list[dict] = []
+
+        def get_bind(self):
+            return _FakeBind()
+
+        def connection(self, execution_options=None):
+            self.connection_calls.append(dict(execution_options or {}))
+
+    fake_session = _RecordingSession()
+    begin_read_only_snapshot(fake_session)
+
+    assert fake_session.connection_calls == [dict(READ_ONLY_SNAPSHOT_OPTIONS)]
+
+
+def test_accounting_sync_v2_route_pins_a_read_only_snapshot_before_querying() -> None:
+    """The route calls ``begin_read_only_snapshot(db)`` before its first query.
+
+    A source-order check rather than an end-to-end DB test: proving the
+    isolation level is actually *requested* is this implementer's job; a real
+    concurrent-transaction proof of the underlying guarantee needs Postgres
+    and belongs to CI's Postgres-backed suite.
+    """
+    import inspect
+
+    from app.api.billing import sync_invoices_for_accounting_v2
+
+    source = inspect.getsource(sync_invoices_for_accounting_v2)
+
+    begin_pos = source.index("begin_read_only_snapshot(db)")
+    validate_pos = source.index("_validate_sync_cursor_pair(")
+    query_pos = source.index("list_invoice_accounting_sync(")
+
+    assert begin_pos < validate_pos < query_pos

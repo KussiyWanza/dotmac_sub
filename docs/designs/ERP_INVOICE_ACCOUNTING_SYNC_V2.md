@@ -168,10 +168,12 @@ Sub is the sole owner of the invoice-accounting-sync feed's content-identity
 digest: the connector and ERP previously each computed their own fingerprint
 independently and disagreed, and one of the two guesses folded the nested
 subscriber profile into the fingerprint even though a subscriber-profile edit
-never advances `invoice.updated_at`. Both fields are computed by
-`app.services.dotmac_erp.invoice_sync_digest.compute_invoice_projection_digest`
-and forwarded verbatim by downstream consumers, which no longer compute their
-own fingerprint.
+never advances `invoice.updated_at`. This document covers Sub's half only —
+Sub now computes and publishes both fields via
+`app.services.dotmac_erp.invoice_sync_digest.compute_invoice_projection_digest`.
+Changing the connector and the ERP shadow task to forward this digest verbatim
+instead of computing their own is **separate, not-yet-shipped follow-up work**
+in those repositories; nothing in the connector or ERP has changed yet.
 
 `digest_version` (currently `1`) and `projection_digest` (a lowercase sha256
 hex string, rejected — not normalised — by the schema validator if malformed)

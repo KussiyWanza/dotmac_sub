@@ -6,9 +6,12 @@ ERP shadow task each independently guessed at a fingerprint algorithm and
 disagreed, and one of the two guesses folded the nested subscriber profile
 (``account``) into the fingerprint even though a subscriber-profile edit never
 advances ``invoice.updated_at`` — producing a false "same revision, different
-projection" contradiction. This module is the fix: Sub defines exactly which
-typed facts are covered and how they are encoded, computes the digest itself,
-and downstream consumers forward it verbatim instead of recomputing it.
+projection" contradiction. This module is step 1 of that fix: Sub defines
+exactly which typed facts are covered and how they are encoded, and computes
+the digest itself. Changing the connector and the ERP shadow task to forward
+this digest verbatim instead of recomputing their own is separate, not-yet-done
+follow-up work (steps 3-5 of the approved plan) in those other repositories —
+nothing in this commit changes their behavior.
 
 Reuses this repo's ADR-0064-governed canonicalisation primitives
 (``app.migration_source.canonical``) rather than an ad hoc
