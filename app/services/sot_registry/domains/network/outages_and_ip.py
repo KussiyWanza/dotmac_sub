@@ -839,11 +839,10 @@ SERVICES: tuple[SOTService, ...] = (
                     name="shared-outage infrastructure ticket issuance",
                     role=OwnerRole.APPLICATION_COORDINATOR,
                     input_names=(
-                        "locked outage incident",
+                        "locked outage incident and scope revision",
                         "outage-response routing team",
                         "typed infrastructure ticket create input",
                     ),
-                    canonical_writer="network.outage_work_order_handoff",
                 ),
                 ConcernContract(
                     name="shared-outage work-order issuance eligibility",
@@ -877,6 +876,18 @@ SERVICES: tuple[SOTService, ...] = (
                     owner="support.ticket_lifecycle",
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
                     source="active ticket bound by the canonical infrastructure incident link",
+                ),
+                AuthorityInput(
+                    name="outage-response routing team",
+                    owner="operations.service_team_composition",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source="active incident.primary routing policy and capability-selected service team",
+                ),
+                AuthorityInput(
+                    name="typed infrastructure ticket create input",
+                    owner="network.outage_work_order_handoff",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source="validated no-subscriber outage ticket title, description, urgency, tags, and outage provenance",
                 ),
                 AuthorityInput(
                     name="assigned team membership",

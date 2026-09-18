@@ -19,7 +19,7 @@ from app.models.network_monitoring import (
     OutageScopeRevision,
 )
 from app.models.service_team import ServiceTeam, ServiceTeamMember
-from app.models.support import Ticket, TicketChannel
+from app.models.support import Ticket, TicketChannel, TicketStatus
 from app.models.system_user import SystemUser
 from app.models.work_order import WorkOrder
 from app.schemas.network import (
@@ -543,10 +543,10 @@ def _create_infrastructure_ticket(
             ticket_type="outage",
             priority="urgent",
             channel=TicketChannel.web,
-            status="open",
+            status=TicketStatus.open,
             service_team_id=routing.team_id,
             tags=["infrastructure", "shared-outage"],
-            metadata={
+            metadata_={
                 "outage_incident_id": str(incident.id),
                 "ticket_role": "infrastructure",
             },
@@ -585,12 +585,12 @@ def _incident_target_label(db: Session, incident: OutageIncident) -> str:
     from app.models.network_monitoring import NetworkDevice, PopSite
 
     if incident.basestation_id is not None:
-        row = db.get(PopSite, incident.basestation_id)
-        return f"BTS: {row.name}" if row is not None else "Basestation"
+        pop = db.get(PopSite, incident.basestation_id)
+        return f"BTS: {pop.name}" if pop is not None else "Basestation"
     if incident.fdh_cabinet_id is not None:
-        row = db.get(FdhCabinet, incident.fdh_cabinet_id)
-        return f"FDH: {row.code or row.name}" if row is not None else "FDH cabinet"
+        fdh = db.get(FdhCabinet, incident.fdh_cabinet_id)
+        return f"FDH: {fdh.code or fdh.name}" if fdh is not None else "FDH cabinet"
     if incident.root_node_id is not None:
-        row = db.get(NetworkDevice, incident.root_node_id)
-        return f"Node: {row.name}" if row is not None else "Network node"
+        node = db.get(NetworkDevice, incident.root_node_id)
+        return f"Node: {node.name}" if node is not None else "Network node"
     return "Unresolved network target"

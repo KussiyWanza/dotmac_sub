@@ -286,6 +286,8 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         (),
         "Review service lifecycle, active access, outage indicators, credentials, IP information, router or NAS, and service location.",
         "Open or update a ticket when the issue needs tracked follow-up or field work.",
+        "For a shared outage, open Network → Outages and select Create infrastructure ticket on the open outage row before issuing field work.",
+        "The infrastructure ticket has no subscriber and is linked to the outage; use the linked ticket and the outage row Resolve action for canonical follow-up.",
         notes=(
             "Billing locks and lifecycle state can also affect access; check Service and Billing as well.",
         ),
