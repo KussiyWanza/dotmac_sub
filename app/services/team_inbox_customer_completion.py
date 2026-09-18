@@ -29,6 +29,7 @@ from app.services import (
     conversation_lead_relationships,
     customer_identity_resolution,
     party,
+    team_inbox_customer_completion_policy,
 )
 from app.services import (
     customer_canonical_profile_patch as canonical_profile_patch,
@@ -341,6 +342,10 @@ def resolution_readiness(
 
     observed_at = evaluated_at or datetime.now(UTC)
     identity = classification(db, conversation)
+    active_policy = team_inbox_customer_completion_policy.active_policy(db)
+    identity_guard_enabled = (
+        True if active_policy is None else active_policy.identity_guard_enabled
+    )
     if identity is InboxIdentityClassification.lead:
         return InboxCustomerResolutionReadiness(
             classification=identity,
@@ -358,7 +363,7 @@ def resolution_readiness(
     blockers: list[ActionableBlocker] = []
     field_states: list[CustomerFieldReadiness] = []
     policy_version: int | None = None
-    if identity is not InboxIdentityClassification.customer:
+    if identity is not InboxIdentityClassification.customer and identity_guard_enabled:
         blockers.append(
             ActionableBlocker(
                 code="inbox_identity_required",
@@ -370,7 +375,7 @@ def resolution_readiness(
                 ),
             )
         )
-    else:
+    elif identity is InboxIdentityClassification.customer:
         policy = (
             db.get(
                 InboxCustomerCompletionPolicyVersion,

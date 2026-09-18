@@ -28,6 +28,18 @@ def test_every_guide_has_plain_language_content_and_a_route() -> None:
         )
 
 
+def test_automation_center_guidance_explains_the_read_only_boundary() -> None:
+    guide = guidance_for_path("/admin/automation")
+
+    assert guide is not None
+    assert guide.id == "automation-center"
+    content = " ".join((*guide.steps, *guide.notes)).lower()
+    assert "module registry" in content
+    assert "recent execution evidence" in content
+    assert "read-only" in content
+    assert "custom fields" in content
+
+
 def test_subscription_lifecycle_guide_includes_plan_changes() -> None:
     guide = guidance_for_path("/admin/catalog/subscriptions/123")
     assert guide is not None
@@ -41,7 +53,7 @@ def test_subscription_lifecycle_guide_includes_plan_changes() -> None:
 def test_getting_started_is_the_first_help_category() -> None:
     categories = guidance_categories()
 
-    assert categories[:2] == ("Getting started", "Billing")
+    assert categories[:2] == ("Getting started", "Administration")
 
 
 def test_specific_workflow_routes_override_or_reject_broad_sections() -> None:
@@ -307,7 +319,7 @@ def test_admin_guidance_uses_one_accessible_centered_modal() -> None:
 
 def test_every_help_guide_has_complete_action_sections() -> None:
     guides = (*WORKFLOW_GUIDANCE, *HELP_ONLY_GUIDANCE)
-    assert len(guides) == 51
+    assert len(guides) == 52
     for guide in guides:
         actions = help_actions_for(guide)
         assert actions, guide.id

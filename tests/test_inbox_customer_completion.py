@@ -125,6 +125,44 @@ def _lead_conversation(db_session, profile_state="missing_all"):
     return conversation
 
 
+def test_disabled_identity_guard_allows_unresolved_resolution(db_session):
+    _policy(db_session)
+    db_session.commit()
+    policy = team_inbox_customer_completion_policy.create_policy_version(
+        db_session,
+        team_inbox_customer_completion_policy.CreateCustomerCompletionPolicyCommand(
+            context=CommandContext.system(
+                actor="person:pytest",
+                scope="team-inbox:customer-completion-policy",
+                reason="pytest disable identity guard",
+            ),
+            required_fields=(),
+            actor_person_id=None,
+            actor_type=AuditActorType.service,
+            decision_source="pytest_settings",
+            identity_guard_enabled=False,
+        ),
+    )
+    conversation = InboxConversation(
+        customer_completion_policy_version_id=policy.policy_id,
+        channel_type="whatsapp",
+        status="open",
+        is_active=True,
+    )
+    db_session.add(conversation)
+    db_session.flush()
+
+    verdict = team_inbox_customer_completion.resolution_readiness(
+        db_session, conversation
+    )
+
+    assert (
+        verdict.classification
+        is team_inbox_customer_completion.InboxIdentityClassification.unresolved
+    )
+    assert verdict.can_agent_resolve is True
+
+
 @pytest.mark.parametrize(
     ("missing", "expected"),
     [

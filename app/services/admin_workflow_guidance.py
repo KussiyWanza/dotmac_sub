@@ -175,6 +175,22 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         ),
     ),
     _guide(
+        "automation-center",
+        "Administration",
+        "Review the Automation Center",
+        "Administrators and automation operators",
+        "Review the governed module, rule, and execution surfaces for central automation.",
+        ("/admin/automation",),
+        "Confirm that your role has Automation Center access before opening the hub.",
+        "Review the module registry to see which modules and events are eligible for central automation.",
+        "Review central rules and recent execution evidence only when your role grants those additional permissions.",
+        "Use the existing automation ownership section to identify workflows that remain managed outside the hub.",
+        notes=(
+            "The initial hub is read-only and creates no rules or business side effects.",
+            "Custom fields and migration of existing rules are outside this delivery sequence.",
+        ),
+    ),
+    _guide(
         "find-customer",
         "Customers",
         "Find a customer",
@@ -286,6 +302,8 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         (),
         "Review service lifecycle, active access, outage indicators, credentials, IP information, router or NAS, and service location.",
         "Open or update a ticket when the issue needs tracked follow-up or field work.",
+        "For a shared outage, open Network → Outages and select Create infrastructure ticket on the open outage row before issuing field work.",
+        "The infrastructure ticket has no subscriber and is linked to the outage; use the linked ticket and the outage row Resolve action for canonical follow-up.",
         notes=(
             "Billing locks and lifecycle state can also affect access; check Service and Billing as well.",
         ),
@@ -962,6 +980,18 @@ HELP_ONLY_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
 
 
 _ACTION_SPECS: dict[str, tuple[_ActionSpec, ...]] = {
+    "automation-center": (
+        _action("review-automation-access", "Review Automation Center access", 0),
+        _action("review-automation-modules", "Review eligible modules and events", 1),
+        _action(
+            "review-automation-rules", "Review central rules and execution evidence", 2
+        ),
+        _action(
+            "confirm-automation-boundary",
+            "Confirm the remaining module ownership boundary",
+            3,
+        ),
+    ),
     "admin-workspace": (
         _action("choose-work-area", "Choose the right work area", 0, 1),
         _action("start-customer-work", "Start customer work", 2, 3),
@@ -1050,6 +1080,13 @@ _ACTION_SPECS: dict[str, tuple[_ActionSpec, ...]] = {
             "Create or update tracked follow-up",
             1,
             permission="support:ticket:update",
+        ),
+        _action("review-shared-outage", "Review a shared outage", 2),
+        _action(
+            "confirm-infrastructure-ticket",
+            "Confirm infrastructure ticket follow-up",
+            3,
+            permission="support:ticket:create",
         ),
     ),
     "olt-operational-health": (
@@ -1631,6 +1668,12 @@ HELP_NAVIGATION: tuple[AdminHelpNavigationSection, ...] = (
             "monitoring:read",
             "customer:read",
         ),
+    ),
+    AdminHelpNavigationSection(
+        "automation",
+        "Automation Center",
+        ("automation-center",),
+        "automation:hub:read",
     ),
     AdminHelpNavigationSection(
         "customers",

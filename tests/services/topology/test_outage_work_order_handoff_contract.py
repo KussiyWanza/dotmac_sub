@@ -31,6 +31,7 @@ def test_infrastructure_flow_has_one_typed_owner_and_no_adapter_commit():
     route = source.split("def outages_issue_work_order", 1)[1].split("@router.", 1)[0]
     assert "issue_work_order(" in route
     assert "db.commit()" not in route
+    assert "create_infrastructure_ticket" in source
 
 
 def test_migration_is_on_current_trunk_head():

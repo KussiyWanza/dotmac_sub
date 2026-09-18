@@ -31,6 +31,9 @@ class EventType(enum.Enum):
     # Canonical Party identity events
     party_identity_reactivated = "party.identity_reactivated"
 
+    # Automation Center control-plane events
+    automation_rule_changed = "automation.rule_changed"
+
     # Subscriber events
     subscriber_created = "subscriber.created"
     subscriber_updated = "subscriber.updated"

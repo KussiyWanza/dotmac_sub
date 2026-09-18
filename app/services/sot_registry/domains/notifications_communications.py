@@ -2512,8 +2512,8 @@ DOMAIN = DomainSOT(
                         owner="auth.permission_gate",
                         kind=AuthorityKind.CONTROL_INPUT,
                         source=(
-                            "Typed administrator-selected Customer fields, actor, "
-                            "decision source, and command provenance."
+                            "Typed administrator-selected Customer fields, identity-guard "
+                            "decision, actor, decision source, and command provenance."
                         ),
                     ),
                 ),

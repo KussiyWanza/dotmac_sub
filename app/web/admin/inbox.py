@@ -3474,6 +3474,7 @@ def _settings_context(
 def team_inbox_customer_completion_policy_update(
     request: Request,
     required_fields: list[str] = Form(default=[]),
+    identity_guard_enabled: bool = Form(default=True),
     db: Session = Depends(get_db),
 ):
     actor_person_id = _actor_uuid_from_request(request)
@@ -3506,13 +3507,17 @@ def team_inbox_customer_completion_policy_update(
                     AuditActorType.user if actor_person_id else AuditActorType.service
                 ),
                 decision_source="inbox_settings",
+                identity_guard_enabled=identity_guard_enabled,
             ),
         )
     except DomainError as exc:
         return _routes_redirect(status="error", message=exc.message)
     return _routes_redirect(
         status="success",
-        message=f"Customer completion policy v{outcome.version} is active.",
+        message=(
+            f"Customer completion policy v{outcome.version} is active; identity guard "
+            + ("enabled." if outcome.identity_guard_enabled else "disabled.")
+        ),
     )
 
 

@@ -16,7 +16,7 @@ conversations that predate the backfill.
 
 The initial policy requires `name`, `phone`, and `address`. The supported field
 vocabulary also includes email, WhatsApp, organization, city/region, country,
-DOB, gender, and NIN. The policy stores field keys rather than browser logic.
+DOB, gender, and NIN. The policy stores field keys rather than browser logic. It also stores the operator-controlled `identity_guard_enabled` setting. The active policy setting applies immediately to readiness checks, while the required field list remains snapshotted per conversation.
 
 `communications.team_inbox_customer_completion` owns the resolution
 `ActionReadiness` verdict and coordinates profile completion from Inbox into the
@@ -67,7 +67,7 @@ status owner asks the completion owner for one authoritative verdict:
 - Customer: every field in the conversation's snapshotted version must be
   complete on the canonical Customer/Party profile.
 - Lead: profile completeness is advisory and never blocks resolution.
-- Unresolved or ambiguous: identification must be completed before resolution.
+- Unresolved or ambiguous: identification must be completed before resolution when the active identity guard is enabled. If an administrator disables the guard, these classifications no longer block resolution; identified Customers still follow their snapshotted required-field policy.
 
 WhatsApp expiry is a controlled channel-state exception, not a new identity
 classification. An expired, unresolved thread may be internally resolved by an

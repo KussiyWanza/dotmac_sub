@@ -814,6 +814,7 @@ SERVICES: tuple[SOTService, ...] = (
         name="network.outage_work_order_handoff",
         module="app.services.topology.outage_work_order_handoff",
         owns=(
+            "shared-outage infrastructure ticket issuance",
             "shared-outage work-order issuance eligibility",
             "outage-to-work-order provenance",
         ),
@@ -834,6 +835,15 @@ SERVICES: tuple[SOTService, ...] = (
         ),
         contract=ServiceContract(
             concerns=(
+                ConcernContract(
+                    name="shared-outage infrastructure ticket issuance",
+                    role=OwnerRole.APPLICATION_COORDINATOR,
+                    input_names=(
+                        "locked outage incident and scope revision",
+                        "outage-response routing team",
+                        "typed infrastructure ticket create input",
+                    ),
+                ),
                 ConcernContract(
                     name="shared-outage work-order issuance eligibility",
                     role=OwnerRole.APPLICATION_COORDINATOR,
@@ -866,6 +876,18 @@ SERVICES: tuple[SOTService, ...] = (
                     owner="support.ticket_lifecycle",
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
                     source="active ticket bound by the canonical infrastructure incident link",
+                ),
+                AuthorityInput(
+                    name="outage-response routing team",
+                    owner="operations.service_team_composition",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source="active incident.primary routing policy and capability-selected service team",
+                ),
+                AuthorityInput(
+                    name="typed infrastructure ticket create input",
+                    owner="network.outage_work_order_handoff",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source="validated no-subscriber outage ticket title, description, urgency, tags, and outage provenance",
                 ),
                 AuthorityInput(
                     name="assigned team membership",
@@ -913,6 +935,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "network.outage_work_order_handoff.idempotency_conflict",
                     "network.outage_work_order_handoff.linked_work_order_missing",
                     "network.outage_work_order_handoff.invalid_command_scope",
+                    "network.outage_work_order_handoff.outage_team_missing",
                 ),
                 mapping_owner="app.web.admin.network_monitoring",
                 fail_closed_on=(

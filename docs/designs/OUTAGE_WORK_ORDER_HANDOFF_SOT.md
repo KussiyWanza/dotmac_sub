@@ -10,6 +10,7 @@ creating one customer work order per affected subscriber.
 
 - `network.outage_lifecycle` owns the incident and its immutable audience
   revisions.
+- `network.outage_work_order_handoff` issues the canonical infrastructure ticket from the outage console, atomically binding it to the outage and routing it to the outage-response team.
 - `support.ticket_lifecycle` owns the canonical infrastructure ticket.
 - `network.outage_work_order_handoff` decides whether field work may be issued
   and records the outage-to-work-order link.
@@ -24,17 +25,18 @@ onto the work order.
 ## Flow
 
 1. Staff opens an active outage in Outage Console.
-2. The outage must have a current audience revision and a canonical active
+2. Staff selects **Create infrastructure ticket** on the open outage row. The command is idempotent, creates no subscriber link, and binds the canonical ticket to the outage.
+3. The outage must have a current audience revision and a canonical active
    infrastructure ticket.
-3. An active member of the ticket's assigned team enters the field instructions
+4. An active member of the ticket's assigned team enters the field instructions
    and submits the form.
-4. The coordinator rechecks permissions, ticket/team membership, incident
+5. The coordinator rechecks permissions, ticket/team membership, incident
    status, and the audience revision. A stale form is rejected.
-5. The coordinator stages the infrastructure work order, provenance link,
+6. The coordinator stages the infrastructure work order, provenance link,
    audit record, and event in one transaction.
-6. Dispatch assigns and completes the work order through the existing field
+7. Dispatch assigns and completes the work order through the existing field
    workflow. Completing it does not resolve the outage or ticket automatically.
-7. Staff verifies restoration, then resolves the outage and closes the ticket
+8. Staff verifies restoration, then resolves the outage and closes the ticket
    through their existing owners.
 
 Retries with the same request key replay the same work order. Reusing a key

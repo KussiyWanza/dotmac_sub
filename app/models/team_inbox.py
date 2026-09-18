@@ -324,6 +324,9 @@ class InboxCustomerCompletionPolicyVersion(Base):
     required_fields: Mapped[list[str]] = mapped_column(
         MutableList.as_mutable(JSON()), nullable=False
     )
+    identity_guard_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
     created_by_person_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     decision_source: Mapped[str] = mapped_column(String(80), nullable=False)
     created_at: Mapped[datetime] = mapped_column(

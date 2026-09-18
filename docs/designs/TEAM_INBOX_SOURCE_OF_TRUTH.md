@@ -51,7 +51,7 @@ combined Inbox/Support workspace.
 | Conversation-to-Lead provenance | `communications.conversation_lead_relationships` | Owns the durable, auditable, one-active-Lead-per-conversation relationship |
 | Customer context drawer | `communications.team_inbox_contact_context` | Composes permission-scoped Party, Lead, Ticket, conversation, Project, and Task sections with typed availability |
 | Profile and Lead action resolution | `communications.inbox_lead_actions` | Resolves and coordinates identity-aware actions without owning Party or Lead fields |
-| Customer completion policy | `communications.team_inbox_customer_completion_policy` | Creates immutable Customer-only required-field versions snapshotted by new conversations |
+| Customer completion policy | `communications.team_inbox_customer_completion_policy` | Creates immutable Customer-only required-field versions and the active identity-guard decision; required fields are snapshotted by new conversations |
 | Customer resolution readiness and Inbox profile completion | `communications.team_inbox_customer_completion` | Computes the central Customer-only gate and coordinates `customer.canonical_profile_patch` plus `party.registry`; Lead completeness is advisory |
 | Routing, assignment, escalation, and FIFO queue | `communications.team_inbox_routing` | Applies configured team, availability, permission, SLA, durable queue admission, and promotion policy |
 | Inbox automation | `communications.team_inbox_automation` | Matches Inbox-scoped conversation triggers and coordinates ordered assign, auto-assign, and tag actions |

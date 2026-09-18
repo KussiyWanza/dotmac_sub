@@ -151,25 +151,26 @@ but equivalent state and actions resolve through the same backend owners.
 11. `observability`
 12. `workforce_operations`
 13. `support_operations`
-14. `tenancy`
-15. `ai_advisory`
-16. `provisioning_operations`
-17. `regulatory_reporting`
-18. `feature_control_plane`
-19. `authorization_control_plane`
-20. `scheduler_control_plane`
-21. `network_access_control_plane`
-22. `service_intent_control_plane`
-23. `integration_control_plane`
-24. `ui_list_projection`
-25. `ui_bulk_actions`
-26. `ui_display_formatting`
-27. `ui_action_forms`
-28. `ui_semantic_presentation`
-29. `vpn_remote_access`
-30. `geospatial`
-31. `sales_referrals`
-32. `migration_source`
+14. `automation_control_plane`
+15. `tenancy`
+16. `ai_advisory`
+17. `provisioning_operations`
+18. `regulatory_reporting`
+19. `feature_control_plane`
+20. `authorization_control_plane`
+21. `scheduler_control_plane`
+22. `network_access_control_plane`
+23. `service_intent_control_plane`
+24. `integration_control_plane`
+25. `ui_list_projection`
+26. `ui_bulk_actions`
+27. `ui_display_formatting`
+28. `ui_action_forms`
+29. `ui_semantic_presentation`
+30. `vpn_remote_access`
+31. `geospatial`
+32. `sales_referrals`
+33. `migration_source`
 
 Rule: each change should finish one coherent domain boundary: define the owner
 service, migrate the highest-risk callers, and add focused tests. Avoid broad
@@ -709,6 +710,7 @@ Edit the owning domain shard and regenerate; do not hand-edit these rows.
 | `network.outage_lifecycle` | incident ticket link composition | `authoritative_record` | recorded outage incidents ← `network.outage_lifecycle`<br>support ticket identities ← `support.ticket_lifecycle` | `owner_managed` | `complete` | network operations | `docs/designs/NETWORK_OUTAGE_RESPONSE_LIFECYCLE.md`<br>`docs/designs/OUTAGE_SLA_SPINE.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/services/topology/test_outage_lifecycle_chain.py`<br>`tests/architecture/test_outage_lifecycle_chain_boundary.py`<br>`tests/services/topology/test_outage_reconcile.py`<br>`tests/services/topology/test_outage_scope_revisions.py` |
 | `network.outage_lifecycle` | typed outage lifecycle output emission | `command_writer` | recorded outage incidents ← `network.outage_lifecycle` | `owner_managed` | `complete` | network operations | `docs/designs/NETWORK_OUTAGE_RESPONSE_LIFECYCLE.md`<br>`docs/designs/OUTAGE_SLA_SPINE.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/services/topology/test_outage_lifecycle_chain.py`<br>`tests/architecture/test_outage_lifecycle_chain_boundary.py`<br>`tests/services/topology/test_outage_reconcile.py`<br>`tests/services/topology/test_outage_scope_revisions.py` |
 | `network.outage_lifecycle` | committed outage output consumption | `command_writer` | recorded outage incidents ← `network.outage_lifecycle`<br>operational escalation surface ← `operations.sla_escalation`<br>receipted owner-output deliveries ← `events.owner_outputs` | `owner_managed` | `complete` | network operations | `docs/designs/NETWORK_OUTAGE_RESPONSE_LIFECYCLE.md`<br>`docs/designs/OUTAGE_SLA_SPINE.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/services/topology/test_outage_lifecycle_chain.py`<br>`tests/architecture/test_outage_lifecycle_chain_boundary.py`<br>`tests/services/topology/test_outage_reconcile.py`<br>`tests/services/topology/test_outage_scope_revisions.py` |
+| `network.outage_work_order_handoff` | shared-outage infrastructure ticket issuance | `application_coordinator` | locked outage incident and scope revision ← `network.outage_lifecycle`<br>outage-response routing team ← `operations.service_team_composition`<br>typed infrastructure ticket create input ← `network.outage_work_order_handoff` | `coordinator_managed` | `native` | network operations | `docs/designs/OUTAGE_WORK_ORDER_HANDOFF_SOT.md`<br>`docs/designs/NETWORK_OUTAGE_RESPONSE_LIFECYCLE.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/services/topology/test_outage_work_order_handoff_contract.py`<br>`tests/architecture/test_ticket_work_order_handoff_boundary.py` |
 | `network.outage_work_order_handoff` | shared-outage work-order issuance eligibility | `application_coordinator` | locked outage incident and scope revision ← `network.outage_lifecycle`<br>canonical infrastructure ticket ← `support.ticket_lifecycle`<br>assigned team membership ← `support.ticket_lifecycle`<br>typed infrastructure work-order request ← `network.outage_work_order_handoff` | `coordinator_managed` | `native` | network operations | `docs/designs/OUTAGE_WORK_ORDER_HANDOFF_SOT.md`<br>`docs/designs/NETWORK_OUTAGE_RESPONSE_LIFECYCLE.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/services/topology/test_outage_work_order_handoff_contract.py`<br>`tests/architecture/test_ticket_work_order_handoff_boundary.py` |
 | `network.outage_work_order_handoff` | outage-to-work-order provenance | `authoritative_record` | locked outage incident and scope revision ← `network.outage_lifecycle`<br>native work-order result ← `operations.work_order_commands` | `coordinator_managed` | `native` | network operations | `docs/designs/OUTAGE_WORK_ORDER_HANDOFF_SOT.md`<br>`docs/designs/NETWORK_OUTAGE_RESPONSE_LIFECYCLE.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/services/topology/test_outage_work_order_handoff_contract.py`<br>`tests/architecture/test_ticket_work_order_handoff_boundary.py` |
 | `network.service_impact` | per-subscription service impact evidence resolution | `resolver` | incident lifecycle and scope revisions ← `network.outage_lifecycle`<br>live session observations ← `network.radius_sessions` | `read_only` | `native` | network operations | `docs/designs/OUTAGE_SLA_SPINE.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/services/topology/test_service_impact.py` |
@@ -912,6 +914,9 @@ Edit the owning domain shard and regenerate; do not hand-edit these rows.
 | `support.ticket_bulk_commands` | structured support-ticket bulk update outcomes | `resolver` | typed bulk selection and changes ← `support.ticket_bulk_commands`<br>canonical ticket lifecycle state ← `support.ticket_lifecycle`<br>ticket configuration ← `support.ticket_configuration` | `read_only` | `complete` | support operations | `docs/designs/SUPPORT_TICKET_LIFECYCLE_SOT.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_support_ticket_bulk_actions.py`<br>`tests/architecture/test_support_ticket_sot_boundary.py` |
 | `support.csat` | support CSAT request and response records | `command_writer` | closed support ticket interaction ← `support.ticket_lifecycle`<br>resolved Team Inbox interaction ← `communications.team_inbox_status`<br>customer CSAT submission ← `support.csat`<br>CSAT request records ← `support.csat` | `participant` | `native` | support operations | `docs/designs/SUPPORT_TICKET_LIFECYCLE_SOT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_support_csat.py` |
 | `support.csat` | support CSAT report projection | `resolver` | CSAT request records ← `support.csat` | `participant` | `native` | support operations | `docs/designs/SUPPORT_TICKET_LIFECYCLE_SOT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_support_csat.py` |
+| `automation.capability_registry` | automation capability declarations and compatibility validation | `policy` | SOT domain automation declarations ← `automation.capability_registry` | `read_only` | `native` | platform automation | `docs/designs/AUTOMATION_CENTER_SOT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/architecture/test_automation_capability_registry.py` |
+| `automation.rule_definitions` | automation rule definitions and immutable versions | `authoritative_record` | typed automation rule lifecycle command ← `automation.rule_definitions`<br>declared automation capabilities ← `automation.capability_registry`<br>tenant-scoped automation rule records ← `automation.rule_definitions` | `owner_managed` | `native` | platform automation | `docs/designs/AUTOMATION_CENTER_SOT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_automation_rules.py`<br>`tests/architecture/test_automation_rule_boundary.py` |
+| `automation.execution` | automation execution decisions and run evidence | `application_coordinator` | durable domain event evidence ← `events.store`<br>published automation rule versions ← `automation.rule_definitions`<br>declared automation runtime adapters ← `automation.capability_registry`<br>tenant-scoped automation run evidence ← `automation.execution` | `coordinator_managed` | `native` | platform automation | `docs/designs/AUTOMATION_CENTER_SOT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_automation_runtime.py`<br>`tests/architecture/test_automation_runtime_boundary.py` |
 | `tenancy.operator_tenant` | operator tenant identity | `authoritative_record` | deterministic operator tenant id ← `tenancy.operator_tenant` | `owner_managed` | `native` | platform | `docs/adr/0009-operator-tenant-bridge.md`<br>`docs/PLATFORM_ADOPTION_LEDGER.md`<br>`tests/test_operator_tenant.py`<br>`tests/integration/test_operator_tenant_transaction_scope.py`<br>`tests/architecture/test_kernel_import_boundary.py` |
 | `tenancy.operator_tenant` | operator tenant provisioning | `command_writer` | deterministic operator tenant id ← `tenancy.operator_tenant` | `owner_managed` | `native` | platform | `docs/adr/0009-operator-tenant-bridge.md`<br>`docs/PLATFORM_ADOPTION_LEDGER.md`<br>`tests/test_operator_tenant.py`<br>`tests/integration/test_operator_tenant_transaction_scope.py`<br>`tests/architecture/test_kernel_import_boundary.py` |
 | `tenancy.operator_tenant` | operator tenant transaction scope installation | `command_writer` | deterministic operator tenant id ← `tenancy.operator_tenant`<br>root database transaction lifecycle observation ← `runtime.db_sessions` | `owner_managed` | `native` | platform | `docs/adr/0009-operator-tenant-bridge.md`<br>`docs/PLATFORM_ADOPTION_LEDGER.md`<br>`tests/test_operator_tenant.py`<br>`tests/integration/test_operator_tenant_transaction_scope.py`<br>`tests/architecture/test_kernel_import_boundary.py` |

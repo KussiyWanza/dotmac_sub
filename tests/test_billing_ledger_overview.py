@@ -354,8 +354,15 @@ def test_customer_ledger_view_pages_newest_activity_in_ten_entry_slices(
     assert [entry.id for entry in first_page.entries] == [
         entry.id for entry in reversed(entries[2:])
     ]
+    assert [entry.running_balance for entry in first_page.entries] == [
+        Decimal(str(sum(range(1, index + 1)))) for index in range(12, 2, -1)
+    ]
     assert [entry.id for entry in second_page.entries] == [
         entry.id for entry in reversed(entries[:2])
+    ]
+    assert [entry.running_balance for entry in second_page.entries] == [
+        Decimal("3"),
+        Decimal("1"),
     ]
     assert first_page.summary.credit_count == 12
     assert second_page.summary.credit_count == 12
