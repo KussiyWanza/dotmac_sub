@@ -800,6 +800,7 @@ class TestDailyRunnerQueueRouting:
             "app.tasks.billing.run_invoice_cycle",
             "app.tasks.collections.run_billing_enforcement",
             "app.tasks.catalog.expire_subscriptions",
+            "app.tasks.catalog.send_expiry_reminders",
             "app.tasks.enforcement.cleanup_subscription_block_sessions",
             "app.tasks.usage.run_usage_rating",
             "app.tasks.usage.evaluate_fup_rules",

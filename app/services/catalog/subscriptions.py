@@ -8,9 +8,10 @@ from calendar import monthrange
 from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from uuid import UUID
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, attributes, selectinload
 
 from app.models.catalog import (
@@ -48,6 +49,11 @@ from app.services.common import (
 from app.services.crud import CRUDManager
 from app.services.events import emit_event
 from app.services.events.types import EventType
+from app.services.prepaid_service_coverage import (
+    PrepaidCoverageStatus,
+    PrepaidServiceCoverageDecision,
+    resolve_prepaid_service_coverage,
+)
 from app.services.query_builders import apply_optional_equals
 from app.services.response import ListResponseMixin
 from app.validators import catalog as catalog_validators
@@ -1616,11 +1622,11 @@ class Subscriptions(ListResponseMixin):
         run_at: datetime | None = None,
         dry_run: bool = False,
     ) -> dict:
-        """Expire subscriptions that have passed their end_at date.
+        """Expire subscriptions whose authoritative service coverage is due.
 
         This should be run periodically (e.g., daily) to ensure subscriptions
-        that have reached their contract end date are properly transitioned
-        to expired status.
+        without current funded coverage or an applied service extension are
+        properly transitioned to expired status.
 
         Args:
             db: Database session
@@ -1632,22 +1638,71 @@ class Subscriptions(ListResponseMixin):
         """
         run_at = run_at or datetime.now(UTC)
 
-        # Find subscriptions that should be expired
+        collectible_statuses = [
+            SubscriptionStatus.active,
+            SubscriptionStatus.suspended,
+        ]
+
+        # end_at is the fixed-term contract boundary. For prepaid
+        # subscriptions, next_billing_at is only a candidate boundary;
+        # the coverage owner must confirm that no funded entitlement or
+        # applied service-extension grant still protects the service.
         subscriptions_to_expire = (
             db.query(Subscription)
-            .filter(Subscription.end_at.is_not(None))
-            .filter(Subscription.end_at <= run_at)
+            .filter(Subscription.status.in_(collectible_statuses))
             .filter(
-                Subscription.status.in_(
-                    [SubscriptionStatus.active, SubscriptionStatus.suspended]
+                or_(
+                    (
+                        Subscription.end_at.is_not(None)
+                        & (Subscription.end_at <= run_at)
+                    ),
+                    (
+                        (Subscription.billing_mode == BillingMode.prepaid)
+                        & Subscription.next_billing_at.is_not(None)
+                        & (Subscription.next_billing_at <= run_at)
+                    ),
                 )
             )
             .all()
         )
 
+        prepaid_candidates = [
+            subscription
+            for subscription in subscriptions_to_expire
+            if subscription.billing_mode == BillingMode.prepaid
+        ]
+        coverage_decisions: dict[UUID, PrepaidServiceCoverageDecision] = {}
+        if prepaid_candidates:
+            coverage_decisions = resolve_prepaid_service_coverage(
+                db,
+                prepaid_candidates,
+                as_of=run_at,
+            )
+
         expired_count = 0
         skipped_count = 0
+        coverage_protected_count = 0
+        coverage_unresolved_count = 0
         for subscription in subscriptions_to_expire:
+            if subscription.billing_mode == BillingMode.prepaid:
+                decision = coverage_decisions[subscription.id]
+                if decision.status is PrepaidCoverageStatus.covered:
+                    coverage_protected_count += 1
+                    logger.info(
+                        "Skipped expiring prepaid subscription %s: "
+                        "current service coverage is valid",
+                        subscription.id,
+                    )
+                    continue
+                if decision.status is PrepaidCoverageStatus.unresolved_projection:
+                    coverage_unresolved_count += 1
+                    logger.warning(
+                        "Held expiry for prepaid subscription %s: "
+                        "billing anchor has no matching coverage evidence",
+                        subscription.id,
+                    )
+                    continue
+
             if not dry_run:
                 try:
                     from app.services.account_lifecycle import expire_subscription
@@ -1671,7 +1726,11 @@ class Subscriptions(ListResponseMixin):
             "run_at": run_at,
             "subscriptions_matched": len(subscriptions_to_expire),
             "subscriptions_expired": expired_count,
-            "subscriptions_skipped": skipped_count,
+            "subscriptions_skipped": (
+                skipped_count + coverage_protected_count + coverage_unresolved_count
+            ),
+            "subscriptions_coverage_protected": coverage_protected_count,
+            "subscriptions_coverage_unresolved": coverage_unresolved_count,
             "dry_run": dry_run,
         }
 
