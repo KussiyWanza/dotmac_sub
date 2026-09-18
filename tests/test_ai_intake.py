@@ -1153,11 +1153,14 @@ def test_classifier_boolean_facts_match_the_published_schema(
         ("device_scope", "all-devices"),
     ],
 )
+@pytest.mark.parametrize("follow_up_count,exhausted", [(0, False), (1, True)])
 def test_bad_fact_types_remain_rejected_and_reach_existing_exhaustion_path(
     db_session,
     monkeypatch,
     field: str,
     value: str,
+    follow_up_count: int,
+    exhausted: bool,
 ) -> None:
     _config(db_session)
     payload = json.loads(_classification())
@@ -1166,7 +1169,7 @@ def test_bad_fact_types_remain_rejected_and_reach_existing_exhaustion_path(
     monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
     outcome = ai_intake.classify_message(
         db_session,
-        _request(classifier_failure_count=1),
+        _request(follow_up_count=follow_up_count, classifier_failure_count=1),
     )
     assert outcome.classification is None
     assert outcome.status is AiIntakeStatus.classification_unavailable
@@ -1174,8 +1177,14 @@ def test_bad_fact_types_remain_rejected_and_reach_existing_exhaustion_path(
         outcome.classifier_attempt.failure_kind
         is AiClassifierFailureKind.schema_validation_failure
     )
-    assert outcome.classifier_attempt.retries_exhausted is True
-    assert outcome.reason is AiIntakeReason.classifier_unavailable_after_retries
+    assert outcome.classifier_attempt.retry_count == 2
+    assert outcome.classifier_attempt.retries_exhausted is exhausted
+    assert outcome.follow_up_count == 1
+    assert outcome.reason is (
+        AiIntakeReason.classifier_unavailable_after_retries
+        if exhausted
+        else AiIntakeReason.classifier_invalid_output
+    )
     assert any(
         issue.location == f"message_facts.{field}"
         for issue in outcome.classifier_attempt.validation_issues

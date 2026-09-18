@@ -490,6 +490,7 @@ def payment_create_preview(
             payment_method_id=payment_method_id,
             reference=reference,
             memo=memo,
+            payment_date=payment_date,
         )
     except Exception as exc:
         db.rollback()

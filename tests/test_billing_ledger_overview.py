@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -458,5 +460,18 @@ def test_render_ledger_csv_contains_split_debit_and_credit(db_session, subscribe
     )
     assert subscriber.name in csv_text
     assert str(subscriber.id) not in csv_text
-    assert ",debit,invoice,15.00,,NGN," in csv_text
-    assert ",credit,payment,,22.00,NGN," in csv_text
+    rows = list(csv.DictReader(io.StringIO(csv_text)))
+    assert len(rows) == 2
+    assert rows[0]["entry_id"] == str(debit_entry.id)
+    assert rows[0]["entry_type"] == "debit"
+    assert rows[0]["source"] == "invoice"
+    assert rows[0]["invoice_number"] == ""
+    assert rows[0]["debit_amount"] == "15.00"
+    assert rows[0]["credit_amount"] == ""
+    assert rows[1]["entry_id"] == str(credit_entry.id)
+    assert rows[1]["entry_type"] == "credit"
+    assert rows[1]["source"] == "payment"
+    assert rows[1]["invoice_number"] == ""
+    assert rows[1]["debit_amount"] == ""
+    assert rows[1]["credit_amount"] == "22.00"
+    assert all(row["currency"] == "NGN" for row in rows)
