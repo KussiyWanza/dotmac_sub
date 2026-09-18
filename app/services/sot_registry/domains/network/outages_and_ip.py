@@ -811,6 +811,144 @@ SERVICES: tuple[SOTService, ...] = (
         ),
     ),
     SOTService(
+        name="network.outage_work_order_handoff",
+        module="app.services.topology.outage_work_order_handoff",
+        owns=(
+            "shared-outage work-order issuance eligibility",
+            "outage-to-work-order provenance",
+        ),
+        depends_on=(
+            "network.outage_lifecycle",
+            "network.outage_impact",
+            "support.ticket_lifecycle",
+            "operations.work_order_commands",
+            "observability.audit_log",
+            "events.dispatcher",
+        ),
+        notes=(
+            "A staff member explicitly issues one infrastructure work order "
+            "for an open or confirmed shared outage. The immutable outage "
+            "scope revision remains the audience authority; this service "
+            "records only the outage, ticket, target, and revision provenance. "
+            "Issuance never creates customer work orders or closes tickets."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="shared-outage work-order issuance eligibility",
+                    role=OwnerRole.APPLICATION_COORDINATOR,
+                    input_names=(
+                        "locked outage incident and scope revision",
+                        "canonical infrastructure ticket",
+                        "assigned team membership",
+                        "typed infrastructure work-order request",
+                    ),
+                ),
+                ConcernContract(
+                    name="outage-to-work-order provenance",
+                    role=OwnerRole.AUTHORITATIVE_RECORD,
+                    input_names=(
+                        "locked outage incident and scope revision",
+                        "native work-order result",
+                    ),
+                    canonical_writer="network.outage_work_order_handoff",
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="locked outage incident and scope revision",
+                    owner="network.outage_lifecycle",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="locked outage_incidents row and latest immutable scope revision",
+                ),
+                AuthorityInput(
+                    name="canonical infrastructure ticket",
+                    owner="support.ticket_lifecycle",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="active ticket bound by the canonical infrastructure incident link",
+                ),
+                AuthorityInput(
+                    name="assigned team membership",
+                    owner="support.ticket_lifecycle",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source="active service-team assignment and active system-user membership",
+                ),
+                AuthorityInput(
+                    name="typed infrastructure work-order request",
+                    owner="network.outage_work_order_handoff",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source="validated title, reason, schedule, priority, and field-scope details",
+                ),
+                AuthorityInput(
+                    name="native work-order result",
+                    owner="operations.work_order_commands",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="flushed infrastructure WorkOrder row and native audit evidence",
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.COORDINATOR_MANAGED,
+                boundary="The coordinator enters execute_owner_command once and commits the work order, provenance link, audit, and event atomically.",
+                locking="Lock the outage incident before reading the latest scope revision and replay link.",
+                idempotency="A unique incident plus command key link and the native work-order public id make retries exact replays; a changed payload with the same key fails closed.",
+                retries="Serialization and deadlock failures retry the complete owner command; partial work is never committed.",
+            ),
+            errors=ErrorContract(
+                domain_codes=owner_command_boundary_error_codes(
+                    "network.outage_work_order_handoff"
+                )
+                + (
+                    "network.outage_work_order_handoff.incident_not_found",
+                    "network.outage_work_order_handoff.incident_not_issuable",
+                    "network.outage_work_order_handoff.incident_target_required",
+                    "network.outage_work_order_handoff.infrastructure_ticket_required",
+                    "network.outage_work_order_handoff.infrastructure_ticket_missing",
+                    "network.outage_work_order_handoff.infrastructure_ticket_terminal",
+                    "network.outage_work_order_handoff.scope_revision_required",
+                    "network.outage_work_order_handoff.scope_revision_stale",
+                    "network.outage_work_order_handoff.team_membership_required",
+                    "network.outage_work_order_handoff.assigned_team_membership_required",
+                    "network.outage_work_order_handoff.permission_required",
+                    "network.outage_work_order_handoff.idempotency_key_required",
+                    "network.outage_work_order_handoff.idempotency_conflict",
+                    "network.outage_work_order_handoff.linked_work_order_missing",
+                    "network.outage_work_order_handoff.invalid_command_scope",
+                ),
+                mapping_owner="app.web.admin.network_monitoring",
+                fail_closed_on=(
+                    "unresolved outage target",
+                    "missing canonical infrastructure ticket",
+                    "stale outage scope revision",
+                    "non-member or inactive issuing actor",
+                ),
+            ),
+            events=EventContract(
+                event_types=("outage.infrastructure_work_order_issued",),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility="Version 1 carries incident, ticket, work-order, target, scope sequence, and membership token; it carries no customer list.",
+                replay="The provenance link and native public work-order identity make redelivery and operator retries exact no-ops.",
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.NATIVE,
+                new_owner="network.outage_work_order_handoff",
+                verification="Focused coordinator, migration, stale-scope, permission, replay, and architecture-boundary tests.",
+                cutover_gate="Only the coordinator may create infrastructure work orders; generic customer creation remains subscriber-bound.",
+                fallback_retirement="No previous shared-outage work-order writer exists; any future adapter must call this owner.",
+            ),
+            steward="network operations",
+            design_refs=(
+                "docs/designs/OUTAGE_WORK_ORDER_HANDOFF_SOT.md",
+                "docs/designs/NETWORK_OUTAGE_RESPONSE_LIFECYCLE.md",
+                "docs/SOT_RELATIONSHIP_MAP.md",
+            ),
+            test_refs=(
+                "tests/services/topology/test_outage_work_order_handoff_contract.py",
+                "tests/architecture/test_ticket_work_order_handoff_boundary.py",
+            ),
+        ),
+    ),
+    SOTService(
         name="network.service_impact",
         module="app.services.network.service_impact",
         owns=("per-subscription service impact evidence resolution",),

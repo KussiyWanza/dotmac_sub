@@ -602,6 +602,7 @@ from app.models.network_monitoring import (  # noqa: F401
     NetworkDeviceSnmpOid,
     NetworkTopologyLink,
     NetworkWeathermapView,
+    OutageIncidentWorkOrderLink,
     PopSite,
     PopSiteContact,
     SpeedTestResult,

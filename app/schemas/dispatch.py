@@ -231,7 +231,7 @@ class WorkOrderHeaderBase(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     title: str = Field(min_length=1, max_length=200)
-    subscriber_id: UUID
+    subscriber_id: UUID | None = None
     project_id: UUID | None = None
     project_task_id: UUID | None = None
     requires_as_built_evidence: bool = True
@@ -278,6 +278,12 @@ class WorkOrderHeaderCreate(WorkOrderHeaderBase):
         max_length=64,
         description="Optional stable work-order id; generated as sub-<uuid> when omitted.",
     )
+
+    @model_validator(mode="after")
+    def _require_subscriber(self) -> WorkOrderHeaderCreate:
+        if self.subscriber_id is None:
+            raise ValueError("subscriber_id is required for customer work orders")
+        return self
 
 
 class WorkOrderHeaderUpdate(BaseModel):

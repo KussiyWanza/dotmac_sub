@@ -1266,6 +1266,55 @@ class OutageIncidentTicketLink(Base):
     scope_revision_sequence: Mapped[int | None] = mapped_column(Integer)
 
 
+class OutageIncidentWorkOrderLink(Base):
+    """Provenance for field work issued for one shared outage."""
+
+    __tablename__ = "outage_incident_work_order_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "incident_id",
+            "work_order_id",
+            name="uq_outage_incident_work_order_links_pair",
+        ),
+        UniqueConstraint(
+            "incident_id",
+            "idempotency_key",
+            name="uq_outage_incident_work_order_links_idempotency",
+        ),
+        Index("ix_outage_incident_work_order_links_incident", "incident_id"),
+        Index("ix_outage_incident_work_order_links_work_order", "work_order_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    incident_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outage_incidents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    work_order_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("work_order.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    scope_revision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outage_scope_revisions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    scope_revision_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    membership_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    command_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
 class OutageCustomerNotice(Base):
     """One customer-facing outage communication decision (OUTAGE_SLA_SPINE §3).
 
