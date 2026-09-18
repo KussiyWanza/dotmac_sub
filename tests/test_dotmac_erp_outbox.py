@@ -775,3 +775,43 @@ def test_outbox_tables_registered_on_metadata():
 
     assert "field_erp_sync_events" in Base.metadata.tables
     assert "sync_flow_ownership" in Base.metadata.tables
+
+
+@pytest.mark.parametrize("action", [None, "", False, 0, "submit", "approve", "reject"])
+def test_retired_expense_is_terminal_and_cannot_starve_later_batches(
+    db_session, action
+):
+    from datetime import UTC, datetime, timedelta
+
+    _seed_ownership(
+        db_session,
+        sub_flows={_GENERIC_DELIVERY_FLOW.value, FieldErpSyncFlow.expense_claim.value},
+    )
+    retired = _enqueue(db_session, flow=FieldErpSyncFlow.expense_claim)
+    retired.payload = {} if action is None else {"_expense_action": action}
+    retired.created_at = datetime.now(UTC) - timedelta(days=1)
+    legitimate = _enqueue(db_session)
+    retired_id, legitimate_id = retired.id, legitimate.id
+    original_payload = dict(retired.payload)
+    db_session.commit()
+    client = FakeERPClient([{"request_id": "ERP-VALID", "status": "accepted"}])
+
+    first = outbox.deliver_pending(db_session, client=client, limit=1)
+    assert first.skipped_preapproval == first.dead == 1
+    assert client.posts == []
+    second = outbox.deliver_pending(db_session, client=client, limit=1)
+    assert second.accepted == 1
+    assert len(client.posts) == 1
+    assert (
+        db_session.get(FieldErpSyncEvent, retired_id).status
+        == FieldErpSyncStatus.dead.value
+    )
+    assert db_session.get(FieldErpSyncEvent, retired_id).payload == original_payload
+    assert db_session.get(FieldErpSyncEvent, retired_id).attempts == 0
+    assert (
+        db_session.get(FieldErpSyncEvent, legitimate_id).status
+        == FieldErpSyncStatus.accepted.value
+    )
+    again = outbox.deliver_pending(db_session, client=client, limit=1)
+    assert again.processed == 0
+    assert len(client.posts) == 1

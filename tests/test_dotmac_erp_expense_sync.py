@@ -1862,8 +1862,15 @@ def test_historical_preapproval_event_is_never_delivered(db_session):
     assert client.posts == []
     assert request.expense_claim_reference is None
     row = _outbox_rows(db_session, request)[-1]
-    assert row.status == FieldErpSyncStatus.pending.value
+    assert row.status == FieldErpSyncStatus.dead.value
     assert row.attempts == 0
+
+    assert row.last_error.startswith("retired_preapproval_expense_event:")
+    assert row.payload["_expense_action"] == "submit"
+    again = outbox.deliver_pending(db_session, client=client)
+    assert again.processed == 0
+    assert again.skipped_preapproval == 0
+    assert client.posts == []
 
 
 # ---------------------------------------------------------------------------
