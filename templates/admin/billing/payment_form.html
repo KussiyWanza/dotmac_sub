@@ -64,6 +64,14 @@
                     {% include "admin/billing/_payment_currency_field.html" with context %}
                 </div>
             </div>
+            {% if not payment %}
+            <div>
+                <label for="payment-date" class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Payment Date</label>
+                <input id="payment-date" type="date" name="payment_date" value="{{ payment_date|default('') }}" max="{{ payment_date|default('') }}" required
+                       class="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                <p class="mt-1 text-xs text-slate-500">Use the date the funds were actually received. This supports recording older payments.</p>
+            </div>
+            {% endif %}
             <div class="grid gap-4 sm:grid-cols-2">
                 <div>
                     <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Status</label>
