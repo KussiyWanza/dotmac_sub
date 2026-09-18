@@ -522,7 +522,7 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         "Review the customer’s current financial position before acting.",
         (),
         "Open the customer Billing tab or the relevant billing list.",
-        "Review invoices, payments, proofs, credits, extensions, balances, and ledger evidence.",
+        "Review invoices, payments, proofs, credits, extensions, balances, and ledger evidence. The ledger CSV includes invoice_number alongside separate debit and credit amounts; a blank invoice reference means the row has no linked invoice number.",
         "Open the specific record that explains the issue before taking action.",
         notes=(
             "Do not use one workflow to imitate another: payments, credits, voids, write-offs, and extensions have different meanings.",
@@ -536,7 +536,7 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         "Billing staff",
         "Manage a customer invoice through its proper lifecycle.",
         ("/admin/billing/invoices",),
-        "Create or open the invoice and verify customer, account, lines, amounts, dates, tax, and memo.",
+        "Create or open the invoice and verify customer, account, lines, amounts, dates, tax, and memo. The issue date defaults to today; selecting a historical invoice date requires billing:invoice:update permission.",
         "Save drafts first; issue and send only after review.",
         "Use Void only when an invoice should never have existed; use Write Off for valid debt that will not be collected.",
         notes=("Issued invoices use post-issue actions, not direct edits.",),
@@ -575,7 +575,7 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         "Billing staff",
         "Record confirmed money and apply it to the right invoices.",
         ("/admin/billing/payments",),
-        "Confirm external payment evidence, then enter amount, currency, method, date, reference, and memo.",
+        "Confirm external payment evidence, then enter amount, currency, method, date, reference, and memo. The payment date defaults to today; use the actual receipt date for historical payments, never a future date, and verify the same date in the preview before confirming.",
         "When arriving from a sales order, verify the customer and suggested outstanding balance before previewing the account-level receipt.",
         "Review the preview, duplicate-reference and duplicate-evidence warnings, allocation, and service effects before confirming.",
         "When verified prepaid credit covers the complete renewal charge, the system creates and pays one invoice for that service period, grants the matching coverage, and updates the next billing date together.",
@@ -585,6 +585,7 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         notes=(
             "Use Payment Proof review for customer-uploaded transfer receipts; never bypass a duplicate warning by changing the reference.",
             "Do not create a manual invoice or manually change the next billing date to imitate a prepaid renewal.",
+            "For a non-pending payment, the selected date is recorded as paid_at at midnight UTC. A pending payment has no paid_at timestamp until it is received.",
         ),
     ),
     _guide(

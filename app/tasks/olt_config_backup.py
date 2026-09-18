@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from billiard.exceptions import SoftTimeLimitExceeded
 
@@ -50,6 +50,28 @@ class _BackupTarget:
         return self.connection.mgmt_ip
 
 
+class _ConfigFetchError(RuntimeError):
+    """A selected OLT did not yield a usable running configuration."""
+
+
+class OltBackupFailure(TypedDict):
+    olt: str
+    mgmt_ip: str | None
+    error: str
+
+
+class OltBackupResult(TypedDict):
+    backed_up: int
+    errors: int
+    skipped: int
+    cleaned: int
+    error_details: list[OltBackupFailure]
+    status: Literal["completed", "partial", "failed", "skipped"]
+    total_targets: int
+    unprocessed: int
+    timed_out: bool
+
+
 def _load_backup_targets() -> list[_BackupTarget]:
     """Project the active OLTs into detached values and end the read.
 
@@ -77,7 +99,7 @@ def _load_backup_targets() -> list[_BackupTarget]:
         db.close()
 
 
-def _fetch_running_config_via_ssh(target: _BackupTarget) -> str | None:
+def _fetch_running_config_via_ssh(target: _BackupTarget) -> str:
     """Fetch full running configuration from an OLT via SSH.
 
     Uses `display current-configuration` which returns the complete config
@@ -86,7 +108,8 @@ def _fetch_running_config_via_ssh(target: _BackupTarget) -> str | None:
     Takes detached values, not an ORM entity, so it cannot be called with a
     transaction open behind it.
 
-    Returns the config text or None if SSH is unavailable.
+    Returns usable configuration or raises a typed fetch failure. Soft task
+    time limits propagate so the caller can persist already-fetched backups.
     """
     connection = target.connection
     try:
@@ -97,7 +120,7 @@ def _fetch_running_config_via_ssh(target: _BackupTarget) -> str | None:
         result = get_protocol_adapter_from_config(connection).fetch_running_config()
         raw_config_text = result.data.get("config_text") if result.success else ""
         config_text = raw_config_text if isinstance(raw_config_text, str) else ""
-        if result.success and config_text:
+        if result.success and config_text.strip():
             # Add metadata header
             header = (
                 f"# OLT Full Running Config: {connection.name}\n"
@@ -110,13 +133,14 @@ def _fetch_running_config_via_ssh(target: _BackupTarget) -> str | None:
                 f"#\n"
             )
             return header + config_text + "\n"
-        logger.warning(
-            "SSH config fetch for OLT %s: %s", connection.name, result.message
-        )
-        return None
-    except Exception as e:
-        logger.warning("SSH config backup failed for OLT %s: %s", connection.name, e)
-        return None
+        reason = str(result.message or "Could not fetch running configuration")
+        if result.success:
+            reason = "Device returned an empty running configuration"
+        raise _ConfigFetchError(reason)
+    except (SoftTimeLimitExceeded, _ConfigFetchError):
+        raise
+    except Exception as exc:
+        raise _ConfigFetchError(str(exc) or type(exc).__name__) from exc
 
 
 def _cleanup_old_backups(db, max_age_days: int = 90, max_per_olt: int = 50) -> int:
@@ -184,14 +208,14 @@ def _cleanup_old_backups(db, max_age_days: int = 90, max_per_olt: int = 50) -> i
     soft_time_limit=3000,
     time_limit=3300,
 )
-def backup_all_olts() -> dict[str, int]:
+def backup_all_olts() -> OltBackupResult:
     """Backup running config for all active OLTs."""
     logger.info("Starting OLT config backup run")
     backed_up = 0
     errors = 0
     skipped = 0
     cleaned = 0
-    error_details: list[dict[str, str | None]] = []
+    error_details: list[OltBackupFailure] = []
     timed_out = False
 
     # Phase 1 — read, then end the transaction.
@@ -205,6 +229,8 @@ def backup_all_olts() -> dict[str, int]:
         for target in targets:
             try:
                 config_text = _fetch_running_config_via_ssh(target)
+            except SoftTimeLimitExceeded:
+                raise
             except Exception as e:
                 logger.error("Failed to fetch backup for OLT %s: %s", target.name, e)
                 errors += 1
@@ -212,17 +238,6 @@ def backup_all_olts() -> dict[str, int]:
                     {"olt": target.name, "mgmt_ip": target.mgmt_ip, "error": str(e)}
                 )
                 failures.append((target, str(e)))
-                continue
-            if config_text is None:
-                skipped += 1
-                error_details.append(
-                    {
-                        "olt": target.name,
-                        "mgmt_ip": target.mgmt_ip,
-                        "error": "Could not fetch running configuration",
-                    }
-                )
-                failures.append((target, "Could not fetch running configuration"))
                 continue
             fetched.append((target, config_text))
     except SoftTimeLimitExceeded:
@@ -273,9 +288,14 @@ def backup_all_olts() -> dict[str, int]:
                 db.add(backup)
                 backed_up += 1
 
+            except SoftTimeLimitExceeded:
+                raise
             except Exception as e:
                 logger.error("Failed to save backup for OLT %s: %s", target.name, e)
                 errors += 1
+                error_details.append(
+                    {"olt": target.name, "mgmt_ip": target.mgmt_ip, "error": str(e)}
+                )
                 backup_alerts.queue_backup_failure_notification(
                     db,
                     device_kind="olt",
@@ -292,6 +312,7 @@ def backup_all_olts() -> dict[str, int]:
             cleaned = _cleanup_old_backups(db, max_age_days=90, max_per_olt=50)
 
     except SoftTimeLimitExceeded:
+        timed_out = True
         logger.warning(
             "olt_config_backup soft time limit hit; committing %d backups", backed_up
         )
@@ -299,18 +320,39 @@ def backup_all_olts() -> dict[str, int]:
             db.commit()
         except Exception:
             db.rollback()
+            raise
     except Exception:
         db.rollback()
         raise
     finally:
         db.close()
 
-    logger.info(
+    status: Literal["completed", "partial", "failed", "skipped"]
+    if errors or timed_out:
+        status = "partial" if backed_up else "failed"
+    else:
+        status = "completed" if targets else "skipped"
+    unprocessed = max(0, len(targets) - backed_up - errors)
+    level = (
+        logging.ERROR
+        if status == "failed"
+        else logging.WARNING
+        if status == "partial"
+        else logging.INFO
+    )
+    logger.log(
+        level,
         "OLT config backup complete: backed_up=%d, errors=%d, skipped=%d, cleaned=%d",
         backed_up,
         errors,
         skipped,
         cleaned,
+        extra={
+            "backup_status": status,
+            "total_targets": len(targets),
+            "unprocessed": unprocessed,
+            "timed_out": timed_out,
+        },
     )
     return {
         "backed_up": backed_up,
@@ -318,4 +360,8 @@ def backup_all_olts() -> dict[str, int]:
         "skipped": skipped,
         "cleaned": cleaned,
         "error_details": error_details,
+        "status": status,
+        "total_targets": len(targets),
+        "unprocessed": unprocessed,
+        "timed_out": timed_out,
     }

@@ -16,7 +16,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import event
 from sqlalchemy.engine import Connection
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, SessionTransaction
 
 from app.services.domain_errors import DomainError
 from app.services.sot_manifest import (
@@ -33,6 +33,7 @@ _ACTIVE_COMMAND_CONTEXT_KEY = "_dotmac_active_owner_command_context"
 _BOUNDARY_COMMIT_KEY = "_dotmac_owner_boundary_commit"
 _HELPER_ROLLBACK_KEY = "_dotmac_owner_helper_rollback"
 _AUTHORIZED_SAVEPOINT_KEY = "_dotmac_authorized_owner_savepoint"
+_ACTIVE_SAVEPOINT_KEY = "_dotmac_active_owner_savepoint"
 _OWNER_ROLES = {
     OwnerRole.AUTHORITATIVE_RECORD,
     OwnerRole.OBSERVATION_COLLECTOR,
@@ -261,6 +262,18 @@ def _reject_helper_commit(session: Session) -> None:
 def _record_helper_rollback(session: Session, previous_transaction: object) -> None:
     if session.info.get(_AUTHORIZED_SAVEPOINT_KEY) is previous_transaction:
         return
+    active_savepoint = session.info.get(_ACTIVE_SAVEPOINT_KEY)
+    if (
+        isinstance(active_savepoint, SessionTransaction)
+        and isinstance(previous_transaction, SessionTransaction)
+        and previous_transaction.parent is active_savepoint
+        and not previous_transaction.nested
+        and not active_savepoint.is_active
+    ):
+        # A failed ORM flush rolls back an internal subtransaction before
+        # raising. Only the executor's own savepoint may absorb that rollback;
+        # direct participant rollback of the savepoint/root still fails closed.
+        return
     if session.info.get(_ACTIVE_COMMAND_KEY) is not None:
         session.info[_HELPER_ROLLBACK_KEY] = True
 
@@ -287,6 +300,7 @@ def execute_owner_savepoint(
         )
 
     savepoint = db.begin_nested()
+    db.info[_ACTIVE_SAVEPOINT_KEY] = savepoint
     try:
         result = operation()
         if db.get_nested_transaction() is not savepoint or not savepoint.is_active:
@@ -299,12 +313,15 @@ def execute_owner_savepoint(
         savepoint.commit()
         return result
     except BaseException:
-        if savepoint.is_active:
+        # A flush failure leaves the nested transaction inactive but still
+        # attached. It must be explicitly rolled back to restore the parent.
+        if db.get_nested_transaction() is savepoint:
             db.info[_AUTHORIZED_SAVEPOINT_KEY] = savepoint
             savepoint.rollback()
         raise
     finally:
         db.info.pop(_AUTHORIZED_SAVEPOINT_KEY, None)
+        db.info.pop(_ACTIVE_SAVEPOINT_KEY, None)
 
 
 def current_command_context(db: Session) -> CommandContext:

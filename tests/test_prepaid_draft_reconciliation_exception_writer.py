@@ -13,10 +13,20 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
+
+import pytest
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.models.billing import Invoice, InvoiceStatus
 from app.models.prepaid_funding import PrepaidDraftReconciliationException
+from app.models.subscriber import Subscriber
+from app.services.owner_commands import (
+    CommandContext,
+    OwnerCommandDefinition,
+    execute_owner_command,
+)
 from app.services.prepaid_draft_reconciliation import (
     record_prepaid_draft_reconciliation_exception,
 )
@@ -152,4 +162,90 @@ def test_is_idempotent_on_invoice_id_and_bumps_attempt_count_on_new_evidence(
 
     assert db_session.query(PrepaidDraftReconciliationException).count() == 1, (
         "one invoice must never accumulate more than one open review row"
+    )
+
+
+_REVIEW_DEFINITION = OwnerCommandDefinition(
+    owner="financial.prepaid_draft_reconciliation",
+    concern="stranded prepaid draft invoice reconciliation",
+    name="test_review_item_owner_savepoint",
+)
+
+
+def _record_owner_review(db: Session, account_id: UUID, invoice_id: UUID) -> UUID:
+    review = record_prepaid_draft_reconciliation_exception(
+        db,
+        account_id=account_id,
+        invoice_id=invoice_id,
+        currency="NGN",
+        required_amount=Decimal("1000.00"),
+        payment_backed_amount=Decimal("400.00"),
+        opening_funding_amount=Decimal("0.00"),
+        preview_fingerprint="c" * 64,
+        reason="renewal_insufficient_funding",
+    )
+    return review.id
+
+
+def test_review_item_can_be_created_inside_the_public_owner_command(
+    db_session: Session,
+    subscriber: Subscriber,
+) -> None:
+    invoice = _draft_invoice(db_session, subscriber.id)
+    account_id, invoice_id = subscriber.id, invoice.id
+    db_session.commit()
+    review_id = execute_owner_command(
+        db_session,
+        definition=_REVIEW_DEFINITION,
+        context=CommandContext.system(
+            actor="pytest:review",
+            scope="billing:write",
+            reason="Verify funding review savepoint",
+        ),
+        operation=lambda: _record_owner_review(db_session, account_id, invoice_id),
+    )
+    assert not db_session.in_transaction()
+    assert db_session.get(PrepaidDraftReconciliationException, review_id) is not None
+
+
+def test_lost_review_insert_race_preserves_the_owner_transaction(
+    db_session: Session,
+    subscriber: Subscriber,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invoice = _draft_invoice(db_session, subscriber.id)
+    account_id, invoice_id = subscriber.id, invoice.id
+    existing_id = _record_owner_review(db_session, account_id, invoice_id)
+    db_session.commit()
+    scalar = db_session.scalar
+    missed = False
+
+    def miss_first_review_lookup(statement, *args, **kwargs):
+        nonlocal missed
+        entities = getattr(statement, "column_descriptions", ())
+        if (
+            not missed
+            and entities
+            and entities[0].get("entity") is PrepaidDraftReconciliationException
+        ):
+            missed = True
+            return None
+        return scalar(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "scalar", miss_first_review_lookup)
+    replay_id = execute_owner_command(
+        db_session,
+        definition=_REVIEW_DEFINITION,
+        context=CommandContext.system(
+            actor="pytest:review",
+            scope="billing:write",
+            reason="Verify duplicate review recovery",
+        ),
+        operation=lambda: _record_owner_review(db_session, account_id, invoice_id),
+    )
+    assert missed
+    assert replay_id == existing_id
+    assert not db_session.in_transaction()
+    assert (
+        len(db_session.scalars(select(PrepaidDraftReconciliationException)).all()) == 1
     )
