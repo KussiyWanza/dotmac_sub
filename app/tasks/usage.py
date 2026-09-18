@@ -128,6 +128,7 @@ _RADIUS_ACCOUNTING_IMPORT_LOCK_KEY = 778_004
 def evaluate_fup_rules(
     subscription_ids: list[str] | None = None,
     source: str = "scheduled_full_sweep",
+    contention_retry: bool = False,
 ) -> dict[str, int]:
     from sqlalchemy import func, select
 
@@ -158,7 +159,7 @@ def evaluate_fup_rules(
         try:
             owner_db = SessionLocal()
             try:
-                return fup_enforcement.run_fup_evaluation(
+                outcome = fup_enforcement.run_fup_evaluation(
                     owner_db,
                     fup_enforcement.RunFupSweepRequest(
                         correlation_id=uuid4(),
@@ -172,6 +173,45 @@ def evaluate_fup_rules(
                 )
             finally:
                 owner_db.close()
+            totals = outcome.totals
+            result = {
+                "processed": totals.processed,
+                "enforced": totals.enforced,
+                "reset": totals.reset,
+                "notified": totals.notified,
+                "submonthly_no_data": totals.submonthly_no_data,
+                "throttle_unconfigured": totals.throttle_unconfigured,
+                "targeted": int(subscription_ids is not None),
+                "retried": outcome.retried,
+                "deferred": len(outcome.deferred_subscription_ids),
+                "deferred_retry_queued": 0,
+                "retry_enqueue_failed": 0,
+            }
+            if outcome.deferred_subscription_ids and not contention_retry:
+                try:
+                    evaluate_fup_rules.apply_async(
+                        kwargs={
+                            "subscription_ids": [
+                                str(value)
+                                for value in outcome.deferred_subscription_ids
+                            ],
+                            "source": source,
+                            "contention_retry": True,
+                        },
+                        queue="billing",
+                        countdown=60,
+                    )
+                    result["deferred_retry_queued"] = len(
+                        outcome.deferred_subscription_ids
+                    )
+                except (
+                    Exception
+                ):  # Broker submission only; never replay committed work.
+                    logger.exception(
+                        "FUP contention retry enqueue failed; full sweep will revisit candidates"
+                    )
+                    result["retry_enqueue_failed"] = 1
+            return result
         finally:
             if is_pg:
                 lock_db.execute(
