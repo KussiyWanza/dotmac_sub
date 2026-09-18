@@ -243,11 +243,17 @@ def deliver_pending(
     try:
         for row in rows:
             if _is_retired_preapproval_expense_event(row):
+                # This envelope belongs to a retired protocol and can never
+                # become deliverable by retrying. Keep its payload/idempotency
+                # evidence, but remove it from the pending candidate set.
                 result.skipped_preapproval += 1
-                logger.warning(
-                    "field_erp_sync: refusing retired pre-approval expense event %s",
-                    row.id,
+                result.processed += 1
+                result.dead += 1
+                _mark_dead(
+                    row,
+                    "retired_preapproval_expense_event: delivery permanently refused",
                 )
+                db.commit()
                 continue
             owned = owned_cache.get(row.flow)
             if owned is None:
