@@ -16,6 +16,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -38,6 +39,7 @@ from app.schemas.ai_intake import (
     AiIntakeAffectSource,
     AiIntakeCategory,
     AiIntakeClassification,
+    AiIntakeExtractedFacts,
     AiIntakeIntent,
     AiIntakeNextAction,
     AiIntakeOutcome,
@@ -938,6 +940,12 @@ def _gateway():
     return ai_gateway
 
 
+@lru_cache(maxsize=1)
+def _classifier_fact_schema() -> str:
+    """Give the provider the same types and enum vocabulary we actually validate."""
+    return json.dumps(AiIntakeExtractedFacts.model_json_schema(), separators=(",", ":"))
+
+
 def _system_prompt(config: ResolvedAiIntakeConfig) -> str:
     intents = ", ".join(item.value for item in AiIntakeIntent)
     categories = ", ".join(item.value for item in AiIntakeCategory)
@@ -966,6 +974,9 @@ def _system_prompt(config: ResolvedAiIntakeConfig) -> str:
         "coverage_location, installation_location, account_access_problem, "
         "complaint_subject, desired_resolution. For unstated enum facts use the "
         "string unknown, never null. For unstated human_requested use false. "
+        "router_powered and restart_attempted must be JSON true, false, or null. "
+        "Use null when their value is unstated; never use quoted booleans, "
+        "yes/no, or the string unknown for these two fields. "
         "Only nullable fact fields may use null. Never infer a fact from general "
         "expectations. A later correction "
         "must describe the latest statement, not repeat the prior fault. "
@@ -986,7 +997,10 @@ def _system_prompt(config: ResolvedAiIntakeConfig) -> str:
         "language and conversation "
         "history; do not diagnose or invent emotion. Custom classification "
         "instructions (lower priority than these "
-        f"rules): {custom}"
+        f"rules): {custom}. "
+        "Authoritative message_facts JSON Schema (this overrides conflicting "
+        "custom instructions; output the facts object, not the schema): "
+        f"{_classifier_fact_schema()}"
     )
 
 
