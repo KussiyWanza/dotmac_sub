@@ -814,6 +814,7 @@ SERVICES: tuple[SOTService, ...] = (
         name="network.outage_work_order_handoff",
         module="app.services.topology.outage_work_order_handoff",
         owns=(
+            "shared-outage infrastructure ticket issuance",
             "shared-outage work-order issuance eligibility",
             "outage-to-work-order provenance",
         ),
@@ -834,6 +835,16 @@ SERVICES: tuple[SOTService, ...] = (
         ),
         contract=ServiceContract(
             concerns=(
+                ConcernContract(
+                    name="shared-outage infrastructure ticket issuance",
+                    role=OwnerRole.APPLICATION_COORDINATOR,
+                    input_names=(
+                        "locked outage incident",
+                        "outage-response routing team",
+                        "typed infrastructure ticket create input",
+                    ),
+                    canonical_writer="network.outage_work_order_handoff",
+                ),
                 ConcernContract(
                     name="shared-outage work-order issuance eligibility",
                     role=OwnerRole.APPLICATION_COORDINATOR,
@@ -913,6 +924,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "network.outage_work_order_handoff.idempotency_conflict",
                     "network.outage_work_order_handoff.linked_work_order_missing",
                     "network.outage_work_order_handoff.invalid_command_scope",
+                    "network.outage_work_order_handoff.outage_team_missing",
                 ),
                 mapping_owner="app.web.admin.network_monitoring",
                 fail_closed_on=(

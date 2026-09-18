@@ -14,17 +14,20 @@ from sqlalchemy.orm import Session
 from app.models.audit import AuditActorType
 from app.models.network_monitoring import (
     OutageIncident,
+    OutageIncidentTicketLink,
     OutageIncidentWorkOrderLink,
     OutageScopeRevision,
 )
 from app.models.service_team import ServiceTeam, ServiceTeamMember
-from app.models.support import Ticket
+from app.models.support import Ticket, TicketChannel
 from app.models.system_user import SystemUser
 from app.models.work_order import WorkOrder
 from app.schemas.network import (
     InfrastructureWorkOrderHeaderCreate,
     InfrastructureWorkOrderIssueRequest,
 )
+from app.schemas.support import TicketCreate
+from app.services import service_team_composition
 from app.services.audit_adapter import AuditActor, stage_audit_event
 from app.services.common import coerce_uuid
 from app.services.domain_errors import DomainError
@@ -34,16 +37,27 @@ from app.services.owner_commands import (
     OwnerCommandDefinition,
     execute_owner_command,
 )
-from app.services.topology.outage import infrastructure_link_for, latest_scope_revision
+from app.services.topology.outage import (
+    infrastructure_link_for,
+    latest_scope_revision,
+    link_infrastructure_ticket,
+)
 from app.services.ui_contracts import Action
 
 IssueErrorKind = Literal["invalid", "forbidden", "not_found", "conflict"]
 ISSUE_SCOPE = "network.outage_work_order:issue"
+TICKET_CREATE_SCOPE = "network.outage_ticket:create"
 REQUIRED_PERMISSIONS = frozenset({"monitoring:write", "operations:dispatch:write"})
+TICKET_CREATE_PERMISSIONS = frozenset({"monitoring:write", "support:ticket:create"})
 _DEFINITION = OwnerCommandDefinition(
     owner="network.outage_work_order_handoff",
     concern="shared-outage work-order issuance eligibility",
     name="issue_infrastructure_work_order",
+)
+_TICKET_DEFINITION = OwnerCommandDefinition(
+    owner="network.outage_work_order_handoff",
+    concern="shared-outage infrastructure ticket issuance",
+    name="create_infrastructure_ticket",
 )
 _ISSUABLE_STATUSES = frozenset({"open", "confirmed"})
 
@@ -65,6 +79,15 @@ class OutageWorkOrderIssueCommand:
     request_id: str | None = None
 
 
+@dataclass(frozen=True)
+class OutageInfrastructureTicketIssueCommand:
+    incident_id: UUID
+    actor_id: UUID
+    permissions: frozenset[str]
+    context: CommandContext
+    request_id: str | None = None
+
+
 class OutageWorkOrderHandoffError(DomainError):
     def __init__(self, code: str, message: str, *, kind: IssueErrorKind = "conflict"):
         super().__init__(code=code, message=message, details={"kind": kind})
@@ -75,6 +98,13 @@ class OutageWorkOrderHandoffError(DomainError):
 class OutageWorkOrderIssueResult:
     work_order: WorkOrder
     link: OutageIncidentWorkOrderLink
+    replayed: bool
+
+
+@dataclass(frozen=True)
+class OutageInfrastructureTicketIssueResult:
+    ticket: Ticket
+    link: OutageIncidentTicketLink
     replayed: bool
 
 
@@ -385,3 +415,182 @@ def _issue_work_order(
     )
     db.flush()
     return OutageWorkOrderIssueResult(work_order=work_order, link=link, replayed=False)
+
+
+def ticket_issue_action(db: Session, incident: OutageIncident) -> Action:
+    """Project readiness for creating the one canonical outage ticket."""
+    if infrastructure_link_for(db, incident.id) is not None:
+        return Action(
+            key="create_infrastructure_ticket",
+            label="Create infrastructure ticket",
+            allowed=False,
+            reason="This outage already has a canonical infrastructure ticket",
+            permission="support:ticket:create",
+        )
+    if incident.status not in _ISSUABLE_STATUSES:
+        return Action(
+            key="create_infrastructure_ticket",
+            label="Create infrastructure ticket",
+            allowed=False,
+            reason="Only open or confirmed outages can receive an infrastructure ticket",
+            permission="support:ticket:create",
+        )
+    try:
+        routing = service_team_composition.resolve_routing_team(
+            db, domain="network.outage", route_key="incident.primary"
+        )
+    except Exception as exc:  # routing owner maps ambiguity to a safe UI reason
+        return Action(
+            key="create_infrastructure_ticket",
+            label="Create infrastructure ticket",
+            allowed=False,
+            reason=str(exc),
+            permission="support:ticket:create",
+        )
+    return Action(
+        key="create_infrastructure_ticket",
+        label="Create infrastructure ticket",
+        allowed=routing is not None,
+        reason=(
+            None
+            if routing is not None
+            else "No active outage-response team is configured"
+        ),
+        permission="support:ticket:create",
+    )
+
+
+def create_infrastructure_ticket(
+    db: Session, command: OutageInfrastructureTicketIssueCommand
+) -> OutageInfrastructureTicketIssueResult:
+    """Create and bind the canonical ticket for one shared outage atomically."""
+    from app.services.db_session_adapter import db_session_adapter
+
+    db_session_adapter.release_read_transaction(db)
+    return execute_owner_command(
+        db,
+        definition=_TICKET_DEFINITION,
+        context=command.context,
+        operation=lambda: _create_infrastructure_ticket(db, command),
+    )
+
+
+def _create_infrastructure_ticket(
+    db: Session, command: OutageInfrastructureTicketIssueCommand
+) -> OutageInfrastructureTicketIssueResult:
+    if command.context.scope != TICKET_CREATE_SCOPE:
+        raise OutageWorkOrderHandoffError(
+            "invalid_command_scope",
+            "Infrastructure ticket scope is invalid",
+            kind="forbidden",
+        )
+    missing = TICKET_CREATE_PERMISSIONS - command.permissions
+    if missing:
+        raise OutageWorkOrderHandoffError(
+            "permission_required",
+            "Monitoring and support ticket create permissions are required",
+            kind="forbidden",
+        )
+    if not str(command.context.idempotency_key or "").strip():
+        raise OutageWorkOrderHandoffError(
+            "idempotency_key_required", "Idempotency-Key is required", kind="invalid"
+        )
+    incident = (
+        db.query(OutageIncident)
+        .filter(OutageIncident.id == command.incident_id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if incident is None:
+        raise OutageWorkOrderHandoffError(
+            "incident_not_found", "Outage not found", kind="not_found"
+        )
+    existing = infrastructure_link_for(db, incident.id)
+    if existing is not None:
+        ticket = db.get(Ticket, existing.ticket_id)
+        if ticket is None:
+            raise OutageWorkOrderHandoffError(
+                "infrastructure_ticket_missing",
+                "The outage link points to a missing ticket",
+                kind="conflict",
+            )
+        return OutageInfrastructureTicketIssueResult(
+            ticket=ticket, link=existing, replayed=True
+        )
+    if incident.status not in _ISSUABLE_STATUSES:
+        raise OutageWorkOrderHandoffError(
+            "incident_not_issuable",
+            "Only open or confirmed outages can receive an infrastructure ticket",
+            kind="invalid",
+        )
+    routing = service_team_composition.resolve_routing_team(
+        db, domain="network.outage", route_key="incident.primary"
+    )
+    if routing is None:
+        raise OutageWorkOrderHandoffError(
+            "outage_team_missing",
+            "No active outage-response team is configured",
+            kind="conflict",
+        )
+    target = _incident_target_label(db, incident)
+    from app.services import support as support_service
+
+    ticket = support_service.Tickets.create(
+        db,
+        TicketCreate(
+            title=f"Infrastructure outage — {target}"[:255],
+            description=incident.note or f"Shared outage affecting {target}.",
+            ticket_type="outage",
+            priority="urgent",
+            channel=TicketChannel.web,
+            status="open",
+            service_team_id=routing.team_id,
+            tags=["infrastructure", "shared-outage"],
+            metadata={
+                "outage_incident_id": str(incident.id),
+                "ticket_role": "infrastructure",
+            },
+        ),
+        actor_id=str(command.actor_id),
+        routing_mode=support_service.TicketCreationRoutingMode.preserve_requested_team,
+    )
+    link = link_infrastructure_ticket(
+        db,
+        incident,
+        ticket.id,
+        linked_by=str(command.actor_id),
+        source="outage_console",
+    )
+    stage_audit_event(
+        db,
+        action="outage.infrastructure_ticket_created",
+        entity_type="outage_incident",
+        entity_id=str(incident.id),
+        actor_type=AuditActorType.user,
+        actor_id=str(command.actor_id),
+        request_id=str(command.context.command_id),
+        metadata={
+            "ticket_id": str(ticket.id),
+            "ticket_number": ticket.number,
+            "service_team_id": str(routing.team_id),
+        },
+    )
+    return OutageInfrastructureTicketIssueResult(
+        ticket=ticket, link=link, replayed=False
+    )
+
+
+def _incident_target_label(db: Session, incident: OutageIncident) -> str:
+    from app.models.network import FdhCabinet
+    from app.models.network_monitoring import NetworkDevice, PopSite
+
+    if incident.basestation_id is not None:
+        row = db.get(PopSite, incident.basestation_id)
+        return f"BTS: {row.name}" if row is not None else "Basestation"
+    if incident.fdh_cabinet_id is not None:
+        row = db.get(FdhCabinet, incident.fdh_cabinet_id)
+        return f"FDH: {row.code or row.name}" if row is not None else "FDH cabinet"
+    if incident.root_node_id is not None:
+        row = db.get(NetworkDevice, incident.root_node_id)
+        return f"Node: {row.name}" if row is not None else "Network node"
+    return "Unresolved network target"

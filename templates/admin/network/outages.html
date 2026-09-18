@@ -18,6 +18,10 @@
     </div>
     {% endif %}
 
+    {% if ticket_notice %}
+    <div class="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-900/20 dark:text-emerald-300">Infrastructure ticket {{ ticket_notice }} created and linked to the outage.</div>
+    {% endif %}
+
     <form method="post" action="/admin/network/outages/declare" class="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
         {% include "components/forms/csrf_input.html" %}
         <div>
@@ -78,6 +82,16 @@
             {% endfor %}
             </tbody>
         </table>
+        {% if reachability_total_pages > 1 %}
+        <div class="mt-4 flex items-center justify-between border-t border-slate-200 pt-3 text-xs dark:border-slate-700">
+            <span class="text-slate-500 dark:text-slate-400">Showing {{ ((reachability_page - 1) * reachability_per_page) + 1 }}–{{ [reachability_page * reachability_per_page, reachability_total] | min }} of {{ reachability_total }} down devices</span>
+            <div class="flex items-center gap-2">
+                {% if reachability_page > 1 %}<a href="/admin/network/outages?reachability_page={{ reachability_page - 1 }}" class="rounded-lg border border-slate-300 px-3 py-1.5 font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200">Previous</a>{% else %}<span class="rounded-lg border border-slate-200 px-3 py-1.5 text-slate-300 dark:border-slate-700">Previous</span>{% endif %}
+                <span class="font-semibold text-slate-600 dark:text-slate-300">Page {{ reachability_page }} of {{ reachability_total_pages }}</span>
+                {% if reachability_page < reachability_total_pages %}<a href="/admin/network/outages?reachability_page={{ reachability_page + 1 }}" class="rounded-lg border border-slate-300 px-3 py-1.5 font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200">Next</a>{% else %}<span class="rounded-lg border border-slate-200 px-3 py-1.5 text-slate-300 dark:border-slate-700">Next</span>{% endif %}
+            </div>
+        </div>
+        {% endif %}
     </div>
     {% endif %}
 
@@ -137,6 +151,16 @@
                     <td class="text-slate-500">{{ row.incident.declared_by or '—' }}</td>
                     <td class="text-slate-500">{{ row.incident.note or '' }}</td>
                     <td>
+                                                {% if row.infrastructure_link %}
+                        <a href="/admin/support/tickets/{{ row.infrastructure_link.ticket_id }}" class="mb-2 inline-block text-blue-600 underline hover:text-blue-700 dark:text-blue-400">View infrastructure ticket</a>
+                        {% elif row.ticket_issue_action.allowed %}
+                        <form method="post" action="/admin/network/outages/{{ row.incident.id }}/infrastructure-ticket" class="mb-2">
+                            {% include "components/forms/csrf_input.html" %}
+                            <button type="submit" class="rounded-lg bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500">Create infrastructure ticket</button>
+                        </form>
+                        {% else %}
+                        <span class="mb-2 block max-w-[15rem] text-xs text-amber-700 dark:text-amber-300">{{ row.ticket_issue_action.reason }}</span>
+                        {% endif %}
                         {% if row.issue_work_order_action.allowed %}
                         <form method="post" action="/admin/network/outages/{{ row.incident.id }}/work-orders" class="mb-2 min-w-[15rem] space-y-1">
                             {% include "components/forms/csrf_input.html" %}
