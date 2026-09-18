@@ -1998,9 +1998,11 @@ DOMAIN = DomainSOT(
                         "expired lifts are idempotent."
                     ),
                     retries=(
-                        "One failed subscription rolls back independently and can retry "
-                        "with its correlation evidence; earlier subscription commands "
-                        "remain committed."
+                        "Known PostgreSQL lock/deadlock/serialization contention retries "
+                        "one rolled-back subscription command at most once. A typed "
+                        "sweep outcome identifies only deferred subscriptions for one "
+                        "delayed targeted task; later full sweeps remain the safety net. "
+                        "Other failures propagate and earlier commands remain committed."
                     ),
                 ),
                 errors=ErrorContract(
@@ -2066,6 +2068,7 @@ DOMAIN = DomainSOT(
                 ),
                 test_refs=(
                     "tests/test_fup_evaluate_commits.py",
+                    "tests/test_fup_contention_isolation.py",
                     "tests/test_fup_enforcement_hardening.py",
                     "tests/test_fup_hysteresis.py",
                     "tests/test_fup_notifications.py",
