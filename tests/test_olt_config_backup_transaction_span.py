@@ -112,3 +112,97 @@ def test_ssh_phase_uses_detached_values_only(monkeypatch: pytest.MonkeyPatch) ->
     assert "# OLT Full Running Config: gpon-jabi-1" in text
     assert "# Serial: SN-1234" in text
     assert "interface gpon 0/1" in text
+
+
+@pytest.mark.parametrize(
+    "reason", ["SSH username missing", "Shell prompt timed out", "Output too short"]
+)
+def test_fetch_failure_is_an_error_with_the_actual_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    _no_persistence: list[str],
+    tmp_path,
+    reason: str,
+) -> None:
+    from app.services.network import olt_protocol_adapters as adapters
+
+    target = _target("failing-olt")
+    adapter = MagicMock()
+    adapter.fetch_running_config.return_value = MagicMock(
+        success=False, data={}, message=reason
+    )
+    monkeypatch.setattr(
+        adapters, "get_protocol_adapter_from_config", lambda config: adapter
+    )
+    monkeypatch.setattr(task_module, "_load_backup_targets", lambda: [target])
+    monkeypatch.setattr(task_module, "BACKUP_DIR", tmp_path)
+    result = task_module.backup_all_olts()
+    assert result["backed_up"] == 0
+    assert result["errors"] == 1
+    assert result["skipped"] == 0
+    assert result["status"] == "failed"
+    assert result["error_details"][0]["error"] == reason
+    task_module.backup_alerts.queue_backup_failure_notification.assert_called_once()
+    assert list(tmp_path.rglob("*.txt")) == []
+
+
+@pytest.mark.parametrize("empty", ["", "  ", None])
+def test_success_flag_cannot_turn_empty_config_into_a_valid_backup(monkeypatch, empty):
+    from app.services.network import olt_protocol_adapters as adapters
+
+    adapter = MagicMock()
+    adapter.fetch_running_config.return_value = MagicMock(
+        success=True, data={"config_text": empty}
+    )
+    monkeypatch.setattr(
+        adapters, "get_protocol_adapter_from_config", lambda config: adapter
+    )
+    with pytest.raises(
+        task_module._ConfigFetchError, match="empty running configuration"
+    ):
+        task_module._fetch_running_config_via_ssh(_target("empty"))
+
+
+def test_soft_timeout_preserves_fetched_backups_and_reports_unprocessed_targets(
+    monkeypatch: pytest.MonkeyPatch,
+    _no_persistence: list[str],
+    tmp_path,
+) -> None:
+    from billiard.exceptions import SoftTimeLimitExceeded
+
+    targets = [_target("completed"), _target("timeout"), _target("not-started")]
+    monkeypatch.setattr(task_module, "_load_backup_targets", lambda: targets)
+    monkeypatch.setattr(task_module, "BACKUP_DIR", tmp_path)
+    fetch = MagicMock(side_effect=["valid config", SoftTimeLimitExceeded()])
+    monkeypatch.setattr(task_module, "_fetch_running_config_via_ssh", fetch)
+    cleanup = MagicMock()
+    monkeypatch.setattr(task_module, "_cleanup_old_backups", cleanup)
+    result = task_module.backup_all_olts()
+    assert fetch.call_count == 2
+    assert result["backed_up"] == 1
+    assert result["status"] == "partial"
+    assert result["timed_out"] is True
+    assert result["unprocessed"] == 2
+    assert result["errors"] == result["skipped"] == 0
+    assert len(list(tmp_path.rglob("*.txt"))) == 1
+    cleanup.assert_not_called()
+
+
+def test_fetch_adapter_propagates_soft_time_limit(monkeypatch):
+    from billiard.exceptions import SoftTimeLimitExceeded
+
+    from app.services.network import olt_protocol_adapters as adapters
+
+    adapter = MagicMock()
+    adapter.fetch_running_config.side_effect = SoftTimeLimitExceeded()
+    monkeypatch.setattr(
+        adapters, "get_protocol_adapter_from_config", lambda config: adapter
+    )
+    with pytest.raises(SoftTimeLimitExceeded):
+        task_module._fetch_running_config_via_ssh(_target("timeout"))
+
+
+def test_empty_backup_population_is_an_explicit_noop(monkeypatch, _no_persistence):
+    monkeypatch.setattr(task_module, "_load_backup_targets", lambda: [])
+    result = task_module.backup_all_olts()
+    assert result["status"] == "skipped"
+    assert result["total_targets"] == result["backed_up"] == result["errors"] == 0
