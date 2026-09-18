@@ -453,7 +453,7 @@ def test_render_ledger_csv_contains_split_debit_and_credit(db_session, subscribe
     csv_text = render_ledger_csv([debit_entry, credit_entry])
 
     assert (
-        "entry_id,customer_name,entry_type,source,debit_amount,credit_amount,currency,description,date"
+        "entry_id,customer_name,entry_type,source,invoice_number,debit_amount,credit_amount,currency,description,date"
         in csv_text
     )
     assert subscriber.name in csv_text

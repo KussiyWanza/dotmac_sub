@@ -1,6 +1,6 @@
 """Admin billing payments routes."""
 
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any, cast
 from uuid import UUID
 
@@ -243,6 +243,7 @@ def payment_new(
             "balance_value": state["balance_value"],
             "balance_display": state["balance_display"],
             "default_currency": state["default_currency"],
+            "payment_date": datetime.now(UTC).date().isoformat(),
         },
     )
 
@@ -388,6 +389,7 @@ def _payment_create_error_response(
     payment_method_id: str | None,
     idempotency_token: str | None,
     reference: str | None,
+    payment_date: date | None,
 ) -> Response:
     from fastapi import HTTPException as _HTTPException
     from pydantic import ValidationError as _ValidationError
@@ -446,6 +448,7 @@ def _payment_create_error_response(
             "request": request,
             **error_state,
             "reference": reference,
+            "payment_date": payment_date.isoformat() if payment_date else "",
             "current_user": get_current_user(request),
             "sidebar_stats": get_sidebar_stats(db),
             "balance_value": balance_value,
@@ -471,6 +474,7 @@ def payment_create_preview(
     payment_method_id: str | None = Form(None),
     reference: str | None = Form(None),
     memo: str | None = Form(None),
+    payment_date: date | None = Form(None),
     idempotency_token: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
@@ -498,6 +502,7 @@ def payment_create_preview(
             payment_method_id=payment_method_id,
             idempotency_token=idempotency_token,
             reference=reference,
+            payment_date=payment_date,
         )
     idempotency_token = (
         idempotency_token
@@ -520,6 +525,7 @@ def payment_create_preview(
             "payment_method_id": payment_method_id,
             "reference": reference,
             "memo": memo,
+            "payment_date": payment_date.isoformat() if payment_date else "",
             "idempotency_token": idempotency_token,
             "current_user": get_current_user(request),
             "sidebar_stats": get_sidebar_stats(db),
@@ -545,6 +551,7 @@ def payment_create(
     payment_method_id: str | None = Form(None),
     reference: str | None = Form(None),
     memo: str | None = Form(None),
+    payment_date: date | None = Form(None),
     idempotency_token: str | None = Form(None),
     preview_fingerprint: str = Form(...),
     control_fingerprint: str = Form(...),
@@ -567,6 +574,7 @@ def payment_create(
             payment_method_id=payment_method_id,
             reference=reference,
             memo=memo,
+            payment_date=payment_date,
             idempotency_token=idempotency_token,
             preview_fingerprint=preview_fingerprint,
             control_fingerprint=control_fingerprint,
@@ -638,6 +646,7 @@ def payment_create(
                 "request": request,
                 **error_state,
                 "reference": reference,
+                "payment_date": payment_date.isoformat() if payment_date else "",
                 "current_user": get_current_user(request),
                 "sidebar_stats": get_sidebar_stats(db),
                 "balance_value": balance_value,

@@ -375,8 +375,14 @@ def build_create_payload(
     reference: str | None,
     memo: str | None,
     invoice_id: str | None,
+    payment_date: date | None,
 ) -> PaymentCreate:
     """Build payment-create payload including optional allocation."""
+    paid_at = None
+    if payment_date and status != PaymentStatus.pending.value:
+        if payment_date > datetime.now(UTC).date():
+            raise ValueError("Payment date cannot be in the future")
+        paid_at = datetime.combine(payment_date, datetime.min.time(), tzinfo=UTC)
     allocations = None
     if invoice_id:
         from app.schemas.billing import PaymentAllocationApply
@@ -396,6 +402,7 @@ def build_create_payload(
         amount=amount,
         currency=currency.strip().upper(),
         status=PaymentStatus(status) if status else PaymentStatus.pending,
+        paid_at=paid_at,
         external_id=reference.strip() if reference and reference.strip() else None,
         memo=memo.strip() if memo else None,
         allocations=allocations,
@@ -1379,6 +1386,7 @@ def _prepare_payment_create(
     payment_method_id: str | None,
     reference: str | None,
     memo: str | None,
+    payment_date: date | None = None,
 ) -> PaymentCreatePreparedResult:
     """Resolve adapter inputs into the canonical payment owner request."""
     from app.services import web_billing_payment_forms as forms_svc
@@ -1414,6 +1422,7 @@ def _prepare_payment_create(
         reference=reference,
         memo=memo,
         invoice_id=invoice_id,
+        payment_date=payment_date,
     )
     return {
         "payload": payload,
@@ -1435,6 +1444,7 @@ def preview_payment_create(
     payment_method_id: str | None,
     reference: str | None,
     memo: str | None,
+    payment_date: date | None = None,
 ) -> PaymentCreatePreviewResult:
     prepared = _prepare_payment_create(
         db,
@@ -1447,6 +1457,7 @@ def preview_payment_create(
         payment_method_id=payment_method_id,
         reference=reference,
         memo=memo,
+        payment_date=payment_date,
     )
     payload = prepared["payload"]
     preview = manual_payment_recording_service.preview_manual_payment_recording(
@@ -1477,6 +1488,7 @@ def process_payment_create(
     payment_method_id: str | None,
     reference: str | None,
     memo: str | None,
+    payment_date: date | None = None,
     idempotency_token: str | None = None,
     preview_fingerprint: str | None = None,
     control_fingerprint: str | None = None,
@@ -1495,6 +1507,7 @@ def process_payment_create(
         payment_method_id=payment_method_id,
         reference=reference,
         memo=memo,
+        payment_date=payment_date,
     )
     payload = prepared["payload"]
     resolved_token = idempotency_token or secrets.token_urlsafe(24)
@@ -1577,6 +1590,7 @@ def process_payment_create_with_audit(
     payment_method_id: str | None,
     reference: str | None,
     memo: str | None,
+    payment_date: date | None = None,
     idempotency_token: str | None = None,
     preview_fingerprint: str | None = None,
     control_fingerprint: str | None = None,
@@ -1610,6 +1624,7 @@ def process_payment_create_with_audit(
         payment_method_id=payment_method_id,
         reference=reference,
         memo=memo,
+        payment_date=payment_date,
         idempotency_token=resolved_token,
         preview_fingerprint=preview_fingerprint,
         control_fingerprint=control_fingerprint,

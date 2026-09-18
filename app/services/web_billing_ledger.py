@@ -338,7 +338,9 @@ def build_ledger_entries_data(
             else:
                 debit_count += int(row.entry_count or 0)
 
-        row_query = ledger_query.options(joinedload(LedgerEntry.account))
+        row_query = ledger_query.options(
+            joinedload(LedgerEntry.account), joinedload(LedgerEntry.invoice)
+        )
         if want_type is not None:
             row_query = row_query.filter(LedgerEntry.entry_type == want_type)
         ledger_rows = (
@@ -653,6 +655,7 @@ def render_ledger_csv(entries: list[LedgerEntry]) -> str:
             "customer_name",
             "entry_type",
             "source",
+            "invoice_number",
             "debit_amount",
             "credit_amount",
             "currency",
@@ -666,12 +669,17 @@ def render_ledger_csv(entries: list[LedgerEntry]) -> str:
         # Prefer the real transaction date; created_at is the import instant for
         # migrated rows and would mislabel every one as 2026-03-15.
         entry_date = getattr(entry, "effective_date", None) or entry.created_at
+        invoice = getattr(entry, "invoice", None)
+        invoice_number = getattr(invoice, "invoice_number", None) or getattr(
+            entry, "invoice_number", None
+        )
         writer.writerow(
             [
                 str(entry.id),
                 _entry_customer_name(entry),
                 entry_type,
                 getattr(getattr(entry, "source", None), "value", "") or "",
+                invoice_number or "",
                 f"{amount:.2f}" if entry_type == "debit" else "",
                 f"{amount:.2f}" if entry_type == "credit" else "",
                 display_format.currency_code(entry.currency),
