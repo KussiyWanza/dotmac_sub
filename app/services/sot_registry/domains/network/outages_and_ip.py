@@ -943,8 +943,8 @@ SERVICES: tuple[SOTService, ...] = (
                 "docs/SOT_RELATIONSHIP_MAP.md",
             ),
             test_refs=(
-                "tests/services/topology/test_outage_work_order_handoff.py",
-                "tests/architecture/test_outage_work_order_handoff_boundary.py",
+                "tests/services/topology/test_outage_work_order_handoff_contract.py",
+                "tests/architecture/test_ticket_work_order_handoff_boundary.py",
             ),
         ),
     ),

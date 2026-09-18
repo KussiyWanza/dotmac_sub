@@ -1272,11 +1272,13 @@ class OutageIncidentWorkOrderLink(Base):
     __tablename__ = "outage_incident_work_order_links"
     __table_args__ = (
         UniqueConstraint(
-            "incident_id", "work_order_id",
+            "incident_id",
+            "work_order_id",
             name="uq_outage_incident_work_order_links_pair",
         ),
         UniqueConstraint(
-            "incident_id", "idempotency_key",
+            "incident_id",
+            "idempotency_key",
             name="uq_outage_incident_work_order_links_idempotency",
         ),
         Index("ix_outage_incident_work_order_links_incident", "incident_id"),

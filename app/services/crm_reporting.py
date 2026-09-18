@@ -1937,7 +1937,7 @@ def _service_quality(db: Session, query: CrmReportQuery) -> CrmReportPage:
         for item in db.scalars(
             select(WorkOrder).where(WorkOrder.is_active.is_(True))
         ).all()
-        if _within(item.created_at, query)
+        if item.subscriber_id is not None and _within(item.created_at, query)
     )
     subscription_owner: dict[UUID, UUID] = {
         subscription_id: subscriber_id

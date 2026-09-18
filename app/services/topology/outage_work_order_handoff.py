@@ -25,7 +25,7 @@ from app.schemas.network import (
     InfrastructureWorkOrderHeaderCreate,
     InfrastructureWorkOrderIssueRequest,
 )
-from app.services.audit_adapter import stage_audit_event
+from app.services.audit_adapter import AuditActor, stage_audit_event
 from app.services.common import coerce_uuid
 from app.services.domain_errors import DomainError
 from app.services.events import EventType, emit_event
@@ -359,8 +359,7 @@ def _issue_work_order(
         action="outage.infrastructure_work_order_issued",
         entity_type="outage_incident",
         entity_id=str(incident.id),
-        actor_type=AuditActorType.user,
-        actor_id=str(actor_uuid),
+        actor=AuditActor(actor_type=AuditActorType.user, actor_id=str(actor_uuid)),
         request_id=command.request_id or str(command.context.command_id),
         metadata={
             "owner": "network.outage_work_order_handoff",

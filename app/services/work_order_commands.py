@@ -587,7 +587,10 @@ class WorkOrderCommands:
             db.query(WorkOrder).filter(WorkOrder.public_id == public_id).one_or_none()
         )
         if existing is not None:
-            if dict(existing.metadata_ or {}).get("native_create_fingerprint") == command_fingerprint:
+            if (
+                dict(existing.metadata_ or {}).get("native_create_fingerprint")
+                == command_fingerprint
+            ):
                 return existing
             raise HTTPException(status_code=409, detail="Work order id already exists")
         supplied_metadata.update(

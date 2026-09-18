@@ -806,7 +806,11 @@ HELP_ONLY_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         "Open a work order to confirm its customer, linked ticket or project, scope, location, and current assignment.",
         "Create or update planning details before assigning a technician and schedule.",
         "Track notes, materials, expenses, evidence, and completion from the work-order detail page.",
+        "For shared outages, open the outage console, confirm the incident, scope revision, infrastructure ticket, and team assignment, then issue infrastructure field work with a clear reason.",
         route_templates=("/admin/dispatch/work-orders",),
+        notes=(
+            "Shared outage work has no individual customer target; verify the outage scope and infrastructure location before issuing it.",
+        ),
     ),
     _guide(
         "field-live-map",
@@ -1473,6 +1477,12 @@ _ACTION_SPECS: dict[str, tuple[_ActionSpec, ...]] = {
             permission="operations:dispatch:write",
         ),
         _action("track-work-order", "Track work-order delivery", 3),
+        _action(
+            "issue-outage-work-order",
+            "Issue shared-outage field work",
+            4,
+            permission="operations:dispatch:write",
+        ),
     ),
     "field-live-map": (
         _action("filter-field-map", "Filter the field map", 0),
