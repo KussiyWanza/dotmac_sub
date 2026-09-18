@@ -19,6 +19,12 @@ operator out.
 - `renew_authentication_session` is the only rotation owner.
 - It locks the matching active session row before deciding what the supplied
   token means. Other renewals for that session wait for the lock.
+- Runtime decision time is sampled after the row lock is acquired. Sampling
+  before waiting can make a legitimate duplicate appear older than the
+  completed rotation, or allow a replay whose overlap expired while waiting.
+  An explicitly supplied `observed_at` remains authoritative for deterministic
+  callers. Client binding, session expiry and the five-second limit are not
+  relaxed.
 - The first current-token request rotates the refresh token once.
 - The immediately previous token may be replayed for five seconds only when its
   recorded browser binding still matches. That replay issues access through the
@@ -60,7 +66,9 @@ expiry in a response header so the browser can schedule the following renewal.
 
 ## Verification
 
-- `tests/test_auth_session_refresh.py` covers the overlap and fail-closed rules.
+- `tests/test_auth_session_refresh.py` covers the overlap and fail-closed rules,
+  including deterministic lock-order clock inversion and overlap expiry during
+  a lock wait. Both cases must use the post-lock runtime decision time.
 - `tests/integration/test_auth_session_refresh_concurrency.py` proves that two
   PostgreSQL workers rotate once and replay once under the row lock.
 - `tests/js/session_refresh.test.js` covers same-tab and cross-tab sharing.
