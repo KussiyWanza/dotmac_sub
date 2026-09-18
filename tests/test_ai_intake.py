@@ -1115,3 +1115,68 @@ def test_classifier_failure_uses_existing_clarification_limit(db_session, monkey
     assert exhausted.follow_up_count == 1
     assert exhausted.classifier_attempt.retry_count == 2
     assert exhausted.classifier_attempt.retries_exhausted is True
+
+
+@pytest.mark.parametrize("value", [True, False, None])
+def test_classifier_boolean_facts_match_the_published_schema(
+    db_session,
+    monkeypatch,
+    value: bool | None,
+) -> None:
+    _config(db_session)
+    payload = json.loads(_classification())
+    payload["message_facts"] = {"router_powered": value, "restart_attempted": value}
+    gateway = _Gateway(json.dumps(payload), provider="primary", model="deepseek-flash")
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+    outcome = ai_intake.classify_message(db_session, _request())
+    assert outcome.status is AiIntakeStatus.classified
+    assert outcome.classification is not None
+    assert outcome.classification.message_facts.router_powered is value
+    assert outcome.classification.message_facts.restart_attempted is value
+    prompt = str(gateway.calls[-1]["system"])
+    assert (
+        "router_powered and restart_attempted must be JSON true, false, or null"
+        in prompt
+    )
+    schema_text = prompt.split("output the facts object, not the schema): ", 1)[1]
+    assert json.loads(schema_text) == AiIntakeExtractedFacts.model_json_schema()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("router_powered", "true"),
+        ("restart_attempted", "false"),
+        ("router_powered", "unknown"),
+        ("restart_attempted", "yes"),
+        ("connectivity_state", "connected-but-not-browsing"),
+        ("device_scope", "all-devices"),
+    ],
+)
+def test_bad_fact_types_remain_rejected_and_reach_existing_exhaustion_path(
+    db_session,
+    monkeypatch,
+    field: str,
+    value: str,
+) -> None:
+    _config(db_session)
+    payload = json.loads(_classification())
+    payload["message_facts"] = {field: value}
+    gateway = _Gateway(json.dumps(payload), provider="primary", model="deepseek-flash")
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+    outcome = ai_intake.classify_message(
+        db_session,
+        _request(classifier_failure_count=1),
+    )
+    assert outcome.classification is None
+    assert outcome.status is AiIntakeStatus.classification_unavailable
+    assert (
+        outcome.classifier_attempt.failure_kind
+        is AiClassifierFailureKind.schema_validation_failure
+    )
+    assert outcome.classifier_attempt.retries_exhausted is True
+    assert outcome.reason is AiIntakeReason.classifier_unavailable_after_retries
+    assert any(
+        issue.location == f"message_facts.{field}"
+        for issue in outcome.classifier_attempt.validation_issues
+    )
