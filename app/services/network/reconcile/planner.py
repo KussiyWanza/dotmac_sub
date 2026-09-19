@@ -1815,8 +1815,7 @@ def _standard_wifi_paths(root: str | None) -> Tr069WifiParameterPaths:
         # these units and causes GenieACS to fault with "Invalid parameter
         # path" when it is used for Wi-Fi updates.
         psk_path=(
-            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1."
-            "KeyPassphrase"
+            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.KeyPassphrase"
         ),
         channel="InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.Channel",
         security_mode=(
