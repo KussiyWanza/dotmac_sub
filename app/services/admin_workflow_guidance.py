@@ -536,10 +536,13 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         "Billing staff",
         "Manage a customer invoice through its proper lifecycle.",
         ("/admin/billing/invoices",),
-        "Create or open the invoice and verify customer, account, lines, amounts, dates, tax, and memo. The issue date defaults to today; selecting a historical invoice date requires billing:invoice:update permission.",
+        "Create or open the invoice and verify customer, account, lines, amounts, dates, tax, and memo. On the invoice list, account, customer, status, and UTC creation-date filters narrow the same result set together; clearing filters preserves the account entry scope. The issue date defaults to today; selecting a historical invoice date requires billing:invoice:update permission.",
         "Save drafts first; issue and send only after review.",
         "Use Void only when an invoice should never have existed; use Write Off for valid debt that will not be collected.",
-        notes=("Issued invoices use post-issue actions, not direct edits.",),
+        notes=(
+            "Issued invoices use post-issue actions, not direct edits.",
+            "The Unpaid view includes collectible issued, partially paid, and overdue balances; it excludes drafts, proformas, and zero-balance invoices.",
+        ),
     ),
     _guide(
         "credit",
