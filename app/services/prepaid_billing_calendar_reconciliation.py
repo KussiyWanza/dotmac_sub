@@ -67,7 +67,9 @@ from app.services.owner_commands import (
 from app.services.prepaid_service_renewals import (
     PrepaidSettlementPeriod,
     PrepaidSettlementPeriodQuery,
+    PrepaidSubscriptionSettlementPeriodQuery,
     resolve_prepaid_settlement_period,
+    resolve_prepaid_subscription_settlement_period,
 )
 from app.timezone import APP_TIMEZONE_NAME
 
@@ -109,6 +111,7 @@ class PrepaidBillingCalendarCorrectionKind(enum.Enum):
 
     retired_utc_midnight = "retired_utc_midnight"
     lapsed_payment_period = "lapsed_payment_period"
+    extension_covered_payment_period = "extension_covered_payment_period"
 
 
 _REASONS: dict[PrepaidBillingCalendarDisposition, str] = {
@@ -167,6 +170,10 @@ _ELIGIBLE_REASONS: dict[PrepaidBillingCalendarCorrectionKind, str] = {
         "The settled payment occurred after the stale invoice period began, "
         "and the older billing anchor proves the lapsed service period should "
         "start on the settlement business date."
+    ),
+    PrepaidBillingCalendarCorrectionKind.extension_covered_payment_period: (
+        "An exact applied service-extension grant covered the payment date, "
+        "and the current dates match the retired double-extension calculation."
     ),
 }
 
@@ -231,6 +238,28 @@ class PrepaidBillingCalendarPreview:
         return (
             datetime.fromisoformat(self.proposed_ends_on).date() - timedelta(days=1)
         ).isoformat()
+
+    @property
+    def access_reconciliation_applicable(self) -> bool:
+        return self.correction_kind in {
+            PrepaidBillingCalendarCorrectionKind.lapsed_payment_period,
+            PrepaidBillingCalendarCorrectionKind.extension_covered_payment_period,
+        }
+
+    @property
+    def correction_label(self) -> str:
+        labels = {
+            PrepaidBillingCalendarCorrectionKind.retired_utc_midnight: (
+                "Retired UTC calendar dates"
+            ),
+            PrepaidBillingCalendarCorrectionKind.lapsed_payment_period: (
+                "Lapsed payment period"
+            ),
+            PrepaidBillingCalendarCorrectionKind.extension_covered_payment_period: (
+                "Applied extension counted twice"
+            ),
+        }
+        return labels.get(self.correction_kind, "Not classified")
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,6 +430,63 @@ def _lapsed_payment_period_candidate(
     return anchor < current_start < proposed.starts_at < current_end < proposed.ends_at
 
 
+def _extension_covered_payment_period_candidate(
+    db: Session,
+    *,
+    invoice: Invoice,
+    subscription: Subscription,
+    payment_effective_at: datetime,
+    payment_period: PrepaidSettlementPeriod,
+    coverage_period: PrepaidSettlementPeriod,
+    covered_through: datetime | None,
+) -> bool:
+    """Prove the retired path applied one exact extension twice."""
+
+    if (
+        invoice.billing_period_start is None
+        or invoice.billing_period_end is None
+        or subscription.next_billing_at is None
+        or covered_through is None
+        or covered_through <= payment_period.starts_at
+        or not _same_instant(invoice.billing_period_start, payment_period.starts_at)
+        or not _same_instant(invoice.billing_period_end, payment_period.ends_at)
+        or not _same_instant(coverage_period.starts_at, covered_through)
+    ):
+        return False
+    extension_entries = list(
+        db.scalars(
+            select(ServiceExtensionEntry)
+            .join(
+                ServiceExtension,
+                ServiceExtension.id == ServiceExtensionEntry.extension_id,
+            )
+            .where(
+                ServiceExtensionEntry.subscription_id == subscription.id,
+                ServiceExtensionEntry.subscriber_id == subscription.subscriber_id,
+                ServiceExtension.status == ServiceExtensionStatus.applied,
+                ServiceExtensionEntry.grant_starts_at.isnot(None),
+                ServiceExtensionEntry.grant_starts_at <= payment_effective_at,
+                ServiceExtensionEntry.grant_ends_at.isnot(None),
+                ServiceExtensionEntry.grant_ends_at > payment_effective_at,
+            )
+        ).all()
+    )
+    if len(extension_entries) != 1:
+        return False
+    entry = extension_entries[0]
+    if (
+        entry.previous_next_billing_at is None
+        or entry.grant_starts_at is None
+        or entry.grant_ends_at is None
+        or not _same_instant(entry.previous_next_billing_at, entry.grant_starts_at)
+        or not _same_instant(entry.grant_ends_at, covered_through)
+    ):
+        return False
+    grant_duration = _utc(entry.grant_ends_at) - _utc(entry.grant_starts_at)
+    retired_anchor = _utc(invoice.billing_period_end) + grant_duration
+    return _same_instant(subscription.next_billing_at, retired_anchor)
+
+
 def preview_prepaid_billing_calendar_reconciliation(
     db: Session, invoice_id: UUID
 ) -> PrepaidBillingCalendarPreview:
@@ -534,12 +620,24 @@ def preview_prepaid_billing_calendar_reconciliation(
             timezone_name="UTC",
         )
     )
-    proposed = resolve_prepaid_settlement_period(
+    payment_period = resolve_prepaid_settlement_period(
         PrepaidSettlementPeriodQuery(
             effective_at=effective_at,
             billing_cycle=subscription.billing_cycle,
         )
     )
+    coverage_decision = resolve_prepaid_subscription_settlement_period(
+        db,
+        PrepaidSubscriptionSettlementPeriodQuery(
+            subscription_id=subscription.id,
+            account_id=subscription.subscriber_id,
+            effective_at=effective_at,
+            billing_cycle=subscription.billing_cycle,
+            exclude_source_invoice_id=invoice.id,
+        ),
+    )
+    coverage_period = coverage_decision.period
+    proposed = payment_period
     correction_kind: PrepaidBillingCalendarCorrectionKind | None = None
     if (
         _same_instant(invoice.billing_period_start, legacy.starts_at)
@@ -553,9 +651,22 @@ def preview_prepaid_billing_calendar_reconciliation(
     elif _lapsed_payment_period_candidate(
         invoice=invoice,
         subscription=subscription,
-        proposed=proposed,
+        proposed=payment_period,
     ):
         correction_kind = PrepaidBillingCalendarCorrectionKind.lapsed_payment_period
+    elif _extension_covered_payment_period_candidate(
+        db,
+        invoice=invoice,
+        subscription=subscription,
+        payment_effective_at=effective_at,
+        payment_period=payment_period,
+        coverage_period=coverage_period,
+        covered_through=coverage_decision.covered_through,
+    ):
+        correction_kind = (
+            PrepaidBillingCalendarCorrectionKind.extension_covered_payment_period
+        )
+        proposed = coverage_period
     else:
         return _preview(
             invoice=invoice,
@@ -605,15 +716,19 @@ def preview_prepaid_billing_calendar_reconciliation(
             proposed=proposed,
             disposition=PrepaidBillingCalendarDisposition.anchor_changed,
         )
-    if db.scalar(
-        select(ServiceExtensionEntry.id)
-        .join(
-            ServiceExtension,
-            ServiceExtension.id == ServiceExtensionEntry.extension_id,
-        )
-        .where(
-            ServiceExtensionEntry.subscription_id == subscription.id,
-            ServiceExtension.status == ServiceExtensionStatus.applied,
+    if (
+        correction_kind
+        is not PrepaidBillingCalendarCorrectionKind.extension_covered_payment_period
+        and db.scalar(
+            select(ServiceExtensionEntry.id)
+            .join(
+                ServiceExtension,
+                ServiceExtension.id == ServiceExtensionEntry.extension_id,
+            )
+            .where(
+                ServiceExtensionEntry.subscription_id == subscription.id,
+                ServiceExtension.status == ServiceExtensionStatus.applied,
+            )
         )
     ):
         return _preview(
@@ -997,7 +1112,10 @@ def reconcile_prepaid_billing_calendar(
         remaining_blockers: tuple[str, ...] = ()
         if (
             current.correction_kind
-            is PrepaidBillingCalendarCorrectionKind.lapsed_payment_period
+            in {
+                PrepaidBillingCalendarCorrectionKind.lapsed_payment_period,
+                PrepaidBillingCalendarCorrectionKind.extension_covered_payment_period,
+            }
             and corrected_start <= now < corrected_end
         ):
             access_consequence_evaluated = True

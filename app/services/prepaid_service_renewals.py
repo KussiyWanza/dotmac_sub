@@ -346,6 +346,26 @@ class PrepaidSettlementPeriod:
     timezone_name: str
 
 
+@dataclass(frozen=True, slots=True)
+class PrepaidSubscriptionSettlementPeriodQuery:
+    """Resolve a paid period from exact current coverage or settlement day."""
+
+    subscription_id: UUID
+    account_id: UUID
+    effective_at: datetime
+    billing_cycle: BillingCycle
+    timezone_name: str = APP_TIMEZONE_NAME
+    exclude_source_invoice_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PrepaidSubscriptionSettlementPeriod:
+    """Selected paid period with the exact coverage boundary that selected it."""
+
+    period: PrepaidSettlementPeriod
+    covered_through: datetime | None
+
+
 _SETTLEMENT_CYCLE_INTERVAL: dict[BillingCycle, tuple[IntervalUnit, int]] = {
     BillingCycle.daily: (IntervalUnit.day, 1),
     BillingCycle.weekly: (IntervalUnit.week, 1),
@@ -422,6 +442,148 @@ def resolve_prepaid_settlement_period(
         starts_on=interval.starts_at.astimezone(zone).date(),
         ends_on=interval.ends_at.astimezone(zone).date(),
         timezone_name=query.timezone_name,
+    )
+
+
+def _contiguous_prepaid_coverage_end(
+    db: Session,
+    *,
+    subscription_id: UUID,
+    account_id: UUID,
+    as_of: datetime,
+    exclude_source_invoice_id: UUID | None,
+) -> datetime | None:
+    """Resolve uninterrupted exact coverage containing ``as_of``."""
+
+    observed_at = _utc(as_of)
+    entitlement_query = select(
+        ServiceEntitlement.id,
+        ServiceEntitlement.starts_at,
+        ServiceEntitlement.ends_at,
+    ).where(
+        ServiceEntitlement.subscription_id == subscription_id,
+        ServiceEntitlement.account_id == account_id,
+        ServiceEntitlement.status == ServiceEntitlementStatus.active,
+        ServiceEntitlement.ends_at > observed_at,
+    )
+    if exclude_source_invoice_id is not None:
+        entitlement_query = entitlement_query.where(
+            (ServiceEntitlement.source_invoice_id.is_(None))
+            | (ServiceEntitlement.source_invoice_id != exclude_source_invoice_id)
+        )
+    intervals: list[tuple[datetime, datetime, UUID]] = [
+        (_utc(row.starts_at), _utc(row.ends_at), row.id)
+        for row in db.execute(entitlement_query).all()
+    ]
+    extension_rows = db.execute(
+        select(
+            ServiceExtensionEntry.id,
+            ServiceExtensionEntry.grant_starts_at,
+            ServiceExtensionEntry.grant_ends_at,
+        )
+        .join(
+            ServiceExtension,
+            ServiceExtension.id == ServiceExtensionEntry.extension_id,
+        )
+        .where(
+            ServiceExtensionEntry.subscription_id == subscription_id,
+            ServiceExtensionEntry.subscriber_id == account_id,
+            ServiceExtension.status == ServiceExtensionStatus.applied,
+            ServiceExtensionEntry.grant_starts_at.isnot(None),
+            ServiceExtensionEntry.grant_ends_at.isnot(None),
+            ServiceExtensionEntry.grant_ends_at > observed_at,
+        )
+    ).all()
+    for row in extension_rows:
+        assert row.grant_starts_at is not None
+        assert row.grant_ends_at is not None
+        intervals.append((_utc(row.grant_starts_at), _utc(row.grant_ends_at), row.id))
+
+    cursor = observed_at
+    found = False
+    for starts_at, ends_at, _source_id in sorted(
+        intervals,
+        key=lambda item: (item[0], item[1], item[2]),
+    ):
+        if ends_at <= cursor:
+            continue
+        if starts_at > cursor:
+            break
+        found = True
+        cursor = max(cursor, ends_at)
+    return cursor if found else None
+
+
+def resolve_prepaid_subscription_settlement_period(
+    db: Session,
+    query: PrepaidSubscriptionSettlementPeriodQuery,
+) -> PrepaidSubscriptionSettlementPeriod:
+    """Start a paid period after exact live coverage, otherwise on payment day.
+
+    This deliberately ignores ``Subscription.next_billing_at``. That mutable
+    projection cannot prove service coverage and previously caused an inferred
+    extension delta to be added twice. Only active entitlement intervals and
+    applied, non-reversed extension grants can defer the new paid period.
+    """
+
+    covered_through = _contiguous_prepaid_coverage_end(
+        db,
+        subscription_id=query.subscription_id,
+        account_id=query.account_id,
+        as_of=query.effective_at,
+        exclude_source_invoice_id=query.exclude_source_invoice_id,
+    )
+    if covered_through is None:
+        period = resolve_prepaid_settlement_period(
+            PrepaidSettlementPeriodQuery(
+                effective_at=query.effective_at,
+                billing_cycle=query.billing_cycle,
+                timezone_name=query.timezone_name,
+            )
+        )
+        return PrepaidSubscriptionSettlementPeriod(
+            period=period,
+            covered_through=None,
+        )
+
+    interval_spec = _SETTLEMENT_CYCLE_INTERVAL.get(query.billing_cycle)
+    if interval_spec is None:
+        _error(
+            "unsupported_cadence",
+            "The prepaid settlement billing cadence is unsupported.",
+            billing_cycle=str(query.billing_cycle),
+        )
+    interval_unit, interval_count = interval_spec
+    cadence = BillingCadence(
+        rate_basis=RateBasis.fixed_per_service_period,
+        rate_unit=interval_unit,
+        rate_quantity=Decimal("1"),
+        service_interval_unit=interval_unit,
+        service_interval_count=interval_count,
+        invoice_interval_unit=interval_unit,
+        invoice_interval_count=interval_count,
+        collection_timing=CollectionTiming.advance,
+        alignment=CadenceAlignment.contract_anniversary,
+        timezone_name=query.timezone_name,
+        end_of_month_rule=EndOfMonthRule.clamp_to_month_end,
+        proration_policy=ProrationPolicy.none,
+    )
+    interval = service_period(
+        cadence=cadence,
+        contract_start=covered_through,
+    )
+    zone = cadence.zone()
+    starts_at = interval.starts_at.astimezone(UTC)
+    ends_at = interval.ends_at.astimezone(UTC)
+    return PrepaidSubscriptionSettlementPeriod(
+        period=PrepaidSettlementPeriod(
+            starts_at=starts_at,
+            ends_at=ends_at,
+            starts_on=starts_at.astimezone(zone).date(),
+            ends_on=ends_at.astimezone(zone).date(),
+            timezone_name=query.timezone_name,
+        ),
+        covered_through=covered_through,
     )
 
 
@@ -3528,9 +3690,8 @@ class BillingAnchorAuthority(enum.StrEnum):
     policies from two finalizers, and both are load-bearing:
 
     * ``_finalize_invoice_payment_effects`` (payment creation, allocation,
-      refund, reversal) re-anchored a lapsed prepaid invoice and deliberately
-      carried its *inferred* extension delta forward, never writing the anchor
-      backwards.
+      refund, reversal) re-anchors a lapsed prepaid invoice after exact current
+      coverage and never writes the anchor backwards.
     * ``finalize_invoice_application_for_owner`` (reviewed prepaid-draft
       reconciliation) additionally projected the anchor unconditionally from
       the exact entitlements, overriding that inferred delta.
@@ -3596,11 +3757,12 @@ def project_prepaid_billing_anchor_for_invoice(
     * ``funding_observation`` — no. A payment settling is an observation that
       funding changed; it carries no statement about why the anchor is ahead.
       That lead may be a ``financial.service_extensions`` grant, a
-      ``financial.subscription_billing_grants`` grant, or the extension delta
-      the payment owner deliberately preserved in the same transaction while
-      re-anchoring a lapsed renewal. Overwriting it would silently claw back
-      service another owner granted, so advancement is monotonic while this
-      invoice's own entitlements survive.
+      ``financial.subscription_billing_grants`` grant, or another unresolved
+      projection. Exact extension coverage is already part of the coverage
+      floor; payment re-anchoring never infers a second extension delta.
+      Overwriting the lead would silently claw back service another owner
+      granted, so advancement is monotonic while this invoice's own
+      entitlements survive.
     * ``reviewed_reconciliation`` — yes. A named owner has just rewritten this
       invoice's documentary period from an operator-confirmed, fingerprint-
       bound preview and holds exact entitlement evidence for it. A stale anchor
@@ -5269,6 +5431,8 @@ __all__ = [
     "PrepaidTriggerExecutionConflictError",
     "PrepaidSettlementPeriod",
     "PrepaidSettlementPeriodQuery",
+    "PrepaidSubscriptionSettlementPeriod",
+    "PrepaidSubscriptionSettlementPeriodQuery",
     "PrepaidServiceRenewalPreview",
     "PrepaidServiceRenewalError",
     "PrepaidServiceRenewalResult",
@@ -5298,6 +5462,7 @@ __all__ = [
     "resolve_prepaid_monthly_charge_detail",
     "resolve_prepaid_monthly_charges",
     "resolve_prepaid_settlement_period",
+    "resolve_prepaid_subscription_settlement_period",
     "run_due_prepaid_service_renewals",
     "stage_prepaid_service_renewed_outcome",
 ]

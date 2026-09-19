@@ -145,6 +145,32 @@ def test_lapsed_payment_review_explains_scoped_access_restoration(monkeypatch):
     assert "independent blocker is preserved" in review.action_form.impact
 
 
+def test_extension_double_count_review_explains_scoped_access_restoration(monkeypatch):
+    preview = _preview(
+        correction_kind=(
+            PrepaidBillingCalendarCorrectionKind.extension_covered_payment_period
+        )
+    )
+    monkeypatch.setattr(
+        web_service,
+        "preview_prepaid_billing_calendar_reconciliation",
+        lambda _db, _invoice_id: preview,
+    )
+    monkeypatch.setattr(
+        web_service.context_signing,
+        "sign_context_token",
+        lambda _db, _claims: "signed-calendar-review",
+    )
+
+    review = web_service.build_admin_review(
+        object(), invoice_id=INVOICE_ID, actor=ACTOR, now=NOW
+    )
+
+    assert preview.correction_label == "Applied extension counted twice"
+    assert preview.access_reconciliation_applicable is True
+    assert "resolves only the prepaid lock" in review.action_form.impact
+
+
 def test_confirmation_binds_actor_invoice_fingerprint_and_idempotency(monkeypatch):
     captured = {}
     released = []

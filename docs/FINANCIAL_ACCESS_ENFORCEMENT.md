@@ -171,13 +171,15 @@ fingerprint-bound preview and explicitly allow retraction, and an applied
 service extension quarantines the candidate. Confirmation aligns the anchor to
 the entitlement end and records durable audit evidence without posting money.
 
-For a lapsed prepaid settlement, the replacement period starts on the
-payment's `Africa/Lagos` calendar date. The owner resolves WAT local midnight
-and advances the typed calendar cadence before converting the half-open period
-boundaries back to UTC for storage. A payment between 00:00 and 00:59 WAT is
-therefore part of the new WAT day even though its UTC timestamp is on the
-previous date. Date-only customer and operator projections convert the stored
-boundary back to the configured display timezone before rendering it.
+For a prepaid settlement, the replacement period starts after the exact
+uninterrupted coverage containing the payment instant. That coverage is the
+union of active entitlements and applied, non-reversed service-extension grant
+intervals; a mutable billing anchor alone is not evidence. If no exact coverage
+contains the payment, a lapsed replacement starts on the payment's
+`Africa/Lagos` calendar date. The owner advances the typed cadence from the
+selected boundary and stores UTC instants. Canceled or reversed extensions can
+therefore never defer a paid period, and an applied extension is not added a
+second time after the new paid month.
 
 A cash-funded prepaid renewal creates a document only after the complete charge
 is available. The owner creates one draft and base-subscription line, issues and
@@ -187,16 +189,18 @@ the paid line. Underfunding creates no invoice or partial application. New
 renewals no longer write the historical invoice-less account-adjustment debit.
 See `docs/designs/FUNDED_PREPAID_RENEWAL_INVOICING.md`.
 
-Historical paid periods that exactly match the retired UTC-midnight rule, plus
-paid lapsed periods proved by an older stale anchor and strict documentary/
-payment-period ordering, are owned by
+Historical paid periods that exactly match the retired UTC-midnight rule, paid
+lapsed periods proved by an older stale anchor and strict documentary/payment-
+period ordering, and the exact signature where an applied extension was carried
+forward twice are owned by
 `financial.prepaid_billing_calendar_reconciliation`. Its admin queue is
 preview-first and fingerprint-bound: only one unambiguous invoice, payment
 settlement, base line, entitlement, calendar defect, and access-lock snapshot
-can be corrected. Refunds, reversals, applied extensions, usage quota periods,
-coverage overlaps, multiple evidence rows, or an unproved anchor relationship
-are quarantined for manual review. Reversed extension history does not provide
-coverage and does not block an otherwise proved correction.
+can be corrected. An applied extension is accepted only for the exact double-
+extension signature; other applied extensions, refunds, reversals, usage quota
+periods, coverage overlaps, multiple evidence rows, or an unproved anchor
+relationship are quarantined for manual review. Canceled and reversed extension
+history does not provide coverage and does not block an otherwise proved correction.
 
 Every repair records zero economic delta and stages invoice evidence, audit,
 event, and idempotency rows atomically. A current lapsed-payment repair also

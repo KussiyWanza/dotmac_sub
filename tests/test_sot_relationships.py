@@ -534,6 +534,7 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "financial.payments",
         "financial.billing_tax_resolution",
         "financial.prepaid_funding_reconstruction",
+        "financial.service_extensions",
         "financial.subscription_billing_grants",
         "financial.subscription_billing_treatments",
         "events.dispatcher",

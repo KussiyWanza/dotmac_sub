@@ -9,12 +9,14 @@ calendar decision. A lapsed settlement begins at midnight on the payment's
 `Africa/Lagos` business date, advances through the subscription's typed billing
 cadence, and persists the resulting boundaries as UTC instants.
 
-`financial.prepaid_billing_calendar_reconciliation` owns two reviewed repairs:
+`financial.prepaid_billing_calendar_reconciliation` owns three reviewed repairs:
 historical periods created by the retired UTC-midnight calculation, and a paid
 lapsed period that remained attached to older documentary coverage and a stale
-billing anchor. The admin routes and templates only project its classification
-and submit a signed, actor-bound, fingerprinted command. They do not calculate
-eligibility, dates, or access consequences.
+billing anchor, plus the exact defect where payment-date re-anchoring carried an
+applied service-extension duration forward a second time. The admin routes and
+templates only project its classification and submit a signed, actor-bound,
+fingerprinted command. They do not calculate eligibility, dates, or access
+consequences.
 
 ## Safe cohort
 
@@ -32,12 +34,17 @@ preview and again under lock:
     its anchor still equals that invoice end; or
   - the anchor predates the recorded invoice period and the payment-derived WAT
     period has the strict ordering `stale anchor < recorded start < corrected
-    start < recorded end < corrected end`;
+    start < recorded end < corrected end`; or
+  - exactly one applied extension covers the payment instant, its immutable
+    grant begins at its recorded previous anchor, the paid invoice is the exact
+    payment-date period, and the current anchor equals the invoice end plus that
+    same grant duration. The corrected paid period starts at the grant end;
 - exactly one active entitlement sourced from the same invoice and line with
   the same current interval;
-- no applied service extension and no other active entitlement or invoice that
-  overlaps the proposed WAT interval; reversed extension history remains
-  immutable evidence but does not block correction;
+- no applied service extension except the one exact grant required by the
+  double-extension signature, and no other active entitlement or invoice that
+  overlaps the proposed WAT interval; canceled and reversed extension history
+  remains immutable evidence but does not supply coverage;
 - no quota bucket overlaps the current or proposed period; usage-period evidence
   requires a coordinated usage-owner review and is never shifted here.
 
@@ -61,8 +68,8 @@ One confirmed command changes:
 - the linked subscription's `next_billing_at`.
 
 For the retired UTC-midnight repair, access remains unchanged. For a proved
-lapsed-payment repair whose corrected half-open period contains confirmation
-time, the command invokes the canonical lifecycle protocol with
+lapsed-payment or double-extension repair whose corrected half-open period
+contains confirmation time, the command invokes the canonical lifecycle protocol with
 `EnforcementReason.prepaid`. That protocol resolves only prepaid enforcement
 locks and reactivates the subscription/account only when no independent lock,
 active-login collision, or lifecycle override remains. Other blockers are
@@ -111,8 +118,8 @@ transaction.
 
 ## Promotion and reconciliation runbook
 
-1. Validate the forward fix and this queue on the immutable `origin/dev` image.
-2. Deploy only that dev image to the explicitly named staging host.
+1. Select the exact validated `origin/main` commit and build its candidate once.
+2. Deploy only that immutable candidate digest to the explicitly named staging host.
 3. Inspect staging queue counts and several eligible and blocked samples.
 4. Confirm test fixtures or approved non-production cases and verify the
    invoice, entitlement, anchor, event, and audit evidence.

@@ -56,10 +56,13 @@ partially constructed renewal invoice.
 ## Timing boundary
 
 This change does not alter the scheduled runner's two-day stale-anchor cutoff.
-Current due periods and payment-triggered lapsed renewals use their existing
-period-selection policy. Reviewed missed-period execution uses the operator-
-approved fingerprint and now produces the same paid-invoice evidence as a normal
-funded renewal.
+Current due periods retain their existing selection policy. A payment-triggered
+renewal starts after exact uninterrupted entitlement or applied-extension
+coverage containing the payment instant; without exact coverage, a lapsed
+renewal starts on the payment's WAT business date. Mutable anchors and canceled
+or reversed extensions do not defer the period. Reviewed missed-period execution
+uses the operator-approved fingerprint and produces the same paid-invoice
+evidence as a normal funded renewal.
 
 ## Reviewed legacy tax-invoice correction
 
