@@ -206,50 +206,6 @@ sqltypes.Uuid.bind_processor = _sqlite_uuid_bind_processor  # type: ignore[metho
 sqltypes.Uuid.result_processor = _sqlite_uuid_result_processor  # type: ignore[method-assign]
 
 
-# Monkey-patch SQLite's own DATETIME type for timezone-aware compatibility.
-#
-# SQLite has no native timezone-aware storage: it stores an ISO string and,
-# on read, hands back a NAIVE ``datetime`` regardless of what was written.
-# PostgreSQL's real ``DateTime(timezone=True)`` columns always round-trip
-# aware — production code (e.g. app/migration_source/canonical.py's
-# ``canonical_datetime``) correctly RELIES on that and refuses a naive value
-# rather than silently assuming UTC, since a naive value there would mean a
-# real offset was dropped upstream. That refusal is a deliberate production
-# invariant, not a bug to work around in production code. This unit suite
-# only ever writes UTC-aware datetimes into these columns to begin with (see
-# each fixture's ``tzinfo=UTC``), so re-attaching UTC on the way back out of
-# SQLite reflects a fact already true of the value, for the SQLite unit lane
-# only — it changes no assertion's meaning.
-#
-# The generic ``sqltypes.DateTime.result_processor`` (patched the same way
-# the UUID type is patched above) is NOT the method actually called here:
-# SQLAlchemy's SQLite dialect maps ``DateTime`` to its OWN
-# ``sqlalchemy.dialects.sqlite.DATETIME`` (a dialect-specific subclass with
-# its own ``result_processor``, verified directly against this SQLAlchemy
-# version before writing this patch — patching the generic method alone is
-# silently never called for SQLite and was caught before landing here).
-from sqlalchemy.dialects.sqlite import DATETIME as _SQLiteDATETIME  # noqa: E402
-
-_original_sqlite_datetime_result_processor = _SQLiteDATETIME.result_processor
-
-
-def _sqlite_datetime_result_processor(self, dialect, coltype):
-    base_process = _original_sqlite_datetime_result_processor(self, dialect, coltype)
-    if not self.timezone:
-        return base_process
-
-    def process(value):
-        value = base_process(value) if base_process is not None else value
-        if value is not None and value.tzinfo is None:
-            return value.replace(tzinfo=UTC)
-        return value
-
-    return process
-
-
-_SQLiteDATETIME.result_processor = _sqlite_datetime_result_processor  # type: ignore[method-assign]
-
-
 # Monkey-patch PostgreSQL JSONB type for SQLite compatibility
 # SQLite uses JSON instead of JSONB
 
