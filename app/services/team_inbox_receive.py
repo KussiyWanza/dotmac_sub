@@ -8,6 +8,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.models.service_team import ServiceTeam
+from app.models.subscriber import Subscriber
 from app.models.team_inbox import (
     InboxAutomationTrigger,
     InboxChannelType,
@@ -32,8 +33,11 @@ from app.services import (
     team_inbox_routing,
 )
 from app.services.customer_identity_normalization import normalize_email_identifier
+from app.services.events import EventType as DomainEventType
+from app.services.events import emit_event
 from app.services.owner_commands import CommandContext
-from app.services.realtime_platform import EventType
+from app.services.realtime_platform import EventType as RealtimeEventType
+from app.services.sales.selfserve import compute_feasibility
 
 _MESSAGE_ID_RE = re.compile(r"<[^<>]+>")
 _MAX_EMAIL_REFERENCE_IDS = 32
@@ -136,6 +140,7 @@ def receive_fiber_inquiry(
     delivery_id: str,
     site_id: str,
     observation_id: UUID,
+    integration_inbox_id: UUID,
     context: CommandContext,
 ) -> team_inbox_fiber_receive.FiberInquiryReceiveResult:
     """Stage one normalized fiber inquiry under the observation processor."""
@@ -149,29 +154,120 @@ def receive_fiber_inquiry(
         .first()
     )
     if duplicate is not None:
+        duplicate_metadata = duplicate.metadata_ or {}
+        duplicate_coverage = duplicate_metadata.get("coverage")
         return team_inbox_fiber_receive.FiberInquiryReceiveResult(
             kind="duplicate",
             conversation_id=str(duplicate.conversation_id),
             message_id=str(duplicate.id),
             duplicate=True,
             subscriber_id=None,
+            resolution_status=str(
+                (duplicate_metadata.get("contact_resolution") or {}).get("status")
+                or "unmatched"
+            ),
+            lead_id=(
+                str(duplicate_metadata["lead_id"])
+                if duplicate_metadata.get("lead_id")
+                else None
+            ),
+            reference=(
+                str(duplicate_metadata["reference"])
+                if duplicate_metadata.get("reference")
+                else None
+            ),
+            coverage=(
+                {
+                    "status": str(duplicate_coverage["status"]),
+                    "summary": str(duplicate_coverage["summary"]),
+                }
+                if isinstance(duplicate_coverage, dict)
+                else None
+            ),
         )
 
-    normalized_email = normalize_email_identifier(str(payload.email))
-    assert normalized_email is not None
+    normalized_email = (
+        normalize_email_identifier(str(payload.email)) if payload.email else None
+    )
     identity = team_inbox_fiber_receive.resolve_fiber_identity(
         db,
         email=normalized_email,
         phone=payload.phone,
     )
     lead_result = None
-    if identity.status == "unmatched":
+    capture_party_id = None
+    capture_subscriber_id = None
+    if payload.is_coverage_request and identity.subscriber_id is not None:
+        subscriber = db.get(Subscriber, identity.subscriber_id)
+        if subscriber is None or subscriber.party_id is None:
+            identity = team_inbox_fiber_receive.FiberIdentityResolution(
+                status="identity_review_required",
+                subscriber_id=None,
+                matched_subscriber_ids=identity.matched_subscriber_ids,
+                suppressed_subscriber_ids=identity.suppressed_subscriber_ids,
+                identity_review_required=True,
+            )
+        else:
+            capture_party_id = subscriber.party_id
+            capture_subscriber_id = subscriber.id
+    should_capture_lead = identity.status == "unmatched" or (
+        payload.is_coverage_request and identity.status == "linked_subscriber"
+    )
+    if should_capture_lead:
         lead_result = team_inbox_fiber_receive.capture_fiber_prospect(
             db,
             payload=payload,
             delivery_id=delivery_id,
             actor=context.actor,
+            integration_inbox_id=integration_inbox_id,
+            party_id=capture_party_id,
+            subscriber_id=capture_subscriber_id,
         )
+
+    coverage = None
+    if (
+        payload.is_coverage_request
+        and not identity.identity_review_required
+        and payload.location is not None
+        and payload.location.latitude is not None
+        and payload.location.longitude is not None
+    ):
+        feasibility = compute_feasibility(
+            db,
+            float(payload.location.latitude),
+            float(payload.location.longitude),
+        )
+        coverage_status = str(feasibility["coverage"])
+        summaries = {
+            "covered": (
+                "Fiber service appears to be available at this location. "
+                "Our team will confirm the installation details."
+            ),
+            "survey_required": (
+                "A site survey is required before Fiber availability can be "
+                "confirmed at this location."
+            ),
+            "out_of_area": (
+                "Fiber service is not currently confirmed for this location. "
+                "Our team will review the address."
+            ),
+        }
+        coverage = {
+            "status": coverage_status,
+            "summary": summaries[coverage_status],
+        }
+        if lead_result is not None:
+            emit_event(
+                db,
+                DomainEventType.fiber_coverage_evaluated,
+                {
+                    "lead_id": str(lead_result.lead.id),
+                    "origin_capture_id": str(lead_result.origin.id),
+                    "coverage_status": coverage_status,
+                },
+                actor=context.actor,
+                subscriber_id=lead_result.lead.subscriber_id,
+            )
 
     routing = team_inbox_routing.resolve_channel_routing_decision(
         db,
@@ -204,7 +300,7 @@ def receive_fiber_inquiry(
         channel_type=channel.value,
         status=InboxConversationStatus.open.value,
         subject=f"Fiber inquiry: {payload.interest.label}",
-        contact_address=normalized_email,
+        contact_address=normalized_email or payload.phone,
         external_thread_id=f"fiber:{delivery_id}",
         first_message_at=payload.submitted_at,
         last_message_at=payload.submitted_at,
@@ -238,7 +334,7 @@ def receive_fiber_inquiry(
         body=team_inbox_fiber_receive.render_fiber_inquiry_body(payload),
         external_message_id=delivery_id,
         external_thread_id=conversation.external_thread_id,
-        from_address=normalized_email,
+        from_address=normalized_email or payload.phone,
         received_at=payload.submitted_at,
         metadata_={
             "provider": provider.value,
@@ -248,6 +344,12 @@ def receive_fiber_inquiry(
             "fiber_inquiry": metadata["fiber_inquiry"],
             "lead_id": str(lead_result.lead.id) if lead_result else None,
             "party_id": str(lead_result.party_id) if lead_result else None,
+            "reference": (
+                team_inbox_fiber_receive.fiber_customer_reference(delivery_id)
+                if payload.is_coverage_request and lead_result is not None
+                else None
+            ),
+            "coverage": coverage,
         },
     )
     db.add(message)
@@ -286,7 +388,7 @@ def receive_fiber_inquiry(
     team_inbox_realtime.publish_conversation_event(
         db,
         str(conversation.id),
-        event_type=EventType.MESSAGE_NEW,
+        event_type=RealtimeEventType.MESSAGE_NEW,
         payload=team_inbox_realtime.message_event_payload(
             conversation_id=str(conversation.id),
             message_id=str(message.id),
@@ -309,6 +411,13 @@ def receive_fiber_inquiry(
         duplicate=False,
         subscriber_id=str(identity.subscriber_id) if identity.subscriber_id else None,
         resolution_status=identity.status,
+        lead_id=str(lead_result.lead.id) if lead_result else None,
+        reference=(
+            team_inbox_fiber_receive.fiber_customer_reference(delivery_id)
+            if payload.is_coverage_request and lead_result is not None
+            else None
+        ),
+        coverage=coverage,
     )
 
 
@@ -684,7 +793,7 @@ def receive_inbound_email(
     team_inbox_realtime.publish_conversation_event(
         db,
         str(conversation.id),
-        event_type=EventType.MESSAGE_NEW,
+        event_type=RealtimeEventType.MESSAGE_NEW,
         payload=team_inbox_realtime.message_event_payload(
             conversation_id=str(conversation.id),
             message_id=str(message.id),

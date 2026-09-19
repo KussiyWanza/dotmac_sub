@@ -400,6 +400,24 @@ class InstallAppointments(CRUDManager[InstallAppointment]):
                 )
         appointment = InstallAppointment(**data)
         db.add(appointment)
+        db.flush()
+        service_order = db.get(ServiceOrder, appointment.service_order_id)
+        if service_order is None:
+            raise HTTPException(status_code=404, detail="Service order not found")
+        emit_event(
+            db,
+            EventType.appointment_scheduled,
+            {
+                "appointment_id": str(appointment.id),
+                "service_order_id": str(service_order.id),
+                "subscriber_id": str(service_order.subscriber_id),
+                "scheduled_start": appointment.scheduled_start.isoformat(),
+            },
+            actor="operations.provisioning_workflow",
+            subscriber_id=service_order.subscriber_id,
+            subscription_id=service_order.subscription_id,
+            service_order_id=service_order.id,
+        )
         db.commit()
         db.refresh(appointment)
         return appointment

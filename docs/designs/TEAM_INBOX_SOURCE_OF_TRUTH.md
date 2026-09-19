@@ -145,11 +145,14 @@ provider contact and cancel stale queued AI messages after takeover.
 2. `InboxProviderObservation` is committed using the unique
    `(provider, provider_account_scope, provider_event_id)` identity. It retains
    an exact normalized-evidence fingerprint and a separately versioned semantic
-   fingerprint. Semantic v2 uses an explicit field contract, treats legacy
-   HTML-in-`body` and the current `html_body` plus readable-`body` shape as the
-   same evidence, and excludes SMTP authentication and relay-hop evidence.
-   Those transport fields remain in persisted normalized evidence but do not
-   turn the same upstream message into a collision.
+   fingerprint. Semantic v3 retains the v2 explicit email field contract,
+   treats legacy HTML-in-`body` and the current `html_body` plus readable-`body`
+   shape as the same evidence, and excludes SMTP authentication and relay-hop
+   evidence. It adds the normalized Fiber journey, attribution, address, map
+   pin, and requested-plan fields so a delivery-ID replay with different
+   acquisition evidence fails closed instead of reusing the first consequence.
+   Transport fields remain in persisted normalized evidence but do not turn the
+   same upstream message into a collision.
 3. A semantic retry replays the observation. A true SMTP semantic mismatch is
    committed to `InboxProviderObservationCollision` with the first normalized
    candidate evidence, candidate fingerprints, bounded changed-field names,
@@ -166,9 +169,9 @@ provider contact and cancel stale queued AI messages after takeover.
 5. A processed observation is a no-op on retry. Existing message and thread
    constraints provide a second idempotency boundary.
 
-Rows written before semantic v2 are ratcheted lazily when an equivalent retry
+Rows written before semantic v3 are ratcheted lazily when an equivalent retry
 arrives. This avoids a speculative bulk rewrite while still proving equivalence
-from the stored normalized evidence before assigning the v2 fingerprint.
+from the stored normalized evidence before assigning the v3 fingerprint.
 
 An inbound email that references an active thread joins it. If the exact
 referenced thread is resolved, the message opens a new active conversation and
@@ -569,9 +572,14 @@ The admin CRM-replication controls use these existing owners:
   cannot selectively remove the current action. Conversation-fragment request
   URLs carry the deployed presentation revision so browsers with a pre-fix
   cached fragment must request the current markup after deployment.
-- Fiber-website inquiries are inbound-only. The projection and outbound owner
-  explicitly reject replies until a reviewed reply transport and prospect
-  destination policy are approved.
+- Fiber-website inquiries are inbound-only. `fiber-contact-v1` keeps its legacy
+  identity/Lead consequence. `fiber-coverage-v1` records the verified inquiry,
+  creates an attributed Lead before an optional PostGIS feasibility check, and
+  returns only a customer-safe coverage class. Exact reviewed Subscriber
+  identity creates a new linked Lead; ambiguous or Party-less identity records
+  review evidence and fails closed. Neither contract enables replies: the
+  projection and outbound owner reject them until a reviewed reply transport
+  and prospect destination policy are approved.
 
 ## Lifecycle audit evidence
 

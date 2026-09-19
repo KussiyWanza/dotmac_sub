@@ -83,6 +83,10 @@ class EventType(enum.Enum):
     payment_failed = "payment.failed"
     payment_refunded = "payment.refunded"
     payment_reversed = "payment.reversed"
+
+    # PII-free Fiber acquisition and marketing delivery lifecycle.
+    fiber_coverage_evaluated = "fiber.coverage_evaluated"
+    marketing_conversion_ready = "marketing.conversion_ready"
     payment_provider_event_processed = "payment_provider_event.processed"
     payment_provider_event_failed = "payment_provider_event.failed"
     payment_gateway_finance_identity_ensured = (

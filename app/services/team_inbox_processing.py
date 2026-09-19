@@ -15,7 +15,7 @@ from app.models.team_inbox import (
     InboxObservationStatus,
     InboxProviderObservation,
 )
-from app.schemas.fiber_inquiry import FiberInquiryInterest, FiberInquiryRequest
+from app.schemas.fiber_inquiry import FiberInquiryRequest
 from app.services import (
     team_inbox_channel_receive,
     team_inbox_delivery_receipts,
@@ -283,18 +283,42 @@ def process_provider_observation(
                 details={"observation_id": str(observation_id)},
             )
         if row.processing_status == InboxObservationStatus.processed.value:
+            message = db.get(InboxMessage, row.message_id) if row.message_id else None
+            metadata = message.metadata_ if message and message.metadata_ else {}
+            lead_value = metadata.get("lead_id")
+            contact_resolution = metadata.get("contact_resolution")
             return team_inbox_observations.ProviderObservationOutcome(
                 observation_id=row.id,
                 outcome=team_inbox_observations.ObservationProcessingOutcome.already_processed,
                 conversation_id=row.conversation_id,
                 message_id=row.message_id,
                 processing_status=InboxObservationStatus.processed,
+                resolution_status=(
+                    str(contact_resolution.get("status") or "unmatched")
+                    if isinstance(contact_resolution, dict)
+                    else None
+                ),
+                lead_id=UUID(str(lead_value)) if lead_value else None,
+                reference=(
+                    str(metadata["reference"]) if metadata.get("reference") else None
+                ),
+                coverage=(
+                    {
+                        "status": str(metadata["coverage"]["status"]),
+                        "summary": str(metadata["coverage"]["summary"]),
+                    }
+                    if isinstance(metadata.get("coverage"), dict)
+                    else None
+                ),
             )
 
         consequence_kind: str | None
         subscriber_id: UUID | None
         reseller_id: UUID | None
         resolution_status: str | None
+        lead_id: UUID | None
+        reference: str | None
+        coverage: dict[str, str] | None
         observed_at = (
             row.observed_at
             if row.observed_at.tzinfo is not None
@@ -309,20 +333,50 @@ def process_provider_observation(
             )
             if row.channel_type == InboxChannelType.website_fiber.value:
                 data = row.normalized_payload
+                request_data: dict[str, object] = {
+                    "form_version": str(data.get("form_version") or ""),
+                    "full_name": str(data.get("full_name") or ""),
+                    "phone": str(data["phone"]) if data.get("phone") else None,
+                    "email": str(data["email"]) if data.get("email") else None,
+                    "interest": str(data.get("interest") or ""),
+                    "message": (str(data["message"]) if data.get("message") else None),
+                    "submitted_at": observed_at,
+                }
+                if request_data["form_version"] == "fiber-coverage-v1":
+                    request_data.update(
+                        {
+                            "attribution": {
+                                "journey_id": data.get("journey_id"),
+                                "utm_source": data.get("utm_source"),
+                                "utm_medium": data.get("utm_medium"),
+                                "utm_campaign": data.get("utm_campaign"),
+                                "utm_content": data.get("utm_content"),
+                                "utm_term": data.get("utm_term"),
+                                "campaign_id": data.get("external_campaign_id"),
+                                "ad_set_id": data.get("external_ad_set_id"),
+                                "ad_id": data.get("external_ad_id"),
+                                "click_id": data.get("external_click_id"),
+                                "landing_path": data.get("landing_path"),
+                                "captured_at": data.get("captured_at"),
+                            },
+                            "location": {
+                                "address": data.get("address"),
+                                "area": data.get("area"),
+                                "latitude": data.get("latitude"),
+                                "longitude": data.get("longitude"),
+                            },
+                            "selected_plan": {"name": data.get("selected_plan_name")},
+                        }
+                    )
                 inbound_result = team_inbox_receive.receive_fiber_inquiry(
                     db,
-                    payload=FiberInquiryRequest(
-                        form_version=str(data.get("form_version") or ""),
-                        full_name=str(data.get("full_name") or ""),
-                        phone=str(data["phone"]) if data.get("phone") else None,
-                        email=str(data.get("email") or ""),
-                        interest=FiberInquiryInterest(str(data.get("interest") or "")),
-                        message=str(data["message"]) if data.get("message") else None,
-                        submitted_at=observed_at,
+                    payload=FiberInquiryRequest.model_validate(
+                        request_data, strict=False
                     ),
                     delivery_id=str(row.external_message_id or ""),
                     site_id=row.provider_account_scope,
                     observation_id=row.id,
+                    integration_inbox_id=UUID(str(data["integration_inbox_id"])),
                     context=context,
                 )
             elif row.channel_type == InboxChannelType.email.value:
@@ -412,6 +466,10 @@ def process_provider_observation(
             subscriber_id = UUID(subscriber_value) if subscriber_value else None
             reseller_id = UUID(reseller_value) if reseller_value else None
             resolution_status = getattr(inbound_result, "resolution_status", None)
+            lead_value = getattr(inbound_result, "lead_id", None)
+            lead_id = UUID(lead_value) if lead_value else None
+            reference = getattr(inbound_result, "reference", None)
+            coverage = getattr(inbound_result, "coverage", None)
         else:
             data = row.normalized_payload
             receipt_result = team_inbox_delivery_receipts.apply_delivery_receipt(
@@ -433,6 +491,9 @@ def process_provider_observation(
             subscriber_id = None
             reseller_id = None
             resolution_status = None
+            lead_id = None
+            reference = None
+            coverage = None
         row.processing_status = InboxObservationStatus.processed.value
         row.processed_at = datetime.now(UTC)
         row.error_code = None
@@ -447,6 +508,9 @@ def process_provider_observation(
             subscriber_id=subscriber_id,
             reseller_id=reseller_id,
             resolution_status=resolution_status,
+            lead_id=lead_id,
+            reference=reference,
+            coverage=coverage,
         )
 
     return execute_owner_command(

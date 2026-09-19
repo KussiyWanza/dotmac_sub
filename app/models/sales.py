@@ -447,6 +447,13 @@ class LeadOriginCapture(Base):
             unique=True,
             postgresql_where=text("source_interaction_id IS NOT NULL"),
         ),
+        Index("ix_lead_origin_captures_journey_id", "journey_id"),
+        Index(
+            "uq_lead_origin_captures_customer_reference",
+            "customer_reference",
+            unique=True,
+            postgresql_where=text("customer_reference IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -466,6 +473,8 @@ class LeadOriginCapture(Base):
         ),
     )
     source_interaction_id: Mapped[str | None] = mapped_column(String(240))
+    journey_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    customer_reference: Mapped[str | None] = mapped_column(String(32))
     capture_fingerprint: Mapped[str | None] = mapped_column(String(64))
     capture_method: Mapped[str] = mapped_column(String(40), nullable=False)
     source_platform: Mapped[str] = mapped_column(String(40), nullable=False)
@@ -491,6 +500,7 @@ class LeadOriginCapture(Base):
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     capture_source: Mapped[str] = mapped_column(String(80), nullable=False)
     capture_reason: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -501,6 +511,55 @@ class LeadOriginCapture(Base):
     campaign = relationship("Campaign")
     campaign_recipient = relationship("CampaignRecipient")
     integration_inbox = relationship("IntegrationInbox")
+
+
+class LeadConversionMilestone(Base):
+    """Idempotent PII-free projection of one attributed lifecycle stage."""
+
+    __tablename__ = "lead_conversion_milestones"
+    __table_args__ = (
+        UniqueConstraint(
+            "origin_capture_id",
+            "stage",
+            name="uq_lead_conversion_milestones_origin_stage",
+        ),
+        UniqueConstraint(
+            "external_event_id",
+            name="uq_lead_conversion_milestones_external_event",
+        ),
+        CheckConstraint(
+            "stage IN ('visitor','coverage_check','lead','qualified_lead',"
+            "'payment','installation','activated_subscriber')",
+            name="ck_lead_conversion_milestones_stage",
+        ),
+        Index("ix_lead_conversion_milestones_origin", "origin_capture_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    origin_capture_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("lead_origin_captures.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    external_event_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    source_event_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    stage: Mapped[str] = mapped_column(String(40), nullable=False)
+    subject_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    origin_capture = relationship("LeadOriginCapture")
 
 
 class LeadOriginCaptureImmutableError(RuntimeError):

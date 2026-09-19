@@ -132,7 +132,7 @@ def test_provider_observation_semantic_retry_ignores_transport_and_schema_shape(
     assert (
         replay.outcome is team_inbox_observations.ObservationProcessingOutcome.replayed
     )
-    assert row.semantic_fingerprint_version == 2
+    assert row.semantic_fingerprint_version == 3
     assert db_session.query(InboxProviderObservationCollision).count() == 0
 
 

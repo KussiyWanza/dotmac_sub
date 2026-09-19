@@ -12,7 +12,11 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.schemas.fiber_inquiry import FiberInquiryReceipt, FiberInquiryRequest
+from app.schemas.fiber_inquiry import (
+    FiberCoverageResult,
+    FiberInquiryReceipt,
+    FiberInquiryRequest,
+)
 from app.services import team_inbox_fiber_receive, team_inbox_observations
 from app.services.db_session_adapter import db_session_adapter
 from app.services.integrations import inbox as integration_inbox
@@ -28,6 +32,46 @@ router = APIRouter(prefix="/webhooks/fiber-inquiry", tags=["fiber-inquiry-webhoo
 logger = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 16 * 1024
+DEFAULT_SIGNATURE_HEADER = "X-Dotmac-Fiber-Signature"
+DEFAULT_DELIVERY_HEADER = "X-Dotmac-Fiber-Delivery"
+DEFAULT_SIGNATURE_PREFIX = "sha256="
+
+
+def _receipt_from_consequence(
+    consequence: dict[str, object], *, replayed: bool
+) -> FiberInquiryReceipt:
+    return FiberInquiryReceipt(
+        observation_id=UUID(str(consequence["observation_id"])),
+        conversation_id=UUID(str(consequence["conversation_id"])),
+        message_id=UUID(str(consequence["message_id"])),
+        replayed=replayed,
+        resolution_status=str(consequence.get("resolution_status") or "unmatched"),
+        reference=(
+            str(consequence["reference"]) if consequence.get("reference") else None
+        ),
+        coverage=(
+            FiberCoverageResult.model_validate(consequence["coverage"])
+            if consequence.get("coverage") is not None
+            else None
+        ),
+    )
+
+
+def _reject_ambiguous_identity(
+    receipt: FiberInquiryReceipt, *, form_version: str
+) -> None:
+    if (
+        form_version == "fiber-coverage-v1"
+        and receipt.resolution_status == "identity_review_required"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "fiber_inquiry_identity_review_required",
+                "message": "Customer identity requires staff review.",
+                "observation_id": str(receipt.observation_id),
+            },
+        )
 
 
 @router.post("/{capability_binding_id}", response_model=FiberInquiryReceipt)
@@ -54,9 +98,15 @@ async def receive_fiber_inquiry(
         raise HTTPException(
             status_code=413, detail="Fiber inquiry payload is too large"
         )
-    signature_header = str(context.config["signature_header"])
-    delivery_header = str(context.config["delivery_id_header"])
-    signature_prefix = str(context.config["signature_prefix"])
+    signature_header = str(
+        context.config.get("signature_header") or DEFAULT_SIGNATURE_HEADER
+    )
+    delivery_header = str(
+        context.config.get("delivery_id_header") or DEFAULT_DELIVERY_HEADER
+    )
+    signature_prefix = str(
+        context.config.get("signature_prefix") or DEFAULT_SIGNATURE_PREFIX
+    )
     site_id = str(context.config["site_id"])
     secret = context.secret_material["webhook_signing_secret"]
     installation_id = context.binding.installation_id
@@ -99,20 +149,17 @@ async def receive_fiber_inquiry(
     if not should_process:
         consequence = receipt.consequence_json or {}
         try:
-            return FiberInquiryReceipt(
-                observation_id=UUID(str(consequence["observation_id"])),
-                conversation_id=UUID(str(consequence["conversation_id"])),
-                message_id=UUID(str(consequence["message_id"])),
-                replayed=True,
-                resolution_status=str(
-                    consequence.get("resolution_status") or "unmatched"
-                ),
-            )
+            replay_receipt = _receipt_from_consequence(consequence, replayed=True)
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(
                 status_code=503,
                 detail="Fiber inquiry receipt has incomplete consequence evidence",
             ) from exc
+        _reject_ambiguous_identity(
+            replay_receipt,
+            form_version=str(consequence.get("form_version") or "fiber-contact-v1"),
+        )
+        return replay_receipt
     receipt_id = receipt.id
     db_session_adapter.release_read_transaction(db)
     try:
@@ -167,12 +214,24 @@ async def receive_fiber_inquiry(
             "conversation_id": str(outcome.conversation_id),
             "message_id": str(outcome.message_id),
             "resolution_status": outcome.resolution_status,
+            "lead_id": str(outcome.lead_id) if outcome.lead_id else None,
+            "reference": outcome.reference,
+            "coverage": outcome.coverage,
+            "form_version": payload.form_version,
         },
     )
-    return FiberInquiryReceipt(
+    response = FiberInquiryReceipt(
         observation_id=outcome.observation_id,
         conversation_id=outcome.conversation_id,
         message_id=outcome.message_id,
         replayed=outcome.replayed,
         resolution_status=outcome.resolution_status,
+        reference=outcome.reference,
+        coverage=(
+            FiberCoverageResult.model_validate(outcome.coverage)
+            if outcome.coverage is not None
+            else None
+        ),
     )
+    _reject_ambiguous_identity(response, form_version=payload.form_version)
+    return response

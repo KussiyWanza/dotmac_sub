@@ -35,7 +35,7 @@ from app.services.owner_commands import (
 )
 
 OBSERVATION_OWNER = "communications.team_inbox_observations"
-SEMANTIC_FINGERPRINT_VERSION = 2
+SEMANTIC_FINGERPRINT_VERSION = 3
 
 _RECORD_OBSERVATION = OwnerCommandDefinition(
     owner=OBSERVATION_OWNER,
@@ -209,12 +209,29 @@ class InboundMessageObservation:
 @dataclass(frozen=True, slots=True)
 class FiberWebsiteInquiryObservation:
     full_name: str
-    email: str
+    email: str | None
     phone: str | None
     interest: str
     message: str | None
     integration_inbox_id: UUID
     form_version: str = "fiber-contact-v1"
+    journey_id: str | None = None
+    utm_source: str | None = None
+    utm_medium: str | None = None
+    utm_campaign: str | None = None
+    utm_content: str | None = None
+    utm_term: str | None = None
+    external_campaign_id: str | None = None
+    external_ad_set_id: str | None = None
+    external_ad_id: str | None = None
+    external_click_id: str | None = None
+    landing_path: str | None = None
+    captured_at: str | None = None
+    address: str | None = None
+    area: str | None = None
+    latitude: str | None = None
+    longitude: str | None = None
+    selected_plan_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +273,9 @@ class ProviderObservationOutcome:
     subscriber_id: UUID | None = None
     reseller_id: UUID | None = None
     resolution_status: str | None = None
+    lead_id: UUID | None = None
+    reference: str | None = None
+    coverage: dict[str, str] | None = None
     collision_id: UUID | None = None
 
 
@@ -381,6 +401,23 @@ def _semantic_payload(
             "message": payload.get("message"),
             "integration_inbox_id": payload.get("integration_inbox_id"),
             "form_version": payload.get("form_version") or "fiber-contact-v1",
+            "journey_id": payload.get("journey_id"),
+            "utm_source": payload.get("utm_source"),
+            "utm_medium": payload.get("utm_medium"),
+            "utm_campaign": payload.get("utm_campaign"),
+            "utm_content": payload.get("utm_content"),
+            "utm_term": payload.get("utm_term"),
+            "external_campaign_id": payload.get("external_campaign_id"),
+            "external_ad_set_id": payload.get("external_ad_set_id"),
+            "external_ad_id": payload.get("external_ad_id"),
+            "external_click_id": payload.get("external_click_id"),
+            "landing_path": payload.get("landing_path"),
+            "captured_at": payload.get("captured_at"),
+            "address": payload.get("address"),
+            "area": payload.get("area"),
+            "latitude": payload.get("latitude"),
+            "longitude": payload.get("longitude"),
+            "selected_plan_name": payload.get("selected_plan_name"),
         }
 
     html_body = payload.get("html_body")
@@ -503,7 +540,7 @@ def _validate(command: RecordProviderObservationCommand) -> tuple[str, str, str]
             command.channel_type is not InboxChannelType.website_fiber
             or command.provider is not InboxProvider.fiber_website
             or not command.payload.full_name.strip()
-            or not command.payload.email.strip()
+            or not (command.payload.email or command.payload.phone)
             or not command.payload.interest.strip()
         ):
             raise _error(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -71,6 +72,9 @@ class FiberInquiryReceiveResult:
     subscriber_id: str | None
     reseller_id: str | None = None
     resolution_status: str = "unmatched"
+    lead_id: str | None = None
+    reference: str | None = None
+    coverage: dict[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,18 +84,23 @@ class FiberInquiryIngressOutcome:
     message_id: UUID
     replayed: bool
     resolution_status: str
+    lead_id: UUID | None = None
+    reference: str | None = None
+    coverage: dict[str, str] | None = None
 
 
 def resolve_fiber_identity(
-    db: Session, *, email: str, phone: str | None
+    db: Session, *, email: str | None, phone: str | None
 ) -> FiberIdentityResolution:
-    resolutions = [
-        resolve_contact_context(
-            db,
-            channel_type=InboxChannelType.email.value,
-            contact_address=email,
+    resolutions = []
+    if email:
+        resolutions.append(
+            resolve_contact_context(
+                db,
+                channel_type=InboxChannelType.email.value,
+                contact_address=email,
+            )
         )
-    ]
     if phone:
         resolutions.append(
             resolve_contact_context(
@@ -147,7 +156,7 @@ def render_fiber_inquiry_body(payload: FiberInquiryRequest) -> str:
     return (
         "Fiber website inquiry\n\n"
         f"Name: {payload.full_name}\n"
-        f"Email: {payload.email}\n"
+        f"Email: {payload.email or 'Not supplied'}\n"
         f"Phone: {phone}\n"
         f"Interest: {payload.interest.label}\n\n"
         f"{message}"
@@ -160,17 +169,22 @@ def capture_fiber_prospect(
     payload: FiberInquiryRequest,
     delivery_id: str,
     actor: str,
+    integration_inbox_id: UUID,
+    party_id: UUID | None = None,
+    subscriber_id: UUID | None = None,
 ):
-    contacts = [
-        LeadContactObservation(
-            channel_type=PartyContactPointType.email,
-            value=str(payload.email),
-            display_value=str(payload.email),
-            provider="fiber_website",
-            provider_account_id="fiber.dotmac.ng",
-            is_primary=True,
+    contacts = []
+    if payload.email is not None:
+        contacts.append(
+            LeadContactObservation(
+                channel_type=PartyContactPointType.email,
+                value=str(payload.email),
+                display_value=str(payload.email),
+                provider="fiber_website",
+                provider_account_id="fiber.dotmac.ng",
+                is_primary=True,
+            )
         )
-    ]
     normalized_phone = normalize_phone_identifier(
         payload.phone,
         default_country_code=default_country_code(db),
@@ -183,6 +197,7 @@ def capture_fiber_prospect(
                 display_value=payload.phone,
                 provider="fiber_website",
                 provider_account_id="fiber.dotmac.ng",
+                is_primary=payload.email is None,
             )
         )
     notes = f"Interest: {payload.interest.label}"
@@ -191,27 +206,86 @@ def capture_fiber_prospect(
     return capture.capture_lead_participant(
         db,
         LeadCaptureRequest(
-            party=LeadCapturePartyCreate(
-                party_type=PartyType.person,
-                display_name=payload.full_name,
-                contacts=contacts,
+            party_id=party_id,
+            party=(
+                None
+                if party_id is not None
+                else LeadCapturePartyCreate(
+                    party_type=PartyType.person,
+                    display_name=payload.full_name,
+                    contacts=contacts,
+                )
             ),
+            subscriber_id=subscriber_id,
             title=f"Fiber inquiry — {payload.interest.label}",
             lead_source="Website",
             origin=LeadOriginCaptureCreate(
                 capture_method=LeadCaptureMethod.landing_page,
                 source_platform=LeadSourcePlatform.website,
+                integration_inbox_id=integration_inbox_id,
                 source_interaction_id=delivery_id,
+                journey_id=(
+                    payload.attribution.journey_id if payload.attribution else None
+                ),
+                customer_reference=fiber_customer_reference(delivery_id),
+                external_campaign_id=(
+                    payload.attribution.campaign_id if payload.attribution else None
+                ),
+                external_ad_set_id=(
+                    payload.attribution.ad_set_id if payload.attribution else None
+                ),
+                external_ad_id=(
+                    payload.attribution.ad_id if payload.attribution else None
+                ),
                 external_form_id=payload.form_version,
-                landing_path="/contact/",
-                captured_at=payload.submitted_at,
+                external_click_id=(
+                    payload.attribution.click_id if payload.attribution else None
+                ),
+                utm_source=(
+                    payload.attribution.utm_source if payload.attribution else None
+                ),
+                utm_medium=(
+                    payload.attribution.utm_medium if payload.attribution else None
+                ),
+                utm_campaign=(
+                    payload.attribution.utm_campaign if payload.attribution else None
+                ),
+                utm_content=(
+                    payload.attribution.utm_content if payload.attribution else None
+                ),
+                utm_term=(
+                    payload.attribution.utm_term if payload.attribution else None
+                ),
+                landing_path=(
+                    payload.attribution.landing_path
+                    if payload.attribution
+                    else "/contact/"
+                ),
+                captured_at=(
+                    payload.attribution.captured_at
+                    if payload.attribution
+                    else payload.submitted_at
+                ),
+                submitted_at=payload.submitted_at,
                 capture_source="fiber.website_inquiry",
                 capture_reason="Signed fiber.dotmac.ng contact form submission",
             ),
+            region=payload.location.area if payload.location else None,
+            address=payload.location.address if payload.location else None,
             notes=notes,
+            requested_plan_name=(
+                payload.selected_plan.name if payload.selected_plan else None
+            ),
+            map_latitude=(payload.location.latitude if payload.location else None),
+            map_longitude=(payload.location.longitude if payload.location else None),
         ),
         actor_id=actor,
     )
+
+
+def fiber_customer_reference(delivery_id: str) -> str:
+    digest = hashlib.sha256(delivery_id.strip().encode("utf-8")).hexdigest()
+    return f"FBR-{digest[:12].upper()}"
 
 
 def receive_fiber_inquiry_committed(
@@ -240,12 +314,97 @@ def receive_fiber_inquiry_committed(
             observed_at=command.payload.submitted_at,
             payload=team_inbox_observations.FiberWebsiteInquiryObservation(
                 full_name=command.payload.full_name,
-                email=str(command.payload.email),
+                email=str(command.payload.email) if command.payload.email else None,
                 phone=command.payload.phone,
                 interest=command.payload.interest.value,
                 message=command.payload.message,
                 integration_inbox_id=command.integration_inbox_id,
                 form_version=command.payload.form_version,
+                journey_id=(
+                    str(command.payload.attribution.journey_id)
+                    if command.payload.attribution
+                    else None
+                ),
+                utm_source=(
+                    command.payload.attribution.utm_source
+                    if command.payload.attribution
+                    else None
+                ),
+                utm_medium=(
+                    command.payload.attribution.utm_medium
+                    if command.payload.attribution
+                    else None
+                ),
+                utm_campaign=(
+                    command.payload.attribution.utm_campaign
+                    if command.payload.attribution
+                    else None
+                ),
+                utm_content=(
+                    command.payload.attribution.utm_content
+                    if command.payload.attribution
+                    else None
+                ),
+                utm_term=(
+                    command.payload.attribution.utm_term
+                    if command.payload.attribution
+                    else None
+                ),
+                external_campaign_id=(
+                    command.payload.attribution.campaign_id
+                    if command.payload.attribution
+                    else None
+                ),
+                external_ad_set_id=(
+                    command.payload.attribution.ad_set_id
+                    if command.payload.attribution
+                    else None
+                ),
+                external_ad_id=(
+                    command.payload.attribution.ad_id
+                    if command.payload.attribution
+                    else None
+                ),
+                external_click_id=(
+                    command.payload.attribution.click_id
+                    if command.payload.attribution
+                    else None
+                ),
+                landing_path=(
+                    command.payload.attribution.landing_path
+                    if command.payload.attribution
+                    else None
+                ),
+                captured_at=(
+                    command.payload.attribution.captured_at.isoformat()
+                    if command.payload.attribution
+                    else None
+                ),
+                address=(
+                    command.payload.location.address
+                    if command.payload.location
+                    else None
+                ),
+                area=(
+                    command.payload.location.area if command.payload.location else None
+                ),
+                latitude=(
+                    str(command.payload.location.latitude)
+                    if command.payload.location
+                    and command.payload.location.latitude is not None
+                    else None
+                ),
+                longitude=(
+                    str(command.payload.location.longitude)
+                    if command.payload.location
+                    and command.payload.location.longitude is not None
+                    else None
+                ),
+                selected_plan_name=(
+                    command.payload.selected_plan.name
+                    if command.payload.selected_plan
+                    else None
+                ),
             ),
         ),
     )
@@ -272,4 +431,7 @@ def receive_fiber_inquiry_committed(
         replayed=recorded.outcome
         is team_inbox_observations.ObservationProcessingOutcome.replayed,
         resolution_status=processed.resolution_status or "unmatched",
+        lead_id=processed.lead_id,
+        reference=processed.reference,
+        coverage=processed.coverage,
     )

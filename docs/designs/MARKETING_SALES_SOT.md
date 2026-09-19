@@ -36,6 +36,33 @@ attempt. Local customer state remains authoritative if Meta is unavailable;
 retry or dead-letter evidence records projection drift without rolling back the
 customer conversion or changing the review-only match.
 
+## Dotmac Fiber landing acquisition and lifecycle feedback
+
+The signed `fiber-coverage-v1` Team Inbox adapter submits the same Party-first
+capture contract. Its `LeadOriginCapture` permanently owns the original journey
+UUID, IntegrationInbox receipt, delivery identity, UTM/campaign/ad/click fields,
+landing path, landing time, submission time, and stable `FBR-` reference.
+`source_platform` remains `website`; Google, Meta, or another acquisition source
+remains `utm_source`. The immutable row and unique delivery identity mean a
+later direct or campaign visit cannot rewrite the original origin.
+
+`sales.marketing_conversion_projection` projects that origin onto exactly seven
+marketing milestones:
+`visitor`, `coverage_check`, `lead`, `qualified_lead`, `payment`,
+`installation`, and `activated_subscriber`. There is no registration stage.
+Visitor time is the original landing time; coverage is emitted only when the
+PostGIS feasibility resolver actually runs; the remaining stages consume their
+committed domain events. A unique `(origin, stage)` ledger row and deterministic
+external event UUID make retries and repeated transitions no-ops.
+
+The outbound event contains attribution plus an HMAC-SHA256 subject key derived
+from the canonical Party UUID with `CONVERSION_INGEST_API_KEY`. It contains no
+name, email, phone number, or street address. The transaction stages a durable
+`marketing.conversion_ready` event; an enabled generic event-delivery binding
+posts its payload to `${MARKETING_BASE_URL}/api/v1/conversions/events` using the
+secret-managed key as a Bearer credential. Marketing is a retryable projection,
+never a participant in the customer-state transaction.
+
 ## Why this map exists
 
 The CRM retirement ledger references this path from nine modules and 107 routes,
