@@ -35,6 +35,12 @@ from app.models.catalog import (
 )
 from app.models.enforcement_lock import EnforcementReason
 from app.models.event_store import EventStore
+from app.models.service_extension import (
+    ServiceExtension,
+    ServiceExtensionEntry,
+    ServiceExtensionScope,
+    ServiceExtensionStatus,
+)
 from app.models.subscriber import Subscriber, SubscriberStatus
 from app.schemas.billing import PaymentAllocationApply, PaymentCreate
 from app.services import billing as billing_service
@@ -404,7 +410,7 @@ def test_lapsed_prepaid_payment_in_first_wat_hour_uses_new_local_day(db_session)
     assert line.description.endswith("(2026-07-06 - 2026-08-06)")
 
 
-def test_lapsed_prepaid_payment_preserves_existing_extension_delta(db_session):
+def test_lapsed_prepaid_payment_ignores_unproved_anchor_delta(db_session):
     subscriber = _make_subscriber(db_session, status=SubscriberStatus.suspended)
     old_start = datetime(2026, 7, 3, tzinfo=UTC)
     old_end = datetime(2026, 8, 3, tzinfo=UTC)
@@ -423,6 +429,28 @@ def test_lapsed_prepaid_payment_preserves_existing_extension_delta(db_session):
         subscription,
         period_start=old_start,
         period_end=old_end,
+    )
+    canceled_extension = ServiceExtension(
+        reason="Canceled outage compensation",
+        window_start=old_start,
+        window_end=old_end,
+        days=5,
+        scope_type=ServiceExtensionScope.subscribers,
+        scope_subscriber_ids=[str(subscriber.id)],
+        status=ServiceExtensionStatus.canceled,
+    )
+    db_session.add(canceled_extension)
+    db_session.flush()
+    db_session.add(
+        ServiceExtensionEntry(
+            extension_id=canceled_extension.id,
+            subscription_id=subscription.id,
+            subscriber_id=subscriber.id,
+            previous_next_billing_at=old_end,
+            grant_starts_at=old_end,
+            grant_ends_at=old_end + extension_days,
+            new_next_billing_at=old_end + extension_days,
+        )
     )
     db_session.commit()
 
@@ -452,7 +480,79 @@ def test_lapsed_prepaid_payment_preserves_existing_extension_delta(db_session):
         datetime(2026, 9, 4, 23, tzinfo=UTC)
     )
     assert subscription.next_billing_at == _utc_naive(
-        datetime(2026, 9, 9, 23, tzinfo=UTC)
+        datetime(2026, 9, 4, 23, tzinfo=UTC)
+    )
+
+
+def test_prepaid_payment_starts_after_exact_applied_extension_coverage(db_session):
+    subscriber = _make_subscriber(db_session, status=SubscriberStatus.active)
+    old_start = datetime(2026, 7, 3, 23, tzinfo=UTC)
+    old_end = datetime(2026, 8, 3, 23, tzinfo=UTC)
+    extension_end = datetime(2026, 8, 17, 23, tzinfo=UTC)
+    subscription = _make_subscription(
+        db_session,
+        subscriber,
+        status=SubscriptionStatus.active,
+        billing_mode=BillingMode.prepaid,
+        billing_cycle=BillingCycle.monthly,
+        next_billing_at=extension_end,
+    )
+    invoice = _make_prepaid_renewal_invoice(
+        db_session,
+        subscriber,
+        subscription,
+        period_start=old_start,
+        period_end=old_end,
+    )
+    extension = ServiceExtension(
+        reason="Applied outage compensation",
+        window_start=old_start,
+        window_end=old_end,
+        days=14,
+        scope_type=ServiceExtensionScope.subscribers,
+        scope_subscriber_ids=[str(subscriber.id)],
+        status=ServiceExtensionStatus.applied,
+    )
+    db_session.add(extension)
+    db_session.flush()
+    db_session.add(
+        ServiceExtensionEntry(
+            extension_id=extension.id,
+            subscription_id=subscription.id,
+            subscriber_id=subscriber.id,
+            previous_next_billing_at=old_end,
+            grant_starts_at=old_end,
+            grant_ends_at=extension_end,
+            new_next_billing_at=extension_end,
+        )
+    )
+    db_session.commit()
+
+    billing_service.payments.create(
+        db_session,
+        PaymentCreate(
+            account_id=subscriber.id,
+            amount=Decimal("1000.00"),
+            currency="NGN",
+            status=PaymentStatus.succeeded,
+            paid_at=datetime(2026, 8, 13, 12, 0, tzinfo=UTC),
+            allocations=[
+                PaymentAllocationApply(
+                    invoice_id=invoice.id,
+                    amount=Decimal("1000.00"),
+                )
+            ],
+        ),
+    )
+
+    db_session.refresh(invoice)
+    db_session.refresh(subscription)
+    assert invoice.billing_period_start == _utc_naive(extension_end)
+    assert invoice.billing_period_end == _utc_naive(
+        datetime(2026, 9, 17, 23, tzinfo=UTC)
+    )
+    assert subscription.next_billing_at == _utc_naive(
+        datetime(2026, 9, 17, 23, tzinfo=UTC)
     )
 
 

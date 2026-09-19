@@ -63,6 +63,13 @@ LAPSED_PROPOSED_START = datetime(2026, 7, 20, 23, 0, tzinfo=UTC)
 LAPSED_PROPOSED_END = datetime(2026, 8, 20, 23, 0, tzinfo=UTC)
 LAPSED_RECONCILED_AT = datetime(2026, 8, 6, 12, 0, tzinfo=UTC)
 STALE_ANCHOR = datetime(2023, 10, 8, tzinfo=UTC)
+EXTENSION_PAID_AT = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+EXTENSION_GRANT_START = datetime(2026, 8, 3, 23, 0, tzinfo=UTC)
+EXTENSION_GRANT_END = datetime(2026, 8, 17, 23, 0, tzinfo=UTC)
+DOUBLE_APPLIED_START = datetime(2026, 8, 12, 23, 0, tzinfo=UTC)
+DOUBLE_APPLIED_END = datetime(2026, 9, 12, 23, 0, tzinfo=UTC)
+DOUBLE_APPLIED_ANCHOR = datetime(2026, 9, 26, 23, 0, tzinfo=UTC)
+CORRECTED_EXTENSION_END = datetime(2026, 9, 17, 23, 0, tzinfo=UTC)
 
 
 def _chain(db, subscriber):
@@ -212,6 +219,47 @@ def _lapsed_chain(db, subscriber):
     )
     db.commit()
     return invoice, line, subscription, entitlement, payment, lock, extension
+
+
+def _extension_double_applied_chain(db, subscriber):
+    invoice, line, subscription, entitlement, payment = _chain(db, subscriber)
+    invoice.billing_period_start = DOUBLE_APPLIED_START
+    invoice.billing_period_end = DOUBLE_APPLIED_END
+    invoice.paid_at = EXTENSION_PAID_AT
+    line.metadata_ = {
+        "kind": "base_subscription",
+        "billing_period_start": DOUBLE_APPLIED_START.isoformat(),
+        "billing_period_end": DOUBLE_APPLIED_END.isoformat(),
+    }
+    entitlement.starts_at = DOUBLE_APPLIED_START
+    entitlement.ends_at = DOUBLE_APPLIED_END
+    payment.paid_at = EXTENSION_PAID_AT
+    payment.created_at = EXTENSION_PAID_AT
+    subscription.next_billing_at = DOUBLE_APPLIED_ANCHOR
+    extension = ServiceExtension(
+        reason="Applied outage compensation",
+        window_start=datetime(2026, 7, 24, 7, 47, tzinfo=UTC),
+        window_end=datetime(2026, 8, 6, 7, 47, tzinfo=UTC),
+        days=14,
+        scope_type=ServiceExtensionScope.subscribers,
+        scope_subscriber_ids=[str(subscriber.id)],
+        status=ServiceExtensionStatus.applied,
+    )
+    db.add(extension)
+    db.flush()
+    db.add(
+        ServiceExtensionEntry(
+            extension_id=extension.id,
+            subscription_id=subscription.id,
+            subscriber_id=subscriber.id,
+            previous_next_billing_at=EXTENSION_GRANT_START,
+            grant_starts_at=EXTENSION_GRANT_START,
+            grant_ends_at=EXTENSION_GRANT_END,
+            new_next_billing_at=EXTENSION_GRANT_END,
+        )
+    )
+    db.commit()
+    return invoice, line, subscription, entitlement, payment, extension
 
 
 def _command(
@@ -371,6 +419,53 @@ def test_lapsed_payment_period_reconciles_evidence_and_restores_prepaid_access(
     assert evidence["correction_kind"] == "lapsed_payment_period"
     assert evidence["economic_delta"] == "0.00"
     assert payment.amount == Decimal("1000.00")
+
+
+def test_applied_extension_double_count_previews_and_repairs_without_money_change(
+    db_session, subscriber
+):
+    invoice, line, subscription, entitlement, payment, extension = (
+        _extension_double_applied_chain(db_session, subscriber)
+    )
+
+    preview = preview_prepaid_billing_calendar_reconciliation(db_session, invoice.id)
+
+    assert preview.disposition is PrepaidBillingCalendarDisposition.eligible
+    assert preview.correction_kind is (
+        PrepaidBillingCalendarCorrectionKind.extension_covered_payment_period
+    )
+    assert preview.current_starts_at == DOUBLE_APPLIED_START
+    assert preview.current_ends_at == DOUBLE_APPLIED_END
+    assert preview.proposed_starts_at == EXTENSION_GRANT_END
+    assert preview.proposed_ends_at == CORRECTED_EXTENSION_END
+    invoice_id = invoice.id
+    db_session.commit()
+
+    result = reconcile_prepaid_billing_calendar(
+        db_session,
+        _command(
+            invoice_id,
+            preview.fingerprint,
+            key="extension-double-count-repair",
+            reason="Move the paid period after exact applied extension coverage.",
+        ),
+    )
+
+    for row in (invoice, line, subscription, entitlement, payment, extension):
+        db_session.refresh(row)
+    assert result.correction_kind is (
+        PrepaidBillingCalendarCorrectionKind.extension_covered_payment_period
+    )
+    assert invoice.billing_period_start.replace(tzinfo=UTC) == EXTENSION_GRANT_END
+    assert invoice.billing_period_end.replace(tzinfo=UTC) == CORRECTED_EXTENSION_END
+    assert entitlement.starts_at.replace(tzinfo=UTC) == EXTENSION_GRANT_END
+    assert entitlement.ends_at.replace(tzinfo=UTC) == CORRECTED_EXTENSION_END
+    assert subscription.next_billing_at.replace(tzinfo=UTC) == CORRECTED_EXTENSION_END
+    assert invoice.total == Decimal("1000.00")
+    assert payment.amount == Decimal("1000.00")
+    assert extension.status is ServiceExtensionStatus.applied
+    evidence = invoice.metadata_["prepaid_billing_calendar_reconciliation"]
+    assert evidence["economic_delta"] == "0.00"
 
 
 def test_lapsed_payment_repair_preserves_independent_access_lock(
