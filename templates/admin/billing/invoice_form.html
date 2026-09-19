@@ -88,7 +88,7 @@
                             </div>
                             <div>
                                 <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Issue Date</label>
-                                <input type="date" name="issued_at" x-model="issuedAt"
+                                <input type="date" name="issued_at" x-model="issuedAt"{% if can_edit_issue_date is defined and not can_edit_issue_date %} readonly aria-readonly="true"{% endif %}
                                        value="{{ invoice.issued_at.strftime('%Y-%m-%d') if invoice and invoice.issued_at else (default_issue_date if default_issue_date else '') }}"
                                        class="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                             </div>

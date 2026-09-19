@@ -424,6 +424,11 @@ def test_admin_capacity_setting_is_consumed_by_assignment_runtime(db_session):
         form={spec.key: "25"},
         specs=[spec],
         service=service,
+        context=CommandContext.system(
+            actor="pytest:settings-admin",
+            scope="control:settings:write",
+            reason="test admin capacity setting update",
+        ),
     )
 
     assert errors == []
@@ -431,6 +436,13 @@ def test_admin_capacity_setting_is_consumed_by_assignment_runtime(db_session):
         team_inbox_assignment.resolve_default_max_concurrent_conversations(db_session)
         == 25
     )
+
+
+def test_integer_admin_settings_use_text_storage_shape():
+    spec = settings_spec.get_spec(SettingDomain.billing, "topup_max_amount")
+    assert spec is not None
+
+    assert settings_spec.normalize_for_db(spec, 999999999) == ("999999999", None)
 
 
 def test_assign_conversation_queues_when_no_agent_available(db_session):

@@ -229,6 +229,7 @@ class _AuthInterceptor extends Interceptor {
     '/auth/login',
     '/auth/mfa',
     '/auth/refresh',
+    '/auth/forgot-password',
     '/field/config',
   ];
 

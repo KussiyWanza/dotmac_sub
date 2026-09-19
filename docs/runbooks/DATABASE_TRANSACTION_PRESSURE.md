@@ -6,15 +6,20 @@
 from its first statement until completion. `database_transaction_spans_slow_total`
 increments at 30 seconds, matching the structured
 `database_transaction_span_slow` log event. Metrics have no customer, request,
-or SQL labels; use the log `request_id` for correlation without creating
-high-cardinality metric series.
+task, or SQL labels; use the log `request_id`, `task_name`, and `task_id` for
+correlation without creating high-cardinality metric series. A
+`database_pool_connection_invalidated` event records the same owner fields
+and transaction age when PostgreSQL kills an idle transaction during pool
+reset.
 
 ## Triage
 
 1. Confirm public health, worker count, connection utilisation, lock waits, and
    idle-in-transaction age. Do not assume host or pool exhaustion.
 2. Correlate `database_transaction_span_slow` events with HTTP request logs by
-   `request_id`; group by route and inspect the longest repeated cohort.
+   `request_id`, or with Celery lifecycle logs by `task_name` and `task_id`.
+   For an idle timeout, start with `database_pool_connection_invalidated` and
+   inspect the recorded owner and transaction age.
 3. Capture `EXPLAIN (ANALYZE, BUFFERS)` for the responsible read on staging or a
    safe replica. Never run an unreviewed expensive plan on production.
 4. Reduce work inside the transaction: use grouped reads, bounded pagination,

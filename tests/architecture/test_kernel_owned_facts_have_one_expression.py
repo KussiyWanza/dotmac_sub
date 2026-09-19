@@ -51,10 +51,6 @@ KNOWN_RESTATEMENTS = frozenset(
         # `coerce_value`: parses a form value per type. Belongs to
         # `ValueTypeSpec.from_storage`.
         "app/services/settings_spec.py",
-        # Chooses a form widget by json-ness. Belongs to `ValueTypeSpec` too,
-        # via whatever presentation hint the kernel grows — or to a single
-        # local adapter, but not to a comparison in a form builder.
-        "app/services/web_system_settings_forms.py",
     }
 )
 

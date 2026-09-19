@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from re import sub
+from dataclasses import dataclass, replace
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
@@ -11,6 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.services import admin_workflow_guidance
+from app.services.admin_workflow_guidance import AdminHelpAction
+from app.services.auth_dependencies import can
 from app.web.templates import templates
 
 router = APIRouter(prefix="/help", tags=["web-admin-help"])
@@ -18,17 +19,17 @@ router = APIRouter(prefix="/help", tags=["web-admin-help"])
 
 @dataclass(frozen=True)
 class HelpArticle:
+    id: str
     category: str
     title: str
     summary: str
-    steps: tuple[str, ...]
+    actions: tuple[AdminHelpAction, ...] = ()
     audience: str = ""
     notes: tuple[str, ...] = ()
 
     @property
     def slug(self) -> str:
-        value = sub(r"[^a-z0-9]+", "-", self.title.casefold()).strip("-")
-        return value or "article"
+        return self.id
 
 
 def _article_matches(article: HelpArticle, *, query: str, category: str) -> bool:
@@ -37,113 +38,51 @@ def _article_matches(article: HelpArticle, *, query: str, category: str) -> bool
         or query in article.title.casefold()
         or query in article.summary.casefold()
         or query in article.audience.casefold()
-        or any(query in step.casefold() for step in article.steps)
+        or any(query in action.title.casefold() for action in article.actions)
+        or any(
+            query in step.casefold()
+            for action in article.actions
+            for step in action.steps
+        )
         or any(query in note.casefold() for note in article.notes)
     )
 
 
-def _group_articles(articles: list[HelpArticle]) -> list[dict[str, object]]:
+def _group_articles(
+    articles: list[HelpArticle], *, selected_id: str = ""
+) -> list[dict[str, object]]:
+    article_by_id = {article.id: article for article in articles}
     categories: list[dict[str, object]] = []
-    for category in admin_workflow_guidance.guidance_categories():
+    for section in admin_workflow_guidance.help_navigation():
         category_articles = [
-            article for article in articles if article.category == category
+            article_by_id[guide_id]
+            for guide_id in section.guide_ids
+            if guide_id in article_by_id
         ]
         if category_articles:
-            categories.append({"category": category, "articles": category_articles})
+            categories.append(
+                {
+                    "id": section.id,
+                    "category": section.label,
+                    "permission": section.permission,
+                    "articles": category_articles,
+                    "selected": any(
+                        article.id == selected_id for article in category_articles
+                    ),
+                }
+            )
     return categories
 
-
-ARTICLES: tuple[HelpArticle, ...] = (
-    HelpArticle(
-        "Getting started",
-        "Navigate Selfcare",
-        "Find customers, work and reports.",
-        (
-            "Choose a workspace from the left navigation.",
-            "Use global search to locate a customer.",
-            "Open Workqueue for assigned operational work.",
-        ),
-    ),
-    HelpArticle(
-        "Customers",
-        "Find and update a customer",
-        "Locate customer identity, services and billing.",
-        (
-            "Open Customers.",
-            "Search by name, account number, phone or email.",
-            "Choose the relevant tab before making a permitted change.",
-        ),
-    ),
-    HelpArticle(
-        "Support",
-        "Manage a support ticket",
-        "Assign, update and resolve customer issues.",
-        (
-            "Open Support tickets.",
-            "Confirm priority, region and assignment.",
-            "Record progress and use the configured transition.",
-        ),
-    ),
-    HelpArticle(
-        "Inbox",
-        "Respond from Team Inbox",
-        "Handle email, WhatsApp and social conversations.",
-        (
-            "Open Inbox.",
-            "Select or assign a conversation.",
-            "Reply, add an internal note, or create a linked ticket.",
-        ),
-    ),
-    HelpArticle(
-        "Surveys",
-        "Create and share a survey",
-        "Collect structured customer feedback.",
-        (
-            "Open Surveys and create a survey.",
-            "Add question definitions and save.",
-            "Copy the public response link from survey details.",
-        ),
-    ),
-    HelpArticle(
-        "Integrations",
-        "Connect Meta",
-        "Review Facebook and Instagram readiness.",
-        (
-            "Open Meta connection.",
-            "Configure the Meta application under communication settings.",
-            "Connect and monitor Page and Instagram token health.",
-        ),
-    ),
-    HelpArticle(
-        "FAQ",
-        "Why can’t I see an action?",
-        "Actions are hidden when your role lacks permission.",
-        (
-            "Ask an administrator to review your assigned role.",
-            "Provide the page URL and action you need.",
-            "Never share credentials or session cookies.",
-        ),
-    ),
-    HelpArticle(
-        "FAQ",
-        "Where should I report a problem?",
-        "Create a support ticket with reproducible evidence.",
-        (
-            "Record the page and approximate time.",
-            "Describe expected and observed results.",
-            "Attach a screenshot without unnecessary customer data.",
-        ),
-    ),
-)
 
 # The workflow-guidance registry is the authoritative Help Center content.
 # ``HelpArticle`` is the typed presentation shape consumed by the existing UI.
 ARTICLES = tuple(
     HelpArticle(
+        id=guide.id,
         category=guide.category,
         title=guide.title,
         summary=guide.purpose,
-        steps=guide.steps,
+        actions=admin_workflow_guidance.help_actions_for(guide),
         audience=guide.audience,
         notes=guide.notes,
     )
@@ -166,10 +105,42 @@ def help_center(
 
     query = q.strip().casefold()
     selected = category.strip()
+    visible_sections = tuple(
+        section
+        for section in admin_workflow_guidance.help_navigation()
+        if (
+            (not section.permission and not section.any_permissions)
+            or (section.permission and can(request, section.permission))
+            or any(can(request, permission) for permission in section.any_permissions)
+        )
+    )
+    visible_guide_ids = {
+        guide_id
+        for section in visible_sections
+        for guide_id in section.guide_ids
+        if not (
+            required := admin_workflow_guidance.HELP_GUIDE_VIEW_PERMISSIONS.get(
+                guide_id, ()
+            )
+        )
+        or any(can(request, permission) for permission in required)
+    }
+    permission_filtered_articles = [
+        replace(
+            item,
+            actions=tuple(
+                action
+                for action in item.actions
+                if not action.permission or can(request, action.permission)
+            ),
+        )
+        for item in ARTICLES
+        if item.id in visible_guide_ids
+    ]
     articles = [
-        article
-        for article in ARTICLES
-        if _article_matches(article, query=query, category=selected)
+        item
+        for item in permission_filtered_articles
+        if _article_matches(item, query=query, category=selected)
     ]
     selected_article = next(
         (item for item in articles if item.slug == article.strip()),
@@ -182,7 +153,9 @@ def help_center(
         "current_user": get_current_user(request),
         "sidebar_stats": get_sidebar_stats(db),
         "articles": articles,
-        "grouped_articles": _group_articles(articles),
+        "grouped_articles": _group_articles(
+            articles, selected_id=selected_article.id if selected_article else ""
+        ),
         "selected_article": selected_article,
         "categories": admin_workflow_guidance.guidance_categories(),
         "query": q,

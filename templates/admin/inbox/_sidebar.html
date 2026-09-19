@@ -130,6 +130,8 @@
               :class="inboxRefreshState === 'error' ? 'bg-rose-500' : inboxRefreshState === 'updated' ? 'bg-emerald-500' : 'bg-slate-400'"
               aria-hidden="true"></span>
         <span x-text="inboxRefreshLabel()">Waiting for new activity</span>
+        <button type="button" x-show="inboxRefreshState === 'error'" x-cloak
+                class="ml-auto underline" @click="retryListRequest()">Retry</button>
     </div>
 
     <div class="border-b border-slate-200 p-3 dark:border-slate-800">
@@ -239,7 +241,6 @@
             </details>
             <p x-show="listRequestError" x-cloak class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200" role="alert">
                 <span x-text="listRequestError"></span>
-                <button type="button" class="ml-1 underline" @click="refreshSidebar()">Retry</button>
             </p>
 
             <details name="inbox-filter-section" class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40">
@@ -457,7 +458,7 @@
             </div>
         </div>
 
-        <form id="inbox-bulk-form" method="post" action="/admin/inbox/bulk" class="contents">
+        <form id="inbox-bulk-form" method="post" action="/admin/inbox/bulk" class="contents" x-data="{ bulkStatus: 'open' }">
             {% include "components/forms/csrf_input.html" %}
             <div x-show="selectedIds.length" x-cloak class="shrink-0 border-b border-slate-200/60 bg-white/80 px-3 py-2 backdrop-blur-sm dark:border-slate-700/60 dark:bg-slate-900/70">
                 <div class="flex items-center gap-2 overflow-x-auto whitespace-nowrap">
@@ -472,9 +473,23 @@
                     </select>
                     <select x-show="bulkAction === 'status'"
                             :disabled="bulkAction !== 'status'"
+                            x-model="bulkStatus"
                             name="status_value"
                             class="h-9 shrink-0 rounded-lg border border-slate-200 bg-white py-1 pl-2 pr-7 text-xs text-slate-700 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
                         {% for option in status_options %}<option value="{{ option }}">{{ option | title }}</option>{% endfor %}
+                    </select>
+                    <select x-show="bulkAction === 'status' && bulkStatus === 'resolved'"
+                            :disabled="bulkAction !== 'status' || bulkStatus !== 'resolved'"
+                            name="resolution_reason"
+                            aria-label="Resolution reason"
+                            class="h-9 max-w-56 shrink-0 rounded-lg border border-slate-200 bg-white py-1 pl-2 pr-7 text-xs text-slate-700 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                        <option value="no_further_action_required">No further action required</option>
+                        <option value="customer_stopped_responding">Customer stopped responding</option>
+                        <option value="whatsapp_window_expired">WhatsApp window expired</option>
+                        <option value="issue_completed_before_expiry">Issue completed before expiry</option>
+                        <option value="duplicate_conversation">Duplicate conversation</option>
+                        <option value="spam_irrelevant">Spam/irrelevant</option>
+                        <option value="other">Other</option>
                     </select>
                     <select x-show="bulkAction === 'priority'"
                             :disabled="bulkAction !== 'priority'"

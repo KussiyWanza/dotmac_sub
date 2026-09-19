@@ -173,7 +173,6 @@ def renew_authentication_session(
     """Serialize rotation and safely replay one just-rotated browser token."""
 
     def operation() -> RefreshSessionOutcome:
-        now = _as_utc(command.observed_at) or datetime.now(UTC)
         supplied_hash = hash_refresh_token(command.refresh_token)
         statement = (
             select(AuthSession)
@@ -194,6 +193,10 @@ def renew_authentication_session(
                 message="Invalid refresh token.",
             )
 
+        # A concurrent rotation may commit while this request waits for the
+        # row lock. Compare its timestamp against decision time, not wait-entry
+        # time; otherwise a valid duplicate can look older than the rotation.
+        now = _as_utc(command.observed_at) or datetime.now(UTC)
         principal_type, principal_id = _principal(session)
         expires_at = _as_utc(session.expires_at)
         if expires_at is not None and expires_at <= now:

@@ -147,7 +147,7 @@ def _subscriber_name(subscriber: Subscriber | None) -> str | None:
 
 def _subscriber_snapshot(row: WorkOrder, subscriber: Subscriber | None) -> dict:
     return {
-        "account_id": str(row.subscriber_id),
+        "account_id": str(row.subscriber_id) if row.subscriber_id else None,
         "account_name": _subscriber_name(subscriber),
         "account_number": subscriber.account_number if subscriber else None,
         "account_email": subscriber.email if subscriber else None,
@@ -183,6 +183,7 @@ def row_to_item(
         "completed_at": _dt(row.completed_at),
         "total_active_seconds": row.total_active_seconds,
         "created_at": _dt(row.work_order_created_at),
+        "work_order_kind": row.work_order_kind,
     }
     if include_internal:
         item.update(
@@ -205,7 +206,7 @@ def row_to_item(
 
 
 def _base_query(db: Session):
-    return db.query(WorkOrder, Subscriber).join(
+    return db.query(WorkOrder, Subscriber).outerjoin(
         Subscriber, Subscriber.id == WorkOrder.subscriber_id
     )
 

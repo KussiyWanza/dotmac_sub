@@ -414,7 +414,11 @@ implementation.
   both template types are published. Manual Lead actions require
   `crm:lead:write`, a reply-capable supported channel, and owner-resolved proof
   that the sender is neither a customer nor a customer contact; ambiguous
-  identity fails closed. The Lead action is rendered beside the conversation
+  identity fails closed. Exact identity evidence is distinct from manual
+  discovery suggestions: unrelated recent records never block Create Lead or
+  appear as possible exact matches. The Lead action shows the normalized
+  inbound endpoint that will be bound, including provider/account scope for an
+  opaque social subject. The Lead action is rendered beside the conversation
   composer. The catalogue action is visible for every conversation and enables
   only plan families with a currently published PDF and a reply-capable thread.
 - State semantics: issued, effectively expired, revoked, completed, and failed
@@ -495,6 +499,12 @@ implementation.
   The bounded newest-first list shows endpoint, channel, status, and last
   activity and routes each row to the exact prior Inbox conversation.
   Assignment does not narrow this customer history.
+- Resolve eligibility and team scope come from the command/status owners, not
+  template conditions. Expired WhatsApp threads show their expired channel
+  state separately from unresolved/resolved status, require an explicit reason
+  for direct or bulk Resolve, and never require temporary assignment. Resolved
+  expired rows leave the default unresolved view but remain searchable in
+  resolved/history projections.
 
 ## Inbox Email Recipient And Copy Contract
 
@@ -552,6 +562,32 @@ implementation.
 - Queue heartbeats are off by default. If enabled in AI intake policy they are
   clearly identified as reassurance, use different copy from a position
   update, and never repeat the current position.
+
+## Ticket SLA Current Operations Page Contract
+
+- Audience and task: support leaders identify the live not-closed workload and
+  the tickets currently breaching SLA by status, service team, and region.
+- Authority: `ui.ticket_sla_report` owns the typed read projection;
+  `support.ticket_lifecycle` owns current Ticket status and assignments,
+  `support.ticket_sla_clock` owns current clock/breach facts, and
+  `operations.service_team_lifecycle` owns team identity. Routes and templates
+  only transport and render those outcomes.
+- Metric semantics: every summary and breakdown renders **currently breaching /
+  currently open**. Currently open means the canonical not-closed Ticket scope;
+  currently breaching means a distinct not-closed Ticket with a current
+  `breached` SLA clock. A completed clock or historical `breached_at` value does
+  not make a closed or canceled Ticket currently breaching.
+- Date semantics: optional date bounds select Tickets by `created_at`, then the
+  report evaluates their current state. The page states this explicitly.
+- Drill-down: team and region links preserve the date bounds and add the
+  canonical `not_closed` Ticket-list scope, so the destination count reconciles
+  with the card denominator.
+- Historical evidence: breach-record queues, CSV, and clock-start trends remain
+  available but are explicitly labelled as historical or record-oriented; they
+  are never presented as the live workload.
+- Freshness and states: the projection is calculated on demand and stamped with
+  its generation time. Empty, unavailable, current, and historical scopes remain
+  distinct, and no cached or estimated count substitutes for a failed read.
 
 ## Agent Performance Analytics Page Contract
 

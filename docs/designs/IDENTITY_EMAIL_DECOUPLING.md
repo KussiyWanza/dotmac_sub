@@ -1,8 +1,8 @@
 # Identity / Email Decoupling
 
-**Status:** Design — not started
+**Status:** Layers 1+2 implemented; bounded customer email login alias added 2026-09-14
 **Date:** 2026-06-20
-**Scope (this doc):** Core only — Layers 1+2 (relax global email uniqueness; stop using email as a login key). Reseller-identity-off-subscribers (Layer 3) and `+NNNN` data cleanup are noted as follow-ups, not implemented here.
+**Scope (this doc):** Core only — Layers 1+2 (relax global email uniqueness; keep credential usernames canonical while permitting a fail-closed customer email login alias). Reseller-identity-off-subscribers (Layer 3) and `+NNNN` data cleanup are noted as follow-ups, not implemented here.
 
 ---
 
@@ -56,12 +56,15 @@ Separate the three concepts cleanly:
 | Concept | Stored as | Uniqueness |
 |---|---|---|
 | Customer contact info | `Subscriber.email` (+ `phone`) | **None** — plain, indexed, nullable contact field |
-| Login identity | `UserCredential.username` (local) / RADIUS / `SystemUser.email` (admins) | `username` unique per provider=local (already enforced, `app/models/auth.py:51`) |
+| Login identity | `UserCredential.username` (local) / RADIUS / `SystemUser.email` (admins); `Subscriber.email` is a read-only customer alias only when unambiguous | `username` unique per provider=local (already enforced, `app/models/auth.py:51`) |
 | Ownership | `Subscriber.reseller_id` | already correct — no change |
 
 Net effect: a reseller may onboard 500 customers all using `owner@abcnetworks.com` as contact email.
 Each is a distinct `Subscriber` (distinct `id`, distinct `subscriber_number`, distinct login
-credential where one exists). Email becomes descriptive, not identifying.
+credential where one exists). Email remains descriptive contact data.
+`auth.customer_login_identity` may use it as a read-only login alias only when
+it can select exactly one eligible customer and exactly one active local portal
+credential without guessing.
 
 The same rule applies across customer and reseller portal principals: an
 existing `Subscriber.email` never blocks a reseller portal principal. A local
@@ -77,8 +80,9 @@ treated as an identity link.
 
 **In scope (this PR):**
 - **Layer 1** — Drop the global `UNIQUE(email)` on `subscribers`; relax duplicate-email rejection.
-- **Layer 2** — Stop resolving logins by `Subscriber.email`; make `username` the sole customer/reseller
-  login key. Audit and harden every remaining "find subscriber by email" call site.
+- **Layer 2** — Keep `username` as the canonical customer/reseller login key. Customer authentication
+  may resolve `Subscriber.email` through the bounded `auth.customer_login_identity` policy. Audit and
+  harden every other "find subscriber by email" call site.
 
 **Out of scope (follow-ups, tracked but not built here):**
 - **Layer 3** — Move reseller portal users off `Subscriber` rows onto their own principal (add a
@@ -116,25 +120,24 @@ treated as an identity link.
    - The `people/email already exists` → "Email already exists" mapping becomes dead for the email
      path; keep the **username** mappings (`:52-53,57`) since username uniqueness still applies.
 
-### Layer 2 — Email is no longer a login key
+### Layer 2 — Email is a bounded customer-login alias
 
-`username`-based login already works: `_resolve_login_credential` matches `UserCredential.username`
-first (`app/services/auth_flow.py:603`) and there is a partial unique index on `username` where
-`provider='local'` (`app/models/auth.py:51`). The change is mostly *removing* the email fallback.
+`UserCredential.username` remains the canonical identity. Customer email resolution is owned by the
+typed, read-only `auth.customer_login_identity` service and follows these rules:
 
-1. **`app/services/auth_flow.py:602-606`** — remove the `func.lower(Subscriber.email) == ...` OR clause
-   from `_resolve_login_credential`. **Keep** the `SystemUser.email` clause (admin logins by email are
-   legitimate and `system_users.email` stays unique).
+1. An exact stored credential username wins first. This preserves existing email-based usernames,
+   customer-number usernames, and PPPoE fallback behavior.
+2. Contact email matching is case-insensitive and never changes stored data.
+3. Any contact email shared by multiple customer records is refused; the customer is asked to use
+   their customer number.
+4. A sole matching customer is selected only when the customer is active, is not disabled or
+   canceled, and has exactly one active local credential with a portal password. Suspended customers
+   retain their existing login eligibility.
+5. A wrong portal password entered through the email alias participates in the existing credential
+   lockout path and must not fall through to PPPoE authentication.
+6. System-user email login and reseller username login remain unchanged.
 
-2. **`app/services/web_reseller_auth.py:35`** — second resolver with a `Subscriber.email` OR; remove
-   the email clause there too. Resellers log in by `username`.
-
-3. **Prerequisite data backfill (BLOCKER before removing the email fallback):** every active local
-   `UserCredential` that currently has a NULL/empty `username` and relies on email-login must get a
-   `username` backfilled, or those users lose the ability to log in. Audit first:
-   `SELECT count(*) FROM user_credentials WHERE provider='local' AND is_active AND (username IS NULL OR username='')`.
-   Backfill from the linked subscriber's (real) email or `subscriber_number`. **Do this and verify in
-   prod before merging the resolver change.**
+No username, email, or password migration or backfill is required for this alias.
 
 ### Layer 2 risk surface — "find subscriber by email" audit
 
@@ -161,10 +164,11 @@ collapse).
 
 ## 5. Why this is safe for customer logins
 
-Customer portal auth is primarily **RADIUS / PPPoE** keyed by `subscriber_id`, with an optional local
-`UserCredential` keyed to the subscriber (see auth-portals design). Customers rarely authenticate by
-typing an email. After Layer 2, anyone who *did* log in by email logs in by their backfilled
-`username` instead. Admin (`SystemUser`) email login is untouched.
+Customer portal auth continues to support customer-number and **RADIUS / PPPoE** identifiers. The
+email alias resolves only to an existing active local portal credential, then uses that credential's
+unchanged password, lockout, MFA, session, and rate-limit handling. Shared email, multiple active
+credentials, disabled/canceled customer state, or inactive customer state fail closed. Admin
+(`SystemUser`) email login is untouched.
 
 ---
 
@@ -186,7 +190,9 @@ typing an email. After Layer 2, anyone who *did* log in by email logs in by thei
 - **CRM merge hazard** (`crm_webhooks.py`) — highest blast radius; must re-key on `crm_subscriber_id`
   before relaxing uniqueness, or shared-email customers get merged. Echoes the prior 4,499-duplicate
   CRM merge — do not regress it.
-- **Login lockout** if usernames aren't backfilled before the resolver change — see §4 prerequisite.
+- **Ambiguous customer login** if an email is shared — fail closed and ask for the customer number.
+- **Authentication fallback bypass** after a wrong email-alias password — prevented by stopping
+  before PPPoE fallback while retaining the existing local-credential lockout counter.
 - **Rollback:** the resolver/validation changes are pure code (revert PR). The migration's reverse adds
   the unique constraint back — which will **fail if duplicate emails now exist**, so document that the
   downgrade is best-effort and effectively one-way once shared emails are created.
@@ -195,8 +201,12 @@ typing an email. After Layer 2, anyone who *did* log in by email logs in by thei
 
 ## 8. Test plan
 
-- Two subscribers with identical `email`, distinct `username` → both creatable; both log in by their
-  own username; neither logs in by the shared email.
+- A unique customer contact email logs in with the existing portal password; mixed case also works.
+- Two subscribers with identical `email`, distinct `username` → both log in by their own username;
+  shared-email login is refused and asks for the customer number.
+- Wrong email-alias password updates the existing local lockout state and does not try PPPoE.
+- Suspended customers may use the alias; disabled, canceled, and inactive customers may not.
+- Existing PPPoE, customer-number, stored email-username, MFA, session, and rate-limit behavior remains.
 - Admin `SystemUser` still logs in by email.
 - CRM webhook with a shared email upserts the correct subscriber by `crm_subscriber_id` (no merge).
 - Password reset for a shared email behaves deterministically (per §4 decision).

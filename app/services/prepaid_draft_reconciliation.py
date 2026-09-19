@@ -143,6 +143,8 @@ from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
     execute_owner_command,
+    execute_owner_savepoint,
+    owner_command_active,
 )
 from app.services.prepaid_funding_reconstruction import (
     PrepaidFundingBaselineMissingError,
@@ -3784,6 +3786,7 @@ def record_prepaid_draft_reconciliation_exception(
             preview_fingerprint=preview_fingerprint,
             alert_fingerprint=alert_fingerprint,
         )
+
         # A SAVEPOINT, not a bare rollback (matches the established
         # `task_idempotency.py` idiom): losing the insert race must not
         # discard anything else this session/transaction has already done.
@@ -3794,10 +3797,18 @@ def record_prepaid_draft_reconciliation_exception(
         # harmless now aborts the whole nightly pass or funding-event
         # transaction instead of degrading gracefully into an update of the
         # row the other writer just created.
+        def insert_review_item() -> None:
+            db.add(exception)
+            db.flush()
+
         try:
-            with db.begin_nested():
-                db.add(exception)
-                db.flush()
+            if owner_command_active(db):
+                execute_owner_savepoint(db, insert_review_item)
+            else:
+                # The standalone reconciliation lane still owns its caller
+                # transaction. Do not commit it when isolating a lost race.
+                with db.begin_nested():
+                    insert_review_item()
             created = True
         except IntegrityError:
             exception = _select_existing()

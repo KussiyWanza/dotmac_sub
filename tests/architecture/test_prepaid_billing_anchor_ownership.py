@@ -277,3 +277,21 @@ def test_the_renewal_handler_covers_funding_reversals() -> None:
     source = HANDLER.read_text(encoding="utf-8")
     assert "payment_refunded" in source
     assert "payment_reversed" in source
+
+
+def test_legacy_tax_invoice_correction_stays_in_the_prepaid_owner() -> None:
+    source = OWNER.read_text(encoding="utf-8")
+    operator = (
+        PROJECT_ROOT / "scripts" / "billing" / "billing_target_shadow.py"
+    ).read_text(encoding="utf-8")
+
+    assert "class LegacyRenewalTaxInvoiceCorrectionQuery:" in source
+    assert "class CorrectLegacyRenewalTaxInvoiceCommand:" in source
+    assert "def preview_legacy_prepaid_renewal_tax_invoice_correction(" in source
+    assert "def correct_legacy_prepaid_renewal_tax_invoice(" in source
+    assert "definition=_LEGACY_TAX_CORRECTION_COMMAND" in source
+    assert "stage_account_adjustment_reversal_for_renewal_owner(" in source
+    assert "Invoices.stage_system_invoice_for_owner(" in source
+    assert "prepaid_service_renewal_document_corrected" in source
+    assert "preview-legacy-renewal-tax-invoice-correction" in operator
+    assert "correct-legacy-renewal-tax-invoice" in operator

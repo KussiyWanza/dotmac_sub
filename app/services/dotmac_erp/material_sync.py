@@ -643,6 +643,11 @@ def refresh_material_request_statuses(
             request_id = str(candidate.request_id)
             try:
                 response = owned_client.get_material_request_status(request_id)
+                # The capability facade reads its binding/configuration using
+                # this session. Those SELECTs reopen a transaction even after
+                # the discovery read was released. End only a clean read before
+                # entering the material owner; pending mutations fail closed.
+                db_session_adapter.release_read_transaction(db)
                 if not isinstance(response, dict):
                     continue
                 command = _observation_command(

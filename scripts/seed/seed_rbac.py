@@ -21,6 +21,11 @@ ADMIN_ONLY_PERMISSION_KEYS = {
     # so "accept inbound observations" cannot be attached to an ordinary role;
     # the read-only mirror scope beside it stays assignable on purpose.
     "integration:observations:write",
+    # Egress authority for a future ERP accounting-sync machine principal.
+    # Kept out of the ordinary role builder for the same reason as the
+    # ingress scope above: this is a credential scope for a machine caller,
+    # not a permission an admin attaches to a human role.
+    "integration:accounting_sync:read",
     "reseller:impersonate",
     "system:db_admin",
     "system:read",
@@ -49,7 +54,16 @@ ADMIN_ONLY_PERMISSION_KEYS = {
 }
 
 DEFAULT_PERMISSIONS = [
-    ("*", "Full access (wildcard) — grants every permission"),
+    ("*", "Full access (wildcard) - grants every permission"),
+    # Automation Center (assignable, not granted to seeded non-admin roles)
+    ("automation:rule:read", "View Automation Center rules and versions"),
+    ("automation:rule:create", "Create Automation Center rule drafts"),
+    ("automation:rule:update", "Update Automation Center rule drafts"),
+    ("automation:rule:publish", "Publish Automation Center rule versions"),
+    ("automation:rule:operate", "Pause, resume, and retire automation rules"),
+    ("automation:hub:read", "Open the Automation Center"),
+    ("automation:run:read", "View Automation Center execution runs"),
+    ("automation:run:redrive", "Retry failed Automation Center runs"),
     # Audit
     ("audit:read", "Read audit events"),
     # Workforce attendance (pilot: intentionally not granted to seeded roles)
@@ -63,6 +77,10 @@ DEFAULT_PERMISSIONS = [
     (
         "integration:observations:mirror",
         "Integrator inbound observation parity evidence, read-only",
+    ),
+    (
+        "integration:accounting_sync:read",
+        "Integrator outbound accounting-sync feed access (Sub->ERP)",
     ),
     # Auth & System
     ("auth:manage", "Manage authentication settings"),

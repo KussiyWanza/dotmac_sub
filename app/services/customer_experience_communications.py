@@ -193,6 +193,9 @@ def request_field_event(
     message = messages.get(event)
     if message is None:
         return
+    # Shared infrastructure work has no individual customer recipient.
+    if work_order.subscriber_id is None:
+        return
     terminal = event in {"complete", "unable_to_complete"}
     request_update(
         db,

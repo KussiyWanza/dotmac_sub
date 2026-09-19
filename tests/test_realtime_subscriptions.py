@@ -90,3 +90,21 @@ def test_operation_topic_requires_its_target_read_permission(db_session) -> None
     )
     with pytest.raises(RealtimeSubscriptionError, match="cannot subscribe"):
         authorize_topic(db_session, unprivileged, f"operation:{operation.id}")
+
+
+@pytest.mark.parametrize(
+    "topic",
+    ["principal:someone-else", "audience:staff", "workqueue:audience:org"],
+)
+def test_server_owned_topics_cannot_be_selected_by_clients(db_session, topic) -> None:
+    auth = {
+        "principal_id": str(uuid4()),
+        "principal_type": "subscriber",
+        "roles": [],
+        "scopes": [],
+    }
+
+    with pytest.raises(RealtimeSubscriptionError) as exc:
+        authorize_topic(db_session, auth, topic)
+
+    assert exc.value.code == "topic_not_client_subscribable"

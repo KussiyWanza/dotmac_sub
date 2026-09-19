@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.templating import Jinja2Templates
 
 
@@ -17,9 +19,13 @@ def test_console_routes_registered():
     assert "/network/outages" in flat
     assert "/network/outages/declare" in flat
     assert "/network/outages/{incident_id}/resolve" in flat
+    assert "/network/outages/{incident_id}/infrastructure-ticket" in flat
 
 
 def test_console_template_compiles():
-    Jinja2Templates(directory="templates").env.get_template(
+    template = Jinja2Templates(directory="templates").env.get_template(
         "admin/network/outages.html"
     )
+    source = Path("templates/admin/network/outages.html").read_text()
+    assert "Create infrastructure ticket" in source
+    assert "reachability_total_pages" in source

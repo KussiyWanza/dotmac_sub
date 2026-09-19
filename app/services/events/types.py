@@ -31,6 +31,9 @@ class EventType(enum.Enum):
     # Canonical Party identity events
     party_identity_reactivated = "party.identity_reactivated"
 
+    # Automation Center control-plane events
+    automation_rule_changed = "automation.rule_changed"
+
     # Subscriber events
     subscriber_created = "subscriber.created"
     subscriber_updated = "subscriber.updated"
@@ -60,6 +63,7 @@ class EventType(enum.Enum):
     subscription_suspension_warning = "subscription.suspension_warning"
     subscription_deleted = "subscription.deleted"
     subscription_correction_applied = "subscription.correction_applied"
+    access_credential_ensured = "access_credential.ensured"
     access_credential_binding_changed = "access_credential.binding_changed"
 
     # Billing - Invoice events (4)
@@ -71,6 +75,7 @@ class EventType(enum.Enum):
     invoice_discount_changed = "invoice.discount_changed"
     invoice_discount_removed = "invoice.discount_removed"
     invoice_discount_inherited = "invoice.discount_inherited"
+    invoice_tax_correction_completed = "invoice.tax_correction_completed"
 
     # Billing - Payment events (5)
     payment_received = "payment.received"
@@ -111,6 +116,9 @@ class EventType(enum.Enum):
     oauth_token_refresh_failed = "oauth_token.refresh_failed"
     account_credit_deposited = "account_credit.deposited"
     prepaid_service_renewed = "prepaid_service.renewed"
+    prepaid_service_renewal_document_corrected = (
+        "prepaid_service.renewal_document_corrected"
+    )
     subscription_billing_treatment_changed = "subscription_billing_treatment.changed"
     subscription_service_granted = "subscription_service.granted"
     billing_shadow_delivery_recorded = "billing.shadow_delivery.recorded"
@@ -209,6 +217,10 @@ class EventType(enum.Enum):
     catalog_offer_reseller_availability_changed = (
         "catalog.offer_reseller_availability_changed"
     )
+    catalog_offer_access_requirement_classified = (
+        "catalog.offer_access_requirement_classified"
+    )
+    catalog_offer_version_admitted = "catalog.offer_version_admitted"
     ncc_weekly_delivery_configuration_changed = (
         "ncc.weekly_delivery_configuration_changed"
     )
@@ -390,6 +402,7 @@ class EventType(enum.Enum):
     ticket_resolution_disputed = "ticket.resolution_disputed"
     ticket_merged = "ticket.merged"
     ticket_work_order_issued = "ticket.work_order_issued"
+    outage_infrastructure_work_order_issued = "outage.infrastructure_work_order_issued"
     work_order_field_outcome_recorded = "work_order.field_outcome_recorded"
     customer_password_changed = "customer.password_changed"  # noqa: S105
 

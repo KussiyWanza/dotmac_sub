@@ -11,10 +11,12 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
+from app.models.support import TicketCommentAuthorType
 from app.schemas.support import (
     MySupportCommentCreate,
     MySupportTicketCreate,
     TicketCommentCreate,
+    TicketCommentRead,
     TicketCreate,
 )
 
@@ -40,6 +42,40 @@ def test_staff_ticket_comment_defaults_internal():
     payload = TicketCommentCreate(body="Staff-only note")
 
     assert payload.is_internal is True
+
+
+@pytest.mark.parametrize("author_type", list(TicketCommentAuthorType))
+def test_ticket_comment_read_keeps_author_type_typed(author_type):
+    comment = TicketCommentRead.model_validate(
+        {
+            "id": uuid4(),
+            "ticket_id": uuid4(),
+            "author_person_id": None,
+            "author_type": author_type.value,
+            "author_system_user_id": None,
+            "body": "Visible reply",
+            "is_internal": False,
+            "created_at": "2026-09-14T12:00:00Z",
+        }
+    )
+
+    assert comment.author_type is author_type
+
+
+def test_ticket_comment_read_rejects_unknown_author_type():
+    with pytest.raises(ValidationError):
+        TicketCommentRead.model_validate(
+            {
+                "id": uuid4(),
+                "ticket_id": uuid4(),
+                "author_person_id": None,
+                "author_type": "operator-shaped-guess",
+                "author_system_user_id": None,
+                "body": "Visible reply",
+                "is_internal": False,
+                "created_at": "2026-09-14T12:00:00Z",
+            }
+        )
 
 
 @pytest.mark.parametrize("blank", ["   ", "\n\t"])

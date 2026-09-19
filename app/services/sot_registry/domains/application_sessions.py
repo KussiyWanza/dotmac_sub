@@ -135,7 +135,10 @@ DOMAIN = DomainSOT(
                     ),
                     locking=(
                         "SELECT FOR UPDATE locks the active session matching the "
-                        "current or immediately previous refresh-token hash"
+                        "current or immediately previous refresh-token hash; "
+                        "the default decision clock is sampled after acquiring "
+                        "the lock so waiting neither revokes a fresh duplicate "
+                        "nor extends the five-second replay window"
                     ),
                     idempotency=(
                         "The current token rotates once; the immediately previous "

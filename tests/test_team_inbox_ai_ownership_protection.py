@@ -32,10 +32,21 @@ from app.services import (
     team_inbox_read,
 )
 from app.services.owner_commands import CommandContext
+from app.services.workqueue.permissions import WorkqueuePrincipal
 from app.tasks import notifications as notification_tasks
 from tests.staff_identity_fixtures import add_bound_staff_user
 
 TAKEOVER_PERMISSIONS = frozenset({"support:ticket:update", "support:inbox:self_assign"})
+
+
+def _admin_principal(actor_id: UUID) -> WorkqueuePrincipal:
+    return WorkqueuePrincipal(
+        person_id=actor_id,
+        roles=frozenset({"admin"}),
+        scopes=frozenset(),
+        can_view=True,
+        can_act=True,
+    )
 
 
 def _owned_conversation(db_session, *, state: str = "collecting_intent"):
@@ -332,6 +343,7 @@ def test_ai_owned_conversation_blocks_normal_human_mutations(db_session, state):
             "status",
             lambda: team_inbox_commands.update_status(
                 db_session,
+                principal=_admin_principal(user_id),
                 conversation_id=conversation_id,
                 status_value="resolved",
                 actor_person_id=user_id,
@@ -367,6 +379,7 @@ def test_ai_owned_conversation_blocks_normal_human_mutations(db_session, state):
             "bulk",
             lambda: team_inbox_commands.bulk_action(
                 db_session,
+                principal=_admin_principal(user_id),
                 conversation_ids=(str(conversation_id),),
                 action="status",
                 status_value="resolved",

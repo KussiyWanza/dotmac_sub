@@ -444,6 +444,40 @@ void main() {
       expect(ticket.statusPresentation.tone.name, 'neutral');
       expect(ticket.statusPresentation.icon, 'info');
     });
+
+    test('parses the closed ticket-comment author vocabulary', () {
+      TicketComment comment(String authorType) => TicketComment.fromJson({
+            'id': 'comment-$authorType',
+            'ticket_id': 'ticket-1',
+            'author_type': authorType,
+            'body': 'Reply',
+            'is_internal': false,
+          });
+
+      expect(
+        comment('customer').authorType,
+        TicketCommentAuthorType.customer,
+      );
+      expect(comment('staff').authorType, TicketCommentAuthorType.staff);
+      expect(comment('system').authorType, TicketCommentAuthorType.system);
+    });
+
+    test('keeps an unavailable comment author visibly unknown', () {
+      final missing = TicketComment.fromJson({
+        'id': 'comment-missing',
+        'ticket_id': 'ticket-1',
+        'body': 'Older response',
+      });
+      final future = TicketComment.fromJson({
+        'id': 'comment-future',
+        'ticket_id': 'ticket-1',
+        'author_type': 'partner',
+        'body': 'Newer response',
+      });
+
+      expect(missing.authorType, TicketCommentAuthorType.unknown);
+      expect(future.authorType, TicketCommentAuthorType.unknown);
+    });
   });
 
   group('PlanChangeQuote', () {

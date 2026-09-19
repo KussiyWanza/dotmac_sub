@@ -96,6 +96,8 @@ from app.services.owner_commands import (
 from app.services.sales import account_conversion
 from app.services.sales import capture as sales_capture
 from app.services.validation_api import validate_email_format
+from app.services.workqueue.permissions import WorkqueuePrincipal
+from app.services.workqueue.scope import WorkqueuePermissionError, get_workqueue_scope
 
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
@@ -162,6 +164,50 @@ class ConversationAssignedToAnotherAgentError(InboxCommandError):
 class MessageNotFoundError(InboxCommandError):
     def __init__(self, message: str = "Message not found.") -> None:
         super().__init__(message, suffix="message_not_found")
+
+
+def _coerce_resolution_reason(
+    value: str | None,
+) -> team_inbox_status.InboxResolutionReason | None:
+    clean = str(value or "").strip().lower()
+    if not clean:
+        return None
+    try:
+        return team_inbox_status.InboxResolutionReason(clean)
+    except ValueError as exc:
+        raise InboxCommandError("Unsupported resolution reason.") from exc
+
+
+def _require_conversation_team_scope(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    principal: WorkqueuePrincipal,
+) -> None:
+    """Enforce the existing operational team scope for Inbox mutations."""
+
+    if principal.is_admin:
+        return
+    try:
+        scope = get_workqueue_scope(db, principal)
+    except WorkqueuePermissionError as exc:
+        raise InboxCommandError(
+            "This conversation is outside your permitted Team Inbox scope.",
+            suffix="conversation_out_of_scope",
+        ) from exc
+    team_ids = {
+        link.service_team_id
+        for link in conversation.team_links
+        if link.is_active and link.service_team_id is not None
+    }
+    if conversation.primary_service_team_id is not None:
+        team_ids.add(conversation.primary_service_team_id)
+    if not team_ids or not any(scope.allows_team(team_id) for team_id in team_ids):
+        raise InboxCommandError(
+            "This conversation is outside your permitted Team Inbox scope.",
+            suffix="conversation_out_of_scope",
+            details={"conversation_id": str(conversation.id)},
+        )
 
 
 class InboxCommandRejected(InboxCommandError):
@@ -1448,6 +1494,7 @@ def refresh_agent_presence(
 def bulk_action(
     db: Session,
     *,
+    principal: WorkqueuePrincipal,
     conversation_ids: Sequence[str | UUID],
     action: str,
     status_value: str | None = None,
@@ -1457,14 +1504,19 @@ def bulk_action(
     assigned_person_id: str | UUID | None = None,
     auto_assign: bool = True,
     actor_person_id: str | UUID | None = None,
+    resolution_reason: str | None = None,
 ) -> BulkActionOutcome:
     if not conversation_ids:
         raise InboxCommandError("Select at least one conversation.")
+    typed_resolution_reason = _coerce_resolution_reason(resolution_reason)
 
     def execute() -> BulkActionOutcome:
         for raw_conversation_id in conversation_ids:
             conversation = _active_conversation(
                 db, raw_conversation_id, for_update=True
+            )
+            _require_conversation_team_scope(
+                db, conversation=conversation, principal=principal
             )
             _require_human_control(
                 db,
@@ -1477,6 +1529,7 @@ def bulk_action(
                 conversation_ids=conversation_ids,
                 status_value=status_value or "",
                 actor_person_id=actor_person_id,
+                resolution_reason=typed_resolution_reason,
             )
             verb = "Updated"
             noun = "conversation statuses"
@@ -3154,18 +3207,24 @@ def resolve_comment(
 def update_status(
     db: Session,
     *,
+    principal: WorkqueuePrincipal,
     conversation_id: str | UUID,
     status_value: str,
     actor_person_id: str | UUID | None = None,
     completion_override_grant_id: str | UUID | None = None,
+    resolution_reason: str | None = None,
 ) -> StatusOutcome:
     clean_status = str(status_value or "").strip().lower()
     allowed_statuses = {item.value for item in InboxConversationStatus}
     if clean_status not in allowed_statuses:
         raise InboxCommandError("Unsupported conversation status.")
+    typed_resolution_reason = _coerce_resolution_reason(resolution_reason)
 
     def action() -> StatusOutcome:
         conversation = _active_conversation(db, conversation_id, for_update=True)
+        _require_conversation_team_scope(
+            db, conversation=conversation, principal=principal
+        )
         _require_human_control(
             db,
             conversation,
@@ -3186,6 +3245,7 @@ def update_status(
             reason=team_inbox_status.InboxStatusReason.operator_change,
             source_id=f"operator-status:{uuid4()}",
             compatibility_source="admin_inbox_status_action",
+            resolution_reason=typed_resolution_reason,
             completion_override_grant_id=coerce_uuid(completion_override_grant_id),
         )
         inbox_sla.update_status(db, conversation, clean_status)

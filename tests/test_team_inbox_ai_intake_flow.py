@@ -3215,6 +3215,73 @@ def test_engine_resolution_finishes_ai_session_and_resolves_inbox(
     assert resolved_event.status == "resolved"
 
 
+def test_engine_sales_resolution_requires_authoritative_lead_identity(
+    db_session, monkeypatch
+):
+    config = _config(db_session)
+    config.metadata_ = {
+        **dict(config.metadata_ or {}),
+        "conversational_engine_enabled": True,
+    }
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: _Gateway())
+
+    def _sales_resolution_decision(
+        db,
+        *,
+        conversation,
+        session,
+        version,
+        latest_body,
+        classification,
+        **_kwargs,
+    ):
+        del db, version, latest_body, classification
+        state = ai_intake_conversation_engine.ConversationalState.load(
+            conversation=conversation,
+            session=session,
+        )
+        state.current_intent = "coverage_request"
+        state.category = "sales"
+        state.resolution_status = "resolved"
+        return ai_intake_conversation_engine.ConversationEngineDecision(
+            action="resolved",
+            state=state,
+            response_text="Coverage information collected.",
+            metadata={"reason": "coverage_collected", "next_action": "resolve"},
+        )
+
+    monkeypatch.setattr(
+        ai_intake_conversation_engine,
+        "run_conversational_turn",
+        _sales_resolution_decision,
+    )
+    received = _receive(
+        db_session,
+        message_id="sales-identity-required",
+        body="Is Dotmac available in my area?",
+    )
+
+    _process_ai(db_session)
+
+    conversation = db_session.get(InboxConversation, received.conversation_id)
+    inbound = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.conversation_id == conversation.id)
+        .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
+        .one()
+    )
+    resolved_events = (
+        db_session.query(InboxStatusTransitionEvent)
+        .filter(InboxStatusTransitionEvent.conversation_id == conversation.id)
+        .filter(InboxStatusTransitionEvent.reason_code == "ai_intake_resolved")
+        .count()
+    )
+    assert conversation.status != "resolved"
+    assert inbound.metadata_["ai_intake_engine_action"] == "handoff"
+    assert inbound.metadata_["ai_intake_escalation_reason"] == "lead_identity_required"
+    assert resolved_events == 0
+
+
 def test_back_to_back_inbounds_are_processed_oldest_first_exactly_once(
     db_session, monkeypatch
 ):

@@ -44,6 +44,7 @@ from app.schemas.subscriber import (
     AddressCreate,
     AddressUpdate,
     SubscriberCreate,
+    SubscriberNotificationPreferencesUpdate,
     SubscriberUpdate,
 )
 from app.services import account_status_commands, customer_portal
@@ -3380,15 +3381,6 @@ def update_customer_profile(
     subscriber = db.get(Subscriber, subscriber_id)
     if not subscriber:
         return None
-    metadata = dict(subscriber.metadata_ or {})
-    metadata["billing_notifications"] = bool(billing_notifications)
-    metadata["sms_updates"] = bool(sms_updates)
-    metadata["push_notifications"] = bool(push_notifications)
-    metadata["service_notifications"] = bool(service_notifications)
-    metadata["account_notifications"] = bool(account_notifications)
-    metadata["usage_notifications"] = bool(usage_notifications)
-    metadata["general_notifications"] = bool(general_notifications)
-
     new_email = email.strip()
     # A changed email address must be re-verified: reset the flag and dispatch a
     # fresh verification link so the verified state can never lag the address.
@@ -3412,7 +3404,15 @@ def update_customer_profile(
         "email": new_email,
         "phone": phone.strip() if phone else None,
         "locale": (locale or "").strip() or None,
-        "metadata_": metadata,
+        "notification_preferences": SubscriberNotificationPreferencesUpdate(
+            billing_notifications=billing_notifications,
+            sms_updates=sms_updates,
+            push_notifications=push_notifications,
+            service_notifications=service_notifications,
+            account_notifications=account_notifications,
+            usage_notifications=usage_notifications,
+            general_notifications=general_notifications,
+        ),
     }
     if enforce_biodata and subscriber.category == SubscriberCategory.residential:
         if not nin_locked:

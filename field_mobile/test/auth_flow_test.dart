@@ -199,6 +199,45 @@ void main() {
     expect((result as LoginFailure).message, 'Invalid credentials');
   });
 
+  test('password recovery submits a typed email request', () async {
+    adapter.on('POST', '/api/v1/auth/forgot-password', (options) {
+      expect(options.data, {'email': 'tech@dotmac.io'});
+      expect(options.headers['Authorization'], isNull);
+      return (
+        200,
+        {'message': 'If the email exists, a reset link has been sent'},
+      );
+    });
+
+    final result = await repo.requestPasswordRecovery(
+      const PasswordRecoveryRequest(email: 'tech@dotmac.io'),
+    );
+
+    expect(result, isA<PasswordRecoveryAccepted>());
+    expect(
+      (result as PasswordRecoveryAccepted).message,
+      'If the email exists, a reset link has been sent',
+    );
+  });
+
+  test('password recovery returns a typed transport failure', () async {
+    adapter.on(
+      'POST',
+      '/api/v1/auth/forgot-password',
+      (_) => (503, {'detail': 'Recovery is temporarily unavailable'}),
+    );
+
+    final result = await repo.requestPasswordRecovery(
+      const PasswordRecoveryRequest(email: 'tech@dotmac.io'),
+    );
+
+    expect(result, isA<PasswordRecoveryFailure>());
+    expect(
+      (result as PasswordRecoveryFailure).message,
+      'Recovery is temporarily unavailable',
+    );
+  });
+
   // Regression (ported from dotmac_crm 50beb0cb): `return _handleTokens(...)`
   // without `await` hands the future back after the `try` frame has already
   // been left, so a failure while persisting tokens escapes `on DioException`

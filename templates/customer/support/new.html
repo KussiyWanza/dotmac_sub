@@ -56,12 +56,12 @@
     {% endif %}
 
     {% if crm_error %}
-    <div class="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-900/30">
+    <div role="alert" class="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-900/30">
         <div class="flex items-center gap-3">
             <svg class="h-5 w-5 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/>
             </svg>
-            <p class="text-sm font-medium text-amber-800 dark:text-amber-200">{{ crm_error_message }}</p>
+            <p id="support-form-error" class="text-sm font-medium text-amber-800 dark:text-amber-200">{{ crm_error_message }}</p>
         </div>
     </div>
     {% endif %}
@@ -86,7 +86,7 @@
                 <!-- Region -->
                 <div>
                     <label for="region" class="block text-sm font-semibold text-stone-700 dark:text-stone-300 mb-2">Region</label>
-                    <select id="region" name="region" required
+                    <select id="region" name="region" required {% if crm_error %}aria-describedby="support-form-error"{% endif %}
                             class="block w-full rounded-xl border-2 border-stone-200 bg-white px-4 py-3 text-sm text-stone-900 transition-all focus:border-[var(--color-brand-500)] focus:outline-none focus:ring-4 focus:ring-[var(--color-brand-500)]/10 dark:border-stone-600 dark:bg-stone-700 dark:text-white">
                         <option value="" {% if form_values is not defined or not form_values or not form_values.region %}selected{% endif %}>Select region</option>
                         {% for region in region_options %}
@@ -119,8 +119,10 @@
                     <input id="attachments" name="attachments" type="file" multiple
                            accept=".jpg,.jpeg,.png,.gif,.webp,.pdf,image/jpeg,image/png,image/gif,image/webp,application/pdf"
                            data-max-bytes="{{ max_attachment_bytes or 5242880 }}"
+                           aria-describedby="attachments-help attachments-error"
                            class="block w-full rounded-xl border-2 border-stone-200 bg-white px-4 py-3 text-sm text-stone-900 file:mr-4 file:rounded-lg file:border-0 file:bg-stone-100 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-stone-700 hover:file:bg-stone-200 dark:border-stone-600 dark:bg-stone-700 dark:text-white dark:file:bg-stone-600 dark:file:text-stone-200">
-                    <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">Images or PDF, up to {{ max_attachment_mb or 5 }} MB each. Attachments stay with this portal ticket if CRM sync is delayed.</p>
+                    <p id="attachments-help" class="mt-1 text-sm text-stone-500 dark:text-stone-400">Images or PDF, up to {{ max_attachment_mb or 5 }} MB each. Attachments stay with this portal ticket if CRM sync is delayed.</p>
+                    <p id="attachments-error" data-attachment-error aria-live="polite" class="mt-2 hidden rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-900/50 dark:bg-rose-900/20 dark:text-rose-300"></p>
                 </div>
             </div>
         </div>
@@ -148,7 +150,12 @@ document.addEventListener("change", function (event) {
     const oversized = Array.from(input.files || []).find((file) => file.size > maxBytes);
     if (oversized) {
         input.value = "";
-        alert(`"${oversized.name}" is larger than the attachment limit.`);
+        const error = input.closest("div") && input.closest("div").querySelector("[data-attachment-error]");
+        const message = `"${oversized.name}" is larger than the attachment limit. Choose a smaller image or PDF.`;
+        if (error) {
+            error.textContent = message;
+            error.classList.remove("hidden");
+        }
     }
 });
 </script>

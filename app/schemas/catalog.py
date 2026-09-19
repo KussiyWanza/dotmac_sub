@@ -17,6 +17,7 @@ from pydantic import (
 
 from app.models.billing import LedgerEntryType, LedgerSource
 from app.models.catalog import (
+    AccessRequirement,
     AccessType,
     AddOnType,
     BillingCycle,
@@ -647,12 +648,33 @@ class OfferVersionBase(BaseModel):
 
 
 class OfferVersionCreate(OfferVersionBase):
-    pass
+    # Owned by service_intent.offer_access_requirement (Release 1): required
+    # and explicit on every new admission. ``unclassified`` remains an
+    # accepted explicit value in Release 1; there is no application-level
+    # fallback. Never present on OfferVersionUpdate — the field is immutable
+    # once admitted (docs/designs/CATALOG_ACCESS_REQUIREMENT_AUTHORITY.md).
+    access_requirement: AccessRequirement
 
 
 class OfferVersionUpdate(BaseModel):
-    offer_id: UUID | None = None
-    version_number: int | None = Field(default=None, ge=1)
+    # offer_id and version_number are deliberately NOT here: together they
+    # are this row's immutable identity (a DB-level unique constraint on the
+    # pair — alembic/versions/611_offer_versions_unique_version_number.py).
+    # Letting either change on an update would let a PATCH race a concurrent
+    # admission targeting the same pair with no advisory lock or duplicate
+    # check guarding it. Same pattern as access_requirement's exclusion
+    # below (docs/designs/CATALOG_ACCESS_REQUIREMENT_AUTHORITY.md).
+    #
+    # extra="forbid" (matching SubscriptionTechnicalUpdate's identical
+    # identity-guard convention above): without it, Pydantic's default
+    # "ignore extra fields" behavior silently DROPS an offer_id/
+    # version_number/access_requirement sent in a PATCH body before
+    # offers.py's `_assert_offer_version_identity_immutable`/
+    # `assert_access_requirement_immutable` guards ever see them via
+    # `model_dump(exclude_unset=True)` — the request would appear to
+    # succeed as a silent no-op instead of failing closed with a real error.
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, min_length=1, max_length=160)
     code: str | None = Field(default=None, max_length=60)
     service_type: ServiceType | None = None
@@ -675,6 +697,7 @@ class OfferVersionRead(OfferVersionBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    access_requirement: AccessRequirement
     created_at: datetime
     updated_at: datetime
 

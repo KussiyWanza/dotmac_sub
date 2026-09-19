@@ -8,6 +8,7 @@ from app.services import module_manager as module_manager_service
 from app.services import web_admin as web_admin_service
 from app.web.admin.admin_hub import router as admin_hub_router
 from app.web.admin.alerts import router as alerts_router
+from app.web.admin.automation_center import router as automation_center_router
 from app.web.admin.billing_accounts import router as billing_accounts_router
 from app.web.admin.billing_arrangements import router as billing_arrangements_router
 from app.web.admin.billing_calendar_reconciliation import (
@@ -198,6 +199,7 @@ def admin_nas_legacy_path_redirect(path: str):
 
 # Include all admin sub-routers
 router.include_router(dashboard_router)
+router.include_router(automation_center_router)
 router.include_router(customer_retention_router)
 router.include_router(help_center_router)
 router.include_router(meta_connection_router)

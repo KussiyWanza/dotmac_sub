@@ -343,17 +343,23 @@ def require_new_prospect_conversation(
             "This conversation already resolves to an authoritative Party.",
         )
 
-    # Candidate equality is review evidence only. It blocks automatic identity
-    # creation but never establishes or merges identity.
+    # Only authoritative endpoint ownership affects identity eligibility.
+    # Discovery suggestions (including recent records) are deliberately absent
+    # from this decision.
     from app.services import team_inbox_contact_links
 
-    candidates = team_inbox_contact_links.contact_link_candidates(
-        db, [str(conversation.contact_address or "")]
+    evidence = team_inbox_contact_links.lock_conversation_identity_evidence(
+        db, conversation
     )
-    if candidates.get("subscribers") or candidates.get("resellers"):
+    if (
+        evidence.disposition
+        is not team_inbox_contact_links.IdentityEvidenceDisposition.no_match
+    ):
         raise _error(
             "identity_review_required",
-            "Potential customer matches require reviewed identity selection.",
+            "Exact or conflicting identity evidence requires reviewed selection.",
+            identity_disposition=evidence.disposition.value,
+            authoritative_party_count=len(evidence.authoritative_party_ids),
         )
     return conversation
 

@@ -96,6 +96,9 @@ def test_lead_list_definition_declares_its_capabilities():
         "pipeline_id",
         "stage_id",
         "owner_agent_id",
+        "date_preset",
+        "date_from",
+        "date_to",
     }
     assert definition.default_sort == "created_at"
 

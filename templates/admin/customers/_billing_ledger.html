@@ -45,6 +45,7 @@
                         <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Source</th>
                         <th class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500">Debit</th>
                         <th class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500">Credit</th>
+                        <th class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500">Running balance</th>
                         <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Description</th>
                         <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Date</th>
                     </tr>
@@ -61,6 +62,7 @@
                         <td class="px-4 py-3 text-sm text-slate-600 dark:text-slate-300">{{ entry.source.value|replace('_', ' ')|title }}</td>
                         <td class="whitespace-nowrap px-4 py-3 text-right font-mono text-sm font-semibold tabular-nums text-amber-700 dark:text-amber-300">{% if entry.entry_type.value == 'debit' %}{{ entry.currency }} {{ '{:,.2f}'.format(entry.amount) }}{% else %}&mdash;{% endif %}</td>
                         <td class="whitespace-nowrap px-4 py-3 text-right font-mono text-sm font-semibold tabular-nums text-emerald-700 dark:text-emerald-300">{% if entry.entry_type.value == 'credit' %}{{ entry.currency }} {{ '{:,.2f}'.format(entry.amount) }}{% else %}&mdash;{% endif %}</td>
+                        <td class="whitespace-nowrap px-4 py-3 text-right font-mono text-sm font-semibold tabular-nums text-slate-700 dark:text-slate-200">{{ entry.currency }} {{ '{:,.2f}'.format(entry.running_balance) }}</td>
                         <td class="max-w-xs px-4 py-3 text-sm text-slate-600 dark:text-slate-300"><a href="{{ entry.detail_url }}" class="block truncate hover:text-emerald-700 hover:underline dark:hover:text-emerald-400" title="{{ entry.description or 'View entry details' }}">{{ entry.description or 'View entry details' }}</a></td>
                         <td class="whitespace-nowrap px-4 py-3 text-sm text-slate-500 dark:text-slate-400">{{ entry.occurred_at | app_datetime('%b %d, %Y', '—', include_tz=False) }}</td>
                     </tr>

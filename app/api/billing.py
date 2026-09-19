@@ -156,7 +156,11 @@ from app.services.application_exception_observability import (
     PaymentVerificationOutcome,
     record_payment_verification_outcome,
 )
-from app.services.auth_dependencies import require_permission, require_user_auth
+from app.services.auth_dependencies import (
+    require_any_permission,
+    require_permission,
+    require_user_auth,
+)
 from app.services.billing import adjustments as account_adjustment_service
 from app.services.customer_context import require_customer_account_id
 from app.services.db_session_adapter import db_session_adapter
@@ -192,6 +196,24 @@ CARD_SAVE_ERROR_MESSAGE = (
     "Payment was recorded, but we could not save this card. You can add a card "
     "from Payment Methods."
 )
+
+# The narrower egress scope for a future ERP accounting-sync machine
+# principal. Does not widen any existing scope: it grants ONLY the v2
+# accounting-sync feed, never the legacy /invoices/sync endpoint below.
+INTEGRATION_ACCOUNTING_SYNC_READ_SCOPE = "integration:accounting_sync:read"
+
+_PARTIAL_CURSOR_DETAIL = (
+    "after_updated_at and after_id must both be supplied together, or neither."
+)
+
+
+def _validate_sync_cursor_pair(
+    after_updated_at: datetime | None, after_id: UUID | None
+) -> None:
+    """Decision B: a partial keyset-cursor pair is a caller error (422),
+    validated at the endpoint boundary before any service call."""
+    if (after_updated_at is None) != (after_id is None):
+        raise HTTPException(status_code=422, detail=_PARTIAL_CURSOR_DETAIL)
 
 
 # --- Dashboard ---
@@ -239,9 +261,24 @@ def sync_invoices(
     ),
     limit: int = Query(default=500, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    after_updated_at: datetime | None = Query(
+        default=None,
+        description=(
+            "Keyset cursor watermark: return rows after this updated_at "
+            "(paired with after_id). Supply both or neither."
+        ),
+    ),
+    after_id: UUID | None = Query(
+        default=None,
+        description=(
+            "Keyset cursor tiebreaker id (paired with after_updated_at). "
+            "Supply both or neither."
+        ),
+    ),
     db: Session = Depends(get_db),
 ):
     """Lightweight, deterministic invoice feed for accounting synchronization."""
+    _validate_sync_cursor_pair(after_updated_at, after_id)
     return finish_read_response(
         db,
         billing_service.invoices.sync_list_response(
@@ -252,6 +289,8 @@ def sync_invoices(
             updated_since=updated_since,
             limit=limit,
             offset=offset,
+            after_updated_at=after_updated_at,
+            after_id=after_id,
         ),
     )
 
@@ -260,7 +299,13 @@ def sync_invoices(
     "/invoices/accounting-sync/v2",
     response_model=ListResponse[InvoiceAccountingSyncRead],
     tags=["invoices"],
-    dependencies=[Depends(require_permission("billing:invoice:read"))],
+    dependencies=[
+        Depends(
+            require_any_permission(
+                "billing:invoice:read", INTEGRATION_ACCOUNTING_SYNC_READ_SCOPE
+            )
+        )
+    ],
 )
 def sync_invoices_for_accounting_v2(
     invoice_id: UUID | None = None,
@@ -273,10 +318,25 @@ def sync_invoices_for_accounting_v2(
     ),
     limit: int = Query(default=500, ge=1, le=SYNC_FEED_MAX_PAGE_SIZE),
     offset: int = Query(default=0, ge=0),
+    after_updated_at: datetime | None = Query(
+        default=None,
+        description=(
+            "Keyset cursor watermark: return rows after this updated_at "
+            "(paired with after_id). Supply both or neither."
+        ),
+    ),
+    after_id: UUID | None = Query(
+        default=None,
+        description=(
+            "Keyset cursor tiebreaker id (paired with after_updated_at). "
+            "Supply both or neither."
+        ),
+    ),
     db: Session = Depends(get_db),
 ):
     """Return versioned invoice accounting facts and blocking issue codes."""
 
+    _validate_sync_cursor_pair(after_updated_at, after_id)
     return finish_read_response(
         db,
         invoice_sync_projection.list_invoice_accounting_sync(
@@ -289,6 +349,8 @@ def sync_invoices_for_accounting_v2(
                 updated_since=updated_since,
                 limit=limit,
                 offset=offset,
+                after_updated_at=after_updated_at,
+                after_id=after_id,
             ),
         ),
     )

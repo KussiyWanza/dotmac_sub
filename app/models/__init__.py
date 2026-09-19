@@ -37,6 +37,15 @@ from app.models.auth import (  # noqa: F401
     Session,
     UserCredential,
 )
+from app.models.automation import (  # noqa: F401
+    AutomationRule,
+    AutomationRuleStatus,
+    AutomationRuleVersion,
+    AutomationRun,
+    AutomationRunStatus,
+    AutomationStepRun,
+    AutomationStepStatus,
+)
 from app.models.bandwidth import BandwidthSample, QueueMapping  # noqa: F401
 from app.models.billing import (  # noqa: F401
     AccountAdjustment,
@@ -602,6 +611,7 @@ from app.models.network_monitoring import (  # noqa: F401
     NetworkDeviceSnmpOid,
     NetworkTopologyLink,
     NetworkWeathermapView,
+    OutageIncidentWorkOrderLink,
     PopSite,
     PopSiteContact,
     SpeedTestResult,

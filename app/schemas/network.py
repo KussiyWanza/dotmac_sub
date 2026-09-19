@@ -30,6 +30,43 @@ from app.models.network import (
 )
 
 
+class InfrastructureWorkOrderHeaderCreate(BaseModel):
+    """Validated header for field work against shared infrastructure."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = None
+    status: str = Field(default="draft", max_length=20)
+    priority: str | None = Field(default="normal", max_length=20)
+    work_type: str | None = Field(default="repair", max_length=20)
+    address: str | None = Field(default=None, max_length=255)
+    scheduled_start: datetime | None = None
+    scheduled_end: datetime | None = None
+    estimated_duration_minutes: int | None = Field(default=None, ge=0)
+    required_skills: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    access_notes: str | None = Field(default=None, max_length=2000)
+    requires_as_built_evidence: bool = True
+
+    @model_validator(mode="after")
+    def _valid_schedule(self) -> InfrastructureWorkOrderHeaderCreate:
+        if (
+            self.scheduled_start is not None
+            and self.scheduled_end is not None
+            and self.scheduled_end <= self.scheduled_start
+        ):
+            raise ValueError("scheduled_end must be after scheduled_start")
+        return self
+
+
+class InfrastructureWorkOrderIssueRequest(InfrastructureWorkOrderHeaderCreate):
+    """Operator input for issuing shared-outage field work."""
+
+    reason: str = Field(min_length=1, max_length=1000)
+    expected_scope_revision_sequence: int | None = Field(default=None, ge=1)
+
+
 class CPEDeviceBase(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

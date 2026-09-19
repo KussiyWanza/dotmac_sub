@@ -200,9 +200,11 @@ The Compose health check is deliberately narrower: SMTP `NOOP` proves socket
 readiness without writing inbox data. After cutover, the same runtime submits a
 verified end-to-end probe every
 `TEAM_INBOX_SMTP_PROBE_INTERVAL_SECONDS` (15 minutes by default). Only the exact
-random Message-ID generated and verified by the runtime is marked as a probe;
-a sender-controlled header cannot hide natural traffic from freshness. The
-runtime allows up to `TEAM_INBOX_SMTP_PROBE_TIMEOUT_SECONDS` (two minutes by
+random probe ID generated and verified by the runtime is marked as a probe;
+the separate `X-Dotmac-Probe-ID` survives delivery providers that replace the
+normal RFC `Message-ID`. A sender-controlled header cannot hide natural traffic
+from freshness. The runtime allows up to
+`TEAM_INBOX_SMTP_PROBE_TIMEOUT_SECONDS` (two minutes by
 default) for the outbound/MX round trip, and the email contract pages if no
 verified probe lands within 30 minutes.
 

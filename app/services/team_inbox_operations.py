@@ -36,6 +36,7 @@ from app.services import (
     team_inbox_assignment,
     team_inbox_filters,
     team_inbox_outbound,
+    team_inbox_reply_window,
     team_inbox_status,
 )
 from app.services.common import coerce_uuid
@@ -500,6 +501,7 @@ def execute_macro_actions(
     macro_id: str | UUID,
     actor_person_id: str | UUID | None = None,
     override_grant_id: str | UUID | None = None,
+    resolution_reason: team_inbox_status.InboxResolutionReason | None = None,
 ) -> dict[str, object]:
     """Run one macro's actions against one conversation.
 
@@ -540,6 +542,7 @@ def execute_macro_actions(
                     reason=team_inbox_status.InboxStatusReason.macro,
                     source_id=f"macro:{macro.id}:{conversation.id}:{uuid4()}",
                     macro_id=macro.id,
+                    resolution_reason=resolution_reason,
                     completion_override_grant_id=override_grant_uuid,
                 )
             elif action_type == "add_tag":
@@ -718,6 +721,7 @@ def bulk_update_status(
     status_value: str,
     actor_person_id: str | UUID | None = None,
     override_grant_ids: Mapping[str | UUID, str | UUID] | None = None,
+    resolution_reason: team_inbox_status.InboxResolutionReason | None = None,
 ) -> dict[str, object]:
     clean_status = str(status_value or "").strip().lower()
     if clean_status not in {"open", "pending", "snoozed", "resolved"}:
@@ -747,6 +751,7 @@ def bulk_update_status(
                 actor_person_id=actor_uuid,
                 reason=team_inbox_status.InboxStatusReason.bulk_change,
                 source_id=f"bulk-status:{conversation.id}:{uuid4()}",
+                resolution_reason=resolution_reason,
                 completion_override_grant_id=grant_ids_by_conversation.get(
                     conversation.id
                 ),
@@ -1173,9 +1178,17 @@ def queue_metrics(db: Session) -> InboxQueueMetrics:
     """
     from app.services import team_inbox_read
 
-    assigned_conversation_ids = select(
-        InboxConversationAssignment.conversation_id
-    ).where(InboxConversationAssignment.is_active.is_(True))
+    assigned_conversation_ids = (
+        select(InboxConversationAssignment.conversation_id)
+        .join(
+            InboxConversation,
+            InboxConversation.id == InboxConversationAssignment.conversation_id,
+        )
+        .where(*team_inbox_assignment.countable_active_assignment_clauses())
+    )
+    expired_whatsapp_ids = (
+        team_inbox_reply_window.expired_whatsapp_conversation_ids_query()
+    )
     total_open, unassigned_open, muted_open, snoozed_open = (
         db.query(
             func.count(InboxConversation.id),
@@ -1192,6 +1205,7 @@ def queue_metrics(db: Session) -> InboxQueueMetrics:
         .filter(InboxConversation.is_active.is_(True))
         .filter(InboxConversation.status != "resolved")
         .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
+        .filter(~InboxConversation.id.in_(expired_whatsapp_ids))
         .one()
     )
     return InboxQueueMetrics(
@@ -1269,6 +1283,16 @@ def auto_resolve_stale_conversations(
         .filter(InboxConversation.status.in_(["open", "pending", "snoozed"]))
         .filter(InboxConversation.last_message_at.isnot(None))
         .filter(InboxConversation.last_message_at <= cutoff)
+        # WhatsApp expiry releases work; it never implies resolution. Keep
+        # expired conversations unresolved until an authorized human resolves
+        # them with an explicit reason or a qualifying inbound reopens work.
+        .filter(
+            ~InboxConversation.id.in_(
+                team_inbox_reply_window.expired_whatsapp_conversation_ids_query(
+                    now=clock
+                )
+            )
+        )
         .order_by(InboxConversation.last_message_at.asc())
         .limit(max(1, int(limit)))
         .with_for_update(skip_locked=True)

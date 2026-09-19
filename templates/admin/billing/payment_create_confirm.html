@@ -95,6 +95,7 @@
         <input type="hidden" name="payment_method_id" value="{{ payment_method_id or '' }}">
         <input type="hidden" name="reference" value="{{ reference or '' }}">
         <input type="hidden" name="memo" value="{{ memo or '' }}">
+        <input type="hidden" name="payment_date" value="{{ payment_date or '' }}">
         <input type="hidden" name="idempotency_token" value="{{ idempotency_token }}">
         <input type="hidden" name="preview_fingerprint" value="{{ preview.fingerprint }}">
         <input type="hidden" name="control_fingerprint" value="{{ duplicate_control.control_fingerprint }}">

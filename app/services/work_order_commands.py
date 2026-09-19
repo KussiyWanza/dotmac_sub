@@ -39,6 +39,7 @@ from app.schemas.dispatch import (
     WorkOrderHeaderCreate,
     WorkOrderHeaderUpdate,
 )
+from app.schemas.network import InfrastructureWorkOrderHeaderCreate
 from app.services.audit_adapter import stage_audit_event
 from app.services.common import coerce_uuid
 from app.services.field.source import mark_sub_authoritative
@@ -540,6 +541,88 @@ class WorkOrderCommands:
                 status_code=409,
                 detail="Work order id already exists",
             ) from exc
+        return row
+
+    @staticmethod
+    def stage_infrastructure_work_order(
+        db: Session,
+        payload: InfrastructureWorkOrderHeaderCreate,
+        *,
+        origin_ticket_id: object,
+        auth: dict[str, Any] | None = None,
+        request_id: str | None = None,
+        idempotency_key: str,
+    ) -> WorkOrder:
+        """Stage an outage work order; the coordinator owns the commit."""
+
+        data = _data(payload)
+        status = _validate_status(data.get("status") or WorkOrderStatus.draft.value)
+        if status not in _INITIAL_STATUSES:
+            raise HTTPException(
+                status_code=422,
+                detail="Infrastructure work orders must start as draft or scheduled",
+            )
+        if any(data.get(field) is not None for field in _ASSIGNMENT_HEADER_FIELDS):
+            raise HTTPException(
+                status_code=422,
+                detail="Create the work order first, then use the assignment command",
+            )
+        _validate_schedule(data.get("scheduled_start"), data.get("scheduled_end"))
+        ticket_id = coerce_uuid(origin_ticket_id)
+        ticket = db.get(Ticket, ticket_id)
+        if ticket is None or not ticket.is_active:
+            raise WorkOrderCommandError(
+                "origin_ticket_not_found", "Origin ticket not found", kind="not_found"
+            )
+        data["status"] = status
+        data["work_order_kind"] = "infrastructure"
+        data["subscriber_id"] = None
+        key = str(idempotency_key).strip()
+        public_id = f"sub-{uuid.uuid5(_CREATE_ID_NAMESPACE, key).hex}"
+        supplied_metadata = dict(data.pop("metadata_", None) or {})
+        command_fingerprint = _fingerprint(
+            {"public_id": public_id, **data, "origin_ticket_id": ticket_id}
+        )
+        existing = (
+            db.query(WorkOrder).filter(WorkOrder.public_id == public_id).one_or_none()
+        )
+        if existing is not None:
+            if (
+                dict(existing.metadata_ or {}).get("native_create_fingerprint")
+                == command_fingerprint
+            ):
+                return existing
+            raise HTTPException(status_code=409, detail="Work order id already exists")
+        supplied_metadata.update(
+            {
+                "native_source": "sub",
+                "native_create_fingerprint": command_fingerprint,
+                "infrastructure_origin_ticket_id": str(ticket_id),
+            }
+        )
+        row = WorkOrder(
+            public_id=public_id,
+            origin_ticket_id=ticket_id,
+            metadata_=supplied_metadata,
+            work_order_created_at=data.get("work_order_created_at"),
+            **data,
+        )
+        db.add(row)
+        db.flush()
+        _audit(
+            db,
+            action="work_order.created",
+            work_order=row,
+            auth=auth,
+            request_id=request_id or key,
+            metadata={
+                "owner": "operations.work_order_commands",
+                "work_order_kind": "infrastructure",
+                "public_id": row.public_id,
+                "origin_ticket_id": str(ticket_id),
+            },
+        )
+        _queue_work_order_tag_notifications(db, row, previous_tags=(), auth=auth)
         return row
 
     @staticmethod

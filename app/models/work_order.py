@@ -28,7 +28,7 @@ def _default_public_id(context) -> str:
 
 
 class WorkOrder(Base):
-    """One work order attributed to one of our subscribers."""
+    """A customer job or a shared infrastructure recovery job."""
 
     __tablename__ = "work_order"
 
@@ -45,11 +45,16 @@ class WorkOrder(Base):
     crm_work_order_id: Mapped[str | None] = mapped_column(
         String(64), nullable=True, unique=True, index=True
     )
-    subscriber_id: Mapped[uuid.UUID] = mapped_column(
+    # Customer jobs have a subscriber. Shared outage jobs deliberately do not;
+    # their audience is the immutable outage scope revision.
+    subscriber_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("subscribers.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
+    )
+    work_order_kind: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="customer", server_default="customer"
     )
     # Native project scope. ``crm_project_id`` below remains import provenance;
     # business policy and joins use this FK.

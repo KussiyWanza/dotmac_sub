@@ -168,7 +168,12 @@ class IPAssignments(CRUDManager[IPAssignment]):
             subscription.ipv4_address = address.address
 
     @staticmethod
-    def create(db: Session, payload: IPAssignmentCreate):
+    def create(
+        db: Session,
+        payload: IPAssignmentCreate,
+        *,
+        commit: bool = True,
+    ) -> IPAssignment:
         data = payload.model_dump()
         IPAssignments._resolve_owner(db, data)
         if data.get("subscriber_id") is not None:
@@ -189,8 +194,11 @@ class IPAssignments(CRUDManager[IPAssignment]):
         db.add(assignment)
         db.flush()
         IPAssignments._sync_subscription_ipv4(db, assignment)
-        db.commit()
-        db.refresh(assignment)
+        if commit:
+            db.commit()
+            db.refresh(assignment)
+        else:
+            db.flush()
         return assignment
 
     @classmethod

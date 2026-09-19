@@ -11,6 +11,7 @@ from app.web.customer import routes as customer_routes
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ROUTES_PATH = REPO_ROOT / "app/web/customer/routes.py"
 TEMPLATE_PATH = REPO_ROOT / "templates/customer/support/new.html"
+SUPPORT_INDEX_TEMPLATE_PATH = REPO_ROOT / "templates/customer/support/index.html"
 
 
 def _function_source(function_name: str) -> str:
@@ -50,6 +51,14 @@ def test_support_create_requires_and_validates_canonical_region() -> None:
     assert '"Select a valid Region."' in source
     assert 'name="region" required' in template
     assert "form_values.region == region" in template
+
+
+def test_support_list_preserves_return_state_and_read_only_create_visibility() -> None:
+    template = SUPPORT_INDEX_TEMPLATE_PATH.read_text()
+
+    assert "support_current_path" in template
+    assert "?return_to={{ support_return_query }}" in template
+    assert "{% if not (customer and customer.read_only) %}" in template
 
 
 @pytest.mark.parametrize("submitted", ("", "forged"))
@@ -106,6 +115,113 @@ def test_support_comment_failure_renders_detail_template_and_success_redirect() 
     assert '"customer/support/detail.html"' in source
     assert "status_code=400" in source
     assert '"/portal/support/{ticket_id}"' in source
+    assert '"comment_form_values"' in source
+
+
+def test_support_comment_failure_preserves_customer_reply(monkeypatch) -> None:
+    monkeypatch.setattr(
+        customer_routes,
+        "get_current_customer_from_request",
+        lambda request, db: {"id": "customer-1"},
+    )
+    monkeypatch.setattr(
+        customer_routes,
+        "resolve_allowed_subscriber_ids",
+        lambda customer, db: ["subscriber-1"],
+    )
+    monkeypatch.setattr(
+        customer_routes.crm_portal,
+        "handle_ticket_comment",
+        lambda db, customer, subscriber_ids, ticket_id, body, attachments: {
+            "success": False,
+            "error": "Attachment is too large.",
+        },
+    )
+    monkeypatch.setattr(
+        customer_routes.crm_portal,
+        "ticket_detail_context",
+        lambda request, db, customer, subscriber_ids, ticket_id: {
+            "request": request,
+            "customer": customer,
+            "ticket": {"id": ticket_id, "status": "open"},
+            "comments": [],
+        },
+    )
+    monkeypatch.setattr(
+        customer_routes.templates,
+        "TemplateResponse",
+        lambda template, context, status_code: SimpleNamespace(
+            template=template,
+            context=context,
+            status_code=status_code,
+        ),
+    )
+
+    response = customer_routes.customer_support_add_comment(
+        request=object(),
+        ticket_id="ticket-1",
+        body="Please keep this typed reply",
+        attachments=[],
+        db=object(),
+    )
+
+    assert response.status_code == 400
+    assert response.template == "customer/support/detail.html"
+    assert response.context["crm_error_message"] == "Attachment is too large."
+    assert response.context["comment_form_values"]["body"] == (
+        "Please keep this typed reply"
+    )
+
+
+def test_support_detail_uses_portal_safe_return_path(monkeypatch) -> None:
+    monkeypatch.setattr(
+        customer_routes,
+        "get_current_customer_from_request",
+        lambda request, db: {"id": "customer-1"},
+    )
+    monkeypatch.setattr(
+        customer_routes,
+        "resolve_allowed_subscriber_ids",
+        lambda customer, db: ["subscriber-1"],
+    )
+    monkeypatch.setattr(
+        customer_routes.crm_portal,
+        "ticket_detail_context",
+        lambda request, db, customer, subscriber_ids, ticket_id: {
+            "request": request,
+            "customer": customer,
+            "ticket": {"id": ticket_id, "status": "open"},
+            "comments": [],
+        },
+    )
+    monkeypatch.setattr(
+        customer_routes.templates,
+        "TemplateResponse",
+        lambda template, context: SimpleNamespace(template=template, context=context),
+    )
+
+    safe = customer_routes.customer_support_detail(
+        request=object(),
+        ticket_id="ticket-1",
+        return_to="/portal/support?status=open&page=2",
+        db=object(),
+    )
+    unsafe = customer_routes.customer_support_detail(
+        request=object(),
+        ticket_id="ticket-1",
+        return_to="https://example.com/steal",
+        db=object(),
+    )
+    default = customer_routes.customer_support_detail(
+        request=object(),
+        ticket_id="ticket-1",
+        return_to=None,
+        db=object(),
+    )
+
+    assert safe.context["support_return_path"] == "/portal/support?status=open&page=2"
+    assert unsafe.context["support_return_path"] == "/portal/notifications"
+    assert default.context["support_return_path"] == "/portal/support"
 
 
 def test_support_list_route_delegates_to_crm_portal() -> None:

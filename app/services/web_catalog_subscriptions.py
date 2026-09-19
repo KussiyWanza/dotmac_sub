@@ -4553,34 +4553,6 @@ def create_subscription_with_audit(
             created.subscriber_id,
             subscription_id=created.id,
         )
-        if (
-            not existing_credential
-            and str(getattr(created, "status", "") or "").strip().lower() == "active"
-        ):
-            try:
-                from app.services.pppoe_credentials import (
-                    auto_generate_pppoe_credential,
-                )
-
-                auto_generate_pppoe_credential(
-                    db,
-                    str(created.subscriber_id),
-                    radius_profile_id=str(created.radius_profile_id)
-                    if created.radius_profile_id
-                    else None,
-                    subscription_id=str(created.id),
-                )
-                existing_credential = _current_access_credential(
-                    db,
-                    created.subscriber_id,
-                    subscription_id=created.id,
-                )
-            except Exception:
-                logger.warning(
-                    "PPPoE credential auto-generation failed during web subscription create for %s",
-                    created.id,
-                    exc_info=True,
-                )
         generated_login = _generated_service_login(subscriber)
         generated_password = _generated_service_password(subscriber)
         explicit_login = str(form.get("login") or "").strip()

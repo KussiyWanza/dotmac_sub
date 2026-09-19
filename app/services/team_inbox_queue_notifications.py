@@ -22,7 +22,11 @@ from app.models.team_inbox import (
     InboxQueueEntryStatus,
     InboxQueueNotification,
 )
-from app.services import ai_conversation_intake, team_inbox_outbound
+from app.services import (
+    ai_conversation_intake,
+    team_inbox_outbound,
+    team_inbox_reply_window,
+)
 from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
@@ -148,9 +152,18 @@ def settle_rejected_queue_delivery(
 def current_visible_position(db: Session, entry: InboxConversationQueueEntry) -> int:
     ahead = (
         db.query(func.count(InboxConversationQueueEntry.id))
+        .join(
+            InboxConversation,
+            InboxConversation.id == InboxConversationQueueEntry.conversation_id,
+        )
         .filter(InboxConversationQueueEntry.service_team_id == entry.service_team_id)
         .filter(
             InboxConversationQueueEntry.status == InboxQueueEntryStatus.queued.value
+        )
+        .filter(
+            ~InboxConversation.id.in_(
+                team_inbox_reply_window.expired_whatsapp_conversation_ids_query()
+            )
         )
         .filter(
             (InboxConversationQueueEntry.entered_at < entry.entered_at)
@@ -382,6 +395,14 @@ def preflight_queue_notification_delivery(
         return outcome(False, "conversation_inactive")
     if conversation.status == "resolved":
         return outcome(False, "conversation_resolved")
+    if (
+        conversation.channel_type == InboxChannelType.whatsapp.value
+        and team_inbox_reply_window.decide_reply_window(
+            db, conversation=conversation
+        ).status
+        is team_inbox_reply_window.ReplyWindowStatus.expired
+    ):
+        return outcome(False, "whatsapp_window_expired")
     if active_assignment is not None:
         return outcome(False, "human_assignment_active")
     if entry.status != InboxQueueEntryStatus.queued.value:

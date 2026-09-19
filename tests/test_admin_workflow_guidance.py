@@ -1,9 +1,13 @@
+import re
 from pathlib import Path
 
 from app.services.admin_workflow_guidance import (
+    HELP_NAVIGATION,
+    HELP_ONLY_GUIDANCE,
     WORKFLOW_GUIDANCE,
     guidance_categories,
     guidance_for_path,
+    help_actions_for,
     search_guidance,
 )
 from scripts.architecture.workflow_guidance_gate import validation_errors
@@ -24,6 +28,18 @@ def test_every_guide_has_plain_language_content_and_a_route() -> None:
         )
 
 
+def test_automation_center_guidance_explains_the_read_only_boundary() -> None:
+    guide = guidance_for_path("/admin/automation")
+
+    assert guide is not None
+    assert guide.id == "automation-center"
+    content = " ".join((*guide.steps, *guide.notes)).lower()
+    assert "module registry" in content
+    assert "recent execution evidence" in content
+    assert "read-only" in content
+    assert "custom fields" in content
+
+
 def test_subscription_lifecycle_guide_includes_plan_changes() -> None:
     guide = guidance_for_path("/admin/catalog/subscriptions/123")
     assert guide is not None
@@ -37,7 +53,7 @@ def test_subscription_lifecycle_guide_includes_plan_changes() -> None:
 def test_getting_started_is_the_first_help_category() -> None:
     categories = guidance_categories()
 
-    assert categories[:2] == ("Getting started", "Billing")
+    assert categories[:2] == ("Getting started", "Administration")
 
 
 def test_specific_workflow_routes_override_or_reject_broad_sections() -> None:
@@ -230,6 +246,18 @@ def test_support_ticket_guidance_separates_editing_from_assignment() -> None:
     assert "assignment details" in content
 
 
+def test_ticket_sla_report_guidance_explains_current_scope_and_drilldowns() -> None:
+    guide = guidance_for_path("/admin/reports/ticket-sla")
+
+    assert guide is not None
+    assert guide.id == "ticket-sla-report"
+    content = " ".join((*guide.steps, *guide.notes)).lower()
+    assert "currently breaching divided by currently open" in content
+    assert "matching not-closed ticket queue" in content
+    assert "closed, canceled, and merged tickets do not contribute" in content
+    assert "unassigned region" in content
+
+
 def test_support_csat_report_guidance_is_route_specific() -> None:
     guide = guidance_for_path("/admin/reports/support-csat")
 
@@ -260,6 +288,10 @@ def test_admin_guidance_uses_one_accessible_centered_modal() -> None:
     billing = Path("templates/admin/billing/index.html").read_text(encoding="utf-8")
 
     assert "{% block workflow_guidance %}" in layout
+    assert (
+        '{% from "components/ui/workflow_help.html" import workflow_help_control with context %}'
+        in layout
+    )
     assert "data-admin-workflow-help-staging" in layout
     assert "admin-workflow-help.js" in layout
     assert "data-admin-workflow-help-control" in control
@@ -272,9 +304,59 @@ def test_admin_guidance_uses_one_accessible_centered_modal() -> None:
     assert 'aria-modal="true"' in control
     assert 'x-trap.inert.noscroll="workflowHelpOpen"' in control
     assert "items-center justify-center" in control
+    assert 'button_class="h-10 w-10"' in control
+    assert "h-7 w-7" in control
+    assert "bg-slate-100" in control
+    assert "dark:bg-slate-800" in control
     assert "{{ workflow_guide.purpose }}" in control
-    assert "{% for step in workflow_guide.steps %}" in control
+    assert "Page Overview" in control
+    assert "admin_help_actions_for(workflow_guide)" in control
+    assert "Showing actions available to your role" in control
+    assert "if not action.permission or can(request, action.permission)" in control
+    assert "?article={{ workflow_guide.id|urlencode }}" in control
     assert "billingHelpOpen" not in billing
+
+
+def test_every_help_guide_has_complete_action_sections() -> None:
+    guides = (*WORKFLOW_GUIDANCE, *HELP_ONLY_GUIDANCE)
+    assert len(guides) == 52
+    for guide in guides:
+        actions = help_actions_for(guide)
+        assert actions, guide.id
+        assert len({action.id for action in actions}) == len(actions)
+        covered_steps = tuple(step for action in actions for step in action.steps)
+        assert sorted(covered_steps) == sorted(guide.steps), guide.id
+        assert all(action.title and action.steps for action in actions)
+
+
+def test_help_navigation_matches_sidebar_destinations_without_adding_icons() -> None:
+    labels = {section.label for section in HELP_NAVIGATION}
+    sidebar = Path("templates/components/navigation/admin_sidebar.html").read_text(
+        encoding="utf-8"
+    )
+    sidebar_labels = set(re.findall(r'(?<!sub)nav_link\("([^"]+)"', sidebar))
+    sidebar_labels.remove("Help center")
+    sidebar_labels.add("Vendors")
+
+    assert labels == sidebar_labels
+    guide_ids = {guide.id for guide in (*WORKFLOW_GUIDANCE, *HELP_ONLY_GUIDANCE)}
+    navigation_guide_ids = {
+        guide_id for section in HELP_NAVIGATION for guide_id in section.guide_ids
+    }
+    assert navigation_guide_ids == guide_ids
+    assert guidance_for_path("/admin/workqueue") is None
+    assert guidance_for_path("/admin/surveys") is None
+
+
+def test_help_center_uses_sidebar_sections_and_action_anchors() -> None:
+    help_template = Path("templates/admin/help/index.html").read_text(encoding="utf-8")
+
+    assert "<details" in help_template
+    assert "group.articles" in help_template
+    assert "selected_article.actions" in help_template
+    assert 'href="#action-{{ action.id }}"' in help_template
+    assert 'id="action-{{ action.id }}"' in help_template
+    assert "Showing actions available to your role" not in help_template
 
 
 def test_customer_list_uses_shared_workflow_help_placement() -> None:

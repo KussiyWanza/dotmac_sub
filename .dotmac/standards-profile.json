@@ -117,13 +117,13 @@
         "path": "tests/test_email_services.py",
         "symbol": "test_send_email_auth_failure_logs",
         "category": "outbound_transport",
-        "fingerprint": "e21f75d7c74d8996bad3d29f4876bcce708c336102a88f3bd2474350f929b10e"
+        "fingerprint": "d04fece5c83bd35cca1931fa0675b17849f4e0d8a0a67fe652d5586269c45b31"
       },
       {
         "path": "tests/test_email_services.py",
         "symbol": "test_smtp_connection_auth_failure_logs",
         "category": "outbound_transport",
-        "fingerprint": "e21f75d7c74d8996bad3d29f4876bcce708c336102a88f3bd2474350f929b10e"
+        "fingerprint": "d04fece5c83bd35cca1931fa0675b17849f4e0d8a0a67fe652d5586269c45b31"
       },
       {
         "path": "tests/test_genieacs_services.py",
@@ -165,7 +165,7 @@
         "path": "tests/test_team_inbox_smtp_runtime.py",
         "symbol": "test_readiness_uses_smtp_noop",
         "category": "outbound_transport",
-        "fingerprint": "2df88d6ae0dba969bd2097a5459861379cf68d42b8542974efb0382c0a92e7f7"
+        "fingerprint": "93abe275aa5f06c2edbe1286e2e1918d61e9cc2a4888101c70134c7cc8bc08b9"
       },
       {
         "path": "tests/test_team_inbox_whatsapp_webhook.py",

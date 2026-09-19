@@ -64,6 +64,8 @@ def _render(
     attendance: AttendanceView | None = None,
     error_message: str | None = None,
     unavailable: bool = False,
+    error_code: str | None = None,
+    retryable: bool = True,
 ):
     return templates.TemplateResponse(
         "admin/dashboard/_attendance.html",
@@ -73,6 +75,8 @@ def _render(
             "attendance_state": AttendanceState,
             "error_message": error_message,
             "attendance_unavailable": unavailable,
+            "attendance_error_code": error_code,
+            "attendance_retryable": retryable,
         },
     )
 
@@ -81,7 +85,10 @@ def load(request: Request, db: Session):
     subject = _subject(request)
     if subject is None:
         return _render(
-            request, error_message="Attendance is not available for this account."
+            request,
+            error_message="Attendance is not available for this account.",
+            error_code="authorization_failed",
+            retryable=False,
         )
     try:
         attendance = WorkforceAttendanceService(db).today(
@@ -89,13 +96,20 @@ def load(request: Request, db: Session):
             request_id=str(getattr(request.state, "request_id", "attendance-read")),
         )
     except WorkforceAttendanceError as exc:
-        return _render(request, error_message=exc.message, unavailable=exc.unavailable)
+        return _render(
+            request,
+            error_message=exc.message,
+            unavailable=exc.unavailable,
+            error_code=exc.code,
+            retryable=exc.unavailable,
+        )
     except Exception:
         logger.exception("Dashboard attendance read failed")
         return _render(
             request,
             error_message="Attendance is temporarily unavailable. Please try again.",
             unavailable=True,
+            error_code="attendance_unavailable",
         )
     return _render(request, attendance=attendance)
 

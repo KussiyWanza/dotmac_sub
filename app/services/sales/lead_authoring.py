@@ -18,6 +18,7 @@ from app.models.catalog import RegionZone
 from app.models.organization import Organization, OrganizationAccountType
 from app.models.party import (
     Party,
+    PartyContactPoint,
     PartyContactPointType,
     PartyIdentityStatus,
     PartyRelationshipType,
@@ -36,7 +37,12 @@ from app.models.sales import (
 from app.models.service_team import ServiceTeamMember
 from app.models.subscriber import Reseller
 from app.models.system_user import SystemUser
-from app.services import conversation_lead_relationships
+from app.models.team_inbox import InboxConversation, InboxParticipantRelationship
+from app.services import (
+    conversation_lead_relationships,
+    team_inbox_contact_links,
+    team_inbox_participants,
+)
 from app.services import party as party_service
 from app.services.audit_adapter import stage_audit_event
 from app.services.credential_crypto import encrypt_credential
@@ -602,6 +608,89 @@ def _inbox_lead_source(channel_type: str) -> str:
     }.get(channel_type, "Website")
 
 
+def _bind_inbox_origin_identity(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    party: Party,
+) -> None:
+    """Bind the exact inbound endpoint inside the Lead authoring transaction."""
+
+    identity = team_inbox_contact_links.observed_inbound_identity(db, conversation)
+    channel_map = {
+        "email": PartyContactPointType.email,
+        "whatsapp": PartyContactPointType.whatsapp,
+        "facebook_messenger": PartyContactPointType.facebook_messenger,
+        "instagram_dm": PartyContactPointType.instagram_dm,
+    }
+    channel = channel_map.get(identity.channel_type)
+    if channel is None:
+        raise _error(
+            "inbox_identity_channel_unsupported",
+            "This Inbox channel cannot establish the required Lead identity.",
+        )
+    social = identity.channel_type in {"facebook_messenger", "instagram_dm"}
+    if social and not (
+        identity.provider
+        and identity.provider_account_id
+        and identity.external_subject_id
+    ):
+        raise _error(
+            "inbox_identity_scope_incomplete",
+            "The provider-scoped inbound identity is incomplete.",
+        )
+    statement = select(PartyContactPoint).where(
+        PartyContactPoint.party_id == party.id,
+        PartyContactPoint.channel_type == channel.value,
+        PartyContactPoint.is_active.is_(True),
+    )
+    if social:
+        statement = statement.where(
+            PartyContactPoint.provider == identity.provider,
+            PartyContactPoint.provider_account_id == identity.provider_account_id,
+            PartyContactPoint.external_subject_id == identity.external_subject_id,
+        )
+    else:
+        statement = statement.where(
+            PartyContactPoint.normalized_value == identity.normalized_endpoint
+        )
+    point = db.scalar(statement.order_by(PartyContactPoint.created_at).limit(1))
+    if point is None:
+        point = party_service.add_contact_point(
+            db,
+            party_id=party.id,
+            channel_type=channel,
+            normalized_value=identity.normalized_endpoint,
+            display_value=identity.normalized_endpoint,
+            scope_key=(
+                f"{identity.provider}:{identity.provider_account_id}"
+                if social
+                else "default"
+            ),
+            provider=identity.provider if social else None,
+            provider_account_id=identity.provider_account_id if social else None,
+            external_subject_id=identity.external_subject_id if social else None,
+            metadata={
+                "captured_by": "sales.lead_authoring",
+                "origin_conversation_id": str(conversation.id),
+                "identity_provenance": "observed_inbound_endpoint",
+            },
+        )
+    team_inbox_participants.bind_endpoint_to_contact_point(
+        db,
+        team_inbox_participants.BindEndpointContactPointCommand(
+            conversation_id=conversation.id,
+            channel_type=identity.channel_type,
+            normalized_endpoint=identity.normalized_endpoint,
+            provider_account_scope=identity.provider_account_scope,
+            party_contact_point_id=point.id,
+            relationship_type=InboxParticipantRelationship.contact,
+            source="sales.lead_authoring",
+            reason="Operator created this Party and Lead from the exact inbound endpoint",
+        ),
+    )
+
+
 def _operation(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
     actor = _active_actor(db, command.actor_system_user_id)
     fingerprint = _fingerprint(command)
@@ -620,6 +709,18 @@ def _operation(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
                 "replay_party_missing", "The saved Lead is missing its Person."
             )
         if command.origin_conversation_id is not None:
+            conversation = db.get(InboxConversation, command.origin_conversation_id)
+            party = db.get(Party, replay.party_id)
+            if conversation is None or party is None:
+                raise _error(
+                    "inbox_identity_replay_unavailable",
+                    "The Inbox Lead identity cannot be restored on replay.",
+                )
+            _bind_inbox_origin_identity(
+                db,
+                conversation=conversation,
+                party=party,
+            )
             conversation_lead_relationships.link_conversation_lead_participant(
                 db,
                 conversation_lead_relationships.ConversationLeadLinkCommand(
@@ -745,6 +846,13 @@ def _operation(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
             relationship_type=PartyRelationshipType.contact_for,
             source="sales.lead_authoring",
             metadata={"organization_profile_id": str(organization.id)},
+        )
+
+    if conversation is not None:
+        _bind_inbox_origin_identity(
+            db,
+            conversation=conversation,
+            party=party,
         )
 
     source = (

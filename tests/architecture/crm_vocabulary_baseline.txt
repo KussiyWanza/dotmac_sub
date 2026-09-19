@@ -506,7 +506,7 @@ scripts/one_off/restore_crm_placeholder_identity.py
 scripts/one_off/review_carried_source_identity.py
 scripts/seed/seed_rbac.py
 #
-# --- tests: 251 files ---
+# --- tests: 250 files ---
 tests/architecture/adapter_keyword_service_call_baseline.txt
 tests/architecture/adapter_transaction_baseline.txt
 tests/architecture/connector_manifest_pins.json
@@ -574,7 +574,6 @@ tests/test_admin_sales_web.py
 tests/test_ai_engine.py
 tests/test_analytics_services.py
 tests/test_api_happy_path.py
-tests/test_api_reseller_self_scoped.py
 tests/test_api_sales_permissions.py
 tests/test_audit_actor_labels.py
 tests/test_audit_actor_search.py

@@ -39,6 +39,7 @@ from app.services import (
     team_inbox_media,
     team_inbox_observations,
     team_inbox_read_state,
+    team_inbox_reply_window,
 )
 
 
@@ -343,9 +344,17 @@ def _base_queue_query(db: Session):
     )
 
 
+def _actionable_queue_query(db: Session):
+    return _base_queue_query(db).filter(
+        ~InboxConversation.id.in_(
+            team_inbox_reply_window.expired_whatsapp_conversation_ids_query()
+        )
+    )
+
+
 def queue_conversation_count(db: Session) -> int:
     return int(
-        _base_queue_query(db)
+        _actionable_queue_query(db)
         .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
         .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
         .with_entities(func.count(InboxConversation.id))
@@ -359,7 +368,7 @@ def queued_conversation_count(db: Session) -> int:
         InboxConversationQueueEntry.status == InboxQueueEntryStatus.queued.value
     )
     return int(
-        _base_queue_query(db)
+        _actionable_queue_query(db)
         .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
         .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
         .filter(InboxConversation.id.in_(queued_ids))
@@ -378,14 +387,19 @@ def assigned_conversation_count(
     if assignee_uuid is None:
         return 0
     return int(
-        _base_queue_query(db)
+        _actionable_queue_query(db)
         .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
         .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
         .filter(
             InboxConversation.id.in_(
-                select(InboxConversationAssignment.conversation_id).where(
+                select(InboxConversationAssignment.conversation_id)
+                .join(
+                    InboxConversation,
+                    InboxConversation.id == InboxConversationAssignment.conversation_id,
+                )
+                .where(
                     InboxConversationAssignment.person_id == assignee_uuid,
-                    InboxConversationAssignment.is_active.is_(True),
+                    *team_inbox_assignment.countable_active_assignment_clauses(),
                 )
             )
         )
@@ -397,7 +411,7 @@ def assigned_conversation_count(
 
 def needs_response_conversation_count(db: Session) -> int:
     return int(
-        _base_queue_query(db)
+        _actionable_queue_query(db)
         .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
         .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
         .filter(_latest_visible_direction() == InboxMessageDirection.inbound.value)
@@ -1363,16 +1377,26 @@ def list_conversations(
     if assignee_uuid is not None:
         query = query.filter(
             InboxConversation.id.in_(
-                select(InboxConversationAssignment.conversation_id).where(
+                select(InboxConversationAssignment.conversation_id)
+                .join(
+                    InboxConversation,
+                    InboxConversation.id == InboxConversationAssignment.conversation_id,
+                )
+                .where(
                     InboxConversationAssignment.person_id == assignee_uuid,
-                    InboxConversationAssignment.is_active.is_(True),
+                    *team_inbox_assignment.countable_active_assignment_clauses(),
                 )
             )
         )
     if unassigned:
-        assigned_conversation_ids = select(
-            InboxConversationAssignment.conversation_id
-        ).where(InboxConversationAssignment.is_active.is_(True))
+        assigned_conversation_ids = (
+            select(InboxConversationAssignment.conversation_id)
+            .join(
+                InboxConversation,
+                InboxConversation.id == InboxConversationAssignment.conversation_id,
+            )
+            .where(*team_inbox_assignment.countable_active_assignment_clauses())
+        )
         query = query.filter(~InboxConversation.id.in_(assigned_conversation_ids))
 
     # The next three used to be applied in Python, which meant the whole
@@ -1513,8 +1537,12 @@ def list_conversations(
         {
             assignment.conversation_id: assignment
             for assignment in db.query(InboxConversationAssignment)
+            .join(
+                InboxConversation,
+                InboxConversation.id == InboxConversationAssignment.conversation_id,
+            )
             .filter(InboxConversationAssignment.conversation_id.in_(conversation_ids))
-            .filter(InboxConversationAssignment.is_active.is_(True))
+            .filter(*team_inbox_assignment.countable_active_assignment_clauses())
             .all()
         }
         if conversation_ids

@@ -1133,6 +1133,32 @@ class Subscribers(ListResponseMixin):
         # to the moment it went missing.
         if "metadata_" in data:
             reject_undeclared_keys(data["metadata_"])
+        data.pop("notification_preferences", None)
+        notification_preferences = payload.notification_preferences
+        if notification_preferences is not None:
+            # An explicit metadata replacement was checked above. Otherwise keep
+            # historical data opaque and change only the typed preference keys.
+            metadata = dict(data.get("metadata_", subscriber.metadata_) or {})
+            metadata["billing_notifications"] = (
+                notification_preferences.billing_notifications
+            )
+            metadata["sms_updates"] = notification_preferences.sms_updates
+            metadata["push_notifications"] = notification_preferences.push_notifications
+            metadata["service_notifications"] = (
+                notification_preferences.service_notifications
+            )
+            metadata["account_notifications"] = (
+                notification_preferences.account_notifications
+            )
+            metadata["usage_notifications"] = (
+                notification_preferences.usage_notifications
+            )
+            metadata["general_notifications"] = (
+                notification_preferences.general_notifications
+            )
+            # Reuse the owner's existing application point below, after every
+            # guard. Do not dirty the row while validating a rejected command.
+            data["metadata_"] = metadata
         lifecycle_fields = {"status", "is_active"} & data.keys()
         if lifecycle_fields:
             raise HTTPException(

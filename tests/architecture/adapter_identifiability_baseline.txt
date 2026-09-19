@@ -23,7 +23,7 @@ app/services/web_catalog_subscriptions.py 53
 app/services/web_configuration.py 2
 app/services/web_consolidated_billing.py 4
 app/services/web_control_plane.py 15
-app/services/web_customer_auth.py 5
+app/services/web_customer_auth.py 4
 app/services/web_customer_availability.py 1
 app/services/web_customer_details.py 35
 app/services/web_customer_user_access.py 6

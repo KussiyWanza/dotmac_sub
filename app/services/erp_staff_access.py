@@ -729,6 +729,28 @@ def audit_denied_write(
     request_id: str | None,
     permission_key: str,
 ) -> None:
+    audit_denied_write_identity(
+        db,
+        auth=auth,
+        restriction_id=restriction.restriction_id,
+        source_system=restriction.source_system,
+        request_id=request_id,
+        permission_key=permission_key,
+    )
+
+
+def audit_denied_write_identity(
+    db: Session,
+    *,
+    auth: dict[str, object],
+    restriction_id: str,
+    source_system: str,
+    request_id: str | None,
+    permission_key: str,
+) -> None:
+    """Stage the same denial event when a refused command carries identity,
+    rather than a live ORM projection, across its transaction boundary.
+    """
     principal_id = str(auth.get("principal_id") or "")
     stage_audit_event(
         db,
@@ -740,9 +762,9 @@ def audit_denied_write(
         status_code=403,
         is_success=False,
         metadata={
-            "restriction_id": restriction.restriction_id,
+            "restriction_id": restriction_id,
             "permission_key": permission_key,
-            "source_system": restriction.source_system,
+            "source_system": source_system,
         },
     )
 

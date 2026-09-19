@@ -6,10 +6,12 @@ import pytest
 from fastapi import HTTPException
 from starlette.datastructures import FormData
 
-from app.models.catalog import AccessType, PriceBasis, ServiceType
+from app.db import finish_read_transaction
+from app.models.catalog import AccessRequirement, AccessType, PriceBasis, ServiceType
 from app.models.fup import FupRule
 from app.schemas.catalog import CatalogOfferCreate, OfferVersionCreate
 from app.services import catalog as catalog_service
+from app.services.catalog.offer_access_requirement import SystemAdmission
 from app.services.fup import fup_policies
 from app.services.web_fup import handle_add_rule, handle_update_rule
 from tests.fup_helpers import (
@@ -18,6 +20,18 @@ from tests.fup_helpers import (
     ensure_fup_policy,
     fup_command_context,
 )
+
+
+@pytest.fixture(autouse=True)
+def _owner_command_session(db_session):
+    """Keep committed fixture identities from reopening read transactions."""
+
+    original_expiry = db_session.expire_on_commit
+    db_session.expire_on_commit = False
+    try:
+        yield
+    finally:
+        db_session.expire_on_commit = original_expiry
 
 
 def _create_offer(db_session, *, name: str, code: str):
@@ -31,16 +45,20 @@ def _create_offer(db_session, *, name: str, code: str):
             price_basis=PriceBasis.flat,
         ),
     )
+    finish_read_transaction(db_session)
+    offer_id = offer.id
     catalog_service.offer_versions.create(
         db_session,
         OfferVersionCreate(
-            offer_id=offer.id,
+            access_requirement=AccessRequirement.unclassified,
+            offer_id=offer_id,
             version_number=1,
             name=f"{name} v1",
             service_type=ServiceType.residential,
             access_type=AccessType.fiber,
             price_basis=PriceBasis.flat,
         ),
+        principal=SystemAdmission(reason="test fixture"),
     )
     return offer
 

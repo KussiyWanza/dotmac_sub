@@ -26,6 +26,7 @@ from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from starlette.requests import ClientDisconnect
 from starlette.responses import Response
 
 from app.csrf import (
@@ -115,6 +116,15 @@ _DEFERRED_API_ROUTER_SPECS = [
     ("app.api.billing_treatments", "router", "api", "user"),
     ("app.api.files", "router", "api", "admin"),
     ("app.api.catalog", "router", "api", "user"),
+    # Offer-version admission (POST/PATCH /offer-versions) lives on its own
+    # router with NO blanket router-level dependency, deliberately: unlike
+    # "router" above, its ONLY gate is _require_offer_version_admission,
+    # which fully delegates to the owning service's authorization function
+    # (the single decision owner — round 12 finding 2). Mounted with the
+    # same "user" (bare authentication) dependency
+    # mode as "router" — this table entry adds no additional permission or
+    # leave-restriction gate of its own, on purpose.
+    ("app.api.catalog", "admission_router", "api", "user"),
     ("app.api.auth", "router", "api", "admin"),
     ("app.api.auth_flow", "router", "api", "none"),
     # Pre-authentication continuation, same class as `POST /auth/login`, so the
@@ -1041,9 +1051,14 @@ def _csrf_safe_return_url(request: Request) -> str | None:
 
 
 async def _terminated_request_response(
-    request: Request, method: str, path: str
+    request: Request,
+    method: str,
+    path: str,
+    *,
+    disconnected: bool | None = None,
 ) -> Response:
-    disconnected = await request.is_disconnected()
+    if disconnected is None:
+        disconnected = await request.is_disconnected()
     logger.info(
         "No response returned from downstream app; request terminated (%s): %s %s",
         "client_disconnected" if disconnected else "reload_or_shutdown",
@@ -1328,7 +1343,15 @@ async def csrf_middleware(request: Request, call_next):
                 or "multipart/form-data" in content_type
             ):
                 # Read body and check token
-                body = await request.body()
+                try:
+                    body = await request.body()
+                except ClientDisconnect:
+                    return await _terminated_request_response(
+                        request,
+                        method,
+                        path,
+                        disconnected=True,
+                    )
 
                 # Parse form data to get CSRF token
                 from urllib.parse import parse_qs
@@ -1463,6 +1486,7 @@ _API_SYNC_FEED_PATHS = frozenset(
         "/api/v1/billing-accounts/sync",
         "/api/v1/credit-notes/sync",
         "/api/v1/invoices/sync",
+        "/api/v1/invoices/accounting-sync/v2",
         "/api/v1/payment-channels/sync",
         "/api/v1/payments/sync",
         "/api/v1/resellers/sync",

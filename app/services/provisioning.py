@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.services.provisioning_helpers import (
     ensure_ip_assignments_for_subscription,  # noqa: F401
+    ensure_ipv4_assignment_for_subscription,  # noqa: F401
 )
 from app.services.provisioning_managers import (  # noqa: F401
     InstallAppointments,
