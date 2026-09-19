@@ -196,10 +196,12 @@ def _fixture_lines(db_session, invoice: Invoice, tax_rate: TaxRate) -> None:
 
 
 _NAIVE_DATETIME_ATTRS = ("issued_at", "due_at", "paid_at", "updated_at")
+_ACCOUNT_NAIVE_DATETIME_ATTRS = ("created_at", "updated_at")
 
 
 def _normalize_sqlite_naive_timestamps(invoice: Invoice) -> None:
-    """Re-attach UTC to an Invoice's timestamps after a SQLite reload.
+    """Re-attach UTC to an Invoice's (and its account's) timestamps after a
+    SQLite reload.
 
     SQLite's DATETIME column drops tzinfo on round-trip (unlike PostgreSQL,
     whose ``DateTime(timezone=True)`` columns are always aware — see
@@ -220,6 +222,16 @@ def _normalize_sqlite_naive_timestamps(invoice: Invoice) -> None:
         value = getattr(invoice, attr)
         if value is not None and value.tzinfo is None:
             set_committed_value(invoice, attr, value.replace(tzinfo=UTC))
+
+    # The account relationship is its own lazy-loaded SQLite round-trip
+    # (a separate SELECT, potentially resolved through a differently-cached
+    # DATETIME result processor than the Invoice row above), so it needs the
+    # identical re-attachment, on the identical rationale.
+    account = invoice.account
+    for attr in _ACCOUNT_NAIVE_DATETIME_ATTRS:
+        value = getattr(account, attr)
+        if value is not None and value.tzinfo is None:
+            set_committed_value(account, attr, value.replace(tzinfo=UTC))
 
 
 def _build_fixture_invoice(db_session) -> Invoice:
