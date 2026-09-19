@@ -1005,6 +1005,11 @@ The filtered invoice CSV at `GET /admin/billing/invoices/export.csv` uses the
 same uncapped filter and stable-sort scope as the list. Its customer identity
 column is `customer_name`, populated from the same customer display-name
 contract used by the invoice table; internal account UUIDs are not exported.
+Invoice filters intersect when combined. The selected customer label remains
+visible after partial refreshes, and **Clear filters** removes user-selected
+criteria while preserving an `account_id` entry-point scope. The date controls
+are labelled **Created From** and **Created To** because they bound UTC
+`created_at`, with the ending calendar date included.
 
 #### `GET /admin/billing`
 **Template:** `admin/billing/index.html`
@@ -1037,6 +1042,9 @@ contract used by the invoice table; internal account UUIDs are not exported.
     "proforma_only": bool,
     "proforma_summary": {"count": int},
     "customer_ref": str | None,
+    "customer_label": str | None,
+    "has_active_filters": bool,
+    "clear_filters_url": str,
     "search": str | None,
     "start_date": str | None,                  # inclusive YYYY-MM-DD, UTC
     "end_date": str | None,                    # inclusive YYYY-MM-DD, UTC

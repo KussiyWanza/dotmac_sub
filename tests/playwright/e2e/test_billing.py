@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from playwright.sync_api import Page, expect
 
 from tests.playwright.pages.admin.billing import (
@@ -66,6 +68,20 @@ class TestInvoicesList:
         page.expect_loaded()
         # Filter dropdown should exist
         expect(admin_page.locator("select[name='status']")).to_be_visible()
+
+    def test_proforma_filter_can_be_applied_and_reset(self, admin_page: Page, settings):
+        """The checkbox refreshes results and Clear filters restores defaults."""
+        page = InvoicesPage(admin_page, settings.base_url)
+        page.goto()
+        page.expect_loaded()
+
+        page.filter_proformas()
+        admin_page.wait_for_url(re.compile(r"proforma_only=true"))
+        expect(admin_page.get_by_role("link", name="Clear filters")).to_be_visible()
+
+        page.clear_filters()
+        admin_page.wait_for_url(re.compile(r"/admin/billing/invoices$"))
+        expect(admin_page.locator("input[name='proforma_only']")).not_to_be_checked()
 
 
 class TestInvoiceForm:

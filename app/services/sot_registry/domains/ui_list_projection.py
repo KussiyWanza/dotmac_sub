@@ -1173,6 +1173,9 @@ DOMAIN = DomainSOT(
             ),
             notes=(
                 "The full page and HTMX response share one list partial. "
+                "Declared filters intersect when combined. Selected customer "
+                "identity remains visible after refresh, and reset clears user "
+                "filters while preserving an account-scoped entry point. "
                 "Explicit start_date and end_date filters bound UTC created_at "
                 "with an inclusive end date. Exports consume the same canonical "
                 "scope without a page cap. The CSV customer_name column uses "

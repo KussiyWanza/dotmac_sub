@@ -3174,6 +3174,10 @@ will reject.
     an uncapped export scope. Full-page and HTMX reads render the same
     `_invoices_list.html` and `_invoices_table.html` projections, so status
     totals, filters, canonical URLs, pagination, and rows cannot diverge. The
+    declared filters intersect when combined. The selected customer label stays
+    visible after an HTMX refresh, and clearing filters removes user-selected
+    criteria while retaining an `account_id` entry-point scope. Date controls
+    are explicitly labelled as created-date bounds. The
     CSV projects the customer account's human display identity as
     `customer_name`; it does not expose the internal account UUID.
 `ui.payments_list_projection` owns the filtered admin payments CSV scope as

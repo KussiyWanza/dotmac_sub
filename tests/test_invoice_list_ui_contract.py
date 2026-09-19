@@ -150,6 +150,8 @@ def test_invoice_full_and_htmx_views_share_the_list_contract_partial():
     assert 'name="sort" value="{{ list_query.sort_by }}"' in list_partial
     assert 'type="date" name="start_date"' in list_partial
     assert 'type="date" name="end_date"' in list_partial
+    assert "Created From" in list_partial
+    assert "Created To" in list_partial
     assert 'name="date_range"' not in list_partial
     assert "list_query.url('/admin/billing/invoices'" in table
     assert 'aria-sort="' in table
@@ -164,12 +166,16 @@ def test_invoice_full_and_htmx_views_share_the_list_contract_partial():
     assert table.index('aria-label="Invoice pagination"') > table_start
 
 
-def test_invoice_customer_typeahead_refreshes_only_after_selection():
+def test_invoice_customer_typeahead_refreshes_after_selection_or_clear():
     list_partial = (
         PROJECT_ROOT / "templates/admin/billing/_invoices_list.html"
     ).read_text(encoding="utf-8")
 
     assert '@typeahead:selected="$el.requestSubmit()"' in list_partial
+    assert '@typeahead:cleared="$el.requestSubmit()"' in list_partial
+    assert 'data-typeahead-validate-selection="true"' in list_partial
+    assert "value=\"{{ customer_label or '' }}\"" in list_partial
+    assert "data-typeahead-clear" in list_partial
     hidden_customer_ref = re.search(
         r'<input\s+type="hidden"\s+name="customer_ref"[^>]*>',
         list_partial,
@@ -177,6 +183,17 @@ def test_invoice_customer_typeahead_refreshes_only_after_selection():
     )
     assert hidden_customer_ref is not None
     assert "hx-" not in hidden_customer_ref.group(0)
+
+
+def test_invoice_proforma_and_clear_filters_refresh_the_canonical_list():
+    list_partial = (
+        PROJECT_ROOT / "templates/admin/billing/_invoices_list.html"
+    ).read_text(encoding="utf-8")
+
+    assert "change from:input[type='checkbox']" in list_partial
+    assert 'href="{{ clear_filters_url }}"' in list_partial
+    assert 'hx-get="{{ clear_filters_url }}"' in list_partial
+    assert "{% if has_active_filters %}" in list_partial
 
 
 def test_invoice_list_exposes_loading_and_inline_failure_feedback():

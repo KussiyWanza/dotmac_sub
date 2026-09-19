@@ -142,6 +142,7 @@ def _create_invoice(
     status: InvoiceStatus,
     created_at: datetime,
     currency: str = "NGN",
+    is_proforma: bool = False,
 ):
     invoice = Invoice(
         account_id=account_id,
@@ -152,6 +153,7 @@ def _create_invoice(
         tax_total=Decimal("0.00"),
         total=Decimal(total),
         balance_due=Decimal(balance_due),
+        is_proforma=is_proforma,
         created_at=created_at,
     )
     db_session.add(invoice)
@@ -420,6 +422,193 @@ def test_invoices_list_filters_by_partner(db_session):
     assert len(result["invoices"]) == 1
     assert result["invoices"][0].invoice_number == "INV-PA-1"
     assert result["selected_partner_id"] == str(reseller_a.id)
+
+
+def test_invoices_list_filters_by_customer(db_session):
+    account_a = Subscriber(
+        first_name="Customer",
+        last_name="Match",
+        email="customer-filter-match@example.com",
+    )
+    account_b = Subscriber(
+        first_name="Customer",
+        last_name="Other",
+        email="customer-filter-other@example.com",
+    )
+    db_session.add_all([account_a, account_b])
+    db_session.commit()
+
+    now = datetime.now(UTC)
+    target = _create_invoice(
+        db_session,
+        account_id=account_a.id,
+        invoice_number="INV-CUSTOMER-MATCH",
+        total="40.00",
+        balance_due="40.00",
+        status=InvoiceStatus.issued,
+        created_at=now,
+    )
+    _create_invoice(
+        db_session,
+        account_id=account_b.id,
+        invoice_number="INV-CUSTOMER-OTHER",
+        total="50.00",
+        balance_due="50.00",
+        status=InvoiceStatus.issued,
+        created_at=now,
+    )
+
+    result = build_invoices_list_data(
+        db_session,
+        customer_ref=f"person:{account_a.id}",
+    )
+
+    assert result["total"] == 1
+    assert [invoice.id for invoice in result["invoices"]] == [target.id]
+    assert result["customer_label"] == "Customer Match"
+
+
+def test_invoices_list_filters_proformas(db_session, subscriber):
+    now = datetime.now(UTC)
+    target = _create_invoice(
+        db_session,
+        account_id=subscriber.id,
+        invoice_number="PF-ONLY",
+        total="60.00",
+        balance_due="60.00",
+        status=InvoiceStatus.draft,
+        created_at=now,
+        is_proforma=True,
+    )
+    _create_invoice(
+        db_session,
+        account_id=subscriber.id,
+        invoice_number="INV-STANDARD",
+        total="70.00",
+        balance_due="70.00",
+        status=InvoiceStatus.draft,
+        created_at=now,
+    )
+
+    result = build_invoices_list_data(db_session, proforma_only=True)
+
+    assert result["total"] == 1
+    assert [invoice.id for invoice in result["invoices"]] == [target.id]
+
+
+def test_invoice_filters_intersect_when_combined(db_session):
+    reseller_a = Reseller(name="Combined Partner A")
+    reseller_b = Reseller(name="Combined Partner B")
+    db_session.add_all([reseller_a, reseller_b])
+    db_session.commit()
+
+    account_a = Subscriber(
+        first_name="Combined",
+        last_name="Target",
+        email="combined-target@example.com",
+        reseller_id=reseller_a.id,
+    )
+    account_b = Subscriber(
+        first_name="Combined",
+        last_name="Other",
+        email="combined-other@example.com",
+        reseller_id=reseller_b.id,
+    )
+    db_session.add_all([account_a, account_b])
+    db_session.commit()
+
+    now = datetime.now(UTC)
+    target = _create_invoice(
+        db_session,
+        account_id=account_a.id,
+        invoice_number="PF-COMBINED-MATCH",
+        total="100.00",
+        balance_due="100.00",
+        status=InvoiceStatus.issued,
+        created_at=now,
+        is_proforma=True,
+    )
+    _create_invoice(
+        db_session,
+        account_id=account_a.id,
+        invoice_number="PF-COMBINED-MATCH-PAID",
+        total="100.00",
+        balance_due="0.00",
+        status=InvoiceStatus.paid,
+        created_at=now,
+        is_proforma=True,
+    )
+    _create_invoice(
+        db_session,
+        account_id=account_b.id,
+        invoice_number="PF-COMBINED-MATCH-OTHER",
+        total="100.00",
+        balance_due="100.00",
+        status=InvoiceStatus.issued,
+        created_at=now,
+        is_proforma=True,
+    )
+
+    result = build_invoices_list_data(
+        db_session,
+        partner_id=str(reseller_a.id),
+        status="issued",
+        proforma_only=True,
+        customer_ref=f"person:{account_a.id}",
+        search="COMBINED-MATCH",
+        start_date=now.date(),
+        end_date=now.date(),
+    )
+
+    assert result["total"] == 1
+    assert [invoice.id for invoice in result["invoices"]] == [target.id]
+    assert result["customer_label"] == "Combined Target"
+    assert result["has_active_filters"] is True
+    assert result["clear_filters_url"] == "/admin/billing/invoices"
+
+
+def test_account_and_customer_filters_intersect_instead_of_overriding(db_session):
+    account_a = Subscriber(
+        first_name="Scoped",
+        last_name="Account",
+        email="scoped-account@example.com",
+    )
+    account_b = Subscriber(
+        first_name="Different",
+        last_name="Customer",
+        email="different-customer@example.com",
+    )
+    db_session.add_all([account_a, account_b])
+    db_session.commit()
+
+    _create_invoice(
+        db_session,
+        account_id=account_b.id,
+        invoice_number="INV-OTHER-CUSTOMER",
+        total="80.00",
+        balance_due="80.00",
+        status=InvoiceStatus.issued,
+        created_at=datetime.now(UTC),
+    )
+
+    result = build_invoices_list_data(
+        db_session,
+        account_id=str(account_a.id),
+        customer_ref=f"person:{account_b.id}",
+    )
+
+    assert result["total"] == 0
+    assert result["clear_filters_url"] == (
+        f"/admin/billing/invoices?account_id={account_a.id}"
+    )
+
+
+def test_invoice_filter_reset_state_is_inactive_without_user_filters(db_session):
+    result = build_invoices_list_data(db_session)
+
+    assert result["customer_label"] is None
+    assert result["has_active_filters"] is False
+    assert result["clear_filters_url"] == "/admin/billing/invoices"
 
 
 def test_render_invoices_csv_contains_customer_name_due_and_received_columns(
