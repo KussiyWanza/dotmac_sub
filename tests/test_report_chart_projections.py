@@ -87,6 +87,21 @@ def test_admin_billing_revenue_trend_height_is_increased_by_twenty_percent() -> 
     assert 'style="height: 156px;"' not in source
 
 
+def test_admin_billing_revenue_trend_distinguishes_billed_and_collected() -> None:
+    source = Path("templates/admin/billing/index.html").read_text()
+
+    assert "text-blue-600 dark:text-blue-400" in source
+    assert 'bg-blue-500"></span> Billed' in source
+    assert "text-emerald-600 dark:text-emerald-400" in source
+    assert 'bg-emerald-500"></span> Collected' in source
+    assert "label: 'Billed'" in source
+    assert "borderColor: themeColor('semantic-info-600')" in source
+    assert "backgroundColor: themeColor('semantic-info-600', 0.1)" in source
+    assert "label: 'Collected'" in source
+    assert "borderColor: themeColor('semantic-positive-600')" in source
+    assert "backgroundColor: themeColor('semantic-positive-600', 0.1)" in source
+
+
 def test_network_charts_render_empty_inventory_and_configured_zero_use_pool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
