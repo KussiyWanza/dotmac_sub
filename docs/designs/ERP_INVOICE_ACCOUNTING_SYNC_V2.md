@@ -161,3 +161,40 @@ lock timeout, performs no backfill, and leaves legacy rows untouched. Downgrade
 refuses once any snapshot has been recorded so application rollback retains
 financial evidence. A later low-traffic maintenance change may validate the
 constraint after the legacy cohort has been measured.
+
+## Canonical content digest (`digest_version`/`projection_digest`)
+
+Sub is the sole owner of the invoice-accounting-sync feed's content-identity
+digest: the connector and ERP previously each computed their own fingerprint
+independently and disagreed, and one of the two guesses folded the nested
+subscriber profile into the fingerprint even though a subscriber-profile edit
+never advances `invoice.updated_at`. This document covers Sub's half only —
+Sub now computes and publishes both fields via
+`app.services.dotmac_erp.invoice_sync_digest.compute_invoice_projection_digest`.
+Changing the connector and the ERP shadow task to forward this digest verbatim
+instead of computing their own is **separate, not-yet-shipped follow-up work**
+in those repositories; nothing in the connector or ERP has changed yet.
+
+`digest_version` (currently `1`) and `projection_digest` (a lowercase sha256
+hex string, rejected — not normalised — by the schema validator if malformed)
+are additive fields on `InvoiceAccountingSyncRead`. The digest reuses this
+repo's ADR-0064-governed canonicalisation primitives
+(`app.migration_source.canonical`) rather than an ad hoc encoder.
+
+**Covered-fact domain (version 1)** is every field of
+`InvoiceAccountingSyncRead` except two deliberate exclusions:
+
+- The entire nested `account`/`InvoiceSyncAccountRead` object (subscriber
+  profile — name/email/phone/address/status/category). None of it is an
+  invoice fact, and none of it advances `invoice.updated_at`, so including it
+  produced a false "same revision, different projection" contradiction. Only
+  the flat `account_id` UUID reference is covered.
+- `updated_at` itself. It is the external revision key the digest is compared
+  against per-key, not digest content; including it would make digest drift
+  trivially "explained" by the key changing and add no signal.
+
+Everything else — header totals, discount facts, timestamps, memo,
+disposition, and the `issues`/`lines` collections (each reduced to a sorted
+tuple of per-item canonical forms) — is covered. Changing the covered-fact set
+or its encoding is an explicit cutover: bump `INVOICE_PROJECTION_DIGEST_VERSION`
+and treat it as a new contract, per ADR-0064.

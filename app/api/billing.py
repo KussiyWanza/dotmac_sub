@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 from app.api.webhook_observation import webhook_observation
-from app.db import finish_read_response, get_db
+from app.db import begin_read_only_snapshot, finish_read_response, get_db
 from app.models.audit import AuditActorType
 from app.models.billing import (
     InvoiceStatus,
@@ -336,6 +336,16 @@ def sync_invoices_for_accounting_v2(
 ):
     """Return versioned invoice accounting facts and blocking issue codes."""
 
+    # This response now carries a content digest alongside each invoice's
+    # header/lines/issues, resolved by three separate selectinload statements
+    # (header, account, lines). Under READ COMMITTED a commit landing between
+    # those statements could leave updated_at stale while lines/digest moved —
+    # exactly the "same revision key, different projection" contradiction this
+    # feed exists to close, just from a within-process race. Pinning one
+    # REPEATABLE READ, READ ONLY snapshot before any query runs makes every
+    # statement in this request see the same point-in-time data (a no-op on
+    # non-PostgreSQL binds; see app.db.begin_read_only_snapshot).
+    begin_read_only_snapshot(db)
     _validate_sync_cursor_pair(after_updated_at, after_id)
     return finish_read_response(
         db,

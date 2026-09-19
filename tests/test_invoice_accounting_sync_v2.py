@@ -43,6 +43,59 @@ from app.services.dotmac_erp.invoice_sync_projection import (
 _NOW = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
 
 
+@pytest.fixture(autouse=True)
+def _tolerate_sqlite_naive_readback_in_projection_digest(monkeypatch):
+    """Every test in this module hits ``NaiveDatetimeError`` without this.
+
+    ``list_invoice_accounting_sync`` -> ``apply_sync_page`` deliberately sets
+    ``populate_existing=True`` (needed for real keyset-walk correctness under
+    concurrent writers — see ``app/services/sync_feeds.py``), which forces a
+    fresh SQLite read for every ``Invoice`` row it returns. SQLite has no
+    native timezone-aware storage and always hands back a naive ``datetime``
+    regardless of what was written, while PostgreSQL's real
+    ``DateTime(timezone=True)`` columns round-trip aware. That refusal happens
+    INSIDE ``project_invoice_for_accounting`` (via
+    ``compute_invoice_projection_digest``'s ``canonical_datetime`` calls),
+    called from inside ``list_invoice_accounting_sync`` itself, so there is no
+    point after the call at which a caller could normalize the result; the
+    naive value has to be tolerated at the one function that rejects it.
+
+    An earlier version of this fix monkeypatched SQLAlchemy's SQLite
+    ``DATETIME`` type's ``result_processor`` instead — REJECTED after direct
+    verification: SQLAlchemy resolves and effectively caches a column type's
+    dialect-specific processor per compiled statement, and this suite's
+    ``engine`` fixture is SESSION-scoped, so a class-level monkeypatch applied
+    only during this module's tests could silently miss statements whose
+    cache entry was already warmed by an earlier-run test file — confirmed by
+    reproducing exactly that miss in an isolated script before this comment
+    was written, not assumed. A first, GLOBAL version of that same type-level
+    patch (in ``conftest.py``, applied at import time, before any statement
+    existed to be cached) DID take effect reliably, but broke unrelated,
+    already-passing tests elsewhere (e.g. ``test_billing_submodules.py``)
+    that compare a SQLite-read timestamp against a bare NAIVE literal,
+    expecting the pre-existing naive-readback behavior — both conventions
+    coexist in this suite today.
+
+    Patching the plain function reference ``canonical_datetime`` as bound
+    into ``invoice_sync_digest``'s own module namespace has neither problem:
+    ordinary Python attribute lookup has no compiled-statement cache to be
+    poisoned by test execution order, and it touches nothing outside this
+    one named function used by this one module.
+    """
+    import app.services.dotmac_erp.invoice_sync_digest as _invoice_sync_digest_module
+
+    original_canonical_datetime = _invoice_sync_digest_module.canonical_datetime
+
+    def _tolerant_canonical_datetime(value: datetime | None) -> str | None:
+        if value is not None and value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return original_canonical_datetime(value)
+
+    monkeypatch.setattr(
+        _invoice_sync_digest_module, "canonical_datetime", _tolerant_canonical_datetime
+    )
+
+
 def _invoice(db_session, subscriber, **overrides) -> Invoice:
     values = {
         "account_id": subscriber.id,
