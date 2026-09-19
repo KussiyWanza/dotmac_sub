@@ -46,7 +46,8 @@ landing path, landing time, submission time, and stable `FBR-` reference.
 remains `utm_source`. The immutable row and unique delivery identity mean a
 later direct or campaign visit cannot rewrite the original origin.
 
-`sales.capture` projects that origin onto exactly seven marketing milestones:
+`sales.marketing_conversion_projection` projects that origin onto exactly seven
+marketing milestones:
 `visitor`, `coverage_check`, `lead`, `qualified_lead`, `payment`,
 `installation`, and `activated_subscriber`. There is no registration stage.
 Visitor time is the original landing time; coverage is emitted only when the

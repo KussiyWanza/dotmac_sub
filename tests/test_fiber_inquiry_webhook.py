@@ -377,6 +377,9 @@ def test_coverage_exact_subscriber_creates_party_linked_lead(
         phone="+2348031234567",
     )
     subscriber.party_id = party.id
+    subscriber.party_bound_at = datetime.fromisoformat("2026-09-19T12:30:00+01:00")
+    subscriber.party_binding_source = "pytest"
+    subscriber.party_binding_reason = "Reviewed exact Subscriber identity fixture"
     db_session.commit()
     binding = _binding(db_session, monkeypatch)
     monkeypatch.setattr(

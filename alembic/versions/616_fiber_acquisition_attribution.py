@@ -1,7 +1,7 @@
 """Add immutable Fiber journey and customer-reference attribution.
 
-Revision ID: 607_fiber_acquisition_attribution
-Revises: 606_project_task_subtasks
+Revision ID: 616_fiber_acquisition_attribution
+Revises: 615_inbox_identity_guard
 Create Date: 2026-09-19
 """
 
@@ -14,8 +14,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "607_fiber_acquisition_attribution"
-down_revision: str | None = "606_project_task_subtasks"
+revision: str = "616_fiber_acquisition_attribution"
+down_revision: str | None = "615_inbox_identity_guard"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -62,7 +62,7 @@ def test_observation_owner_contracts_collision_quarantine() -> None:
         encoding="utf-8"
     )
     assert "class InboxProviderObservationCollision" in model
-    assert "SEMANTIC_FINGERPRINT_VERSION = 2" in owner
+    assert "SEMANTIC_FINGERPRINT_VERSION = 3" in owner
     assert "ObservationCollisionPolicy.quarantine" in smtp
 
 

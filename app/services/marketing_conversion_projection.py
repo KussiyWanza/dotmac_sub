@@ -23,7 +23,7 @@ from app.services.owner_commands import (
     execute_owner_command,
 )
 
-OWNER = "sales.capture"
+OWNER = "sales.marketing_conversion_projection"
 _PROJECT = OwnerCommandDefinition(
     owner=OWNER,
     concern="PII-free immutable Fiber conversion milestone projection",

@@ -2,8 +2,8 @@
     {
         "current": true,
         "key": "fiber.inquiry.http",
-        "manifest_digest": "ad7d0c65b4796d83484c8d842657824a36b102d575428035caf8405654cd1aef",
-        "version": "1.0.0"
+        "manifest_digest": "e28042a9e37a198210a04b60f518684078bd780eeecd54aef4e3e0e341a08c7a",
+        "version": "1.1.0"
     },
     {
         "current": true,
@@ -20,8 +20,8 @@
     {
         "current": true,
         "key": "webhook.http",
-        "manifest_digest": "cd12010918d2171928d5ab7ba3b117ccfe90189ec4842f0595bd33545cd20871",
-        "version": "1.0.0"
+        "manifest_digest": "4aae3baf1e9ec68afbc84d7574c288a1a14934eafdcea8b06bb6bed7e6af55f0",
+        "version": "1.1.0"
     },
     {
         "current": true,
@@ -75,6 +75,18 @@
         "current": true,
         "key": "freepbx",
         "manifest_digest": "2009f57dda6aec855f50ddb970505365f979fde9eb2e94c93341b3b6efc6772c",
+        "version": "1.0.0"
+    },
+    {
+        "current": false,
+        "key": "fiber.inquiry.http",
+        "manifest_digest": "ad7d0c65b4796d83484c8d842657824a36b102d575428035caf8405654cd1aef",
+        "version": "1.0.0"
+    },
+    {
+        "current": false,
+        "key": "webhook.http",
+        "manifest_digest": "cd12010918d2171928d5ab7ba3b117ccfe90189ec4842f0595bd33545cd20871",
         "version": "1.0.0"
     },
     {

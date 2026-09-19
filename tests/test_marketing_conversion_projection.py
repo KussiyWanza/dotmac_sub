@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.models.party import Party
 from app.models.sales import Lead, LeadConversionMilestone, LeadOriginCapture
@@ -17,7 +17,7 @@ from app.services.marketing_conversion_projection import (
 from app.services.owner_commands import CommandContext
 
 
-def _fiber_origin(db_session) -> LeadOriginCapture:
+def _fiber_origin(db_session) -> tuple[UUID, UUID]:
     now = datetime(2026, 9, 19, 11, 30, tzinfo=UTC)
     party = Party(party_type="person", display_name="Private Customer")
     db_session.add(party)
@@ -54,8 +54,10 @@ def _fiber_origin(db_session) -> LeadOriginCapture:
         capture_reason="signed Fiber inquiry fixture",
     )
     db_session.add(origin)
+    lead_id = lead.id
+    origin_id = origin.id
     db_session.commit()
-    return origin
+    return lead_id, origin_id
 
 
 def test_all_required_lifecycle_events_map_to_exact_stages() -> None:
@@ -88,7 +90,7 @@ def test_all_required_lifecycle_events_map_to_exact_stages() -> None:
 
 
 def test_projection_is_idempotent_and_emits_no_pii(db_session, monkeypatch) -> None:
-    origin = _fiber_origin(db_session)
+    lead_id, origin_id = _fiber_origin(db_session)
     emitted: list[dict[str, object]] = []
     monkeypatch.setattr(
         "app.services.marketing_conversion_projection.settings",
@@ -101,8 +103,8 @@ def test_projection_is_idempotent_and_emits_no_pii(db_session, monkeypatch) -> N
     event = Event(
         event_type=EventType.lead_created,
         payload={
-            "lead_id": str(origin.lead_id),
-            "origin_capture_id": str(origin.id),
+            "lead_id": str(lead_id),
+            "origin_capture_id": str(origin_id),
         },
     )
 

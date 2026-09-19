@@ -7,12 +7,14 @@ smoke test have passed.
 ## Required secrets
 
 - Create a random HMAC secret in the approved secret manager and bind it as
-  `webhook_signing_secret` on the `fiber.inquiry.http` installation. Never put
+  `webhook_signing_secret` on the `fiber.inquiry.http` `1.1.0` installation.
+  Never put
   the value in connector config, logs, commits, screenshots, or tickets.
 - Set `CONVERSION_INGEST_API_KEY` from the approved secret manager for stable
   pseudonymous subject-key derivation.
-- Bind the same marketing API key to the outbound `webhook.http` installation
-  as secret `authorization`; configure `authorization_scheme` as `Bearer`.
+- Bind the same marketing API key to the outbound `webhook.http` `1.1.0`
+  installation as secret `authorization`; configure `authorization_scheme` as
+  `Bearer`.
 
 ## Capability bindings
 
@@ -39,7 +41,7 @@ Create and enable an `events.deliver.v1` `webhook.http` binding with URL
 ## Staging acceptance
 
 1. Upgrade the staging database to Alembic head and confirm revision
-   `607_fiber_acquisition_attribution`.
+   `616_fiber_acquisition_attribution`.
 2. Submit one redacted, signed `fiber-coverage-v1` request with a unique
    delivery ID. Confirm a single IntegrationInbox receipt, provider observation,
    Lead, immutable origin, customer reference, and safe coverage response.

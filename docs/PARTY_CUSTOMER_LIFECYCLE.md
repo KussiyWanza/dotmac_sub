@@ -176,12 +176,13 @@ customer-safe summary leave the boundary; access-point identity, distance, and
 engineering detail remain internal. Missing coordinates still create the Lead
 and return no automatic coverage result.
 
-`lead_conversion_milestones` is the idempotent, PII-free projection of the
-immutable origin through visitor, actual coverage check, Lead qualification,
-first verified payment, first scheduled installation, and first subscription
-activation. Each `(origin, stage)` is unique. Delivery uses the durable event
-outbox and an `events.deliver.v1` binding with `event_payload.v1`; customer
-names, contact values, and addresses never enter the outbound payload.
+`sales.marketing_conversion_projection` owns `lead_conversion_milestones`, the
+idempotent, PII-free projection of the immutable origin through visitor, actual
+coverage check, Lead qualification, first verified payment, first scheduled
+installation, and first subscription activation. Each `(origin, stage)` is
+unique. Delivery uses the durable event outbox and an `events.deliver.v1`
+binding with `event_payload.v1`; customer names, contact values, and addresses
+never enter the outbound payload.
 
 Revision 356 activates the referral adapter contract. Referral capture creates
 a quarantined Party and unverified Party contact points, then delegates Lead
