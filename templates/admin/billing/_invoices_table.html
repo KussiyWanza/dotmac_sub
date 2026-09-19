@@ -47,7 +47,7 @@
                                hx-target="#invoice-list" hx-push-url="true" class="hover:text-primary-600">Invoice</a>
                         </th>
                         <th scope="col" class="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">Customer</th>
-                        {% for sort_key, label in [('total', 'Amount'), ('status', 'Status'), ('issued_at', 'Issued'), ('due_at', 'Due')] %}
+                        {% for sort_key, label in [('total', 'Amount'), ('status', 'Status'), ('created_at', 'Created (UTC)'), ('issued_at', 'Issued'), ('due_at', 'Due')] %}
                         {% set next_sort_dir = 'desc' if list_query.sort_by == sort_key and list_query.sort_dir == 'asc' else 'asc' %}
                         <th scope="col" aria-sort="{{ list_query.sort_dir ~ 'ending' if list_query.sort_by == sort_key else 'none' }}" class="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
                             <a href="{{ list_query.url('/admin/billing/invoices', sort_by=sort_key, sort_dir=next_sort_dir) }}"
@@ -107,6 +107,13 @@
                             {{ status_presentation_badge(invoice_status_presentations.get(invoice.id|string), size="sm") }}
                         </td>
                         <td class="whitespace-nowrap px-3 py-2.5">
+                            {% if invoice_created_dates.get(invoice.id|string) %}
+                            <span class="text-sm text-slate-600 dark:text-slate-400">{{ invoice_created_dates.get(invoice.id|string) }}</span>
+                            {% else %}
+                            <span class="text-sm text-slate-400 dark:text-slate-500">—</span>
+                            {% endif %}
+                        </td>
+                        <td class="whitespace-nowrap px-3 py-2.5">
                             <span class="text-sm text-slate-600 dark:text-slate-400">{{ invoice.issued_at | app_datetime('%b %d, %Y', '—', include_tz=False) }}</span>
                         </td>
                         <td class="whitespace-nowrap px-3 py-2.5">
@@ -145,7 +152,7 @@
                     </tr>
                     {% endfor %}
                     {% else %}
-                    {{ empty_state("No invoices found", "Create your first invoice to get started", icon=icon_invoice("h-8 w-8 text-slate-400"), color="primary", color2="accent", action_label="New Invoice", action_href="/admin/billing/invoices/new", colspan=10 if selection_enabled else 9) }}
+                    {{ empty_state("No invoices found", "Create your first invoice to get started", icon=icon_invoice("h-8 w-8 text-slate-400"), color="primary", color2="accent", action_label="New Invoice", action_href="/admin/billing/invoices/new", colspan=11 if selection_enabled else 10) }}
                     {% endif %}
                 </tbody>
             </table>

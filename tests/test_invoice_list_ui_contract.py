@@ -150,11 +150,15 @@ def test_invoice_full_and_htmx_views_share_the_list_contract_partial():
     assert 'name="sort" value="{{ list_query.sort_by }}"' in list_partial
     assert 'type="date" name="start_date"' in list_partial
     assert 'type="date" name="end_date"' in list_partial
+    assert "Created From (UTC)" in list_partial
+    assert "Created To (UTC)" in list_partial
     assert 'name="date_range"' not in list_partial
     assert "list_query.url('/admin/billing/invoices'" in table
     assert 'aria-sort="' in table
     assert 'aria-current="page"' in table
     assert 'role="status"' in table
+    assert "('created_at', 'Created (UTC)')" in table
+    assert "invoice_created_dates.get(invoice.id|string)" in table
     assert "/admin/billing/invoices?page=" not in table
     assert "range(1, total_pages + 1)" not in table
     assert "page_meta.start_item" in table
@@ -164,12 +168,18 @@ def test_invoice_full_and_htmx_views_share_the_list_contract_partial():
     assert table.index('aria-label="Invoice pagination"') > table_start
 
 
-def test_invoice_customer_typeahead_refreshes_only_after_selection():
+def test_invoice_customer_typeahead_preserves_and_clears_typed_selection():
     list_partial = (
         PROJECT_ROOT / "templates/admin/billing/_invoices_list.html"
     ).read_text(encoding="utf-8")
 
     assert '@typeahead:selected="$el.requestSubmit()"' in list_partial
+    assert '@typeahead:cleared="$el.requestSubmit()"' in list_partial
+    assert 'data-typeahead-validate-selection="true"' in list_partial
+    assert "customer_filter.label if customer_filter else ''" in list_partial
+    assert "customer_filter.reference if customer_filter else ''" in list_partial
+    assert "data-typeahead-clear" in list_partial
+    assert 'aria-label="Clear selected customer"' in list_partial
     hidden_customer_ref = re.search(
         r'<input\s+type="hidden"\s+name="customer_ref"[^>]*>',
         list_partial,

@@ -24,6 +24,7 @@
           hx-push-url="true"
           hx-sync="this:replace"
           @typeahead:selected="$el.requestSubmit()"
+          @typeahead:cleared="$el.requestSubmit()"
           @htmx:before-request="clearSelection()"
           class="grid gap-3 lg:grid-cols-12 lg:items-end">
         <input type="hidden" name="page" value="1">
@@ -54,12 +55,14 @@
         </div>
         <div class="lg:col-span-2">
             <label class="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Customer</label>
-            <div class="relative" data-typeahead-url="/api/v1/search/customers" data-typeahead-min="2" data-typeahead-limit="8">
+            <div class="relative" data-typeahead-url="/api/v1/search/customers" data-typeahead-min="2" data-typeahead-limit="8" data-typeahead-validate-selection="true">
                 <input type="text" data-typeahead-input
                        placeholder="Search customers..."
-                       class="block w-full rounded-lg border-0 bg-slate-50 py-2 pl-3 pr-3 text-sm text-slate-900 placeholder-slate-500 ring-1 ring-inset ring-slate-200 transition-all focus:bg-white focus:ring-2 focus:ring-primary-500 dark:bg-slate-700 dark:text-white dark:ring-slate-600 dark:placeholder-slate-400 dark:focus:bg-slate-600" />
+                       value="{{ customer_filter.label if customer_filter else '' }}"
+                       class="block w-full rounded-lg border-0 bg-slate-50 py-2 pl-3 pr-9 text-sm text-slate-900 placeholder-slate-500 ring-1 ring-inset ring-slate-200 transition-all focus:bg-white focus:ring-2 focus:ring-primary-500 dark:bg-slate-700 dark:text-white dark:ring-slate-600 dark:placeholder-slate-400 dark:focus:bg-slate-600" />
                 <input type="hidden" name="customer_ref" data-typeahead-hidden
-                       value="{{ customer_ref or '' }}">
+                       value="{{ customer_filter.reference if customer_filter else '' }}">
+                <button type="button" data-typeahead-clear class="absolute right-2 top-2 hidden min-h-6 min-w-6 rounded text-slate-500 hover:text-slate-800 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:text-slate-400 dark:hover:text-slate-200" aria-label="Clear selected customer">×</button>
                 <div data-typeahead-results></div>
             </div>
         </div>
@@ -76,12 +79,12 @@
             </select>
         </div>
         <div class="lg:col-span-1">
-            <label for="invoice-start-date" class="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Start Date</label>
+            <label for="invoice-start-date" class="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Created From (UTC)</label>
             <input id="invoice-start-date" type="date" name="start_date" value="{{ start_date or '' }}" {% if end_date %}max="{{ end_date }}"{% endif %}
                    class="block w-full rounded-lg border-0 bg-slate-50 px-3 py-2 text-sm text-slate-900 ring-1 ring-inset ring-slate-200 transition-all focus:bg-white focus:ring-2 focus:ring-primary-500 dark:bg-slate-700 dark:text-white dark:ring-slate-600 dark:focus:bg-slate-600">
         </div>
         <div class="lg:col-span-1">
-            <label for="invoice-end-date" class="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">End Date</label>
+            <label for="invoice-end-date" class="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Created To (UTC)</label>
             <input id="invoice-end-date" type="date" name="end_date" value="{{ end_date or '' }}" {% if start_date %}min="{{ start_date }}"{% endif %}
                    class="block w-full rounded-lg border-0 bg-slate-50 px-3 py-2 text-sm text-slate-900 ring-1 ring-inset ring-slate-200 transition-all focus:bg-white focus:ring-2 focus:ring-primary-500 dark:bg-slate-700 dark:text-white dark:ring-slate-600 dark:focus:bg-slate-600">
         </div>

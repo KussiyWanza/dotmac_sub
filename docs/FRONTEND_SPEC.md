@@ -164,7 +164,9 @@ Invoice and payment list periods use explicit optional `start_date` and
 `end_date` filters against each document's UTC `created_at`. Both calendar dates
 are inclusive; owners translate the end date to the exclusive start of the next
 UTC day. List totals, pagination, status summaries, deep links, and CSV exports
-consume the same normalized range.
+consume the same normalized range. The invoice UI labels this basis as Created
+From/To (UTC), renders a sortable Created (UTC) column, and preserves the
+human-readable label for an active typed customer selection after HTMX refreshes.
 
 The support-ticket queue is the next list adoption. `app.services.support.Tickets`
 owns the canonical filtered domain query, while
@@ -1037,6 +1039,7 @@ contract used by the invoice table; internal account UUIDs are not exported.
     "proforma_only": bool,
     "proforma_summary": {"count": int},
     "customer_ref": str | None,
+    "customer_filter": InvoiceCustomerFilterSelection | None,  # typed reference + human label
     "search": str | None,
     "start_date": str | None,                  # inclusive YYYY-MM-DD, UTC
     "end_date": str | None,                    # inclusive YYYY-MM-DD, UTC

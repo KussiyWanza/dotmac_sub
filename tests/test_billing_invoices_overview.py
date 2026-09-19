@@ -11,6 +11,7 @@ from app.models.billing import Invoice, InvoiceStatus
 from app.models.subscriber import Reseller, Subscriber, SubscriberCategory
 from app.services import web_billing_overview as web_billing_overview_service
 from app.services.web_billing_overview import (
+    InvoiceCustomerFilterSelection,
     build_invoices_list_data,
     build_overview_data,
     render_invoices_csv,
@@ -420,6 +421,103 @@ def test_invoices_list_filters_by_partner(db_session):
     assert len(result["invoices"]) == 1
     assert result["invoices"][0].invoice_number == "INV-PA-1"
     assert result["selected_partner_id"] == str(reseller_a.id)
+
+
+def test_invoice_list_combines_criteria_before_sorting_and_pagination(db_session):
+    reseller = Reseller(name="Combined Filter Partner")
+    other_reseller = Reseller(name="Other Filter Partner")
+    db_session.add_all([reseller, other_reseller])
+    db_session.commit()
+
+    account = Subscriber(
+        first_name="Filter",
+        last_name="Customer",
+        email="invoice-filter-customer@example.com",
+        reseller_id=reseller.id,
+    )
+    other_account = Subscriber(
+        first_name="Other",
+        last_name="Customer",
+        email="other-invoice-filter-customer@example.com",
+        reseller_id=other_reseller.id,
+    )
+    db_session.add_all([account, other_account])
+    db_session.commit()
+
+    now = datetime.now(UTC)
+    for index in range(12):
+        _create_invoice(
+            db_session,
+            account_id=account.id,
+            invoice_number=f"INV-COMBINED-{index:02d}",
+            total="100.00",
+            balance_due="100.00",
+            status=InvoiceStatus.issued,
+            created_at=now - timedelta(hours=index),
+        )
+    _create_invoice(
+        db_session,
+        account_id=other_account.id,
+        invoice_number="INV-COMBINED-OTHER-PARTNER",
+        total="100.00",
+        balance_due="100.00",
+        status=InvoiceStatus.issued,
+        created_at=now,
+    )
+    _create_invoice(
+        db_session,
+        account_id=account.id,
+        invoice_number="INV-COMBINED-WRONG-STATUS",
+        total="100.00",
+        balance_due="100.00",
+        status=InvoiceStatus.draft,
+        created_at=now,
+    )
+    _create_invoice(
+        db_session,
+        account_id=account.id,
+        invoice_number="INV-COMBINED-OUTSIDE-DATE",
+        total="100.00",
+        balance_due="100.00",
+        status=InvoiceStatus.issued,
+        created_at=now - timedelta(days=30),
+    )
+
+    result = build_invoices_list_data(
+        db_session,
+        account_id=None,
+        partner_id=str(reseller.id),
+        status="issued",
+        customer_ref=str(account.id),
+        search="INV-COMBINED-",
+        start_date=(now - timedelta(days=7)).date(),
+        end_date=now.date(),
+        sort_by="invoice_number",
+        sort_dir="asc",
+        page=2,
+        per_page=10,
+    )
+
+    assert result["total"] == 12
+    assert result["page"] == 2
+    assert [invoice.invoice_number for invoice in result["invoices"]] == [
+        "INV-COMBINED-10",
+        "INV-COMBINED-11",
+    ]
+    assert set(result["invoice_created_dates"]) == {
+        str(invoice.id) for invoice in result["invoices"]
+    }
+    assert all(
+        value.endswith(" UTC") for value in result["invoice_created_dates"].values()
+    )
+    assert result["customer_filter"] == InvoiceCustomerFilterSelection(
+        reference=str(account.id),
+        label="Filter Customer",
+    )
+    assert result["selected_partner_id"] == str(reseller.id)
+    assert result["status"] == "issued"
+    assert result["start_date"] == (now - timedelta(days=7)).date().isoformat()
+    assert result["end_date"] == now.date().isoformat()
 
 
 def test_render_invoices_csv_contains_customer_name_due_and_received_columns(
