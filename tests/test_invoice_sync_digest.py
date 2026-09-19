@@ -32,6 +32,7 @@ from app.models.billing import (
     TaxRate,
 )
 from app.models.subscriber import Subscriber, SubscriberStatus
+from app.models.system_user import SystemUser
 from app.schemas.billing import (
     InvoiceAccountingSyncDisposition,
     InvoiceAccountingSyncIssueCode,
@@ -120,7 +121,21 @@ def _fixture_tax_rate(db_session) -> TaxRate:
     return tax_rate
 
 
+def _fixture_discount_actor(db_session) -> SystemUser:
+    actor = SystemUser(
+        first_name="Invoice",
+        last_name="Digest",
+        display_name="Invoice Digest Fixture",
+        email=f"invoice-digest-{uuid4().hex}@example.com",
+        is_active=True,
+    )
+    db_session.add(actor)
+    db_session.flush()
+    return actor
+
+
 def _fixture_invoice(db_session, account_id: UUID) -> Invoice:
+    discount_actor = _fixture_discount_actor(db_session)
     invoice = Invoice(
         id=_INVOICE_ID,
         account_id=account_id,
@@ -133,7 +148,7 @@ def _fixture_invoice(db_session, account_id: UUID) -> Invoice:
         discount_amount=Decimal("10000.00"),
         discount_revision=1,
         discount_source=InvoiceDiscountSource.manual.value,
-        discount_applied_by_system_user_id=uuid4(),
+        discount_applied_by_system_user_id=discount_actor.id,
         discount_applied_at=_ISSUED_AT,
         tax_total=Decimal("7000.00"),
         total=Decimal("147000.00"),
