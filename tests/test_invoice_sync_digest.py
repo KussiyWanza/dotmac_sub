@@ -24,6 +24,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 
 from app.models.billing import (
     Invoice,
+    InvoiceDiscountSource,
     InvoiceDiscountType,
     InvoiceLine,
     InvoiceStatus,
@@ -130,6 +131,10 @@ def _fixture_invoice(db_session, account_id: UUID) -> Invoice:
         discount_type=InvoiceDiscountType.fixed_amount.value,
         discount_value=Decimal("10000.00"),
         discount_amount=Decimal("10000.00"),
+        discount_revision=1,
+        discount_source=InvoiceDiscountSource.manual.value,
+        discount_applied_by_system_user_id=uuid4(),
+        discount_applied_at=_ISSUED_AT,
         tax_total=Decimal("7000.00"),
         total=Decimal("147000.00"),
         balance_due=Decimal("147000.00"),
