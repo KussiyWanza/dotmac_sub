@@ -248,6 +248,8 @@ class PrepaidBillingCalendarPreview:
 
     @property
     def correction_label(self) -> str:
+        if self.correction_kind is None:
+            return "Not classified"
         labels = {
             PrepaidBillingCalendarCorrectionKind.retired_utc_midnight: (
                 "Retired UTC calendar dates"
@@ -259,7 +261,7 @@ class PrepaidBillingCalendarPreview:
                 "Applied extension counted twice"
             ),
         }
-        return labels.get(self.correction_kind, "Not classified")
+        return labels[self.correction_kind]
 
 
 @dataclass(frozen=True, slots=True)
