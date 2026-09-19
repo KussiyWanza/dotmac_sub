@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from playwright.sync_api import Page, expect
 
 from tests.playwright.pages.admin.billing import (
@@ -35,6 +37,19 @@ class TestBillingOverview:
         page.click_invoices()
         admin_page.wait_for_url("**/billing/invoices**")
 
+    def test_unpaid_card_opens_visibly_selected_unpaid_filter(
+        self, admin_page: Page, settings
+    ):
+        """The Unpaid KPI must not appear as All on the invoice list."""
+        page = BillingOverviewPage(admin_page, settings.base_url)
+        page.goto()
+        page.expect_loaded()
+
+        page.click_unpaid()
+
+        admin_page.wait_for_url(re.compile(r"status=unpaid"))
+        expect(admin_page.locator("select[name='status']")).to_have_value("unpaid")
+
 
 class TestInvoicesList:
     """Tests for the invoices list page."""
@@ -60,12 +75,37 @@ class TestInvoicesList:
         admin_page.wait_for_url("**/invoices/new**")
 
     def test_filter_invoices_by_status(self, admin_page: Page, settings):
-        """Should be able to filter invoices by status."""
+        """Unpaid, All, and concrete statuses remain visibly selected."""
         page = InvoicesPage(admin_page, settings.base_url)
         page.goto()
         page.expect_loaded()
-        # Filter dropdown should exist
-        expect(admin_page.locator("select[name='status']")).to_be_visible()
+        status_filter = admin_page.locator("select[name='status']")
+
+        page.filter_by_status("unpaid")
+        admin_page.wait_for_url(re.compile(r"status=unpaid"))
+        expect(status_filter).to_have_value("unpaid")
+
+        page.filter_by_status("")
+        admin_page.wait_for_url(re.compile(r"/admin/billing/invoices(?:\?.*)?$"))
+        expect(status_filter).to_have_value("")
+
+        page.filter_by_status("paid")
+        admin_page.wait_for_url(re.compile(r"status=paid"))
+        expect(status_filter).to_have_value("paid")
+
+    def test_proforma_filter_can_be_applied_and_reset(self, admin_page: Page, settings):
+        """The checkbox refreshes results and Clear filters restores defaults."""
+        page = InvoicesPage(admin_page, settings.base_url)
+        page.goto()
+        page.expect_loaded()
+
+        page.filter_proformas()
+        admin_page.wait_for_url(re.compile(r"proforma_only=true"))
+        expect(admin_page.get_by_role("link", name="Clear filters")).to_be_visible()
+
+        page.clear_filters()
+        admin_page.wait_for_url(re.compile(r"/admin/billing/invoices$"))
+        expect(admin_page.locator("input[name='proforma_only']")).not_to_be_checked()
 
 
 class TestInvoiceForm:

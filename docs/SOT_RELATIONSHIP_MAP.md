@@ -3177,7 +3177,14 @@ will reject.
     totals, filters, canonical URLs, pagination, and rows cannot diverge. The
     UI exposes the UTC `created_at` date basis in both the filter labels and a
     sortable Created column, and retains the typed human-readable customer
-    selection across HTMX refreshes. The
+    selection across HTMX refreshes. The declared filters intersect when
+    combined. The selected customer label stays
+    visible after an HTMX refresh, and clearing filters removes user-selected
+    criteria while retaining an `account_id` entry-point scope. Date controls
+    are explicitly labelled as created-date bounds. The synthetic `unpaid`
+    status remains visible in the filter and selects issued, partially paid,
+    or overdue collectible non-proforma invoices with a positive balance due;
+    drafts are not unpaid receivables. The
     CSV projects the customer account's human display identity as
     `customer_name`; it does not expose the internal account UUID.
 `ui.payments_list_projection` owns the filtered admin payments CSV scope as

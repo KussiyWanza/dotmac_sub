@@ -25,6 +25,7 @@ from app.services import display_format
 from app.services import web_billing_customers as web_billing_customers_service
 from app.services.common import validate_enum
 from app.services.inclusive_date_range import InclusiveDateRange
+from app.services.invoice_classification import collectible_ar_invoice_filter
 from app.services.list_query import (
     ListDefinition,
     ListFieldDefinition,
@@ -86,6 +87,9 @@ class InvoiceListData(TypedDict):
     proforma_summary: InvoiceProformaSummary
     customer_ref: str | None
     customer_filter: InvoiceCustomerFilterSelection | None
+    customer_label: str | None
+    has_active_filters: bool
+    clear_filters_url: str
     search: str | None
     start_date: str | None
     end_date: str | None
@@ -136,7 +140,6 @@ _overview_cache: dict[
     tuple[str | None, str | None, str], tuple[float, dict[str, object]]
 ] = {}
 _UNPAID_INVOICE_STATUSES = (
-    InvoiceStatus.draft,
     InvoiceStatus.issued,
     InvoiceStatus.partially_paid,
     InvoiceStatus.overdue,
@@ -166,6 +169,46 @@ INVOICE_LIST_DEFINITION = ListDefinition(
     default_sort="created_at",
     default_sort_dir="desc",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class InvoiceListFilterPresentation:
+    """Canonical rendered state for the invoice-list filter rail."""
+
+    customer_label: str | None
+    has_active_filters: bool
+    clear_filters_url: str
+
+
+_INVOICE_RESETTABLE_FILTERS = (
+    "partner_id",
+    "status",
+    "proforma_only",
+    "customer_ref",
+    "start_date",
+    "end_date",
+)
+
+
+def build_invoice_filter_presentation(
+    db: Session, *, list_query: ListQuery
+) -> InvoiceListFilterPresentation:
+    """Resolve visible filter state and the account-safe reset destination."""
+
+    account_id = list_query.filter_value("account_id")
+    clear_filters_url = "/admin/billing/invoices"
+    if account_id:
+        clear_filters_url = f"{clear_filters_url}?account_id={account_id}"
+    return InvoiceListFilterPresentation(
+        customer_label=web_billing_customers_service.customer_label(
+            db, list_query.filter_value("customer_ref")
+        ),
+        has_active_filters=bool(
+            list_query.search
+            or any(list_query.filter_value(key) for key in _INVOICE_RESETTABLE_FILTERS)
+        ),
+        clear_filters_url=clear_filters_url,
+    )
 
 
 def _normalize_invoice_uuid_filter(value: str | None, name: str) -> str | None:
@@ -436,7 +479,7 @@ def _apply_invoice_list_filters(
         if not customer_account_ids:
             return scoped.filter(Invoice.id.is_(None))
         scoped = scoped.filter(Invoice.account_id.in_(customer_account_ids))
-    elif account_id:
+    if account_id:
         scoped = scoped.filter(Invoice.account_id == UUID(account_id))
     if partner_id:
         scoped = scoped.filter(
@@ -445,7 +488,11 @@ def _apply_invoice_list_filters(
 
     if include_status and status:
         if status == "unpaid":
-            scoped = scoped.filter(Invoice.status.in_(_UNPAID_INVOICE_STATUSES))
+            scoped = scoped.filter(
+                Invoice.status.in_(_UNPAID_INVOICE_STATUSES),
+                Invoice.balance_due > Decimal("0"),
+                collectible_ar_invoice_filter(),
+            )
         else:
             scoped = scoped.filter(
                 Invoice.status == validate_enum(status, InvoiceStatus, "status")
@@ -654,6 +701,10 @@ def build_invoices_list_data(
     status_totals = _invoice_status_summary(
         status_rows, default_currency=default_currency
     )
+    filter_presentation = build_invoice_filter_presentation(
+        db,
+        list_query=effective_query,
+    )
     proforma_count = int(
         _apply_invoice_list_filters(
             db.query(func.count(Invoice.id)),
@@ -697,6 +748,9 @@ def build_invoices_list_data(
         "proforma_summary": {"count": proforma_count},
         "customer_ref": effective_query.filter_value("customer_ref"),
         "customer_filter": customer_filter,
+        "customer_label": filter_presentation.customer_label,
+        "has_active_filters": filter_presentation.has_active_filters,
+        "clear_filters_url": filter_presentation.clear_filters_url,
         "search": effective_query.search,
         "start_date": effective_query.filter_value("start_date"),
         "end_date": effective_query.filter_value("end_date"),

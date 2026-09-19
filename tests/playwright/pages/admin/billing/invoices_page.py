@@ -37,6 +37,14 @@ class InvoicesPage(BasePage):
         """Filter invoices by status."""
         self.page.locator("select[name='status']").select_option(status)
 
+    def filter_proformas(self) -> None:
+        """Limit the list to proforma invoices."""
+        self.page.locator("input[name='proforma_only']").check()
+
+    def clear_filters(self) -> None:
+        """Clear user-selected filters while retaining any account scope."""
+        self.page.get_by_role("link", name="Clear filters").click()
+
     def search(self, query: str) -> None:
         """Search invoices."""
         search_input = self.page.get_by_placeholder("Search")
