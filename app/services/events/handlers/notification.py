@@ -33,6 +33,7 @@ from app.services.notification_template_conditions import (
     NotificationTemplateConditionError,
     conditions_match,
 )
+from app.services.notification_template_renderer import render_template_text
 
 logger = logging.getLogger(__name__)
 _LOGGED_MISSING_TEMPLATE_CODES: set[str] = set()
@@ -1135,10 +1136,7 @@ class NotificationHandler:
         return context
 
     def _render_text(self, text: str, context: dict[str, str]) -> str:
-        rendered = text
-        for key, value in context.items():
-            rendered = rendered.replace(f"{{{key}}}", value)
-        return rendered
+        return render_template_text(text, context)
 
     def _render_subject(
         self,
