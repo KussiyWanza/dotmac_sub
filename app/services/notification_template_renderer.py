@@ -52,6 +52,8 @@ _EVENT_VARIABLES: frozenset[str] = frozenset(
         "total_amount",
         "receipt_number",
         "receipt_url",
+        "invoice_url",
+        "renewed_through",
     }
 )
 _BULK_VARIABLES: frozenset[str] = frozenset(
@@ -89,6 +91,8 @@ TEMPLATE_VARIABLES: tuple[tuple[str, str, str], ...] = (
         "/portal/billing/payments/example/receipt",
         "Authorized receipt URL",
     ),
+    ("invoice_url", "/portal/billing/invoices/example", "Authorized invoice URL"),
+    ("renewed_through", "Mar 31, 2026", "Service renewal end date"),
 )
 
 # Sample values for every KNOWN placeholder so previews never show blanks.
@@ -111,6 +115,8 @@ _PREVIEW_SAMPLES: dict[str, str] = {
     "total_amount": "₦20,000.00",
     "receipt_number": "#RCP-1A2B3C4D",
     "receipt_url": "/portal/billing/payments/example/receipt",
+    "invoice_url": "/portal/billing/invoices/example",
+    "renewed_through": "Mar 31, 2026",
 }
 
 
@@ -134,7 +140,7 @@ def render_template_text(
         key = match.group(1)
         return values[key] if key in values else match.group(0)
 
-    return _PLACEHOLDER_RE.sub(_replace, text)
+    return _SINGLE_NAME_RE.sub(_replace, text)
 
 
 def default_preview_variables() -> dict[str, str]:

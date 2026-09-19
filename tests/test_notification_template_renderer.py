@@ -1,5 +1,9 @@
 import pytest
 
+from app.services.notification_personalization import (
+    EMAIL_PERSONALIZATION_MATRIX,
+    personalization_spec,
+)
 from app.services.notification_template_renderer import (
     default_preview_variables,
     render_template_text,
@@ -27,7 +31,7 @@ def test_render_template_text_does_not_substitute_double_braces():
     rendered = render_template_text(
         "Hi {{subscriber_name}}", {"subscriber_name": "Ada"}
     )
-    assert rendered != "Hi Ada"
+    assert rendered == "Hi {{subscriber_name}}"
 
 
 def test_render_template_text_keeps_unknown_variables():
@@ -101,3 +105,74 @@ def test_active_payment_receipt_requires_receipt_fields_in_the_body():
         body="Receipt {receipt_number}: {receipt_url}",
         code="payment_received",
     )
+
+
+def test_email_personalization_matrix_covers_the_live_email_catalog():
+    expected = {
+        "customer_support_availability",
+        "emergency_network_maintenance_gudu",
+        "important_account_information",
+        "intermittent_connectivity_email",
+        "internet_service_outage_update_karsana_axis",
+        "invoice_created",
+        "invoice_overdue",
+        "invoice_paid",
+        "invoice_sent",
+        "ont_discovered",
+        "ont_offline",
+        "ont_online",
+        "ont_signal_degraded",
+        "payment_failed",
+        "payment_method_paystack_only",
+        "payment_received",
+        "payment_refunded",
+        "payment_reversed",
+        "plan_change_approved",
+        "plan_change_requested",
+        "prepaid_service_renewed",
+        "provisioning_completed",
+        "provisioning_failed",
+        "quote_accepted",
+        "quote_sent",
+        "referral_reward_issued",
+        "selfcare_billing_plan_change_guide",
+        "service_extended",
+        "service_order_assigned",
+        "service_order_completed",
+        "service_order_created",
+        "service_outage",
+        "service_restoration",
+        "slow_browsing_support",
+        "subscriber_created",
+        "subscriber_updated",
+        "subscription_activated",
+        "subscription_canceled",
+        "subscription_created",
+        "subscription_downgraded",
+        "subscription_expired",
+        "subscription_expiring",
+        "subscription_renewal_invoice_ready",
+        "subscription_resumed",
+        "subscription_suspended",
+        "subscription_upgraded",
+        "suspension_warning",
+        "technician_assigned",
+        "ticket_created",
+        "ticket_resolved",
+        "ticket_updated",
+        "update_customer_details",
+        "usage_exhausted",
+        "usage_warning",
+        "work_order_completed",
+        "work_order_scheduled",
+    }
+    assert len(expected) == 56
+    assert set(EMAIL_PERSONALIZATION_MATRIX) == expected
+    assert all(spec.primary_action for spec in EMAIL_PERSONALIZATION_MATRIX.values())
+
+
+def test_expiry_contract_requires_specific_data_when_available():
+    spec = personalization_spec("subscription_expiring")
+    assert spec is not None
+    assert "renewed_through" in spec.optional
+    assert "soon" in spec.missing_data_fallback
