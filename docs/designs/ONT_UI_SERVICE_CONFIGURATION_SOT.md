@@ -205,6 +205,12 @@ entry `wifi.psk.additional.1` names WLAN instance 5. The supported value leaf
 is `PreSharedKey.1.PreSharedKey`; a CWMP 9007 from `KeyPassphrase` is a failed
 write, never convergence evidence.
 
+For Huawei HG8546M, deployed TR-098 evidence instead selects the
+`WLANConfiguration.{i}.KeyPassphrase` value leaf. The unbound TR-098
+compatibility fallback uses that HG8546M path; model-bound capability packs
+remain authoritative for devices, such as EG8145V5, whose verified path
+differs.
+
 ## Return to inventory
 
 `network.ont_reconcile_projection` exposes the typed flush-only participant
