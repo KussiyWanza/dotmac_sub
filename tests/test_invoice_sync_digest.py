@@ -127,7 +127,7 @@ def _fixture_invoice(db_session, account_id: UUID) -> Invoice:
         status=InvoiceStatus.issued,
         currency="NGN",
         subtotal=Decimal("150000.00"),
-        discount_type=InvoiceDiscountType.fixed_amount,
+        discount_type=InvoiceDiscountType.fixed_amount.value,
         discount_value=Decimal("10000.00"),
         discount_amount=Decimal("10000.00"),
         tax_total=Decimal("7000.00"),
