@@ -7,10 +7,12 @@ import io
 import logging
 from collections.abc import Iterator
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from threading import Lock
 from time import monotonic
+from typing import TypedDict
 from uuid import UUID
 
 from sqlalchemy import func, or_
@@ -18,6 +20,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.models.billing import Invoice, InvoiceStatus, PaymentAllocation
 from app.models.subscriber import Reseller, Subscriber, UserType
+from app.schemas.status_presentation import StatusPresentation
 from app.services import display_format
 from app.services import web_billing_customers as web_billing_customers_service
 from app.services.common import validate_enum
@@ -34,7 +37,61 @@ from app.services.status_presentation import invoice_status_presentation
 logger = logging.getLogger(__name__)
 
 
-def _empty_invoice_total(currency: str) -> dict[str, object]:
+@dataclass(frozen=True, slots=True)
+class InvoiceCustomerFilterSelection:
+    """Selected customer identity and its human-readable filter label."""
+
+    reference: str
+    label: str
+
+
+class InvoiceTotalProjection(TypedDict):
+    count: int
+    amount: float
+    due_total: float
+    received_total: float
+    amounts: dict[str, Decimal]
+    due_amounts: dict[str, Decimal]
+    received_amounts: dict[str, Decimal]
+    display: str
+    due_display: str
+    received_display: str
+
+
+class InvoicePartnerOption(TypedDict):
+    id: str
+    name: str
+
+
+class InvoiceProformaSummary(TypedDict):
+    count: int
+
+
+class InvoiceListData(TypedDict):
+    invoices: list[Invoice]
+    invoice_status_presentations: dict[str, StatusPresentation]
+    invoice_created_dates: dict[str, str | None]
+    status_totals: dict[str, InvoiceTotalProjection]
+    list_query: ListQuery
+    page_meta: PageMeta
+    page: int
+    per_page: int
+    total: int
+    total_pages: int
+    account_id: str | None
+    selected_partner_id: str | None
+    partner_options: list[InvoicePartnerOption]
+    status: str | None
+    proforma_only: bool
+    proforma_summary: InvoiceProformaSummary
+    customer_ref: str | None
+    customer_filter: InvoiceCustomerFilterSelection | None
+    search: str | None
+    start_date: str | None
+    end_date: str | None
+
+
+def _empty_invoice_total(currency: str) -> InvoiceTotalProjection:
     empty_display = display_format.format_currency_groups({}, empty_currency=currency)
     return {
         "count": 0,
@@ -50,17 +107,17 @@ def _empty_invoice_total(currency: str) -> dict[str, object]:
     }
 
 
-def _finalize_invoice_total(item: dict[str, object], *, currency: str) -> None:
+def _finalize_invoice_total(item: InvoiceTotalProjection, *, currency: str) -> None:
     item["display"] = display_format.format_currency_groups(
-        item["amounts"],  # type: ignore[arg-type]
+        item["amounts"],
         empty_currency=currency,
     )
     item["due_display"] = display_format.format_currency_groups(
-        item["due_amounts"],  # type: ignore[arg-type]
+        item["due_amounts"],
         empty_currency=currency,
     )
     item["received_display"] = display_format.format_currency_groups(
-        item["received_amounts"],  # type: ignore[arg-type]
+        item["received_amounts"],
         empty_currency=currency,
     )
 
@@ -337,6 +394,27 @@ def _invoice_customer_account_ids(db, customer_ref: str | None) -> tuple[UUID, .
     )
 
 
+def _invoice_customer_filter_selection(
+    db: Session, customer_ref: str | None
+) -> InvoiceCustomerFilterSelection | None:
+    if not customer_ref:
+        return None
+    return InvoiceCustomerFilterSelection(
+        reference=customer_ref,
+        label=(
+            web_billing_customers_service.customer_label(db, customer_ref)
+            or "Unavailable customer"
+        ),
+    )
+
+
+def _invoice_created_date_utc(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    observed = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return observed.astimezone(UTC).strftime("%b %d, %Y UTC")
+
+
 def _apply_invoice_list_filters(
     query,
     *,
@@ -408,8 +486,8 @@ def _apply_invoice_list_sort(query, list_query: ListQuery):  # type: ignore[no-u
 
 def _invoice_status_summary(
     status_rows, *, default_currency: str
-) -> dict[str, dict[str, object]]:
-    summary: dict[str, dict[str, object]] = {
+) -> dict[str, InvoiceTotalProjection]:
+    summary: dict[str, InvoiceTotalProjection] = {
         key: _empty_invoice_total(default_currency)
         for key in ("draft", "issued", "partially_paid", "paid", "overdue", "void")
     }
@@ -432,9 +510,6 @@ def _invoice_status_summary(
         amounts = summary[key]["amounts"]
         due_amounts = summary[key]["due_amounts"]
         received_amounts = summary[key]["received_amounts"]
-        assert isinstance(amounts, dict)
-        assert isinstance(due_amounts, dict)
-        assert isinstance(received_amounts, dict)
         amounts[currency] = amounts.get(currency, Decimal("0")) + amount_decimal
         due_amounts[currency] = due_amounts.get(currency, Decimal("0")) + due_decimal
         received_amounts[currency] = (
@@ -516,7 +591,7 @@ def build_invoices_list_data(
     sort_dir: SortDirection | str | None = None,
     page: int = 1,
     per_page: int | str | None = 25,
-) -> dict[str, object]:
+) -> InvoiceListData:
     """Build the canonical invoice-list projection and compatibility context."""
     default_currency = display_format.default_currency(db)
 
@@ -539,6 +614,9 @@ def build_invoices_list_data(
         raise ValueError("Invoice list requires the billing invoice definition")
 
     customer_account_ids = _invoice_customer_account_ids(
+        db, list_query.filter_value("customer_ref")
+    )
+    customer_filter = _invoice_customer_filter_selection(
         db, list_query.filter_value("customer_ref")
     )
     filtered_query = _apply_invoice_list_filters(
@@ -576,7 +654,7 @@ def build_invoices_list_data(
     status_totals = _invoice_status_summary(
         status_rows, default_currency=default_currency
     )
-    proforma_count = (
+    proforma_count = int(
         _apply_invoice_list_filters(
             db.query(func.count(Invoice.id)),
             list_query=effective_query,
@@ -587,7 +665,7 @@ def build_invoices_list_data(
         .scalar()
         or 0
     )
-    partner_options = [
+    partner_options: list[InvoicePartnerOption] = [
         {"id": str(item.id), "name": item.name}
         for item in db.query(Reseller)
         .filter(Reseller.is_active.is_(True))
@@ -598,6 +676,10 @@ def build_invoices_list_data(
         "invoices": invoices,
         "invoice_status_presentations": {
             str(invoice.id): invoice_status_presentation(invoice.status)
+            for invoice in invoices
+        },
+        "invoice_created_dates": {
+            str(invoice.id): _invoice_created_date_utc(invoice.created_at)
             for invoice in invoices
         },
         "status_totals": status_totals,
@@ -614,6 +696,7 @@ def build_invoices_list_data(
         "proforma_only": effective_query.filter_value("proforma_only") == "true",
         "proforma_summary": {"count": proforma_count},
         "customer_ref": effective_query.filter_value("customer_ref"),
+        "customer_filter": customer_filter,
         "search": effective_query.search,
         "start_date": effective_query.filter_value("start_date"),
         "end_date": effective_query.filter_value("end_date"),
