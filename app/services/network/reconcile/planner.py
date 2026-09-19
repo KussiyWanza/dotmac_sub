@@ -1809,9 +1809,13 @@ def _standard_wifi_paths(root: str | None) -> Tr069WifiParameterPaths:
     return Tr069WifiParameterPaths(
         enabled="InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.Enable",
         ssid="InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID",
+        # Huawei HG8546M TR-098 firmware exposes the writable PSK as the
+        # WLANConfiguration KeyPassphrase leaf.  The TR-098 PreSharedKey
+        # object is present in the capability tree but is not writable on
+        # these units and causes GenieACS to fault with "Invalid parameter
+        # path" when it is used for Wi-Fi updates.
         psk_path=(
-            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1."
-            "PreSharedKey.1.PreSharedKey"
+            "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.KeyPassphrase"
         ),
         channel="InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.Channel",
         security_mode=(

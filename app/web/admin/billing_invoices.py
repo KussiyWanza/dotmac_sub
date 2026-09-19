@@ -208,7 +208,7 @@ def invoices_list(
     assert isinstance(effective_query, ListQuery)
     invoices = state["invoices"]
     assert isinstance(invoices, list)
-    state["invoice_bulk_action_contract"] = (
+    invoice_bulk_action_contract = (
         web_billing_invoice_bulk_actions_service.build_invoice_bulk_action_contract(
             db,
             auth=getattr(request.state, "auth", None) or {},
@@ -223,6 +223,7 @@ def invoices_list(
             {
                 "request": request,
                 **state,
+                "invoice_bulk_action_contract": invoice_bulk_action_contract,
             },
         )
         if page_was_clamped:
@@ -248,6 +249,7 @@ def invoices_list(
         {
             "request": request,
             **state,
+            "invoice_bulk_action_contract": invoice_bulk_action_contract,
             "active_page": "invoices",
             "active_menu": "billing",
             "current_user": current_user,
@@ -497,7 +499,7 @@ def invoice_generate_from_subscription(
         )
         invoices = state["invoices"]
         assert isinstance(invoices, list)
-        state["invoice_bulk_action_contract"] = (
+        invoice_bulk_action_contract = (
             web_billing_invoice_bulk_actions_service.build_invoice_bulk_action_contract(
                 db,
                 auth=getattr(request.state, "auth", None) or {},
@@ -511,6 +513,7 @@ def invoice_generate_from_subscription(
             {
                 "request": request,
                 **state,
+                "invoice_bulk_action_contract": invoice_bulk_action_contract,
                 "error": error,
                 "active_page": "invoices",
                 "active_menu": "billing",

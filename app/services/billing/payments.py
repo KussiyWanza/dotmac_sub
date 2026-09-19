@@ -1066,34 +1066,19 @@ def _prepaid_invoice_needs_payment_date_anchor(
     return False
 
 
-def _prepaid_extension_delta_after_invoice(
-    invoice: Invoice, subscription: Subscription
-) -> timedelta:
-    period_end = invoice.billing_period_end
-    next_billing = subscription.next_billing_at
-    if period_end is None or next_billing is None:
-        return timedelta(0)
-    period_end = period_end if period_end.tzinfo else period_end.replace(tzinfo=UTC)
-    next_billing = (
-        next_billing if next_billing.tzinfo else next_billing.replace(tzinfo=UTC)
-    )
-    if next_billing <= period_end:
-        return timedelta(0)
-    return next_billing - period_end
-
-
 def _reanchor_paid_prepaid_invoice_if_lapsed(
     db: Session,
     invoice: Invoice,
     *,
     fallback_effective_at: datetime | None = None,
 ) -> bool:
-    """Start lapsed prepaid renewals from the settlement date.
+    """Start prepaid renewals after exact coverage or from settlement day.
 
     Prepaid customers should not lose paid entitlement to a historical unpaid
     period after they have already been suspended or otherwise lapsed. When a
-    payment fully settles that renewal invoice, move the covered period to the
-    payment date and advance the subscription from there.
+    payment fully settles that renewal invoice, move the paid period after any
+    exact live entitlement or applied-extension coverage. With no such evidence,
+    start on the payment's business date.
 
     A document owner that has ALREADY computed this invoice's period as
     authoritative (``invoice.metadata_["renewal_period_authoritative"]`` —
@@ -1138,16 +1123,20 @@ def _reanchor_paid_prepaid_invoice_if_lapsed(
         else BillingCycle.monthly
     )
     from app.services.prepaid_service_renewals import (
-        PrepaidSettlementPeriodQuery,
-        resolve_prepaid_settlement_period,
+        PrepaidSubscriptionSettlementPeriodQuery,
+        resolve_prepaid_subscription_settlement_period,
     )
 
-    settlement_period = resolve_prepaid_settlement_period(
-        PrepaidSettlementPeriodQuery(
+    settlement_decision = resolve_prepaid_subscription_settlement_period(
+        db,
+        PrepaidSubscriptionSettlementPeriodQuery(
+            subscription_id=subscription.id,
+            account_id=subscription.subscriber_id,
             effective_at=effective_at,
             billing_cycle=cycle,
-        )
+        ),
     )
+    settlement_period = settlement_decision.period
     if not _prepaid_invoice_needs_payment_date_anchor(
         subscription,
         invoice,
@@ -1159,7 +1148,6 @@ def _reanchor_paid_prepaid_invoice_if_lapsed(
     if not base_lines:
         return False
 
-    extension_delta = _prepaid_extension_delta_after_invoice(invoice, subscription)
     old_period_start = invoice.billing_period_start
     old_period_end = invoice.billing_period_end
     new_period_start = settlement_period.starts_at
@@ -1181,7 +1169,7 @@ def _reanchor_paid_prepaid_invoice_if_lapsed(
             f"{settlement_period.ends_on})"
         )
 
-    target_next_billing = new_period_end + extension_delta
+    target_next_billing = new_period_end
     current_next = subscription.next_billing_at
     if current_next is None:
         stage_subscription_billing_anchor(
@@ -1226,7 +1214,11 @@ def _reanchor_paid_prepaid_invoice_if_lapsed(
             "billing_calendar_timezone": settlement_period.timezone_name,
             "new_period_start_date": settlement_period.starts_on.isoformat(),
             "new_period_end_date": settlement_period.ends_on.isoformat(),
-            "extension_delta_seconds": extension_delta.total_seconds(),
+            "covered_through": (
+                settlement_decision.covered_through.isoformat()
+                if settlement_decision.covered_through is not None
+                else None
+            ),
             "new_next_billing_at": target_next_billing.isoformat(),
         },
     )

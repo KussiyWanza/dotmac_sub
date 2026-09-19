@@ -1173,8 +1173,17 @@ DOMAIN = DomainSOT(
             ),
             notes=(
                 "The full page and HTMX response share one list partial. "
+                "Declared filters intersect when combined. Selected customer "
+                "identity remains visible after refresh, and reset clears user "
+                "filters while preserving an account-scoped entry point. "
+                "The synthetic unpaid status stays visible and selects only "
+                "collectible, non-proforma issued, partially paid, or overdue "
+                "invoices with a positive balance due; drafts are excluded. "
                 "Explicit start_date and end_date filters bound UTC created_at "
-                "with an inclusive end date. Exports consume the same canonical "
+                "with an inclusive end date; the filter labels and sortable table "
+                "column expose that Created (UTC) basis. Active customer filters "
+                "retain a typed human-readable selection across HTMX refreshes. "
+                "Exports consume the same canonical "
                 "scope without a page cap. The CSV customer_name column uses "
                 "the customer account's human display identity and does not "
                 "expose account UUIDs."

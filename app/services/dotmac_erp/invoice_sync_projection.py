@@ -32,6 +32,10 @@ from app.schemas.billing import (
 from app.schemas.common import ListResponse
 from app.services.billing._common import _calculate_tax_amount
 from app.services.common import round_money, to_decimal
+from app.services.dotmac_erp.invoice_sync_digest import (
+    INVOICE_PROJECTION_DIGEST_VERSION,
+    compute_invoice_projection_digest,
+)
 from app.services.sync_feeds import apply_sync_page
 
 ACCOUNTING_SYNC_CONTRACT_VERSION: Literal["invoice-accounting-sync.v2"] = (
@@ -251,13 +255,37 @@ def project_invoice_for_accounting(invoice: Invoice) -> InvoiceAccountingSyncRea
     else:
         disposition = InvoiceAccountingSyncDisposition.READY
 
+    source_kind = (
+        InvoiceAccountingSyncSourceKind.SPLYNX_LEGACY
+        if invoice.splynx_invoice_id is not None
+        else InvoiceAccountingSyncSourceKind.NATIVE
+    )
+    discount_type = (
+        InvoiceDiscountType(invoice.discount_type)
+        if invoice.discount_type is not None
+        else None
+    )
+    balance_due = round_money(to_decimal(invoice.balance_due))
+
+    projection_digest = compute_invoice_projection_digest(
+        contract_version=ACCOUNTING_SYNC_CONTRACT_VERSION,
+        source_kind=source_kind,
+        invoice=invoice,
+        subtotal_before_discount=subtotal,
+        discount_type=discount_type,
+        discount_amount=discount_amount,
+        discounted_subtotal=discounted_subtotal,
+        tax_total=tax_total,
+        total=total,
+        balance_due=balance_due,
+        disposition=disposition,
+        issues=issues,
+        lines=line_projections,
+    )
+
     return InvoiceAccountingSyncRead(
         contract_version=ACCOUNTING_SYNC_CONTRACT_VERSION,
-        source_kind=(
-            InvoiceAccountingSyncSourceKind.SPLYNX_LEGACY
-            if invoice.splynx_invoice_id is not None
-            else InvoiceAccountingSyncSourceKind.NATIVE
-        ),
+        source_kind=source_kind,
         source_invoice_id=invoice.id,
         source_splynx_invoice_id=invoice.splynx_invoice_id,
         account_id=invoice.account_id,
@@ -266,17 +294,13 @@ def project_invoice_for_accounting(invoice: Invoice) -> InvoiceAccountingSyncRea
         status=invoice.status,
         currency=invoice.currency,
         subtotal_before_discount=subtotal,
-        discount_type=(
-            InvoiceDiscountType(invoice.discount_type)
-            if invoice.discount_type is not None
-            else None
-        ),
+        discount_type=discount_type,
         discount_value=invoice.discount_value,
         discount_amount=discount_amount,
         discounted_subtotal=discounted_subtotal,
         tax_total=tax_total,
         total=total,
-        balance_due=round_money(to_decimal(invoice.balance_due)),
+        balance_due=balance_due,
         issued_at=invoice.issued_at,
         due_at=invoice.due_at,
         paid_at=invoice.paid_at,
@@ -286,6 +310,8 @@ def project_invoice_for_accounting(invoice: Invoice) -> InvoiceAccountingSyncRea
         disposition=disposition,
         issues=issues,
         lines=line_projections,
+        digest_version=INVOICE_PROJECTION_DIGEST_VERSION,
+        projection_digest=projection_digest,
     )
 
 

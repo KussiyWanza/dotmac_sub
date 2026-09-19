@@ -174,7 +174,14 @@ SERVICES: tuple[SOTService, ...] = (
             "consumer. It exposes Sub-owned Invoice header and issued-line tax "
             "facts without posting, repairing, or inventing missing facts. "
             "Contradictory and not-yet-projectable documents carry stable blocking "
-            "codes. The durable ERP billing outbox remains the target boundary."
+            "codes. The durable ERP billing outbox remains the target boundary. "
+            "The projection's output additionally carries a canonical content "
+            "digest (digest_version/projection_digest) over the same resolved "
+            "facts, computed once by Sub. Downstream consumers (the connector "
+            "and ERP shadow task) are EXPECTED to forward it verbatim instead "
+            "of recomputing their own fingerprint, in separate not-yet-done "
+            "follow-up work in those repositories; this service only computes "
+            "and publishes the digest."
         ),
         contract=ServiceContract(
             concerns=(
@@ -265,6 +272,7 @@ SERVICES: tuple[SOTService, ...] = (
             ),
             test_refs=(
                 "tests/test_invoice_accounting_sync_v2.py",
+                "tests/test_invoice_sync_digest.py",
                 "tests/architecture/test_sot_registry_integrity.py",
                 "tests/architecture/test_openapi_contract_surface.py",
             ),

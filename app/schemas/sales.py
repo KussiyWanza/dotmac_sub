@@ -109,6 +109,10 @@ class LeadOriginCaptureCreate(BaseModel):
     source_platform: LeadSourcePlatform
     integration_inbox_id: UUID | None = None
     source_interaction_id: str | None = Field(default=None, max_length=240)
+    journey_id: UUID | None = None
+    customer_reference: str | None = Field(
+        default=None, min_length=12, max_length=32, pattern=r"^FBR-[A-Z0-9]+$"
+    )
     campaign_id: UUID | None = None
     campaign_recipient_id: UUID | None = None
     external_campaign_id: str | None = Field(default=None, max_length=200)
@@ -123,6 +127,7 @@ class LeadOriginCaptureCreate(BaseModel):
     utm_term: str | None = Field(default=None, max_length=200)
     landing_path: str | None = Field(default=None, max_length=500)
     captured_at: datetime | None = None
+    submitted_at: datetime | None = None
     capture_source: str = Field(min_length=1, max_length=80)
     capture_reason: str = Field(min_length=1)
 
@@ -146,12 +151,16 @@ class LeadCapturePartyCreate(BaseModel):
 class LeadCaptureRequest(BaseModel):
     party_id: UUID | None = None
     party: LeadCapturePartyCreate | None = None
+    subscriber_id: UUID | None = None
     title: str = Field(min_length=1, max_length=200)
     lead_source: str = Field(min_length=1, max_length=40)
     origin: LeadOriginCaptureCreate
     region: str | None = Field(default=None, max_length=80)
     address: str | None = None
     notes: str | None = None
+    requested_plan_name: str | None = Field(default=None, min_length=1, max_length=200)
+    map_latitude: Decimal | None = Field(default=None, ge=-90, le=90)
+    map_longitude: Decimal | None = Field(default=None, ge=-180, le=180)
 
     @model_validator(mode="after")
     def _one_party_source_and_interaction(self) -> LeadCaptureRequest:
@@ -159,6 +168,10 @@ class LeadCaptureRequest(BaseModel):
             raise ValueError("Supply exactly one of party_id or party")
         if not str(self.origin.source_interaction_id or "").strip():
             raise ValueError("origin.source_interaction_id is required")
+        if self.subscriber_id is not None and self.party_id is None:
+            raise ValueError("subscriber_id requires an existing party_id")
+        if (self.map_latitude is None) != (self.map_longitude is None):
+            raise ValueError("map coordinates must be supplied together")
         return self
 
 

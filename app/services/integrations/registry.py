@@ -624,11 +624,41 @@ def _dotmac_integrator_manifest(
     )
 
 
-_DEFINITIONS: tuple[ConnectorManifest, ...] = (
-    ConnectorManifest(
+def _fiber_inquiry_manifest(
+    *, version: str, include_coverage_defaults: bool
+) -> ConnectorManifest:
+    properties: dict[str, object] = {
+        "signature_header": {"type": "string", "minLength": 1},
+        "delivery_id_header": {"type": "string", "minLength": 1},
+        "signature_prefix": {"type": "string"},
+        "site_id": {"type": "string", "minLength": 1},
+    }
+    required = [
+        "signature_header",
+        "delivery_id_header",
+        "signature_prefix",
+        "site_id",
+    ]
+    if include_coverage_defaults:
+        properties = {
+            "signature_header": {
+                "type": "string",
+                "minLength": 1,
+                "default": "X-Dotmac-Fiber-Signature",
+            },
+            "delivery_id_header": {
+                "type": "string",
+                "minLength": 1,
+                "default": "X-Dotmac-Fiber-Delivery",
+            },
+            "signature_prefix": {"type": "string", "default": "sha256="},
+            "site_id": {"type": "string", "minLength": 1},
+        }
+        required = ["site_id"]
+    return ConnectorManifest(
         key="fiber.inquiry.http",
         name="Fiber Website Inquiry",
-        version="1.0.0",
+        version=version,
         connector_type="messaging",
         description="Signed fiber.dotmac.ng inquiry ingress for Team Inbox.",
         runtime=RuntimeManifest(
@@ -643,18 +673,8 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
         ),
         config_schema={
             "type": "object",
-            "properties": {
-                "signature_header": {"type": "string", "minLength": 1},
-                "delivery_id_header": {"type": "string", "minLength": 1},
-                "signature_prefix": {"type": "string"},
-                "site_id": {"type": "string", "minLength": 1},
-            },
-            "required": [
-                "signature_header",
-                "delivery_id_header",
-                "signature_prefix",
-                "site_id",
-            ],
+            "properties": properties,
+            "required": required,
             "additionalProperties": False,
         },
         secrets=(SecretBindingManifest(name="webhook_signing_secret"),),
@@ -664,6 +684,64 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
         ),
         egress=EgressManifest(),
         health=HealthManifest(operation="connection.validate.v1"),
+    )
+
+
+def _http_webhook_manifest(
+    *, version: str, include_bearer_authorization: bool
+) -> ConnectorManifest:
+    properties: dict[str, object] = {
+        "url": {"type": "string"},
+        "method": {"type": "string"},
+        "timeout_seconds": {"type": "number"},
+        "max_attempts": {"type": "integer"},
+    }
+    if include_bearer_authorization:
+        properties["authorization_scheme"] = {
+            "type": "string",
+            "enum": ["Bearer"],
+        }
+    return ConnectorManifest(
+        key="webhook.http",
+        name="HTTP Webhook",
+        version=version,
+        connector_type="automation",
+        description="Approved outbound HTTPS event delivery transport.",
+        catalogue_visible=False,
+        runtime=RuntimeManifest(
+            type=ConnectorRuntimeType.builtin_worker,
+            module="app.services.integrations.connectors.http_webhook",
+        ),
+        capabilities=(
+            CapabilityManifest(
+                id="events.deliver.v1",
+                modes=(CapabilityMode.event, CapabilityMode.manual),
+            ),
+        ),
+        config_schema={
+            "type": "object",
+            "properties": properties,
+            "required": ["url"],
+            "additionalProperties": False,
+        },
+        secrets=(
+            SecretBindingManifest(name="signing_secret", required=False),
+            SecretBindingManifest(name="authorization", required=False),
+        ),
+        data_access=DataAccessManifest(
+            reads=("events.outbound_projection",),
+            emits=("events.external_delivery_receipt",),
+            classifications=("domain_event_projection",),
+        ),
+        egress=EgressManifest(allow_installation_hosts=True),
+        health=HealthManifest(operation="connection.validate.v1"),
+    )
+
+
+_DEFINITIONS: tuple[ConnectorManifest, ...] = (
+    _fiber_inquiry_manifest(
+        version="1.1.0",
+        include_coverage_defaults=True,
     ),
     ConnectorManifest(
         key="lead.capture.http",
@@ -706,45 +784,9 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
         health=HealthManifest(operation="connection.validate.v1"),
     ),
     _dotmac_integrator_manifest(version="1.1.0", include_settlement=True),
-    ConnectorManifest(
-        key="webhook.http",
-        name="HTTP Webhook",
-        version="1.0.0",
-        connector_type="automation",
-        description="Approved outbound HTTPS event delivery transport.",
-        catalogue_visible=False,
-        runtime=RuntimeManifest(
-            type=ConnectorRuntimeType.builtin_worker,
-            module="app.services.integrations.connectors.http_webhook",
-        ),
-        capabilities=(
-            CapabilityManifest(
-                id="events.deliver.v1",
-                modes=(CapabilityMode.event, CapabilityMode.manual),
-            ),
-        ),
-        config_schema={
-            "type": "object",
-            "properties": {
-                "url": {"type": "string"},
-                "method": {"type": "string"},
-                "timeout_seconds": {"type": "number"},
-                "max_attempts": {"type": "integer"},
-            },
-            "required": ["url"],
-            "additionalProperties": False,
-        },
-        secrets=(
-            SecretBindingManifest(name="signing_secret", required=False),
-            SecretBindingManifest(name="authorization", required=False),
-        ),
-        data_access=DataAccessManifest(
-            reads=("events.outbound_projection",),
-            emits=("events.external_delivery_receipt",),
-            classifications=("domain_event_projection",),
-        ),
-        egress=EgressManifest(allow_installation_hosts=True),
-        health=HealthManifest(operation="connection.validate.v1"),
+    _http_webhook_manifest(
+        version="1.1.0",
+        include_bearer_authorization=True,
     ),
     _dotmac_crm_manifest(
         version="1.3.0",
@@ -881,6 +923,14 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
 )
 
 _HISTORICAL_DEFINITIONS: tuple[ConnectorManifest, ...] = (
+    _fiber_inquiry_manifest(
+        version="1.0.0",
+        include_coverage_defaults=False,
+    ),
+    _http_webhook_manifest(
+        version="1.0.0",
+        include_bearer_authorization=False,
+    ),
     _dotmac_integrator_manifest(version="1.0.0", include_settlement=False),
     _whatsapp_manifest(version="1.0.0", include_phone_number_id=False),
     _dotmac_erp_manifest(

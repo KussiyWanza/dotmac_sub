@@ -155,13 +155,34 @@ payload mapping remains connector configuration/code at the edge and submits
 the canonical capture contract; it is not embedded in the lifecycle owner.
 
 The signed fiber-website inquiry path participates in that owner inside the
-Team Inbox observation-processing transaction. An inquiry with no exact active
-Subscriber match creates or reuses a prospect Party and Lead through
-`sales.capture` and links that Lead to the resulting Inbox conversation. It
-never creates a Subscriber. Conflicting, ambiguous, or suppressed Subscriber
-evidence creates neither a Party nor a Lead automatically; the conversation is
-retained with explicit identity-review metadata so a human can adjudicate the
-identity without merging contact evidence by inference.
+Team Inbox observation-processing transaction. The legacy `fiber-contact-v1`
+contract retains its original behavior: an unmatched inquiry creates a prospect
+Party and Lead, while an exact active Subscriber match links only the Inbox
+conversation. The `fiber-coverage-v1` contract always creates an attributed
+Lead before evaluating coverage. An exact Subscriber match reuses its reviewed
+Party and attaches that same Subscriber to the new Lead; it never creates a
+duplicate Party or Subscriber. Conflicting, ambiguous, suppressed, or
+Party-less Subscriber evidence creates no Lead and returns a conflict after the
+verified receipt, observation, conversation, and review evidence commit.
+
+Coverage capture adds immutable journey UUID, customer reference, landing and
+submission timestamps, UTM/campaign/ad/click identifiers, and the verified
+IntegrationInbox receipt to `LeadOriginCapture`. Address and area remain Lead
+fields; requested plan and optional customer map pin are structured Lead
+metadata. The map pin is an observation, not proof of coverage. When present,
+the existing PostGIS feasibility resolver compares the point with active fiber
+access points. Only `covered`, `survey_required`, or `out_of_area` and a fixed
+customer-safe summary leave the boundary; access-point identity, distance, and
+engineering detail remain internal. Missing coordinates still create the Lead
+and return no automatic coverage result.
+
+`sales.marketing_conversion_projection` owns `lead_conversion_milestones`, the
+idempotent, PII-free projection of the immutable origin through visitor, actual
+coverage check, Lead qualification, first verified payment, first scheduled
+installation, and first subscription activation. Each `(origin, stage)` is
+unique. Delivery uses the durable event outbox and an `events.deliver.v1`
+binding with `event_payload.v1`; customer names, contact values, and addresses
+never enter the outbound payload.
 
 Revision 356 activates the referral adapter contract. Referral capture creates
 a quarantined Party and unverified Party contact points, then delegates Lead

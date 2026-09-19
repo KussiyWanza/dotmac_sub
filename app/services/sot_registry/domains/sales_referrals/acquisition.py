@@ -254,6 +254,150 @@ SERVICES: tuple[SOTService, ...] = (
         ),
     ),
     SOTService(
+        name="sales.marketing_conversion_projection",
+        module="app.services.marketing_conversion_projection",
+        owns=("PII-free immutable Fiber conversion milestone projection",),
+        depends_on=(
+            "sales.capture",
+            "sales.lead_lifecycle",
+            "events.dispatcher",
+        ),
+        notes=(
+            "This derived projection never owns Lead, Party, payment, appointment, "
+            "or subscription lifecycle state. It consumes committed events and "
+            "retains one immutable delivery milestone per captured origin and stage."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="PII-free immutable Fiber conversion milestone projection",
+                    role=OwnerRole.PROJECTION_WRITER,
+                    input_names=(
+                        "immutable captured origin evidence",
+                        "committed customer lifecycle event",
+                    ),
+                    canonical_writer="sales.marketing_conversion_projection",
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="immutable captured origin evidence",
+                    owner="sales.capture",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "Party-bound LeadOriginCapture with journey, attribution, "
+                        "landing, submission, and delivery provenance"
+                    ),
+                ),
+                AuthorityInput(
+                    name="committed customer lifecycle event",
+                    owner="events.dispatcher",
+                    kind=AuthorityKind.OBSERVATION,
+                    source=(
+                        "durable lead, coverage, payment, appointment, and "
+                        "subscription lifecycle event"
+                    ),
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.OWNER_MANAGED,
+                boundary=(
+                    "The durable event handler supplies a fresh transaction-free "
+                    "session; one owner command stages milestone and outbound event "
+                    "atomically and commits once."
+                ),
+                locking=(
+                    "The unique origin-stage constraint arbitrates concurrent "
+                    "projection attempts without locking lifecycle owners."
+                ),
+                idempotency=(
+                    "One origin-stage row and deterministic external event UUID make "
+                    "event replay and repeated lifecycle transitions no-ops."
+                ),
+                retries=(
+                    "The durable dispatcher retries the same event; uniqueness and "
+                    "the stable UUID recover the canonical milestone."
+                ),
+            ),
+            errors=ErrorContract(
+                domain_codes=owner_command_boundary_error_codes(
+                    "sales.marketing_conversion_projection"
+                ),
+                mapping_owner="events.webhook_handler",
+                fail_closed_on=(
+                    "missing conversion signing key",
+                    "attributed Lead without a canonical Party",
+                ),
+            ),
+            projections=(
+                ProjectionContract(
+                    name="PII-free immutable Fiber conversion milestone projection",
+                    input_names=(
+                        "immutable captured origin evidence",
+                        "committed customer lifecycle event",
+                    ),
+                    writer="sales.marketing_conversion_projection",
+                    freshness=(
+                        "Projected after the authoritative lifecycle transaction "
+                        "commits and retried from the durable event store."
+                    ),
+                    stale_behavior=(
+                        "Missing delivery remains retryable and never changes the "
+                        "customer lifecycle transaction."
+                    ),
+                    drift_signal=(
+                        "An attributed lifecycle event lacks its unique origin-stage "
+                        "milestone or outbound event."
+                    ),
+                    rebuild_operation=(
+                        "Replay the exact durable lifecycle event; unique origin-stage "
+                        "identity makes the rebuild idempotent."
+                    ),
+                    repair_owner="sales.marketing_conversion_projection",
+                ),
+            ),
+            events=EventContract(
+                event_types=("marketing.conversion_ready",),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility=(
+                    "Version 1 is the exact PII-free marketing conversion payload."
+                ),
+                replay=(
+                    "The immutable origin and committed source event reproduce the "
+                    "same external event UUID and payload."
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.COMPLETE,
+                old_owner="aspirational direct marketing callback",
+                new_owner="sales.marketing_conversion_projection",
+                verification=(
+                    "Lifecycle mapping, PII exclusion, deterministic UUID, and "
+                    "idempotent replay tests."
+                ),
+                cutover_gate=(
+                    "Only committed durable lifecycle events invoke this owner; "
+                    "delivery uses an enabled events.deliver.v1 binding."
+                ),
+                fallback_retirement=(
+                    "No lifecycle transaction makes a direct marketing HTTP call."
+                ),
+            ),
+            steward="sales operations",
+            design_refs=(
+                "docs/SOT_RELATIONSHIP_MAP.md",
+                "docs/PARTY_CUSTOMER_LIFECYCLE.md",
+                "docs/designs/MARKETING_SALES_SOT.md",
+            ),
+            test_refs=(
+                "tests/test_marketing_conversion_projection.py",
+                "tests/test_fiber_inquiry_webhook.py",
+                "tests/architecture/test_sot_registry_liveness.py",
+            ),
+        ),
+    ),
+    SOTService(
         name="sales.meta_lead_customer_match",
         module="app.services.sales.meta_lead_ads",
         owns=("Meta Lead customer-match projection",),

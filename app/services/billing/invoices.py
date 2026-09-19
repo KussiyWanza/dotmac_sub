@@ -3362,6 +3362,7 @@ class InvoiceLines(ListResponseMixin):
                 line.is_active = False
         db.flush()
         _recalculate_invoice_totals(db, invoice)
+        invoice.updated_at = datetime.now(UTC)
 
     @staticmethod
     def stage_system_line(

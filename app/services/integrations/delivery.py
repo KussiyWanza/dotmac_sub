@@ -222,13 +222,18 @@ def create_platform_deliveries_for_event(
         )
         .all()
     )
-    payload = event.to_dict()
-    digest = payload_digest(payload)
     deliveries: list[IntegrationDelivery] = []
     for subscription in subscriptions:
         binding = subscription.capability_binding
         if binding.installation.state != IntegrationInstallationState.enabled.value:
             continue
+        projection = str(
+            (subscription.payload_policy_json or {}).get("projection") or ""
+        )
+        payload = (
+            dict(event.payload) if projection == "event_payload.v1" else event.to_dict()
+        )
+        digest = payload_digest(payload)
         key = f"event:{event.event_id}:binding:{binding.id}"
         existing = (
             db.query(IntegrationDelivery)
