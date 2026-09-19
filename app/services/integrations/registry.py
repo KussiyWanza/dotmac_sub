@@ -624,7 +624,7 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
     ConnectorManifest(
         key="fiber.inquiry.http",
         name="Fiber Website Inquiry",
-        version="1.0.0",
+        version="1.1.0",
         connector_type="messaging",
         description="Signed fiber.dotmac.ng inquiry ingress for Team Inbox.",
         runtime=RuntimeManifest(
@@ -640,15 +640,20 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
         config_schema={
             "type": "object",
             "properties": {
-                "signature_header": {"type": "string", "minLength": 1},
-                "delivery_id_header": {"type": "string", "minLength": 1},
-                "signature_prefix": {"type": "string"},
+                "signature_header": {
+                    "type": "string",
+                    "minLength": 1,
+                    "default": "X-Dotmac-Fiber-Signature",
+                },
+                "delivery_id_header": {
+                    "type": "string",
+                    "minLength": 1,
+                    "default": "X-Dotmac-Fiber-Delivery",
+                },
+                "signature_prefix": {"type": "string", "default": "sha256="},
                 "site_id": {"type": "string", "minLength": 1},
             },
             "required": [
-                "signature_header",
-                "delivery_id_header",
-                "signature_prefix",
                 "site_id",
             ],
             "additionalProperties": False,
@@ -726,6 +731,10 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
                 "method": {"type": "string"},
                 "timeout_seconds": {"type": "number"},
                 "max_attempts": {"type": "integer"},
+                "authorization_scheme": {
+                    "type": "string",
+                    "enum": ["Bearer"],
+                },
             },
             "required": ["url"],
             "additionalProperties": False,

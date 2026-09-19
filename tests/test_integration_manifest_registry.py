@@ -30,7 +30,7 @@ from app.services.integrations.runtime import (
 from app.services.web_integrations import build_marketplace_data
 
 EXPECTED_MARKETPLACE = {
-    "fiber.inquiry.http": ("Fiber Website Inquiry", "1.0.0", "messaging"),
+    "fiber.inquiry.http": ("Fiber Website Inquiry", "1.1.0", "messaging"),
     "lead.capture.http": ("Lead Capture Webhook", "1.0.0", "sales"),
     "whatsapp": ("WhatsApp", "1.1.0", "messaging"),
     "nextcloud.talk": ("Nextcloud Talk", "1.0.0", "messaging"),

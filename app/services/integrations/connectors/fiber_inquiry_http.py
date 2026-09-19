@@ -28,14 +28,7 @@ class FiberInquiryHttpRunner:
         secret_material: Mapping[str, str],
     ) -> ValidationResult:
         missing = tuple(
-            key
-            for key in (
-                "signature_header",
-                "delivery_id_header",
-                "signature_prefix",
-                "site_id",
-            )
-            if not str(config.get(key) or "").strip()
+            key for key in ("site_id",) if not str(config.get(key) or "").strip()
         )
         if not secret_material.get("webhook_signing_secret"):
             missing += ("webhook_signing_secret",)

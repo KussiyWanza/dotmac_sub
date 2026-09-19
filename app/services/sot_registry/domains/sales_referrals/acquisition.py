@@ -75,6 +75,7 @@ SERVICES: tuple[SOTService, ...] = (
             "provider-neutral Party-first Lead capture command",
             "source-interaction idempotency and collision decision",
             "verified integration receipt to Lead consequence",
+            "PII-free immutable Fiber conversion milestone projection",
         ),
         depends_on=(
             "integration.inbox",
@@ -96,6 +97,15 @@ SERVICES: tuple[SOTService, ...] = (
                         "canonical Party identity state",
                         "canonical Lead lifecycle state",
                     ),
+                ),
+                ConcernContract(
+                    name="PII-free immutable Fiber conversion milestone projection",
+                    role=OwnerRole.PROJECTION_WRITER,
+                    input_names=(
+                        "immutable captured origin evidence",
+                        "committed customer lifecycle event",
+                    ),
+                    canonical_writer="sales.capture",
                 ),
                 ConcernContract(
                     name="source-interaction idempotency and collision decision",
@@ -159,6 +169,15 @@ SERVICES: tuple[SOTService, ...] = (
                         "canonical fingerprint, and append-only origin row"
                     ),
                 ),
+                AuthorityInput(
+                    name="committed customer lifecycle event",
+                    owner="events.dispatcher",
+                    kind=AuthorityKind.OBSERVATION,
+                    source=(
+                        "durable lead, coverage, payment, appointment, and "
+                        "subscription lifecycle event"
+                    ),
+                ),
             ),
             transaction=TransactionContract(
                 mode=TransactionMode.OWNER_MANAGED,
@@ -207,13 +226,44 @@ SERVICES: tuple[SOTService, ...] = (
                     "ambiguous Party context",
                 ),
             ),
+            projections=(
+                ProjectionContract(
+                    name="PII-free immutable Fiber conversion milestone projection",
+                    input_names=(
+                        "immutable captured origin evidence",
+                        "committed customer lifecycle event",
+                    ),
+                    writer="sales.capture",
+                    freshness=(
+                        "Projected after the authoritative lifecycle transaction "
+                        "commits and retried from the durable event store."
+                    ),
+                    stale_behavior=(
+                        "Missing delivery remains retryable and never changes the "
+                        "customer lifecycle transaction."
+                    ),
+                    drift_signal=(
+                        "An attributed lifecycle event lacks its unique origin-stage "
+                        "milestone or outbound event."
+                    ),
+                    rebuild_operation=(
+                        "Replay the exact durable lifecycle event; unique origin-stage "
+                        "identity makes the rebuild idempotent."
+                    ),
+                    repair_owner="sales.capture",
+                ),
+            ),
             events=EventContract(
-                event_types=("lead.created",),
-                schema_version=1,
+                event_types=(
+                    "lead.created",
+                    "fiber.coverage_evaluated",
+                    "marketing.conversion_ready",
+                ),
+                schema_version=2,
                 delivery_owner="events.dispatcher",
                 compatibility=(
-                    "Version 1 carries exact Lead, Party, origin, capture method, "
-                    "platform, and source-interaction identifiers without contact PII."
+                    "Version 2 retains the Lead capture identifiers and adds an "
+                    "exact PII-free marketing conversion payload."
                 ),
                 replay=(
                     "The immutable origin fingerprint and IntegrationInbox "
@@ -248,6 +298,7 @@ SERVICES: tuple[SOTService, ...] = (
             test_refs=(
                 "tests/test_lead_capture_webhook.py",
                 "tests/test_fiber_inquiry_webhook.py",
+                "tests/test_marketing_conversion_projection.py",
                 "tests/test_sales_capture_account_conversion.py",
                 "tests/architecture/test_service_http_boundary.py",
             ),

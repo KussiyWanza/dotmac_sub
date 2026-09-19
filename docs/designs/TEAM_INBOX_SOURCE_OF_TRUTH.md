@@ -517,9 +517,14 @@ The admin CRM-replication controls use these existing owners:
   cannot selectively remove the current action. Conversation-fragment request
   URLs carry the deployed presentation revision so browsers with a pre-fix
   cached fragment must request the current markup after deployment.
-- Fiber-website inquiries are inbound-only. The projection and outbound owner
-  explicitly reject replies until a reviewed reply transport and prospect
-  destination policy are approved.
+- Fiber-website inquiries are inbound-only. `fiber-contact-v1` keeps its legacy
+  identity/Lead consequence. `fiber-coverage-v1` records the verified inquiry,
+  creates an attributed Lead before an optional PostGIS feasibility check, and
+  returns only a customer-safe coverage class. Exact reviewed Subscriber
+  identity creates a new linked Lead; ambiguous or Party-less identity records
+  review evidence and fails closed. Neither contract enables replies: the
+  projection and outbound owner reject them until a reviewed reply transport
+  and prospect destination policy are approved.
 
 ## Lifecycle audit evidence
 
