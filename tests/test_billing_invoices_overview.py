@@ -325,6 +325,67 @@ def test_invoice_status_summary_preserves_other_status_tabs(db_session, subscrib
     assert result["status_totals"]["issued"]["count"] == 1
 
 
+def test_invoices_list_unpaid_filter_matches_collectible_dashboard_scope(
+    db_session, subscriber
+):
+    now = datetime.now(UTC)
+    expected_numbers = {
+        "INV-UNPAID-ISSUED",
+        "INV-UNPAID-PARTIAL",
+        "INV-UNPAID-OVERDUE",
+    }
+    for invoice_number, status in (
+        ("INV-UNPAID-ISSUED", InvoiceStatus.issued),
+        ("INV-UNPAID-PARTIAL", InvoiceStatus.partially_paid),
+        ("INV-UNPAID-OVERDUE", InvoiceStatus.overdue),
+    ):
+        _create_invoice(
+            db_session,
+            account_id=subscriber.id,
+            invoice_number=invoice_number,
+            total="100.00",
+            balance_due="40.00",
+            status=status,
+            created_at=now,
+        )
+    _create_invoice(
+        db_session,
+        account_id=subscriber.id,
+        invoice_number="INV-DRAFT-NOT-UNPAID",
+        total="100.00",
+        balance_due="100.00",
+        status=InvoiceStatus.draft,
+        created_at=now,
+    )
+    _create_invoice(
+        db_session,
+        account_id=subscriber.id,
+        invoice_number="INV-ZERO-DUE-NOT-UNPAID",
+        total="100.00",
+        balance_due="0.00",
+        status=InvoiceStatus.issued,
+        created_at=now,
+    )
+    _create_invoice(
+        db_session,
+        account_id=subscriber.id,
+        invoice_number="PF-NOT-COLLECTIBLE-UNPAID",
+        total="100.00",
+        balance_due="100.00",
+        status=InvoiceStatus.issued,
+        created_at=now,
+        is_proforma=True,
+    )
+
+    result = build_invoices_list_data(db_session, status="unpaid")
+
+    assert result["status"] == "unpaid"
+    assert result["total"] == 3
+    assert {invoice.invoice_number for invoice in result["invoices"]} == (
+        expected_numbers
+    )
+
+
 def test_invoices_list_filters_by_inclusive_start_and_end_dates(db_session, subscriber):
     now = datetime.now(UTC)
     _create_invoice(

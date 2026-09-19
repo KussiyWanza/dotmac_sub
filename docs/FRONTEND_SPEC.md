@@ -1009,7 +1009,10 @@ Invoice filters intersect when combined. The selected customer label remains
 visible after partial refreshes, and **Clear filters** removes user-selected
 criteria while preserving an `account_id` entry-point scope. The date controls
 are labelled **Created From** and **Created To** because they bound UTC
-`created_at`, with the ending calendar date included.
+`created_at`, with the ending calendar date included. The synthetic **Unpaid**
+status remains visibly selected and uses the dashboard receivables scope:
+issued, partially paid, or overdue collectible non-proforma invoices with a
+positive balance due. Draft invoices are not unpaid receivables.
 
 #### `GET /admin/billing`
 **Template:** `admin/billing/index.html`

@@ -23,6 +23,7 @@ from app.services import display_format
 from app.services import web_billing_customers as web_billing_customers_service
 from app.services.common import validate_enum
 from app.services.inclusive_date_range import InclusiveDateRange
+from app.services.invoice_classification import collectible_ar_invoice_filter
 from app.services.list_query import (
     ListDefinition,
     ListFieldDefinition,
@@ -80,7 +81,6 @@ _overview_cache: dict[
     tuple[str | None, str | None, str], tuple[float, dict[str, object]]
 ] = {}
 _UNPAID_INVOICE_STATUSES = (
-    InvoiceStatus.draft,
     InvoiceStatus.issued,
     InvoiceStatus.partially_paid,
     InvoiceStatus.overdue,
@@ -408,7 +408,11 @@ def _apply_invoice_list_filters(
 
     if include_status and status:
         if status == "unpaid":
-            scoped = scoped.filter(Invoice.status.in_(_UNPAID_INVOICE_STATUSES))
+            scoped = scoped.filter(
+                Invoice.status.in_(_UNPAID_INVOICE_STATUSES),
+                Invoice.balance_due > Decimal("0"),
+                collectible_ar_invoice_filter(),
+            )
         else:
             scoped = scoped.filter(
                 Invoice.status == validate_enum(status, InvoiceStatus, "status")

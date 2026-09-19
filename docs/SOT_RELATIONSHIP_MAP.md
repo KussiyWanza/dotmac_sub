@@ -3177,7 +3177,10 @@ will reject.
     declared filters intersect when combined. The selected customer label stays
     visible after an HTMX refresh, and clearing filters removes user-selected
     criteria while retaining an `account_id` entry-point scope. Date controls
-    are explicitly labelled as created-date bounds. The
+    are explicitly labelled as created-date bounds. The synthetic `unpaid`
+    status remains visible in the filter and selects issued, partially paid,
+    or overdue collectible non-proforma invoices with a positive balance due;
+    drafts are not unpaid receivables. The
     CSV projects the customer account's human display identity as
     `customer_name`; it does not expose the internal account UUID.
 `ui.payments_list_projection` owns the filtered admin payments CSV scope as

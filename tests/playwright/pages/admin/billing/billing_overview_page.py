@@ -54,6 +54,10 @@ class BillingOverviewPage(BasePage):
         """Navigate to invoices list."""
         self.page.get_by_role("link", name="Invoices").first.click()
 
+    def click_unpaid(self) -> None:
+        """Open the invoice list for the Unpaid KPI cohort."""
+        self.page.get_by_role("link", name="Unpaid").click()
+
     def click_payments(self) -> None:
         """Navigate to payments list."""
         self.page.get_by_role("link", name="Payments").first.click()
