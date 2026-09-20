@@ -53,16 +53,19 @@ the selected work order when the request is submitted.
   fact. Cost-centre, ERP task, fleet vehicle, and receipt-number controls remain
   out of scope.
 
-The form offers the technician's masked ERP bank profile by default. A
-technician may instead enter a beneficiary name, ERP bank, and account number
-for this expense only. Sub sends those values directly to ERP account
-verification and receives an encrypted, short-lived token bound to the
-requester, organization, and claim UUID. Sub persists and delivers only that
-opaque token, bank label, account last four digits, verified beneficiary, and
-verification timestamps; it never stores the raw account number. ERP encrypts
-the verified account snapshot on the claim. Approval locks the snapshot, and
-payment rejects any attempt to replace it. The override never updates the
-employee's ERP profile.
+The Field app offers the technician's masked ERP bank profile by default. A
+technician may instead enter an ERP bank and account number for this expense
+only. For both modes, Sub asks ERP to resolve the account before submission,
+shows a loading state, and displays the bank-returned account name in a
+read-only field. Changing the mode, bank, or account number clears that result
+and requires fresh verification. Sub receives an encrypted, short-lived token
+bound to the requester, organization, and claim UUID, and persists and delivers
+only that opaque token, bank label, account last four digits, bank-returned
+beneficiary, and verification timestamps; it never stores the raw account
+number. The employee's HR/display name is not an account-verification input.
+ERP encrypts the verified account snapshot on the claim. Approval locks the
+snapshot, and payment rejects any attempt to replace it. The override never
+updates the employee's ERP profile.
 
 The mobile-generated client reference is the canonical claim UUID. New
 submissions persist that same UUID as both `FieldExpenseRequest.id` and
