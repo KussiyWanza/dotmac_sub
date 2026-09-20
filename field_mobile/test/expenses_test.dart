@@ -901,9 +901,9 @@ void main() {
     expect(find.byKey(const Key('expense-account-name')), findsOneWidget);
     expect(find.text('Account name'), findsOneWidget);
     expect(
-      tester.widget<TextField>(
-        find.byKey(const Key('expense-account-name')),
-      ).readOnly,
+      tester
+          .widget<TextField>(find.byKey(const Key('expense-account-name')))
+          .readOnly,
       isTrue,
     );
 
@@ -1081,11 +1081,14 @@ void main() {
     });
     expect(verificationPayload!.containsKey('beneficiary_name'), isFalse);
     expect(find.text('AKANDE SANMI BAMIDELE'), findsOneWidget);
-    expect(find.text('Confirm this is the intended recipient.'), findsOneWidget);
     expect(
-      tester.widget<TextField>(
-        find.byKey(const Key('expense-account-name')),
-      ).readOnly,
+      find.text('Confirm this is the intended recipient.'),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('expense-account-name')))
+          .readOnly,
       isTrue,
     );
   });

@@ -1211,7 +1211,9 @@ class _NewExpenseRequestScreenState
     }
     final verified = _verifiedDestination;
     if (verified == null || verified.mode != _destinationMode) {
-      setState(() => _submitError = 'Wait for the account name to be verified.');
+      setState(
+        () => _submitError = 'Wait for the account name to be verified.',
+      );
       unawaited(_verifyCurrentDestination());
       return;
     }
