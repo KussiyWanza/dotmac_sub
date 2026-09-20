@@ -912,6 +912,7 @@ void main() {
     expect(find.byKey(const Key('expense-bank')), findsNothing);
 
     // Pick a category and describe the line, but leave the amount empty.
+    await tester.ensureVisible(find.byKey(const Key('expense-category')));
     await tester.tap(find.byKey(const Key('expense-category')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Transport').last);
@@ -1497,6 +1498,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    await tester.ensureVisible(find.byKey(const Key('expense-category')));
     await tester.tap(find.byKey(const Key('expense-category')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Fuel').last);
