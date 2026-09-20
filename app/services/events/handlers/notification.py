@@ -16,6 +16,7 @@ from app.models.notification import (
     NotificationTemplate,
 )
 from app.schemas.notification import NotificationCreate
+from app.services.branding_config import get_brand
 from app.services.communication_intents import (
     CommunicationAttachment,
     CommunicationAttachmentKind,
@@ -1016,7 +1017,6 @@ class NotificationHandler:
                         payment_receipt_path,
                         payment_receipt_reference,
                     )
-                    from app.services.branding_config import get_brand
                     from app.services.common import coerce_uuid
 
                     payment = db.get(Payment, coerce_uuid(payment_id))
@@ -1072,8 +1072,6 @@ class NotificationHandler:
                 )
 
         if event.invoice_id:
-            from app.services.branding_config import get_brand
-
             app_url = str(get_brand().get("app_url") or "").rstrip("/")
             context.setdefault(
                 "invoice_url", f"{app_url}/portal/billing/invoices/{event.invoice_id}"
@@ -1127,7 +1125,8 @@ class NotificationHandler:
 
         context.setdefault("device_serial", context.get("serial_number", ""))
         context.setdefault("location", context.get("olt_name", ""))
-        context.setdefault("portal_url", "/portal")
+        app_url = str(get_brand().get("app_url") or "").rstrip("/")
+        context.setdefault("portal_url", f"{app_url}/portal")
         context.setdefault("subscriber_name", "Valued Customer")
         context.setdefault("offer_name", context.get("plan_name", "your service"))
         context.setdefault("old_offer_name", "your current plan")

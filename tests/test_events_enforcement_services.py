@@ -1320,6 +1320,20 @@ class TestNotificationHandler:
         # Should not raise
         handler.handle(db_session, event)
 
+    @patch(
+        "app.services.events.handlers.notification.get_brand",
+        return_value={"app_url": "https://selfcare.example.test/"},
+    )
+    def test_render_context_uses_absolute_portal_url_without_payment(
+        self, _get_brand, db_session
+    ):
+        context = NotificationHandler()._build_render_context(
+            db_session,
+            Event(event_type=EventType.subscriber_updated, payload={}),
+        )
+
+        assert context["portal_url"] == "https://selfcare.example.test/portal"
+
     def test_payment_event_queues_receipt_aware_email(self, db_session, subscriber):
         payment = Payment(
             account_id=subscriber.id,
