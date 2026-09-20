@@ -2275,7 +2275,11 @@ SERVICES: tuple[SOTService, ...] = (
             "A same-"
             "business-day current anchor may supply the start only when the "
             "invoice due instant exactly matches the next cadence boundary "
-            "and no coverage overlaps. It writes only missing document "
+            "and no coverage overlaps. One separately permission-gated staff "
+            "repair may retain exactly one earlier adjustment-funded entitlement "
+            "whose end equals the current anchor and whose strict interval is "
+            "prior start < paid start < prior end < paid end; automatic payment "
+            "finalization cannot apply that reviewed overlap. It writes only missing document "
             "identity, entitlement, billing anchor, and the canonical access-"
             "restoration consequence with zero economic delta. A separate "
             "entity-scoped missing-invoice command accepts "
@@ -2320,6 +2324,8 @@ SERVICES: tuple[SOTService, ...] = (
                         "canonical paid prepaid document gap",
                         "canonical prepaid subscription contract",
                         "canonical paid invoice allocation evidence",
+                        "canonical funded service entitlement",
+                        "canonical direct-renewal debit",
                         "canonical settlement business calendar",
                         "financial access restoration protocol",
                     ),
@@ -2460,7 +2466,8 @@ SERVICES: tuple[SOTService, ...] = (
                     source=(
                         "operator-named matching account subscription, active "
                         "prepaid state, frozen unit price, contracted cadence, "
-                        "unanchored billing state, and absence of coverage"
+                        "billing anchor, and either absence of coverage or one "
+                        "exact reviewed earlier adjustment-funded overlap"
                     ),
                 ),
                 AuthorityInput(
@@ -2581,7 +2588,8 @@ SERVICES: tuple[SOTService, ...] = (
                     "creates no entitlement. Its resulting valid prepaid draft "
                     "then enters the existing reviewed settlement command. The "
                     "historical paid-invoice repair locks and recomputes exact "
-                    "allocation and settlement evidence, then commits document "
+                    "allocation, settlement, and any reviewed prior-entitlement "
+                    "ledger and adjustment evidence, then commits document "
                     "identity, entitlement, reviewed anchor projection, access "
                     "consequence, audit, event, and idempotency evidence with "
                     "zero economic delta. The "
@@ -2605,7 +2613,8 @@ SERVICES: tuple[SOTService, ...] = (
                     "Lock account first, then invoice or selected subscription "
                     "and payment, subscription when "
                     "adopting a proforma, eligible payment and "
-                    "settlement records, and the opening-funding baseline; "
+                    "settlement records, active entitlement and linked renewal "
+                    "evidence, and the opening-funding baseline; "
                     "re-read consumption, entitlement, adjustment, and "
                     "allocation evidence before writing. A multiple-draft "
                     "account is not automatically repaired."
@@ -2668,6 +2677,9 @@ SERVICES: tuple[SOTService, ...] = (
                     "an already-paid invoice without one exact active full-value "
                     "allocation and successful unreturned settlement, or whose "
                     "charge differs from canonical renewal terms",
+                    "an overlapping paid-invoice entitlement unless exactly one "
+                    "earlier unreversed adjustment-funded period ends at the "
+                    "current anchor inside the reviewed single payment period",
                     "a missing-invoice repair with changed contract tax, dates, "
                     "payment capacity, expected remaining credit, competing "
                     "document, or overlapping entitlement",

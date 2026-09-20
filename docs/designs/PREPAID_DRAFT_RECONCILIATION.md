@@ -125,8 +125,9 @@ mixed documents in manual review and automatic repair never guesses a line.
 The current snapshot must prove one active full-value allocation, one successful
 unreturned settlement, canonical taxed contract-charge equality for every
 integer service period represented by the selected line quantity, internally
-exact undiscounted document totals, no credit-note funding, and no overlapping
-entitlement or competing document. Unselected installation or other
+exact undiscounted document totals, no credit-note funding, and no competing
+document. Overlapping entitlement evidence is blocked except for the one
+staff-reviewed prior-renewal shape defined below. Unselected installation or other
 non-subscription lines remain untouched. The Payment may fund other invoices;
 the selected allocation alone must exactly equal this invoice total. The
 settlement instant determines the WAT service-period start, and the selected
@@ -136,6 +137,18 @@ For a single-period repair, an older anchor one boundary later on the same WAT
 service-start business date remains acceptable only when the invoice due
 instant exactly matches the next cadence boundary; otherwise the anchor remains
 manual review.
+
+One additional single-period shape is available only to the fingerprint-bound
+staff command, never to automatic payment finalization. The owner may retain
+one earlier adjustment-funded entitlement that overlaps the beginning of the
+payment-derived period when its exact unreversed prepaid-renewal adjustment and
+ledger debit remain linked, the current anchor equals that earlier entitlement's
+end, and the strict ordering is `prior start < paid start < prior end < paid
+end`. This represents an explicitly reviewed early-payment re-anchor. The prior
+funded entitlement remains immutable evidence; the new invoice receives its own
+entitlement, and the anchor follows the union through the reviewed paid end.
+Multiple, invoice-linked, grant-linked, reversed, amount-mismatched, or otherwise
+ambiguous overlaps remain blocked.
 
 Confirmation posts no money and never changes invoice status, balance, total,
 or allocation. A flush-only invoice participant writes missing line and period
@@ -355,7 +368,9 @@ poetry run python -m scripts.billing.reconcile_prepaid_drafts \
 
 `--line-id` is optional for the legacy one-positive-line shape and mandatory in
 practice for a mixed invoice. The dry-run response reports
-`service_period_count`; review its WAT start/end before applying.
+`service_period_count`, any retained prior entitlement IDs, and the proposed
+WAT start/end. A retained-overlap disposition is staff-review-only and is never
+applied by payment finalization.
 
 For a completely missing document, preview the exact entity and reviewed
 outcome first. Apply repeats every argument and requires the returned

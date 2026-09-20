@@ -228,6 +228,9 @@ class PrepaidProformaAdoptionDisposition(StrEnum):
 
 class PaidPrepaidInvoiceRepairDisposition(StrEnum):
     exact_paid_unlinked_invoice = "exact_paid_unlinked_invoice"
+    reviewed_paid_unlinked_invoice_with_prior_coverage = (
+        "reviewed_paid_unlinked_invoice_with_prior_coverage"
+    )
     manual_review = "manual_review"
     already_repaired = "already_repaired"
 
@@ -492,9 +495,21 @@ class PaidPrepaidInvoiceRepairPreview:
     service_period_count: int | None
     reason: str
     fingerprint: str
+    retained_overlapping_entitlement_ids: tuple[UUID, ...] = ()
 
     @property
     def actionable(self) -> bool:
+        return self.disposition in {
+            PaidPrepaidInvoiceRepairDisposition.exact_paid_unlinked_invoice,
+            (
+                PaidPrepaidInvoiceRepairDisposition.reviewed_paid_unlinked_invoice_with_prior_coverage
+            ),
+        }
+
+    @property
+    def automatically_actionable(self) -> bool:
+        """Whether payment finalization may apply this without staff review."""
+
         return (
             self.disposition
             is PaidPrepaidInvoiceRepairDisposition.exact_paid_unlinked_invoice
@@ -532,6 +547,7 @@ class PaidPrepaidInvoiceRepairResult:
     preview_fingerprint: str
     subscriptions_restored: int
     replayed: bool
+    retained_overlapping_entitlement_ids: tuple[UUID, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1697,7 +1713,20 @@ def _build_paid_invoice_repair_preview(
     period_start: datetime | None = None,
     period_end: datetime | None = None,
     service_period_count: int | None = None,
+    retained_overlapping_entitlements: tuple[ServiceEntitlement, ...] = (),
 ) -> PaidPrepaidInvoiceRepairPreview:
+    retained_overlap_evidence = [
+        {
+            "id": item.id,
+            "starts_at": item.starts_at,
+            "ends_at": item.ends_at,
+            "amount_funded": item.amount_funded,
+            "currency": item.currency,
+            "source_ledger_entry_id": item.source_ledger_entry_id,
+            "updated_at": item.updated_at,
+        }
+        for item in retained_overlapping_entitlements
+    ]
     payload = {
         "invoice_id": invoice.id,
         "account_id": invoice.account_id,
@@ -1751,6 +1780,7 @@ def _build_paid_invoice_repair_preview(
         "period_start": period_start,
         "period_end": period_end,
         "service_period_count": service_period_count,
+        "retained_overlapping_entitlements": retained_overlap_evidence,
         "disposition": disposition,
         "reason": reason,
     }
@@ -1781,7 +1811,95 @@ def _build_paid_invoice_repair_preview(
         service_period_count=service_period_count,
         reason=reason,
         fingerprint=_hash(payload),
+        retained_overlapping_entitlement_ids=tuple(
+            item.id for item in retained_overlapping_entitlements
+        ),
     )
+
+
+def _reviewed_paid_invoice_prior_coverage(
+    db: Session,
+    *,
+    invoice: Invoice,
+    line: InvoiceLine,
+    subscription: Subscription,
+    period_start: datetime,
+    period_end: datetime,
+    current_anchor: datetime | None,
+    service_period_count: int,
+    existing_entitlements: tuple[ServiceEntitlement, ...],
+) -> tuple[ServiceEntitlement, ...]:
+    """Prove the one overlap shape that a staff-reviewed repair may retain.
+
+    A prior scheduled renewal can extend a few days into the settlement-derived
+    period when a customer pays early and Finance deliberately re-anchors the
+    next cycle to the payment business date.  The earlier funded record remains
+    immutable evidence; this repair adds the separately paid invoice coverage
+    and advances the anchor.  Automatic payment handling never applies this
+    disposition.
+    """
+
+    if (
+        service_period_count != 1
+        or current_anchor is None
+        or len(existing_entitlements) != 1
+    ):
+        return ()
+    entitlement = existing_entitlements[0]
+    entitlement_start = _utc(entitlement.starts_at)
+    entitlement_end = _utc(entitlement.ends_at)
+    if (
+        entitlement.account_id != invoice.account_id
+        or entitlement.subscription_id != subscription.id
+        or entitlement.source_invoice_id is not None
+        or entitlement.source_invoice_line_id is not None
+        or entitlement.source_billing_grant_id is not None
+        or entitlement.source_ledger_entry_id is None
+        or not (entitlement_start < period_start < entitlement_end < period_end)
+        or current_anchor != entitlement_end
+        or (entitlement.currency or "NGN").upper()
+        != (invoice.currency or "NGN").upper()
+        or round_money(to_decimal(entitlement.amount_funded))
+        != round_money(to_decimal(invoice.total))
+        or dict(entitlement.metadata_ or {}).get("source")
+        != "scheduled_prepaid_service_renewal"
+    ):
+        return ()
+
+    ledger_entry = db.get(LedgerEntry, entitlement.source_ledger_entry_id)
+    adjustment = db.scalar(
+        select(AccountAdjustment).where(
+            AccountAdjustment.ledger_entry_id == entitlement.source_ledger_entry_id,
+            AccountAdjustment.account_id == invoice.account_id,
+            AccountAdjustment.origin == _RENEWAL_ORIGIN,
+            AccountAdjustment.reversed_at.is_(None),
+        )
+    )
+    expected_origin = (
+        f"{subscription.id}:{entitlement_start.isoformat()}:"
+        f"{entitlement_end.isoformat()}"
+    )
+    funded_total = round_money(to_decimal(invoice.total))
+    if (
+        ledger_entry is None
+        or adjustment is None
+        or adjustment.origin_ref != expected_origin
+        or adjustment.currency.upper() != (invoice.currency or "NGN").upper()
+        or round_money(to_decimal(adjustment.amount)) != funded_total
+        or ledger_entry.account_id != invoice.account_id
+        or ledger_entry.entry_type is not LedgerEntryType.debit
+        or ledger_entry.source is not LedgerSource.adjustment
+        or not ledger_entry.is_active
+        or not ledger_entry.affects_customer_position
+        or ledger_entry.reversal_of_entry_id is not None
+        or _ledger_entry_has_reversal(db, ledger_entry)
+        or (ledger_entry.currency or "NGN").upper()
+        != (invoice.currency or "NGN").upper()
+        or round_money(to_decimal(ledger_entry.amount)) != funded_total
+        or round_money(to_decimal(line.amount)) <= Decimal("0.00")
+    ):
+        return ()
+    return (entitlement,)
 
 
 def _paid_invoice_repair_access_key(idempotency_key: str) -> str:
@@ -2105,12 +2223,34 @@ def preview_historical_paid_prepaid_invoice_repair(
     )
     if anchor_period is not None:
         period = anchor_period
+    existing_entitlements = tuple(
+        db.scalars(
+            select(ServiceEntitlement)
+            .where(
+                ServiceEntitlement.subscription_id == subscription.id,
+                ServiceEntitlement.status == ServiceEntitlementStatus.active,
+                ServiceEntitlement.ends_at > period.starts_at,
+            )
+            .order_by(ServiceEntitlement.id)
+        ).all()
+    )
+    reviewed_prior_coverage = _reviewed_paid_invoice_prior_coverage(
+        db,
+        invoice=invoice,
+        line=line,
+        subscription=subscription,
+        period_start=period.starts_at,
+        period_end=period.ends_at,
+        current_anchor=current_anchor,
+        service_period_count=service_period_count,
+        existing_entitlements=existing_entitlements,
+    )
     stale_anchor = (
         current_anchor is None
         or current_anchor <= period.starts_at
         or (service_period_count > 1 and current_anchor < period.ends_at)
     )
-    if not stale_anchor:
+    if not stale_anchor and not reviewed_prior_coverage:
         return _build_paid_invoice_repair_preview(
             invoice=invoice,
             subscription_id=query.subscription_id,
@@ -2127,18 +2267,6 @@ def preview_historical_paid_prepaid_invoice_repair(
             period_end=period.ends_at,
             service_period_count=service_period_count,
         )
-
-    existing_entitlements = tuple(
-        db.scalars(
-            select(ServiceEntitlement)
-            .where(
-                ServiceEntitlement.subscription_id == subscription.id,
-                ServiceEntitlement.status == ServiceEntitlementStatus.active,
-                ServiceEntitlement.ends_at > period.starts_at,
-            )
-            .order_by(ServiceEntitlement.id)
-        ).all()
-    )
     competing_document_id = db.scalar(
         select(Invoice.id)
         .join(InvoiceLine, InvoiceLine.invoice_id == Invoice.id)
@@ -2158,7 +2286,9 @@ def preview_historical_paid_prepaid_invoice_repair(
         )
         .limit(1)
     )
-    if existing_entitlements or competing_document_id is not None:
+    if (
+        existing_entitlements and not reviewed_prior_coverage
+    ) or competing_document_id is not None:
         return _build_paid_invoice_repair_preview(
             invoice=invoice,
             subscription_id=query.subscription_id,
@@ -2174,6 +2304,27 @@ def preview_historical_paid_prepaid_invoice_repair(
             period_start=period.starts_at,
             period_end=period.ends_at,
             service_period_count=service_period_count,
+        )
+
+    if reviewed_prior_coverage:
+        return _build_paid_invoice_repair_preview(
+            invoice=invoice,
+            subscription_id=query.subscription_id,
+            disposition=(
+                PaidPrepaidInvoiceRepairDisposition.reviewed_paid_unlinked_invoice_with_prior_coverage
+            ),
+            reason=(
+                "one exact successful settlement funds the reviewed prepaid "
+                "period while one earlier adjustment-funded entitlement is retained"
+            ),
+            line=line,
+            allocation=allocation,
+            settlement=settlement,
+            payment=payment,
+            period_start=period.starts_at,
+            period_end=period.ends_at,
+            service_period_count=service_period_count,
+            retained_overlapping_entitlements=reviewed_prior_coverage,
         )
 
     return _build_paid_invoice_repair_preview(
@@ -4976,6 +5127,18 @@ def _replay_paid_invoice_repair_result(
     provenance = dict(evidence.entitlement.metadata_ or {})
     original_fingerprint = provenance.get("reconciliation_fingerprint")
     subscriptions_restored = consequence.result.get("subscriptions_changed")
+    repair_metadata = dict(invoice.metadata_ or {}).get(
+        _PAID_INVOICE_REPAIR_METADATA_KEY,
+        {},
+    )
+    retained_overlap_values = (
+        repair_metadata.get("retained_overlapping_entitlement_ids", [])
+        if isinstance(repair_metadata, dict)
+        else []
+    )
+    retained_overlap_ids = tuple(
+        UUID(value) for value in retained_overlap_values if isinstance(value, str)
+    )
     if (
         not isinstance(original_fingerprint, str)
         or original_fingerprint != command.preview_fingerprint
@@ -5003,6 +5166,7 @@ def _replay_paid_invoice_repair_result(
         preview_fingerprint=original_fingerprint,
         subscriptions_restored=subscriptions_restored,
         replayed=True,
+        retained_overlapping_entitlement_ids=retained_overlap_ids,
     )
 
 
@@ -5127,6 +5291,9 @@ def _stage_paid_prepaid_invoice_repair_from_preview(
         "settlement_id": str(current.settlement_id),
         "payment_id": str(current.payment_id),
         "entitlement_id": str(entitlement.id),
+        "retained_overlapping_entitlement_ids": [
+            str(value) for value in current.retained_overlapping_entitlement_ids
+        ],
         "access_consequence_id": str(restoration.consequence.id),
         "subscriptions_restored": restoration.subscriptions_changed,
         "settlement_effective_at": current.settlement_effective_at.isoformat(),
@@ -5159,6 +5326,9 @@ def _stage_paid_prepaid_invoice_repair_from_preview(
                 "settlement_id": str(current.settlement_id),
                 "payment_id": str(current.payment_id),
                 "entitlement_id": str(entitlement.id),
+                "retained_overlapping_entitlement_ids": [
+                    str(value) for value in current.retained_overlapping_entitlement_ids
+                ],
                 "access_consequence_id": str(restoration.consequence.id),
                 "subscriptions_restored": restoration.subscriptions_changed,
                 "billing_period_start": current.billing_period_start.isoformat(),
@@ -5186,6 +5356,9 @@ def _stage_paid_prepaid_invoice_repair_from_preview(
             "settlement_id": str(current.settlement_id),
             "payment_id": str(current.payment_id),
             "entitlement_id": str(entitlement.id),
+            "retained_overlapping_entitlement_ids": [
+                str(value) for value in current.retained_overlapping_entitlement_ids
+            ],
             "access_consequence_id": str(restoration.consequence.id),
             "subscriptions_restored": restoration.subscriptions_changed,
             "billing_period_start": current.billing_period_start.isoformat(),
@@ -5215,6 +5388,9 @@ def _stage_paid_prepaid_invoice_repair_from_preview(
         preview_fingerprint=current.fingerprint,
         subscriptions_restored=restoration.subscriptions_changed,
         replayed=False,
+        retained_overlapping_entitlement_ids=(
+            current.retained_overlapping_entitlement_ids
+        ),
     )
 
 
@@ -5404,7 +5580,7 @@ def repair_exact_paid_prepaid_invoice_after_settlement_for_owner(
             subscription_id=already_repaired[0].subscription_id,
             preview_fingerprint=already_repaired[0].fingerprint,
         )
-    actionable = [item for item in previews if item.actionable]
+    actionable = [item for item in previews if item.automatically_actionable]
     if len(actionable) == 1:
         evidence_hash = hashlib.sha256(
             command.evidence_ref.encode("utf-8")
@@ -5527,6 +5703,45 @@ def repair_historical_paid_prepaid_invoice(
                     select(PaymentReversal)
                     .where(PaymentReversal.payment_id.in_(payment_ids))
                     .order_by(PaymentReversal.id)
+                    .with_for_update()
+                ).all()
+            )
+
+        locked_entitlements = list(
+            db.scalars(
+                select(ServiceEntitlement)
+                .where(
+                    ServiceEntitlement.subscription_id == command.subscription_id,
+                    ServiceEntitlement.status == ServiceEntitlementStatus.active,
+                )
+                .order_by(ServiceEntitlement.id)
+                .with_for_update()
+            ).all()
+        )
+        entitlement_ledger_ids = sorted(
+            {
+                row.source_ledger_entry_id
+                for row in locked_entitlements
+                if row.source_ledger_entry_id is not None
+            },
+            key=str,
+        )
+        if entitlement_ledger_ids:
+            list(
+                db.scalars(
+                    select(LedgerEntry)
+                    .where(LedgerEntry.id.in_(entitlement_ledger_ids))
+                    .order_by(LedgerEntry.id)
+                    .with_for_update()
+                ).all()
+            )
+            list(
+                db.scalars(
+                    select(AccountAdjustment)
+                    .where(
+                        AccountAdjustment.ledger_entry_id.in_(entitlement_ledger_ids)
+                    )
+                    .order_by(AccountAdjustment.id)
                     .with_for_update()
                 ).all()
             )

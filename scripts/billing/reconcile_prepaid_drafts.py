@@ -228,6 +228,9 @@ def _paid_invoice_repair_preview_payload(preview) -> dict[str, object]:
         "invoice_total": str(preview.invoice_total),
         "allocated_amount": str(preview.allocated_amount),
         "service_period_count": preview.service_period_count,
+        "retained_overlapping_entitlement_ids": [
+            str(value) for value in preview.retained_overlapping_entitlement_ids
+        ],
         "actionable": preview.actionable,
         "reason": preview.reason,
         "fingerprint": preview.fingerprint,
@@ -646,6 +649,10 @@ def main() -> int:
                         "settlement_id": str(repair.settlement_id),
                         "payment_id": str(repair.payment_id),
                         "entitlement_id": str(repair.entitlement_id),
+                        "retained_overlapping_entitlement_ids": [
+                            str(value)
+                            for value in repair.retained_overlapping_entitlement_ids
+                        ],
                         "access_consequence_id": str(repair.access_consequence_id),
                         "billing_period_start": repair.billing_period_start.isoformat(),
                         "billing_period_end": repair.billing_period_end.isoformat(),

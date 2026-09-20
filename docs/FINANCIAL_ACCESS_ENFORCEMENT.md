@@ -234,12 +234,16 @@ The same owner has a separate dry-run-first command for the historical case
 where generic conversion already made an onboarding document final and an
 exact allocation later made it `paid`, while its line and period remained
 unlinked. Repair requires one active paid non-proforma invoice, one positive
-unlinked line, one named matching prepaid subscription with either no billing
-anchor or a stale anchor at or before the paid settlement period, one active
-full-value allocation from a successful unreturned settlement, no credit-note
-funding, no overlapping entitlement or competing document, and exact equality
-with the shared taxed renewal charge. The Payment may also fund other invoices;
-only this invoice's allocation must equal its total.
+unlinked line, one named matching prepaid subscription, one active full-value
+allocation from a successful unreturned settlement, no credit-note funding or
+competing document, and exact equality with the shared taxed renewal charge.
+Ordinarily the subscription has no anchor or one stale at or before the paid
+settlement period, with no overlapping entitlement. A separately permission-
+gated staff repair may retain exactly one earlier unreversed adjustment-funded
+entitlement when its end equals the current anchor and falls strictly inside the
+new single payment-derived period. Automatic payment finalization never applies
+that reviewed overlap. The Payment may also fund other invoices; only this
+invoice's allocation must equal its total.
 
 Payment finalization invokes the same exact repair participant before prepaid
 entitlement and financial-access restoration run. If exactly one matching
