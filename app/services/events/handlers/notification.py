@@ -16,6 +16,7 @@ from app.models.notification import (
     NotificationTemplate,
 )
 from app.schemas.notification import NotificationCreate
+from app.services.branding_config import get_brand
 from app.services.communication_intents import (
     CommunicationAttachment,
     CommunicationAttachmentKind,
@@ -1016,7 +1017,6 @@ class NotificationHandler:
                         payment_receipt_path,
                         payment_receipt_reference,
                     )
-                    from app.services.branding_config import get_brand
                     from app.services.common import coerce_uuid
 
                     payment = db.get(Payment, coerce_uuid(payment_id))
