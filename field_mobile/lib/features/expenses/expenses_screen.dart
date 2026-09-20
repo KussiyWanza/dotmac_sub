@@ -626,7 +626,7 @@ class _NewExpenseRequestScreenState
   final _vendor = TextEditingController();
   final _receiptUrl = TextEditingController();
   final _accountNumber = TextEditingController();
-  final _beneficiaryName = TextEditingController();
+  final _accountName = TextEditingController();
   final _approverFieldKey = GlobalKey();
   final String _clientRef = const Uuid().v4();
   String _workOrderId = '';
@@ -635,14 +635,19 @@ class _NewExpenseRequestScreenState
   ExpenseApprover? _selectedApprover;
   ExpenseBank? _selectedBank;
   ExpensePaymentMode _destinationMode = ExpensePaymentMode.erpProfile;
+  VerifiedExpenseDestination? _verifiedDestination;
+  Timer? _destinationVerificationDebounce;
+  int _destinationVerificationRevision = 0;
   final _items = <ExpenseItemDraft>[];
   bool _saving = false;
+  bool _verifyingDestination = false;
   bool _receiptUploading = false;
   String _receiptFileName = '';
   String? _receiptAttachmentId;
   String _submitError = '';
   String _approverError = '';
   String _lineError = '';
+  String _destinationVerificationError = '';
 
   @override
   void initState() {
@@ -656,6 +661,7 @@ class _NewExpenseRequestScreenState
 
   @override
   void dispose() {
+    _destinationVerificationDebounce?.cancel();
     _purpose.dispose();
     _notes.dispose();
     _projectId.dispose();
@@ -665,7 +671,7 @@ class _NewExpenseRequestScreenState
     _vendor.dispose();
     _receiptUrl.dispose();
     _accountNumber.dispose();
-    _beneficiaryName.dispose();
+    _accountName.dispose();
     super.dispose();
   }
 
@@ -791,17 +797,122 @@ class _NewExpenseRequestScreenState
       final data = await ref.read(expenseFormContextProvider.future);
       if (!mounted) return;
       setState(() {
+        _clearDestinationVerification();
         _destinationMode = data.profileDestination.available
             ? ExpensePaymentMode.erpProfile
             : ExpensePaymentMode.expenseOverride;
       });
+      if (_destinationMode == ExpensePaymentMode.erpProfile) {
+        unawaited(_verifyCurrentDestination());
+      }
     } catch (_) {
       // The visible form-context error owns retry guidance.
     }
   }
 
+  void _clearDestinationVerification() {
+    _destinationVerificationDebounce?.cancel();
+    _destinationVerificationRevision += 1;
+    _verifiedDestination = null;
+    _verifyingDestination = false;
+    _destinationVerificationError = '';
+    _accountName.clear();
+  }
+
+  void _selectDestinationMode(ExpensePaymentMode mode) {
+    setState(() {
+      _clearDestinationVerification();
+      _destinationMode = mode;
+      _submitError = '';
+    });
+    if (mode == ExpensePaymentMode.erpProfile) {
+      unawaited(_verifyCurrentDestination());
+    } else {
+      _scheduleOverrideVerification();
+    }
+  }
+
+  void _selectDestinationBank(ExpenseBank? bank) {
+    setState(() {
+      _clearDestinationVerification();
+      _selectedBank = bank;
+      _submitError = '';
+    });
+    _scheduleOverrideVerification();
+  }
+
+  void _changeDestinationAccountNumber(String _) {
+    setState(() {
+      _clearDestinationVerification();
+      _submitError = '';
+    });
+    _scheduleOverrideVerification();
+  }
+
+  void _scheduleOverrideVerification() {
+    _destinationVerificationDebounce?.cancel();
+    if (_destinationMode != ExpensePaymentMode.expenseOverride ||
+        _selectedBank == null ||
+        _accountNumber.text.trim().length < 6) {
+      return;
+    }
+    _destinationVerificationDebounce = Timer(
+      const Duration(milliseconds: 600),
+      () => unawaited(_verifyCurrentDestination()),
+    );
+  }
+
+  Future<void> _verifyCurrentDestination() async {
+    final mode = _destinationMode;
+    final bank = _selectedBank;
+    final accountNumber = _accountNumber.text.trim();
+    if (mode == ExpensePaymentMode.expenseOverride &&
+        (bank == null || accountNumber.length < 6)) {
+      return;
+    }
+    final revision = ++_destinationVerificationRevision;
+    setState(() {
+      _verifiedDestination = null;
+      _verifyingDestination = true;
+      _destinationVerificationError = '';
+      _accountName.clear();
+    });
+    try {
+      final verified = await ref
+          .read(expensesRepositoryProvider)
+          .verifyDestination(
+            sourceClaimId: _clientRef,
+            mode: mode,
+            bankCode: bank?.bankCode,
+            accountNumber: accountNumber,
+          );
+      if (!mounted || revision != _destinationVerificationRevision) return;
+      setState(() {
+        _verifiedDestination = verified;
+        _accountName.text = verified.verifiedBeneficiaryName;
+      });
+    } on DioException catch (error) {
+      if (!mounted || revision != _destinationVerificationRevision) return;
+      setState(() {
+        _destinationVerificationError = error.response == null
+            ? 'Connect to the internet to verify this account.'
+            : _expenseErrorMessage(error, 'Could not verify this account.');
+      });
+    } catch (_) {
+      if (!mounted || revision != _destinationVerificationRevision) return;
+      setState(() {
+        _destinationVerificationError = 'Could not verify this account.';
+      });
+    } finally {
+      if (mounted && revision == _destinationVerificationRevision) {
+        setState(() => _verifyingDestination = false);
+      }
+    }
+  }
+
   void _retryFormContext() {
     setState(() {
+      _clearDestinationVerification();
       _selectedApprover = null;
       _selectedBank = null;
       _approverError = '';
@@ -1086,7 +1197,6 @@ class _NewExpenseRequestScreenState
     }
     if (_destinationMode == ExpensePaymentMode.expenseOverride) {
       final accountNumber = _accountNumber.text.trim();
-      final accountName = _beneficiaryName.text.trim();
       if (_selectedBank == null) {
         setState(() => _submitError = 'Select a bank.');
         return;
@@ -1098,22 +1208,22 @@ class _NewExpenseRequestScreenState
         );
         return;
       }
-      if (accountName.length < 2) {
-        setState(() => _submitError = 'Enter the account name.');
-        return;
-      }
+    }
+    final verified = _verifiedDestination;
+    if (verified == null || verified.mode != _destinationMode) {
+      setState(() => _submitError = 'Wait for the account name to be verified.');
+      unawaited(_verifyCurrentDestination());
+      return;
+    }
+    if (!verified.expiresAt.isAfter(DateTime.now().toUtc())) {
+      setState(
+        () => _submitError = 'Account verification expired. Checking it again…',
+      );
+      unawaited(_verifyCurrentDestination());
+      return;
     }
     setState(() => _saving = true);
     try {
-      final verified = await ref
-          .read(expensesRepositoryProvider)
-          .verifyDestination(
-            sourceClaimId: _clientRef,
-            mode: _destinationMode,
-            bankCode: _selectedBank?.bankCode,
-            accountNumber: _accountNumber.text.trim(),
-            beneficiaryName: _beneficiaryName.text.trim(),
-          );
       final request = await ref
           .read(expensesRepositoryProvider)
           .submitRequest(
@@ -1199,6 +1309,47 @@ class _NewExpenseRequestScreenState
         (_destinationMode == ExpensePaymentMode.erpProfile
             ? formContextData.profileDestination.available
             : formContextData.banks.isNotEmpty);
+    final verifiedDestination = _verifiedDestination;
+    final paymentDestinationReady =
+        verifiedDestination != null &&
+        verifiedDestination.mode == _destinationMode &&
+        verifiedDestination.expiresAt.isAfter(DateTime.now().toUtc());
+    final String accountNameHelperText;
+    if (_verifyingDestination) {
+      accountNameHelperText = 'Checking the account details…';
+    } else if (_verifiedDestination != null) {
+      accountNameHelperText = 'Confirm this is the intended recipient.';
+    } else if (_destinationMode == ExpensePaymentMode.expenseOverride) {
+      accountNameHelperText = 'Select a bank and enter the account number.';
+    } else {
+      accountNameHelperText = 'ERP will check your saved account.';
+    }
+    final Widget? accountNameSuffixIcon;
+    if (_verifyingDestination) {
+      accountNameSuffixIcon = const Padding(
+        padding: EdgeInsets.all(14),
+        child: SizedBox(
+          key: Key('expense-account-verifying'),
+          width: 18,
+          height: 18,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+    } else if (_verifiedDestination != null) {
+      accountNameSuffixIcon = Icon(
+        Icons.verified_outlined,
+        color: Theme.of(context).colorScheme.primary,
+      );
+    } else if (_destinationVerificationError.isNotEmpty) {
+      accountNameSuffixIcon = IconButton(
+        key: const Key('expense-account-verification-retry'),
+        onPressed: _verifyCurrentDestination,
+        icon: const Icon(Icons.refresh_rounded),
+        tooltip: 'Verify account again',
+      );
+    } else {
+      accountNameSuffixIcon = null;
+    }
     final requiredServerDataReady =
         formContextData != null &&
         formContextData.approvers.isNotEmpty &&
@@ -1360,15 +1511,12 @@ class _NewExpenseRequestScreenState
                             groupValue: _destinationMode,
                             // ignore: deprecated_member_use
                             onChanged: data.profileDestination.available
-                                ? (value) => setState(() {
-                                    _destinationMode = value!;
-                                    _submitError = '';
-                                  })
+                                ? (value) => _selectDestinationMode(value!)
                                 : null,
                             title: const Text('Use ERP payment details'),
                             subtitle: Text(
                               data.profileDestination.available
-                                  ? '${data.profileDestination.beneficiaryName} · ${data.profileDestination.bankName} · ${data.profileDestination.maskedAccountNumber}'
+                                  ? '${data.profileDestination.bankName} · ${data.profileDestination.maskedAccountNumber}'
                                   : 'ERP bank profile is incomplete.',
                             ),
                           ),
@@ -1380,10 +1528,8 @@ class _NewExpenseRequestScreenState
                               // ignore: deprecated_member_use
                               groupValue: _destinationMode,
                               // ignore: deprecated_member_use
-                              onChanged: (value) => setState(() {
-                                _destinationMode = value!;
-                                _submitError = '';
-                              }),
+                              onChanged: (value) =>
+                                  _selectDestinationMode(value!),
                               title: const Text('Input custom payment details'),
                               subtitle: const Text(
                                 'These details apply only to this expense.',
@@ -1411,10 +1557,7 @@ class _NewExpenseRequestScreenState
                                   ),
                                 ),
                             ],
-                            onChanged: (value) => setState(() {
-                              _selectedBank = value;
-                              _submitError = '';
-                            }),
+                            onChanged: _selectDestinationBank,
                           ),
                           const SizedBox(height: 12),
                           TextField(
@@ -1426,23 +1569,30 @@ class _NewExpenseRequestScreenState
                               LengthLimitingTextInputFormatter(30),
                             ],
                             autofillHints: const [],
-                            onChanged: (_) => setState(() => _submitError = ''),
+                            onChanged: _changeDestinationAccountNumber,
                             decoration: const InputDecoration(
                               labelText: 'Account number',
                             ),
                           ),
+                        ],
+                        if ((_destinationMode ==
+                                    ExpensePaymentMode.erpProfile &&
+                                data.profileDestination.available) ||
+                            (_destinationMode ==
+                                    ExpensePaymentMode.expenseOverride &&
+                                data.banks.isNotEmpty)) ...[
                           const SizedBox(height: 12),
                           TextField(
-                            key: const Key('expense-beneficiary-name'),
-                            controller: _beneficiaryName,
-                            inputFormatters: [
-                              LengthLimitingTextInputFormatter(150),
-                            ],
-                            onChanged: (_) => setState(() => _submitError = ''),
-                            decoration: const InputDecoration(
+                            key: const Key('expense-account-name'),
+                            controller: _accountName,
+                            readOnly: true,
+                            decoration: InputDecoration(
                               labelText: 'Account name',
-                              helperText:
-                                  'ERP will verify these details when you submit.',
+                              helperText: accountNameHelperText,
+                              errorText: _destinationVerificationError.isEmpty
+                                  ? null
+                                  : _destinationVerificationError,
+                              suffixIcon: accountNameSuffixIcon,
                             ),
                           ),
                         ],
@@ -1691,6 +1841,8 @@ class _NewExpenseRequestScreenState
                 onPressed:
                     _items.isEmpty ||
                         _saving ||
+                        _verifyingDestination ||
+                        !paymentDestinationReady ||
                         !requiredServerDataReady ||
                         !itemCategoriesValid
                     ? null

@@ -99,6 +99,23 @@ void main() {
       tokenStore: store,
       dio: dio,
     );
+    adapter.on(
+      'POST',
+      '/api/v1/field/expense-requests/payment-destination/verify',
+      (_) => (
+        200,
+        {
+          'destination_token': 'enc:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+          'mode': 'erp_profile',
+          'bank_code': '058',
+          'bank_name': 'Test Bank',
+          'masked_account_number': '******6789',
+          'verified_beneficiary_name': 'Field Technician',
+          'verified_at': '2099-09-10T10:00:00Z',
+          'expires_at': '2099-09-10T10:30:00Z',
+        },
+      ),
+    );
     container = ProviderContainer(
       overrides: [apiClientProvider.overrideWithValue(client)],
     );
@@ -416,7 +433,6 @@ void main() {
             'mode': 'expense_override',
             'bank_code': '058',
             'account_number': '0123456789',
-            'beneficiary_name': 'Field Technician',
           });
           return (
             200,
@@ -441,7 +457,6 @@ void main() {
             mode: ExpensePaymentMode.expenseOverride,
             bankCode: '058',
             accountNumber: '0123456789',
-            beneficiaryName: 'Field Technician',
           );
 
       expect(destination.mode, ExpensePaymentMode.expenseOverride);
@@ -883,8 +898,14 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('expense-bank')), findsOneWidget);
     expect(find.byKey(const Key('expense-account-number')), findsOneWidget);
-    expect(find.byKey(const Key('expense-beneficiary-name')), findsOneWidget);
+    expect(find.byKey(const Key('expense-account-name')), findsOneWidget);
     expect(find.text('Account name'), findsOneWidget);
+    expect(
+      tester.widget<TextField>(
+        find.byKey(const Key('expense-account-name')),
+      ).readOnly,
+      isTrue,
+    );
 
     await tester.tap(find.byKey(const Key('expense-payment-erp')));
     await tester.pumpAndSettle();
@@ -983,6 +1004,92 @@ void main() {
     await tester.pumpAndSettle();
   });
 
+  testWidgets('custom account resolves and displays the bank returned name', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(800, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    Map<String, dynamic>? verificationPayload;
+    adapter.on(
+      'POST',
+      '/api/v1/field/expense-requests/payment-destination/verify',
+      (options) {
+        verificationPayload = (options.data as Map).cast<String, dynamic>();
+        return (
+          200,
+          {
+            'destination_token': 'enc:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+            'mode': 'expense_override',
+            'bank_code': '058',
+            'bank_name': 'Test Bank',
+            'masked_account_number': '******6789',
+            'verified_beneficiary_name': 'AKANDE SANMI BAMIDELE',
+            'verified_at': '2099-09-10T10:00:00Z',
+            'expires_at': '2099-09-10T10:30:00Z',
+          },
+        );
+      },
+    );
+    final customOnlyContext = ExpenseFormContext(
+      approvers: _testFormContext.approvers,
+      banks: _testFormContext.banks,
+      profileDestination: ExpenseProfileDestination(available: false),
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          apiClientProvider.overrideWithValue(client),
+          expenseCategoriesProvider.overrideWith(
+            (ref) async => const [
+              ExpenseCategory(categoryCode: 'FUEL', categoryName: 'Fuel'),
+            ],
+          ),
+          expenseFormContextProvider.overrideWith(
+            (ref) async => customOnlyContext,
+          ),
+        ],
+        child: const MaterialApp(
+          home: NewExpenseRequestScreen(
+            initialWorkOrderId: 'wo-1',
+            initialWorkOrderLabel: 'WO-1',
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('expense-bank')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Test Bank').last);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('expense-account-number')),
+      '0123456789',
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(verificationPayload, isNull);
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pumpAndSettle();
+
+    expect(verificationPayload, {
+      'source_claim_id': isA<String>(),
+      'mode': 'expense_override',
+      'bank_code': '058',
+      'account_number': '0123456789',
+    });
+    expect(verificationPayload!.containsKey('beneficiary_name'), isFalse);
+    expect(find.text('AKANDE SANMI BAMIDELE'), findsOneWidget);
+    expect(find.text('Confirm this is the intended recipient.'), findsOneWidget);
+    expect(
+      tester.widget<TextField>(
+        find.byKey(const Key('expense-account-name')),
+      ).readOnly,
+      isTrue,
+    );
+  });
+
   testWidgets('new expense request displays a structured safe server message', (
     tester,
   ) async {
@@ -1036,38 +1143,19 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.enterText(
-      find.byKey(const Key('expense-purpose')),
-      'Generator fuel',
-    );
-    await tester.tap(find.byKey(const Key('expense-approver')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Expense Approver').last);
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('expense-category')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Fuel').last);
-    await tester.pumpAndSettle();
-    await tester.enterText(
-      find.byKey(const Key('expense-description')),
-      'Diesel',
-    );
-    await tester.enterText(find.byKey(const Key('expense-amount')), '5000');
-    await tester.enterText(
-      find.byKey(const Key('expense-receipt-url')),
-      'https://receipts.test/fuel.jpg',
-    );
-    await tester.tap(find.byKey(const Key('add-expense-line')));
-    await tester.pump();
-    await tester.ensureVisible(find.text('Submit request'));
-    await tester.tap(find.text('Submit request'));
-    await tester.pumpAndSettle();
-
     expect(
       find.text('Verify the payment destination again.'),
       findsAtLeastNWidgets(1),
     );
     expect(find.textContaining('expired-token'), findsNothing);
+    expect(
+      tester
+          .widget<PrimaryActionButton>(
+            find.byKey(const Key('submit-expense-request')),
+          )
+          .onPressed,
+      isNull,
+    );
     expect(submitted, isFalse);
   });
 
@@ -1080,6 +1168,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          apiClientProvider.overrideWithValue(client),
           expenseCategoriesProvider.overrideWith((ref) async => const []),
           expenseFormContextProvider.overrideWith(
             (ref) async => _testFormContext,
@@ -1121,6 +1210,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          apiClientProvider.overrideWithValue(client),
           expenseCategoriesProvider.overrideWith((ref) async {
             categoryLoads += 1;
             if (categoryLoads == 1) {
@@ -1163,6 +1253,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          apiClientProvider.overrideWithValue(client),
           expenseCategoriesProvider.overrideWith(
             (ref) async => const [
               ExpenseCategory(categoryCode: 'FUEL', categoryName: 'Fuel'),
@@ -1288,6 +1379,7 @@ void main() {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
+            apiClientProvider.overrideWithValue(client),
             expenseCategoriesProvider.overrideWith(
               (ref) async => const [
                 ExpenseCategory(
@@ -1344,6 +1436,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          apiClientProvider.overrideWithValue(client),
           expenseCategoriesProvider.overrideWith(
             (ref) async => const [
               ExpenseCategory(categoryCode: 'FUEL', categoryName: 'Fuel'),
@@ -1379,6 +1472,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          apiClientProvider.overrideWithValue(client),
           expenseCategoriesProvider.overrideWith(
             (ref) async => const [
               ExpenseCategory(

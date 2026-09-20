@@ -11,14 +11,23 @@ from app.services.dotmac_erp.expense_form_contracts import (
 )
 
 
-def test_override_requires_all_transient_bank_inputs() -> None:
+def test_override_requires_bank_and_account_but_not_an_entered_name() -> None:
+    result = VerifyExpenseDestination(
+        requested_by_email="tech@example.com",
+        source_claim_id=uuid4(),
+        mode=ExpenseDestinationMode.EXPENSE_OVERRIDE,
+        bank_code="058",
+        account_number="0123456789",
+    )
+
+    assert result.beneficiary_name is None
+
     with pytest.raises(ValidationError):
         VerifyExpenseDestination(
             requested_by_email="tech@example.com",
             source_claim_id=uuid4(),
             mode=ExpenseDestinationMode.EXPENSE_OVERRIDE,
             bank_code="058",
-            account_number="0123456789",
         )
 
 

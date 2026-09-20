@@ -130,7 +130,6 @@ class ExpensesRepository {
     required ExpensePaymentMode mode,
     String? bankCode,
     String? accountNumber,
-    String? beneficiaryName,
   }) async {
     final response = await _ref
         .read(apiClientProvider)
@@ -144,8 +143,6 @@ class ExpensesRepository {
               'bank_code': bankCode,
             if (mode == ExpensePaymentMode.expenseOverride)
               'account_number': accountNumber,
-            if (mode == ExpensePaymentMode.expenseOverride)
-              'beneficiary_name': beneficiaryName,
           },
         );
     return VerifiedExpenseDestination.fromJson(
