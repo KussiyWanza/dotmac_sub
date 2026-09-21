@@ -12,6 +12,8 @@
 {% set default_pay_provider = provider_type if provider_type in pay_provider_values else (pay_options[0].provider_type if pay_options else "") %}
 {% set default_payment_choice = ("provider:" ~ default_pay_provider) if default_pay_provider else (("card:" ~ payment_methods[0].id) if payment_methods|default([]) else "") %}
 {% set invoice_currency = invoice.currency or default_currency|default('NGN') %}
+{% set payable_amount = amount or invoice.balance_due or invoice.total or 0 %}
+{% set has_customer_email = customer_email|default('', true)|trim|length > 0 %}
 <div class="space-y-6" x-data="paymentPage()">
     <div>
         <nav class="flex items-center gap-2 text-sm text-stone-500 dark:text-stone-400 mb-2">
@@ -22,11 +24,12 @@
             <span class="text-stone-900 dark:text-white">Pay</span>
         </nav>
         <h1 class="text-2xl font-bold text-stone-900 dark:text-white">Pay Invoice</h1>
-        <p class="text-sm text-stone-500 dark:text-stone-400 mt-1">Choose how you want to pay this invoice.</p>
+        <p class="text-sm text-stone-500 dark:text-stone-400 mt-1">Review the amount, choose a payment method, then confirm.</p>
     </div>
 
-    <!-- Invoice Summary -->
+    <!-- Step 1: authoritative invoice summary -->
     <div class="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm dark:border-stone-700 dark:bg-stone-800">
+        <p class="mb-4 text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">1. Review amount</p>
         <div class="flex items-start justify-between">
             <div>
                 <h3 class="text-sm font-medium text-stone-500 dark:text-stone-400">Invoice</h3>
@@ -40,15 +43,16 @@
             <div class="text-right">
                 <p class="text-sm font-medium text-stone-500 dark:text-stone-400">Amount Due</p>
                 <p class="mt-1 text-3xl font-bold text-stone-900 dark:text-white" style="font-family: var(--font-display);">
-                    {{ invoice_currency }} {{ "{:,.2f}".format(amount or invoice.balance_due or invoice.total or 0) }}
+                    {{ invoice_currency }} {{ "{:,.2f}".format(payable_amount) }}
                 </p>
             </div>
         </div>
     </div>
 
-    <!-- Payment method chooser -->
+    <!-- Step 2: payment method chooser -->
     <div class="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm dark:border-stone-700 dark:bg-stone-800">
-        <h2 class="text-lg font-semibold text-stone-900 dark:text-white">Payment method</h2>
+        <p class="text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">2. Choose payment method</p>
+        <h2 class="mt-2 text-lg font-semibold text-stone-900 dark:text-white">Payment method</h2>
         <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">Pay with a saved card, an online gateway, or a bank transfer.</p>
 
         <div class="mt-5 space-y-3">
@@ -69,6 +73,14 @@
         </div>
         {% endif %}
 
+        {% if not has_customer_email and (pay_options or payment_methods|default([])) %}
+        <div x-show="paymentChoiceRequiresEmail()" x-cloak class="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-200">
+            <p class="font-semibold">Add an email address before paying by card</p>
+            <p class="mt-1">The payment provider needs a valid email address to issue checkout and receipt details.</p>
+            <a href="/portal/profile" class="mt-3 inline-flex font-semibold underline underline-offset-2 hover:no-underline">Add email address</a>
+        </div>
+        {% endif %}
+
         <label
             x-show="selectedPaymentChoice === 'provider:paystack'"
             class="mt-5 inline-flex cursor-pointer items-center gap-2 text-sm text-stone-600 dark:text-stone-300">
@@ -79,26 +91,40 @@
             <span>Save this card for future payments</span>
         </label>
 
-        <p x-show="errorMessage" x-cloak class="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300" x-text="errorMessage"></p>
-
         <div class="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
             <button
-                @click="startPayment()"
-                :disabled="processing || !selectedPaymentChoice"
+                @click="reviewPayment()"
+                :disabled="!canReviewPayment()"
                 class="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-8 py-3.5 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 transition-all hover:bg-emerald-700 hover:shadow-xl hover:shadow-emerald-500/30 hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0">
-                <svg x-show="!processing" class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
                 </svg>
-                <svg x-show="processing" class="h-5 w-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-                </svg>
-                <span x-text="buttonLabel()"></span>
+                <span>Review payment</span>
             </button>
             <a href="/portal/billing/invoices/{{ invoice.id }}" class="text-sm font-medium text-stone-500 hover:text-stone-700 dark:text-stone-400 dark:hover:text-stone-200">
                 Back to invoice
             </a>
         </div>
+    </div>
+
+    <!-- Step 3: explicit confirmation before creating an intent or charging a saved card -->
+    <div x-show="reviewing" x-cloak class="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-6 shadow-sm dark:border-emerald-900/60 dark:bg-emerald-900/10">
+        <p class="text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">3. Confirm payment</p>
+        <h2 class="mt-2 text-lg font-semibold text-stone-900 dark:text-white">Check before you pay</h2>
+        <dl class="mt-5 divide-y divide-stone-200 rounded-xl border border-stone-200 bg-white px-4 dark:divide-stone-700 dark:border-stone-700 dark:bg-stone-800">
+            <div class="flex items-center justify-between gap-4 py-3"><dt class="text-sm text-stone-500 dark:text-stone-400">Invoice</dt><dd class="text-sm font-semibold text-stone-900 dark:text-white">#{{ invoice.invoice_number or invoice.id[:8] }}</dd></div>
+            <div class="flex items-center justify-between gap-4 py-3"><dt class="text-sm text-stone-500 dark:text-stone-400">Payment method</dt><dd class="text-right text-sm font-semibold text-stone-900 dark:text-white" x-text="selectedPaymentLabel()"></dd></div>
+            <div class="flex items-center justify-between gap-4 py-3"><dt class="text-sm text-stone-500 dark:text-stone-400">Amount to pay</dt><dd class="text-lg font-bold text-stone-900 dark:text-white">{{ invoice_currency }} {{ "{:,.2f}".format(payable_amount) }}</dd></div>
+        </dl>
+        <p x-show="errorMessage" x-cloak role="alert" class="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300" x-text="errorMessage"></p>
+        <div class="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
+            <button @click="startPayment()" :disabled="processing" class="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-8 py-3.5 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 transition-all hover:bg-emerald-700 hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-60">
+                <svg x-show="processing" class="h-5 w-5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                <span x-text="confirmationButtonLabel()"></span>
+            </button>
+            <button type="button" @click="editPaymentMethod()" :disabled="processing" class="text-sm font-semibold text-stone-600 hover:text-stone-900 disabled:opacity-60 dark:text-stone-300 dark:hover:text-white">Change payment method</button>
+        </div>
+        <p x-show="processing" aria-live="polite" class="mt-3 text-sm text-stone-600 dark:text-stone-300">Keep this page open while we securely start your payment.</p>
     </div>
 </div>
 
@@ -107,6 +133,7 @@
 function paymentPage() {
     return {
         processing: false,
+        reviewing: false,
         saveCard: false,
         errorMessage: '',
         selectedPaymentChoice: {{ default_payment_choice|tojson }},
@@ -133,17 +160,49 @@ function paymentPage() {
             } catch (e) { /* best effort */ }
             return this.csrfToken();
         },
-        buttonLabel() {
+        paymentChoiceChanged() {
+            this.reviewing = false;
+            this.errorMessage = '';
+        },
+        paymentChoiceRequiresEmail() {
+            const choice = this.selectedPaymentChoice || '';
+            return choice.startsWith('card:') || (choice.startsWith('provider:') && choice !== 'provider:direct_bank_transfer');
+        },
+        canReviewPayment() {
+            if (!this.selectedPaymentChoice || this.processing) {
+                return false;
+            }
+            return {{ 'true' if has_customer_email else 'false' }} || !this.paymentChoiceRequiresEmail();
+        },
+        selectedPaymentLabel() {
+            const selected = document.querySelector('input[name="payment_choice"]:checked');
+            return selected ? selected.dataset.paymentLabel : 'Selected payment method';
+        },
+        reviewPayment() {
+            if (!this.canReviewPayment()) {
+                return;
+            }
+            this.errorMessage = '';
+            this.reviewing = true;
+        },
+        editPaymentMethod() {
+            this.reviewing = false;
+            this.errorMessage = '';
+        },
+        confirmationButtonLabel() {
             if (this.processing) {
-                return 'Processing...';
+                return 'Starting secure payment...';
             }
             const choice = this.selectedPaymentChoice || '';
             if (choice === 'provider:direct_bank_transfer') {
-                return 'Continue to bank transfer';
+                return 'Confirm and continue to bank transfer';
             }
-            return 'Pay {{ invoice_currency }} {{ "{:,.2f}".format(amount or invoice.balance_due or invoice.total or 0) }}';
+            return 'Confirm and pay {{ invoice_currency }} {{ "{:,.2f}".format(payable_amount) }}';
         },
         async startPayment() {
+            if (!this.reviewing || this.processing) {
+                return;
+            }
             this.processing = true;
             this.errorMessage = '';
             const self = this;

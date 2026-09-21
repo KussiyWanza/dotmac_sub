@@ -991,6 +991,38 @@ class TestSaveCardOnVerify:
         )
         assert "email: checkoutEmail" in template
 
+    def test_invoice_pay_template_reviews_before_starting_payment(self) -> None:
+        template = Path("templates/customer/billing/pay.html").read_text()
+
+        assert "1. Review amount" in template
+        assert "2. Choose payment method" in template
+        assert "3. Confirm payment" in template
+        assert '@click="reviewPayment()"' in template
+        assert '@click="startPayment()"' in template
+        assert template.index('@click="reviewPayment()"') < template.index(
+            '@click="startPayment()"'
+        )
+        assert "if (!this.reviewing || this.processing)" in template
+        assert "Confirm and pay {{ invoice_currency }}" in template
+
+    def test_invoice_pay_template_surfaces_email_prerequisite_before_review(
+        self,
+    ) -> None:
+        template = Path("templates/customer/billing/pay.html").read_text()
+
+        assert "Add an email address before paying by card" in template
+        assert 'href="/portal/profile"' in template
+        assert ':disabled="!canReviewPayment()"' in template
+        assert "paymentChoiceRequiresEmail()" in template
+
+    def test_payment_method_change_invalidates_existing_review(self) -> None:
+        template = Path(
+            "templates/customer/billing/_payment_method_choice.html"
+        ).read_text()
+
+        assert template.count('@change="paymentChoiceChanged()"') == 2
+        assert template.count("data-payment-label=") == 2
+
     def test_invoice_pay_success_template_shows_remaining_balance(self) -> None:
         template = Path("templates/customer/billing/pay_success.html").read_text()
 

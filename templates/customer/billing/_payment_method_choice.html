@@ -8,8 +8,10 @@
         type="radio"
         name="payment_choice"
         data-form-consumer="client"
+        data-payment-label="{{ option.label }}"
         value="provider:{{ option.provider_type }}"
         x-model="selectedPaymentChoice"
+        @change="paymentChoiceChanged()"
         class="h-4 w-4 border-stone-300 text-emerald-600 focus:ring-emerald-500">
     <span class="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-stone-100 dark:bg-stone-700">
         {% if option.provider_type == "direct_bank_transfer" %}{{ bank_icon() }}{% else %}{{ card_icon() }}{% endif %}
@@ -29,8 +31,10 @@
         type="radio"
         name="payment_choice"
         data-form-consumer="client"
+        data-payment-label="{{ card_label(method) }}"
         value="card:{{ method.id }}"
         x-model="selectedPaymentChoice"
+        @change="paymentChoiceChanged()"
         class="h-4 w-4 border-stone-300 text-emerald-600 focus:ring-emerald-500">
     <span class="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-stone-100 dark:bg-stone-700">
         {{ card_icon() }}

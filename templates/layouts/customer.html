@@ -12,7 +12,7 @@
 {% set recent_notifications_total = recent_notifications_total if recent_notifications_total is defined else 0 %}
 {% set unread_notifications_count = unread_notifications_count if unread_notifications_count is defined else recent_notifications_total %}
 {% set has_recent_notifications = has_recent_notifications if has_recent_notifications is defined else False %}
-<div class="min-h-screen flex flex-col font-body">
+<div class="flex min-h-screen min-w-0 flex-col overflow-x-clip font-body">
     {% if customer and customer.is_impersonation %}
     <div class="bg-gradient-to-r from-amber-500 to-orange-500 text-white">
         <div class="mx-auto max-w-7xl px-4 py-2.5 sm:px-6 lg:px-8 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -41,12 +41,12 @@
     <!-- Premium Navigation Header -->
     <header x-data="{ mobileOpen: false }" class="sticky top-0 z-40 glass border-b border-stone-200/50 dark:border-stone-700/50">
         <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-            <div class="flex h-16 items-center justify-between">
+            <div class="flex h-16 min-w-0 items-center justify-between gap-2">
                 <!-- Logo -->
-                <a href="/portal" class="flex items-center gap-3 group">
+                <a href="/portal" class="group flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
                     {% set portal_logo_main = sidebar_stats.sidebar_logo_url if sidebar_stats is defined and sidebar_stats and sidebar_stats.sidebar_logo_url else '' %}
                     {% set portal_logo_dark = sidebar_stats.sidebar_logo_dark_url if sidebar_stats is defined and sidebar_stats and sidebar_stats.sidebar_logo_dark_url else '' %}
-                    <div class="relative flex h-10 w-10 items-center justify-center rounded-xl {% if portal_logo_main or portal_logo_dark %}bg-transparent{% else %}bg-gradient-to-br from-[var(--color-brand-500)] to-[var(--color-brand-600)]{% endif %} shadow-lg shadow-[var(--color-brand-500)]/20 transition-transform group-hover:scale-105">
+                    <div class="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl {% if portal_logo_main or portal_logo_dark %}bg-transparent{% else %}bg-gradient-to-br from-[var(--color-brand-500)] to-[var(--color-brand-600)]{% endif %} shadow-lg shadow-[var(--color-brand-500)]/20 transition-transform group-hover:scale-105">
                         {% if portal_logo_main or portal_logo_dark %}
                         <span class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border border-white/70 bg-white/10">
                             {% if portal_logo_main %}
@@ -68,7 +68,7 @@
                         </svg>
                         {% endif %}
                     </div>
-                    <span class="text-xl font-display font-bold text-stone-900 dark:text-white">{{ portal_name or (brand.product_name if brand is defined and brand else 'DotMac Subs') }}</span>
+                    <span class="min-w-0 truncate font-display text-base font-bold text-stone-900 sm:text-xl dark:text-white">{{ portal_name or (brand.product_name if brand is defined and brand else 'DotMac Subs') }}</span>
                 </a>
 
                 <!-- Desktop Navigation - Grouped and styled -->
@@ -216,7 +216,7 @@
                 </nav>
 
                 <!-- Right side actions -->
-                <div class="flex items-center gap-2">
+                <div class="flex shrink-0 items-center gap-1 sm:gap-2">
                     <div x-data="{ open: false }" class="relative z-50">
                         <button x-on:click="open = !open"
                                 x-on:keydown.escape.window="open = false"
@@ -533,8 +533,8 @@
     </header>
 
     <!-- Main Content with mesh gradient background -->
-    <main class="flex-1 mesh-gradient relative">
-        <div class="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+    <main class="relative min-w-0 flex-1 mesh-gradient">
+        <div class="mx-auto min-w-0 max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
             {% if service_location_required is defined and service_location_required and active_page != 'location' %}
             <div class="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/60 px-4 py-6" role="dialog" aria-modal="true" aria-labelledby="service-location-dialog-title" aria-describedby="service-location-dialog-description">
                 <div class="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl dark:bg-stone-900 sm:p-8">

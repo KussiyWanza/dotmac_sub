@@ -145,6 +145,16 @@ def test_customer_impersonation_banner_uses_recoverable_exit_link():
     assert 'method="post" action="/portal/auth/stop-impersonation"' not in template
 
 
+def test_customer_mobile_header_cannot_expand_the_document_width():
+    template = Path("templates/layouts/customer.html").read_text()
+
+    assert "min-h-screen min-w-0 flex-col overflow-x-clip" in template
+    assert 'class="group flex min-w-0 flex-1 items-center' in template
+    assert "min-w-0 truncate font-display text-base" in template
+    assert 'class="flex shrink-0 items-center gap-1 sm:gap-2"' in template
+    assert 'class="relative min-w-0 flex-1 mesh-gradient"' in template
+
+
 def test_customer_stop_impersonation_invalidates_session_and_returns_to_admin(
     monkeypatch,
 ):
