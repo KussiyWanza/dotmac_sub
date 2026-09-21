@@ -17,6 +17,8 @@ def test_root_transaction_span_emits_metric_and_correlated_warning(monkeypatch, 
             session_hooks._ROOT_TRANSACTION_SPAN_KEY: {
                 "started": 10.0,
                 "request_id": "request-123",
+                "task_name": "app.tasks.billing.reconcile",
+                "task_id": "task-456",
             }
         }
     )
@@ -39,6 +41,8 @@ def test_root_transaction_span_emits_metric_and_correlated_warning(monkeypatch, 
     )
     assert record.duration_seconds == 35.5
     assert record.request_id == "request-123"
+    assert record.task_name == "app.tasks.billing.reconcile"
+    assert record.task_id == "task-456"
 
 
 def test_fast_root_transaction_records_histogram_without_warning(monkeypatch, caplog):

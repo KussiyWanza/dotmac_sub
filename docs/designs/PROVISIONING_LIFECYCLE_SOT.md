@@ -89,6 +89,13 @@ and treated as customer success. The connectivity cutover described in
 The service/network projection contract remains independently guarded in
 `docs/FINANCIAL_ACCESS_ENFORCEMENT.md`.
 
+Dotmac's subscriber activation projection is IPv4-only. Activation, service-
+order confirmation, and resume therefore call the IPv4 allocation participant;
+they do not require or attempt an IPv6 allocation. A missing IPv6 pool cannot
+block PPPoE/RADIUS projection for an IPv4 service. The participant flushes into
+the event delivery transaction so a later RADIUS or NAS failure does not leave
+a separately committed allocation.
+
 Remote same-medium service changes use the existing RADIUS control plane rather
 than manufacturing a field service order. The service-change execution
 coordinator asks `access.radius_state` to stage the exact catalog-linked target
@@ -104,7 +111,11 @@ is scoped to that exact subscription: creation must not rename, re-secret, or
 re-profile a credential bound to another live service merely because both
 services belong to the same subscriber. If no exact credential is staged,
 activation mints and binds one for the new subscription, and the subscription
-login follows that exact credential identity.
+login follows that exact credential identity. `access.pppoe_credentials` owns
+the typed, idempotent, flush-only credential command. The lifecycle owner calls
+it before staging active status or the activation event, so an unavailable or
+ambiguous credential leaves the subscription pending rather than presenting an
+active service that cannot authenticate.
 
 ## Migration and repair
 
@@ -139,5 +150,7 @@ slice; it may not regain activation decision rights while it is retired.
   activation, confirmation guards, and event replay.
 - `tests/architecture/test_provisioning_lifecycle_sot.py` enforces one terminal
   order-state writer and thin event adapters.
+- `tests/architecture/test_pppoe_activation_boundary.py` enforces activation-
+  owned credential creation and IPv4-only connectivity projection.
 - SOT manifest contract validation checks authority, transactions, errors,
   events, projections, migration state, and source references.

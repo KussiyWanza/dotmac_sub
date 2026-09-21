@@ -282,6 +282,182 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="ui.ticket_sla_report",
+            module="app.services.ticket_sla_reports",
+            owns=(
+                "current ticket SLA operational summary",
+                "ticket SLA violation queue and export projection",
+                "ticket SLA historical clock trend projection",
+            ),
+            depends_on=(
+                "auth.permission_gate",
+                "operations.service_team_lifecycle",
+                "support.ticket_lifecycle",
+                "support.ticket_sla_clock",
+            ),
+            notes=(
+                "The live summary counts canonical not-closed Tickets and distinct "
+                "Tickets whose current SLA clock status is breached. Historical "
+                "breach records remain confined to the explicitly labelled queue, "
+                "export, and clock-start trend."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="current ticket SLA operational summary",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "typed ticket SLA report query",
+                            "authorized support-report scope",
+                            "canonical current Ticket lifecycle state",
+                            "current ticket SLA records",
+                            "canonical service-team identity",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="ticket SLA violation queue and export projection",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "typed ticket SLA report query",
+                            "authorized support-report scope",
+                            "canonical current Ticket lifecycle state",
+                            "current ticket SLA records",
+                            "canonical service-team identity",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="ticket SLA historical clock trend projection",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "typed ticket SLA report query",
+                            "authorized support-report scope",
+                            "canonical current Ticket lifecycle state",
+                            "current ticket SLA records",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="typed ticket SLA report query",
+                        owner="ui.ticket_sla_report",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "typed UTC creation-time bounds, breach-record scope, "
+                            "and bounded queue pagination"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="authorized support-report scope",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="reports:support:read permission",
+                    ),
+                    AuthorityInput(
+                        name="canonical current Ticket lifecycle state",
+                        owner="support.ticket_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "active Ticket identity, status, created_at, region, "
+                            "service-team assignment, and person assignment"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="current ticket SLA records",
+                        owner="support.ticket_sla_clock",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="SlaClock and SlaBreach rows for canonical Tickets",
+                    ),
+                    AuthorityInput(
+                        name="canonical service-team identity",
+                        owner="operations.service_team_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="current native ServiceTeam identity and display name",
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary=(
+                        "The web adapter supplies a read session; typed report queries "
+                        "perform grouped reads and never flush or commit."
+                    ),
+                    locking="Committed Ticket and SLA facts require no mutation lock.",
+                    idempotency=(
+                        "The same committed facts and typed query produce the same "
+                        "ticket-level counts."
+                    ),
+                    retries="The on-demand report query and export are safe to retry.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=(),
+                    mapping_owner="app.web.admin.reports ticket SLA adapter",
+                    fail_closed_on=(
+                        "missing reports:support:read permission",
+                        "invalid date or pagination transport input",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.COMPLETE,
+                    old_owner=(
+                        "dict-shaped ticket SLA helpers and report-template metric "
+                        "interpretation"
+                    ),
+                    new_owner="ui.ticket_sla_report",
+                    verification=(
+                        "typed summary, current-state cohort, drill-down, template "
+                        "semantics, and registry architecture tests"
+                    ),
+                    cutover_gate=(
+                        "dashboard summaries consume the typed current-state outcome "
+                        "and label historical trend and breach-record scopes"
+                    ),
+                    fallback_retirement=(
+                        "no dashboard bucket uses all historical Tickets or breached_at "
+                        "as a proxy for a current breach"
+                    ),
+                ),
+                steward="Self-Care reporting",
+                design_refs=(
+                    "docs/designs/CRM_REPORT_DATA_FLOW_GUIDE.md",
+                    "docs/designs/OPERATIONS_MEASUREMENT_STRATEGY.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_ticket_sla_reports.py",
+                    "tests/architecture/test_ticket_sla_report_boundary.py",
+                ),
+                projections=(
+                    ProjectionContract(
+                        name="live current ticket SLA operational summary",
+                        input_names=(
+                            "typed ticket SLA report query",
+                            "canonical current Ticket lifecycle state",
+                            "current ticket SLA records",
+                            "canonical service-team identity",
+                        ),
+                        writer="ui.ticket_sla_report",
+                        freshness=(
+                            "Calculated on demand from committed Ticket and SlaClock "
+                            "rows and stamped with generated_at."
+                        ),
+                        stale_behavior=(
+                            "No cached result is authoritative; a failed read is "
+                            "unavailable and no prior count is reused."
+                        ),
+                        drift_signal=(
+                            "A bucket total differs from the canonical not-closed "
+                            "Ticket query or its active breached-clock subset."
+                        ),
+                        rebuild_operation=(
+                            "Re-run the idempotent typed summary query for the exact "
+                            "creation-time bounds."
+                        ),
+                        repair_owner="ui.ticket_sla_report",
+                    ),
+                ),
+            ),
+        ),
+        SOTService(
             name="ui.document_discount_report",
             module="app.services.web_document_discount_report",
             owns=(
@@ -580,16 +756,20 @@ DOMAIN = DomainSOT(
                 "customer.accounts",
                 "access.subscription_lifecycle",
                 "financial.billing_profile",
+                "financial.invoices",
+                "financial.payments",
                 "financial.subscription_billing_treatments",
                 "service_intent.catalog_policy",
                 "network.identity",
                 "network.ip_assignment_lifecycle",
+                "support.ticket_lifecycle",
             ),
             notes=(
                 "The admin list and CSV export share one normalized scope and "
                 "stable ordering contract. CSV rows project committed customer, "
-                "subscription, catalog, access identity, IP assignment, NAS, and "
-                "POP facts without mutating or re-owning them. Customer rows "
+                "subscription, catalog, access identity, IP assignment, NAS, POP, "
+                "support-ticket, payment, and invoice facts without mutating or "
+                "re-owning them. Customer rows "
                 "retain the full account name while the list presentation limits "
                 "visible names to four words and exposes the full text when cut. "
                 "Billing cohorts consume the canonical billing profile and "
@@ -612,6 +792,16 @@ DOMAIN = DomainSOT(
                             "canonical catalog offers",
                             "canonical network access identities",
                             "canonical service IP assignments",
+                        )
+                        + (
+                            (
+                                "canonical support ticket lifecycle records",
+                                "canonical customer payment records",
+                                "canonical customer invoice records",
+                            )
+                            if concern
+                            == "admin customer complete CSV scope and analytical projection"
+                            else ()
                         ),
                     )
                     for concern in (
@@ -692,6 +882,33 @@ DOMAIN = DomainSOT(
                         source=(
                             "desired subscription IPv4, active IPAM assignments, "
                             "and active ONT static IP assignments"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical support ticket lifecycle records",
+                        owner="support.ticket_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Ticket active flag, lifecycle status, human identifier, "
+                            "and canonical customer links"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical customer payment records",
+                        owner="financial.payments",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Payment active flag, lifecycle status, customer account "
+                            "link, and amount"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical customer invoice records",
+                        owner="financial.invoices",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Invoice active flag, customer account link, issued_at, "
+                            "and created_at"
                         ),
                     ),
                 ),
@@ -956,8 +1173,17 @@ DOMAIN = DomainSOT(
             ),
             notes=(
                 "The full page and HTMX response share one list partial. "
+                "Declared filters intersect when combined. Selected customer "
+                "identity remains visible after refresh, and reset clears user "
+                "filters while preserving an account-scoped entry point. "
+                "The synthetic unpaid status stays visible and selects only "
+                "collectible, non-proforma issued, partially paid, or overdue "
+                "invoices with a positive balance due; drafts are excluded. "
                 "Explicit start_date and end_date filters bound UTC created_at "
-                "with an inclusive end date. Exports consume the same canonical "
+                "with an inclusive end date; the filter labels and sortable table "
+                "column expose that Created (UTC) basis. Active customer filters "
+                "retain a typed human-readable selection across HTMX refreshes. "
+                "Exports consume the same canonical "
                 "scope without a page cap. The CSV customer_name column uses "
                 "the customer account's human display identity and does not "
                 "expose account UUIDs."

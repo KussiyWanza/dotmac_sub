@@ -5,11 +5,14 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from app.models.ai_intake import AiIntakeSession
+from app.models.party import Party, PartyContactPoint, PartyType
+from app.models.sales import Lead
 from app.models.service_team import ServiceTeam, ServiceTeamType
 from app.models.subscriber import Reseller, Subscriber, SubscriberStatus
 from app.models.team_inbox import (
     InboxChannelType,
     InboxConversation,
+    InboxConversationParticipant,
     InboxMediaAsset,
     InboxMessage,
     InboxMessageDirection,
@@ -202,6 +205,58 @@ def test_receive_whatsapp_links_reseller_contact_without_subscriber(db_session):
     assert conversation.metadata_["contact_resolution"]["reseller_id"] == str(
         reseller.id
     )
+
+
+def test_receive_whatsapp_reuses_exact_lead_party_contact_point(db_session):
+    party = Party(
+        party_type=PartyType.person.value,
+        display_name="Returning Prospect",
+        status="quarantined",
+    )
+    db_session.add(party)
+    db_session.flush()
+    point = PartyContactPoint(
+        party_id=party.id,
+        channel_type="whatsapp",
+        normalized_value="+2348035550114",
+        display_value="+2348035550114",
+        is_active=True,
+    )
+    lead = Lead(
+        party_id=party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Returning Inbox Lead",
+        title="Coverage enquiry",
+        status="new",
+        is_active=True,
+    )
+    db_session.add_all([point, lead])
+    db_session.commit()
+
+    result = team_inbox_channel_receive.receive_inbound_channel(
+        db_session,
+        team_inbox_channel_receive.InboundChannelPayload(
+            channel_type=InboxChannelType.whatsapp.value,
+            contact_address="08035550114",
+            body="Is service available now?",
+            external_message_id=f"wamid-returning-{uuid4()}",
+        ),
+    )
+    db_session.commit()
+
+    conversation = db_session.get(InboxConversation, result.conversation_id)
+    resolution = conversation.metadata_["contact_resolution"]
+    participant = (
+        db_session.query(InboxConversationParticipant)
+        .filter_by(conversation_id=conversation.id, is_active=True)
+        .one()
+    )
+    assert result.resolution_status == "linked_party"
+    assert resolution["participant_party_id"] == str(party.id)
+    assert resolution["matched_lead_ids"] == [str(lead.id)]
+    assert conversation.subscriber_id is None
+    assert participant.party_contact_point_id == point.id
 
 
 def test_receive_whatsapp_webhook_normalizes_and_deduplicates(db_session):

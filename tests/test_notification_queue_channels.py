@@ -62,6 +62,7 @@ def test_inbound_smtp_probe_uses_delivery_gate_and_fixed_payload(
             recipient="probe@dotmac.io",
             message_id="<probe-1@sub.local>",
             marker="team_inbox_smtp_e2e",
+            probe_id="probe-id-1",
         )
         is True
     )
@@ -70,6 +71,7 @@ def test_inbound_smtp_probe_uses_delivery_gate_and_fixed_payload(
     assert captured["headers"] == email_service.EmailTransportHeaders(
         message_id="<probe-1@sub.local>",
         x_dotmac_probe="team_inbox_smtp_e2e",
+        x_dotmac_probe_id="probe-id-1",
     )
 
 
@@ -93,6 +95,7 @@ def test_inbound_smtp_probe_respects_all_scope_suppression(db_session, monkeypat
             recipient="probe@dotmac.io",
             message_id="<probe-2@sub.local>",
             marker="team_inbox_smtp_e2e",
+            probe_id="probe-id-2",
         )
         is False
     )

@@ -307,6 +307,35 @@ def test_status_lead_and_combined_search_filters_share_one_scope(
     assert search_status.total_count == search_lead.total_count == 1
 
 
+def test_created_date_range_drives_postgres_rows_and_count(
+    db_session,
+    quote_search_graph: QuoteSearchGraph,
+) -> None:
+    quote_search_graph.quote.created_at = datetime(2026, 8, 10, 0, 0, tzinfo=UTC)
+    quote_search_graph.other_quote.created_at = datetime(
+        2026, 8, 12, 23, 59, tzinfo=UTC
+    )
+    quote_search_graph.party_first_quote.created_at = datetime(
+        2026, 8, 13, 0, 0, tzinfo=UTC
+    )
+    db_session.flush()
+
+    result = sales.quotes.query(
+        db_session,
+        sales.QuoteListQueryInput(
+            date_preset="custom",
+            date_from="2026-08-10",
+            date_to="2026-08-12",
+        ),
+    )
+
+    assert {item.id for item in result.items} == {
+        quote_search_graph.quote.id,
+        quote_search_graph.other_quote.id,
+    }
+    assert result.total_count == 2
+
+
 def test_invalid_stale_empty_and_literal_like_search_are_canonicalized(
     db_session,
     quote_search_graph: QuoteSearchGraph,
@@ -405,3 +434,19 @@ def test_base_unfiltered_quote_list_continues_to_work(
     assert quote_search_graph.other_quote in result.items
     assert quote_search_graph.party_first_quote in result.items
     assert result.total_count >= len(result.items) >= 3
+
+
+def test_quote_maximum_custom_end_canonicalizes_without_overflow(
+    db_session, quote_search_graph
+):
+    all_time = sales.quotes.query(db_session, sales.QuoteListQueryInput())
+    invalid = sales.quotes.query(
+        db_session,
+        sales.QuoteListQueryInput(
+            date_preset="custom", date_from="2026-01-01", date_to="9999-12-31"
+        ),
+    )
+    assert invalid.query.date_preset is None
+    assert invalid.query.date_from is invalid.query.date_to is None
+    assert invalid.total_count == all_time.total_count
+    assert [row.id for row in invalid.items] == [row.id for row in all_time.items]

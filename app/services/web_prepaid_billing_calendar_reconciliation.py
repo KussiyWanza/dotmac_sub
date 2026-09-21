@@ -28,7 +28,6 @@ from app.services.form_contracts import register as register_form_contract
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_billing_calendar_reconciliation import (
     PrepaidBillingCalendarCohort,
-    PrepaidBillingCalendarCorrectionKind,
     PrepaidBillingCalendarPreview,
     PrepaidBillingCalendarReconciliationResult,
     ReconcilePrepaidBillingCalendarCommand,
@@ -70,7 +69,7 @@ PREPAID_BILLING_CALENDAR_FORM = register_form_contract(
             FormConsequence(
                 key="access_reconciliation",
                 label=(
-                    "A current lapsed-payment repair resolves only its prepaid lock; "
+                    "A current coverage-period repair resolves only its prepaid lock; "
                     "the lifecycle owner restores access only when no other blocker remains"
                 ),
             ),
@@ -156,16 +155,12 @@ def build_admin_review(
                 "will recheck every guard under lock before changing them."
             ),
         )
-    lapsed_payment_repair = (
-        preview.correction_kind
-        is PrepaidBillingCalendarCorrectionKind.lapsed_payment_period
-    )
     impact = (
         "Calendar projections move with an economic delta of NGN 0.00. If the "
         "corrected period is current, the owner resolves only the prepaid lock and "
         "asks the lifecycle owner to restore access; every independent blocker is "
         "preserved."
-        if lapsed_payment_repair
+        if preview.access_reconciliation_applicable
         else (
             "Only calendar projections move. The economic delta is NGN 0.00 and no "
             "payment, ledger, invoice status, or access decision changes."

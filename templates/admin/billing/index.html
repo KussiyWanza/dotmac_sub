@@ -189,7 +189,7 @@
         <div class="flex items-center justify-between mb-4">
             <h2 class="font-display text-lg font-bold text-slate-900 dark:text-white">Revenue Trend</h2>
             <div class="flex items-center gap-3">
-                <span class="inline-flex items-center gap-1.5 text-[10px] font-semibold text-teal-600 dark:text-teal-400"><span class="h-2 w-2 rounded-full bg-teal-500"></span> Billed</span>
+                <span class="inline-flex items-center gap-1.5 text-[10px] font-semibold text-blue-600 dark:text-blue-400"><span class="h-2 w-2 rounded-full bg-blue-500"></span> Billed</span>
                 <span class="inline-flex items-center gap-1.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400"><span class="h-2 w-2 rounded-full bg-emerald-500"></span> Collected</span>
             </div>
         </div>
@@ -278,7 +278,7 @@ document.addEventListener('DOMContentLoaded', function() {
             data: {
                 labels: {{ trend["labels"] | tojson | safe }},
                 datasets: [
-                    { label: 'Billed', data: {{ trend["billed"] | tojson | safe }}, borderColor: themeColor('primary-600'), backgroundColor: themeColor('primary-600', 0.1) },
+                    { label: 'Billed', data: {{ trend["billed"] | tojson | safe }}, borderColor: themeColor('semantic-info-600'), backgroundColor: themeColor('semantic-info-600', 0.1) },
                     { label: 'Collected', data: {{ trend["collected"] | tojson | safe }}, borderColor: themeColor('semantic-positive-600'), backgroundColor: themeColor('semantic-positive-600', 0.1) }
                 ]
             },

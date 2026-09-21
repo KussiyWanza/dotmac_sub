@@ -30,6 +30,9 @@ class Settings:
         "DATABASE_URL",
         "postgresql+psycopg://postgres:postgres@localhost:5434/dotmac_sub",
     )
+    # Used only to derive stable, non-reversible marketing subject identifiers.
+    # The raw key and customer identity must never enter an event payload or log.
+    conversion_ingest_api_key: str = os.getenv("CONVERSION_INGEST_API_KEY", "")
     # Pool is per-process; the engine is recreated in every uvicorn worker and
     # every Celery prefork child. Production runs multiple app/worker processes
     # against a Postgres server that may have only ~100 connection slots, so the

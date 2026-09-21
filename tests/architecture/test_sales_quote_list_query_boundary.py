@@ -39,3 +39,15 @@ def test_quote_list_route_maps_database_failure_without_owning_query_rules() -> 
     assert "logger.exception" not in source
     assert "build_quotes_failure_context(" in source
     assert "db.query(" not in source
+
+
+def test_quote_success_and_failure_share_the_public_date_owner() -> None:
+    owner = inspect.getsource(sales_service._normalize_quote_list_query)
+    recovery = inspect.getsource(web_sales.build_quotes_failure_context)
+    assert "normalize_quote_date_range(request)" in owner
+    assert "sales_service.normalize_quote_date_range(" in recovery
+    assert "sales_service.QuoteListQueryInput(" in recovery
+    for source in (recovery, inspect.getsource(web_sales.build_quotes_list_context)):
+        assert "_optional_date_filter" not in source
+        assert "fromisoformat" not in source
+        assert "timedelta" not in source

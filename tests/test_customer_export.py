@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import csv
 import io
+from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 
+from app.models.billing import Invoice, Payment, PaymentStatus
 from app.models.catalog import NasDevice, SubscriptionStatus
 from app.models.subscriber import Subscriber, SubscriberStatus, UserType
+from app.models.support import Ticket, TicketStatus
 from app.services import web_customer_lists
 
 
@@ -108,8 +112,97 @@ def test_complete_customer_csv_projects_advanced_analytical_fields(
     assert row["nas_devices"] == "Core NAS"
     assert row["locations"] == "Test POP"
     assert row["contact_completeness"] == "Email and phone"
+    assert row["open_ticket_ids"] == ""
+    assert row["total_payment"] == "0.00"
+    assert row["last_billing_date"] == ""
     assert exported.filename.startswith("customers_export_")
     assert exported.filename.endswith(".csv")
+
+
+def test_customer_csv_projects_open_tickets_payments_and_last_billing_date(
+    db_session,
+    subscriber,
+):
+    subscriber.user_type = UserType.customer
+    open_ticket = Ticket(
+        number="TKT-EXPORT-200",
+        title="Open export ticket",
+        status=TicketStatus.open.value,
+        subscriber_id=subscriber.id,
+        customer_account_id=subscriber.id,
+        is_active=True,
+    )
+    pending_ticket = Ticket(
+        number="TKT-EXPORT-100",
+        title="Pending export ticket",
+        status=TicketStatus.pending.value,
+        customer_person_id=subscriber.id,
+        is_active=True,
+    )
+    closed_ticket = Ticket(
+        number="TKT-EXPORT-CLOSED",
+        title="Closed export ticket",
+        status=TicketStatus.closed.value,
+        subscriber_id=subscriber.id,
+        is_active=True,
+    )
+    payments = [
+        Payment(
+            account_id=subscriber.id,
+            amount=Decimal("1250.50"),
+            status=PaymentStatus.succeeded,
+            is_active=True,
+        ),
+        Payment(
+            account_id=subscriber.id,
+            amount=Decimal("249.50"),
+            status=PaymentStatus.succeeded,
+            is_active=True,
+        ),
+        Payment(
+            account_id=subscriber.id,
+            amount=Decimal("999.00"),
+            status=PaymentStatus.failed,
+            is_active=True,
+        ),
+        Payment(
+            account_id=subscriber.id,
+            amount=Decimal("500.00"),
+            status=PaymentStatus.succeeded,
+            is_active=False,
+        ),
+    ]
+    invoices = [
+        Invoice(
+            account_id=subscriber.id,
+            issued_at=datetime(2026, 1, 2, 8, 0, tzinfo=UTC),
+            is_active=True,
+        ),
+        Invoice(
+            account_id=subscriber.id,
+            issued_at=datetime(2026, 2, 3, 8, 0, tzinfo=UTC),
+            is_active=True,
+        ),
+        Invoice(
+            account_id=subscriber.id,
+            issued_at=datetime(2026, 3, 4, 8, 0, tzinfo=UTC),
+            is_active=False,
+        ),
+    ]
+    db_session.add_all(
+        [open_ticket, pending_ticket, closed_ticket, *payments, *invoices]
+    )
+    db_session.commit()
+
+    exported = web_customer_lists.build_customer_csv_export(
+        db_session,
+        export_query=_export_query(ids=f"person:{subscriber.id}"),
+    )
+
+    row = next(csv.DictReader(io.StringIO(exported.content)))
+    assert row["open_ticket_ids"] == "TKT-EXPORT-100 | TKT-EXPORT-200"
+    assert row["total_payment"] == "1500.00"
+    assert row["last_billing_date"] == "2026-02-03"
 
 
 def test_selected_customer_export_preserves_requested_target_scope(

@@ -51,7 +51,7 @@ def test_shared_renderer_exposes_accessible_contract_semantics() -> None:
     assert "bg-rose" not in template
     assert ".action-form-submit" in design_system
     assert "background: var(--status-indicator)" in design_system
-    assert "/static/css/design-system.css?v=20260714a" in base
+    assert "/static/css/design-system.css?v=20260914a" in base
 
 
 def test_action_form_imports_keep_request_context() -> None:

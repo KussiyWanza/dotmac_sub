@@ -89,7 +89,7 @@ class WorkOrderCreatePrefill:
 
 def _subscriber_label(subscriber: Subscriber | None) -> str:
     if subscriber is None:
-        return "Subscriber"
+        return "Infrastructure"
     full_name = " ".join(
         part for part in [subscriber.first_name, subscriber.last_name] if part
     ).strip()
@@ -462,6 +462,7 @@ def list_page(
             "work_order": row,
             "subscriber": subscriber,
             "subscriber_label": _subscriber_label(subscriber),
+            "work_order_kind": row.work_order_kind,
             "project_label": project_labels.get(str(row.project_id)),
             "origin_ticket": origin_tickets.get(row.origin_ticket_id)
             if row.origin_ticket_id
@@ -545,6 +546,21 @@ def detail_page(
     project = db.get(Project, row.project_id) if row.project_id else None
     task = db.get(ProjectTask, row.project_task_id) if row.project_task_id else None
     ticket = db.get(Ticket, row.origin_ticket_id) if row.origin_ticket_id else None
+    from app.models.network_monitoring import (
+        OutageIncident,
+        OutageIncidentWorkOrderLink,
+    )
+
+    outage_work_order_link = (
+        db.query(OutageIncidentWorkOrderLink)
+        .filter(OutageIncidentWorkOrderLink.work_order_id == row.id)
+        .first()
+    )
+    outage_incident = (
+        db.get(OutageIncident, outage_work_order_link.incident_id)
+        if outage_work_order_link
+        else None
+    )
     queue_status = _queue_status_by_work_order(db, [row]).get(str(row.id))
     from app.services.field.material_requests import list_staff_material_requests
 
@@ -569,6 +585,7 @@ def detail_page(
         "work_order": row,
         "subscriber": subscriber,
         "subscriber_label": _subscriber_label(subscriber),
+        "work_order_kind": row.work_order_kind,
         "project": project,
         "project_label": (
             project.name or project.code or project.number or str(project.id)
@@ -577,6 +594,8 @@ def detail_page(
         ),
         "project_task": task,
         "origin_ticket": ticket,
+        "outage_work_order_link": outage_work_order_link,
+        "outage_incident": outage_incident,
         "queue_status": queue_status,
         "queue_action": _queue_action(row),
         "priorities": PRIORITY_OPTIONS,

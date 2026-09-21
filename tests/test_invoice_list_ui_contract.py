@@ -105,6 +105,18 @@ def test_invoice_query_normalizes_declared_state_and_rejects_unknown_values():
     assert query.page == 2
     assert query.per_page == 50
 
+    unpaid_query = build_invoice_list_query(
+        account_id=None,
+        partner_id=None,
+        status="unpaid",
+        proforma_only=False,
+        customer_ref=None,
+        search=None,
+        start_date=None,
+        end_date=None,
+    )
+    assert unpaid_query.filter_value("status") == "unpaid"
+
     with pytest.raises(ValueError, match="Unsupported status filter"):
         build_invoice_list_query(
             account_id=None,
@@ -150,11 +162,15 @@ def test_invoice_full_and_htmx_views_share_the_list_contract_partial():
     assert 'name="sort" value="{{ list_query.sort_by }}"' in list_partial
     assert 'type="date" name="start_date"' in list_partial
     assert 'type="date" name="end_date"' in list_partial
+    assert "Created From (UTC)" in list_partial
+    assert "Created To (UTC)" in list_partial
     assert 'name="date_range"' not in list_partial
     assert "list_query.url('/admin/billing/invoices'" in table
     assert 'aria-sort="' in table
     assert 'aria-current="page"' in table
     assert 'role="status"' in table
+    assert "('created_at', 'Created (UTC)')" in table
+    assert "invoice_created_dates.get(invoice.id|string)" in table
     assert "/admin/billing/invoices?page=" not in table
     assert "range(1, total_pages + 1)" not in table
     assert "page_meta.start_item" in table
@@ -164,12 +180,18 @@ def test_invoice_full_and_htmx_views_share_the_list_contract_partial():
     assert table.index('aria-label="Invoice pagination"') > table_start
 
 
-def test_invoice_customer_typeahead_refreshes_only_after_selection():
+def test_invoice_customer_typeahead_preserves_and_clears_typed_selection():
     list_partial = (
         PROJECT_ROOT / "templates/admin/billing/_invoices_list.html"
     ).read_text(encoding="utf-8")
 
     assert '@typeahead:selected="$el.requestSubmit()"' in list_partial
+    assert '@typeahead:cleared="$el.requestSubmit()"' in list_partial
+    assert 'data-typeahead-validate-selection="true"' in list_partial
+    assert "customer_filter.label if customer_filter else ''" in list_partial
+    assert "customer_filter.reference if customer_filter else ''" in list_partial
+    assert "data-typeahead-clear" in list_partial
+    assert 'aria-label="Clear selected customer"' in list_partial
     hidden_customer_ref = re.search(
         r'<input\s+type="hidden"\s+name="customer_ref"[^>]*>',
         list_partial,
@@ -177,6 +199,28 @@ def test_invoice_customer_typeahead_refreshes_only_after_selection():
     )
     assert hidden_customer_ref is not None
     assert "hx-" not in hidden_customer_ref.group(0)
+
+
+def test_invoice_proforma_and_clear_filters_refresh_the_canonical_list():
+    list_partial = (
+        PROJECT_ROOT / "templates/admin/billing/_invoices_list.html"
+    ).read_text(encoding="utf-8")
+
+    assert "change from:input[type='checkbox']" in list_partial
+    assert 'href="{{ clear_filters_url }}"' in list_partial
+    assert 'hx-get="{{ clear_filters_url }}"' in list_partial
+    assert "{% if has_active_filters %}" in list_partial
+
+
+def test_invoice_status_filter_renders_unpaid_as_a_selectable_state():
+    list_partial = (
+        PROJECT_ROOT / "templates/admin/billing/_invoices_list.html"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "<option value=\"unpaid\" {% if status == 'unpaid' %}selected{% endif %}>"
+        "Unpaid</option>"
+    ) in list_partial
 
 
 def test_invoice_list_exposes_loading_and_inline_failure_feedback():

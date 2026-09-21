@@ -11,10 +11,20 @@ journals, tax transactions, and financial statements. The version-2 feed is a
 read-only resolver between those owners; it does not post accounting and it
 never changes an Invoice.
 
-The endpoint is `GET /api/v1/invoices/accounting-sync/v2`. It is additive and
-uses the same `billing:invoice:read` permission as the existing
-`GET /api/v1/invoices/sync` feed. The existing feed stays unchanged during
-shadow validation.
+The endpoint is `GET /api/v1/invoices/accounting-sync/v2`. It is additive.
+
+Authorization: the v2 endpoint accepts EITHER the existing
+`billing:invoice:read` permission OR the narrower
+`integration:accounting_sync:read` scope (for a future ERP accounting-sync
+machine principal — kept out of the ordinary role builder, see
+`scripts/seed/seed_rbac.py`). Holding `integration:accounting_sync:read`
+alone does not grant access to the legacy `GET /api/v1/invoices/sync` feed,
+which keeps requiring `billing:invoice:read` only and gained no new scope.
+
+The legacy feed's authorization is unchanged; its query surface is not: both
+`GET /api/v1/invoices/sync` and `GET /api/v1/invoices/accounting-sync/v2` now
+also accept the optional `after_updated_at`/`after_id` keyset-cursor pair
+described below.
 
 The durable `integration.dotmac_erp_billing_adapter` outbox remains the target
 cross-application boundary under ADR 0007. This pull feed exists to stop the
@@ -101,6 +111,27 @@ bounded. A typed `invoice_id` filter permits one explicit operator replay
 without rewinding the global cursor or scanning another customer's invoices.
 The query takes no locks and writes no data.
 
+Paging supports two modes, both accepted by `GET /invoices/accounting-sync/v2`
+(and the legacy `GET /invoices/sync` feed, which shares the same underlying
+`apply_sync_page` helper):
+
+- **Offset** (default, unchanged): `limit`/`offset`, as above.
+- **Keyset cursor** (additive, optional): `after_updated_at`/`after_id`,
+  supplied together — never one without the other (HTTP 422 otherwise).
+  Paging advances by `(updated_at, id) > (after_updated_at, after_id)`
+  instead of `OFFSET`, so a concurrent update to an unrelated row cannot
+  re-sort it across a page boundary and skip a row the walk has not reached
+  yet — the concrete hazard offset paging has under concurrent writes.
+
+Revision semantics under the keyset cursor: `updated_at` is mutable, so the
+cursor cannot promise "each row exactly once" across a walk that overlaps
+concurrent writes — a row genuinely modified after being observed legitimately
+reappears with its new revision later in the walk, and this is intended, not
+a bug (ERP is idempotent on the source invoice id plus its source
+`updated_at`). What the cursor does guarantee is narrower and is the actual
+fix: a row whose own `(updated_at, id)` never changes during the walk is
+never skipped.
+
 ERP must treat `blocked` as a durable data outcome, not as a transient exception:
 record the issue keyed by source invoice and source revision, advance the pull
 cursor after recording it, and retry only after `updated_at` changes or an
@@ -130,3 +161,40 @@ lock timeout, performs no backfill, and leaves legacy rows untouched. Downgrade
 refuses once any snapshot has been recorded so application rollback retains
 financial evidence. A later low-traffic maintenance change may validate the
 constraint after the legacy cohort has been measured.
+
+## Canonical content digest (`digest_version`/`projection_digest`)
+
+Sub is the sole owner of the invoice-accounting-sync feed's content-identity
+digest: the connector and ERP previously each computed their own fingerprint
+independently and disagreed, and one of the two guesses folded the nested
+subscriber profile into the fingerprint even though a subscriber-profile edit
+never advances `invoice.updated_at`. This document covers Sub's half only —
+Sub now computes and publishes both fields via
+`app.services.dotmac_erp.invoice_sync_digest.compute_invoice_projection_digest`.
+Changing the connector and the ERP shadow task to forward this digest verbatim
+instead of computing their own is **separate, not-yet-shipped follow-up work**
+in those repositories; nothing in the connector or ERP has changed yet.
+
+`digest_version` (currently `1`) and `projection_digest` (a lowercase sha256
+hex string, rejected — not normalised — by the schema validator if malformed)
+are additive fields on `InvoiceAccountingSyncRead`. The digest reuses this
+repo's ADR-0064-governed canonicalisation primitives
+(`app.migration_source.canonical`) rather than an ad hoc encoder.
+
+**Covered-fact domain (version 1)** is every field of
+`InvoiceAccountingSyncRead` except two deliberate exclusions:
+
+- The entire nested `account`/`InvoiceSyncAccountRead` object (subscriber
+  profile — name/email/phone/address/status/category). None of it is an
+  invoice fact, and none of it advances `invoice.updated_at`, so including it
+  produced a false "same revision, different projection" contradiction. Only
+  the flat `account_id` UUID reference is covered.
+- `updated_at` itself. It is the external revision key the digest is compared
+  against per-key, not digest content; including it would make digest drift
+  trivially "explained" by the key changing and add no signal.
+
+Everything else — header totals, discount facts, timestamps, memo,
+disposition, and the `issues`/`lines` collections (each reduced to a sorted
+tuple of per-item canonical forms) — is covered. Changing the covered-fact set
+or its encoding is an explicit cutover: bump `INVOICE_PROJECTION_DIGEST_VERSION`
+and treat it as a new contract, per ADR-0064.

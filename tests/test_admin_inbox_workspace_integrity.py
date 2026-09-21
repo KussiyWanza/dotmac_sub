@@ -259,7 +259,8 @@ def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
     assert 'workspace?.refreshConversationList?.("reply")' not in JAVASCRIPT
     assert 'this.draft = ""' in JAVASCRIPT
     assert "window.location.reload" not in JAVASCRIPT
-    assert "admin-inbox.js?v=20260910a" in INDEX
+    assert "admin-inbox.js?v=20260915-navigation" in INDEX
+    assert "admin-inbox.js?v=20260910a" not in INDEX
     assert "admin-inbox.js?v=20260904a" not in INDEX
     assert "admin-inbox.js?v=20260830a" not in INDEX
     assert "admin-inbox.js?v=20260827a" not in INDEX
@@ -373,7 +374,16 @@ def test_conversation_drilldown_and_reply_fallback_preserve_queue_page_state():
     pagination_marker = JAVASCRIPT.index("navigatePage(urlValue)")
     pagination_body = JAVASCRIPT[pagination_marker : pagination_marker + 500]
     assert 'url.searchParams.set("c", this.selectedId)' in pagination_body
-    assert "window.__inboxReturnUrl" in pagination_body
+    assert 'intent: "pagination"' in pagination_body
+    assert 'target: "#inbox-conversation-queue"' in pagination_body
+    assert 'historyMode: "push"' in pagination_body
+    # Return state must describe rendered rows, not a pending pagination intent.
+    assert "window.__inboxReturnUrl =" not in pagination_body
+    swap_marker = JAVASCRIPT.index('"htmx:afterSwap"')
+    swap_end = JAVASCRIPT.index('"htmx:beforeCleanupElement"', swap_marker)
+    swap_body = JAVASCRIPT[swap_marker:swap_end]
+    assert "request.applied = true" in swap_body
+    assert "window.__inboxReturnUrl = `${url.pathname}${url.search}`" in swap_body
 
 
 def test_macro_menu_dispatches_identity_not_just_text():
@@ -554,7 +564,9 @@ def test_sidebar_filters_replace_stale_requests_and_expose_busy_state():
     assert "Checking for updates" in JAVASCRIPT
     assert "stale.xhr.abort()" in JAVASCRIPT
     assert "if (this.filterLoading) return" in JAVASCRIPT
-    assert 'document.body.addEventListener("htmx:sendAbort", release)' in JAVASCRIPT
+    abort_marker = JAVASCRIPT.index('document.body.addEventListener("htmx:sendAbort"')
+    abort_end = JAVASCRIPT.index("\n        );", abort_marker)
+    assert "release(event, true)" in JAVASCRIPT[abort_marker:abort_end]
     assert "InboxQueueComposition.sidebar" in ROUTES
     assert "InboxQueueComposition.queue_only" in ROUTES
     assert "manager_dashboard = None" in ROUTES
@@ -572,13 +584,15 @@ def test_inbox_refresh_status_precedes_stats_filters_and_conversation_list():
         "Waiting for new activity",
         "Checking for updates",
         "Inbox updated just now",
-        "Couldn’t update — retrying",
+        "Couldn’t update conversations — retry available",
     ):
         assert label in SIDEBAR or label in JAVASCRIPT
     for contract in (
         'inboxRefreshState: "idle"',
         "this.inboxRefreshStarted()",
-        "this.inboxRefreshFinished(requestFailed)",
+        "requestFailed || event.detail?.xhr?.status === 204",
+        "this.inboxRefreshFinished(failed)",
+        "if (!failed && !request.applied) return",
         "event.detail?.successful === false",
     ):
         assert contract in JAVASCRIPT

@@ -7,7 +7,20 @@ from app.models.domain_settings import SettingDomain
 from app.models.subscription_engine import SettingValueType
 from app.schemas.settings import DomainSettingUpdate
 from app.services import settings_spec
+from app.services.domain_errors import DomainError
 from app.services.response import list_response
+
+
+class SettingNormalizationError(DomainError):
+    """Transport-neutral rejection of one submitted setting value."""
+
+
+def _normalization_error(message: str) -> SettingNormalizationError:
+    return SettingNormalizationError(
+        code="control.settings_spec.invalid_value",
+        message=message,
+        retryable=False,
+    )
 
 
 def _coerce_int(value: object) -> int:
@@ -34,33 +47,25 @@ def _normalize_spec_setting(
     spec = settings_spec.get_spec(domain, key)
     if not spec:
         allowed = _domain_allowed_keys(domain)
-        raise HTTPException(
-            status_code=400, detail=f"Invalid setting key. Allowed: {allowed}"
-        )
+        raise _normalization_error(f"Invalid setting key. Allowed: {allowed}")
     value = payload.value_text if payload.value_text is not None else payload.value_json
     if value is None:
-        raise HTTPException(status_code=400, detail="Value required")
+        raise _normalization_error("Value required")
     coerced, error = settings_spec.coerce_value(spec, value)
     if error:
-        raise HTTPException(status_code=400, detail=error)
+        raise _normalization_error(error)
     if spec.allowed and coerced not in spec.allowed:
         allowed = ", ".join(sorted(spec.allowed))
-        raise HTTPException(status_code=400, detail=f"Value must be one of: {allowed}")
+        raise _normalization_error(f"Value must be one of: {allowed}")
     if spec.value_type == SettingValueType.integer:
         try:
             parsed = _coerce_int(coerced)
         except (TypeError, ValueError) as exc:
-            raise HTTPException(
-                status_code=400, detail="Value must be an integer"
-            ) from exc
+            raise _normalization_error("Value must be an integer") from exc
         if spec.min_value is not None and parsed < spec.min_value:
-            raise HTTPException(
-                status_code=400, detail=f"Value must be >= {spec.min_value}"
-            )
+            raise _normalization_error(f"Value must be >= {spec.min_value}")
         if spec.max_value is not None and parsed > spec.max_value:
-            raise HTTPException(
-                status_code=400, detail=f"Value must be <= {spec.max_value}"
-            )
+            raise _normalization_error(f"Value must be <= {spec.max_value}")
         coerced = parsed
     value_text, value_json = settings_spec.normalize_for_db(spec, coerced)
     data = payload.model_dump(exclude_unset=True)
@@ -105,7 +110,10 @@ def _list_domain_settings_response(
 def _upsert_domain_setting(
     db: Session, domain: SettingDomain, key: str, payload: DomainSettingUpdate
 ):
-    normalized_payload = _normalize_spec_setting(domain, key, payload)
+    try:
+        normalized_payload = _normalize_spec_setting(domain, key, payload)
+    except SettingNormalizationError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
     service = settings_spec.DOMAIN_SETTINGS_SERVICE.get(domain)
     if not service:
         raise HTTPException(status_code=400, detail="Unknown settings domain")

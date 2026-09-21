@@ -4,7 +4,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
 from starlette.responses import Response
 
 from app.csrf import CSRF_COOKIE_NAME
@@ -85,6 +85,41 @@ def test_csrf_middleware_returns_204_for_actual_disconnect(monkeypatch):
     assert response.status_code == 204
 
 
+def test_csrf_middleware_returns_204_when_client_disconnects_during_body_read(
+    caplog,
+):
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/admin/support/tickets/ticket-id/comment",
+        "raw_path": b"/admin/support/tickets/ticket-id/comment",
+        "query_string": b"",
+        "headers": [
+            (b"content-type", b"application/x-www-form-urlencoded"),
+            (b"cookie", f"{CSRF_COOKIE_NAME}=expected".encode()),
+        ],
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 80),
+    }
+
+    async def receive():
+        raise ClientDisconnect
+
+    request = Request(scope, receive)
+
+    async def call_next(_request: Request) -> Response:
+        raise AssertionError("a disconnected request must not reach downstream")
+
+    response = _run_async(csrf_middleware(request, call_next))
+
+    assert response.status_code == 204
+    assert "client_disconnected" in caplog.text
+    assert any(record.levelname == "INFO" for record in caplog.records)
+
+
 def test_view_as_readonly_middleware_returns_204_when_no_response(monkeypatch):
     request = _build_request(path="/admin/customers")
 
@@ -147,6 +182,37 @@ def test_api_sync_pressure_guard_blocks_listed_sync_ip(monkeypatch):
 def test_api_sync_pressure_guard_uses_bounded_feed_bucket(monkeypatch):
     request = _build_request(
         path="/api/v1/payments/sync",
+        headers=[(b"x-forwarded-for", b"149.102.158.167")],
+    )
+    calls: list[tuple[str, int, int]] = []
+
+    def fake_allow_operation(key: str, *, limit: int, window_seconds: int, now=None):
+        calls.append((key, limit, window_seconds))
+        return SimpleNamespace(allowed=True, retry_after_seconds=None)
+
+    monkeypatch.setenv("API_SYNC_PRESSURE_FEED_LIMIT", "75")
+    monkeypatch.setattr(
+        "app.services.rate_limiter_adapter.allow_operation", fake_allow_operation
+    )
+
+    async def call_next(_request: Request) -> Response:
+        return Response("ok", status_code=200)
+
+    response = _run_async(api_sync_pressure_guard_middleware(request, call_next))
+
+    assert response.status_code == 200
+    assert calls == [("api-v1-pressure:feed:149.102.158.167", 75, 60)]
+
+
+def test_api_sync_pressure_guard_uses_bounded_feed_bucket_for_accounting_sync_v2(
+    monkeypatch,
+):
+    # The v2 accounting-sync feed is the real feed a future ERP poll connector
+    # uses; it must classify into the bounded "feed" lane exactly like the
+    # legacy /invoices/sync path, not fall through to the default per-IP
+    # bucket and defeat the point of a higher-throughput sync feed.
+    request = _build_request(
+        path="/api/v1/invoices/accounting-sync/v2",
         headers=[(b"x-forwarded-for", b"149.102.158.167")],
     )
     calls: list[tuple[str, int, int]] = []

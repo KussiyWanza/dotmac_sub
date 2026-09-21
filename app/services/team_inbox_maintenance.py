@@ -6,9 +6,10 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from uuid import UUID
 
-from sqlalchemy import or_
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models.ai_intake import AiIntakePolicyVersion, AiIntakeSession
@@ -16,10 +17,13 @@ from app.models.integration_platform import IntegrationInbox
 from app.models.service_team import ServiceTeam
 from app.models.team_inbox import (
     InboxConversation,
+    InboxConversationAssignment,
+    InboxConversationQueueEntry,
     InboxConversationStatus,
     InboxMediaAsset,
     InboxMessage,
     InboxMessageDirection,
+    InboxQueueEntryStatus,
     InboxTeamSource,
 )
 from app.services import (
@@ -30,6 +34,7 @@ from app.services import (
     team_inbox_observations,
     team_inbox_operations,
     team_inbox_outbound,
+    team_inbox_reply_window,
     team_inbox_routing,
     team_inbox_status,
 )
@@ -75,6 +80,45 @@ class AutoResolveStaleCommand:
 class MaintenanceOutcome:
     changed: int
     skipped: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class WhatsAppWindowExpirySweepCommand:
+    context: CommandContext
+    limit: int = 200
+    now: datetime | None = None
+    expired_after: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WhatsAppWindowExpirySweepOutcome:
+    examined: int
+    expired_found: int
+    assignments_released: int
+    queues_cancelled: int
+    already_correct: int
+    conflicts: int
+    errors: int
+
+
+@dataclass(frozen=True, slots=True)
+class RepairExpiredWhatsAppAssignmentsCommand:
+    context: CommandContext
+    dry_run: bool = True
+    limit: int = 5000
+    now: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RepairExpiredWhatsAppAssignmentsOutcome:
+    examined: int
+    stale_assignments_found: int
+    stale_queues_found: int
+    assignments_released: int
+    queues_cancelled: int
+    already_correct: int
+    conflicts: int
+    errors: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -943,6 +987,186 @@ def promote_media_assets(
                 db, limit=max(1, command.limit)
             )
         ),
+    )
+
+
+def _expired_whatsapp_ids(
+    db: Session,
+    *,
+    now: datetime,
+    limit: int,
+    actionable_only: bool,
+    expired_after: datetime | None = None,
+) -> tuple[UUID, ...]:
+    statement = team_inbox_reply_window.expired_whatsapp_conversation_ids_query(
+        now=now,
+        expired_after=expired_after,
+    ).where(InboxConversation.is_active.is_(True))
+    if actionable_only:
+        active_assignment = (
+            select(InboxConversationAssignment.id)
+            .where(
+                InboxConversationAssignment.conversation_id == InboxConversation.id,
+                InboxConversationAssignment.is_active.is_(True),
+            )
+            .exists()
+        )
+        active_queue = (
+            select(InboxConversationQueueEntry.id)
+            .where(
+                InboxConversationQueueEntry.conversation_id == InboxConversation.id,
+                InboxConversationQueueEntry.status
+                == InboxQueueEntryStatus.queued.value,
+            )
+            .exists()
+        )
+        statement = statement.where(or_(active_assignment, active_queue))
+    return tuple(
+        db.scalars(
+            statement.order_by(InboxConversation.id).limit(max(1, int(limit)))
+        ).all()
+    )
+
+
+def sweep_expired_whatsapp_windows(
+    db: Session, command: WhatsAppWindowExpirySweepCommand
+) -> WhatsAppWindowExpirySweepOutcome:
+    """Converge expired routing state without resolving conversations."""
+
+    observed_at = command.now or datetime.now(UTC)
+
+    def operation() -> WhatsAppWindowExpirySweepOutcome:
+        candidate_ids = _expired_whatsapp_ids(
+            db,
+            now=observed_at,
+            limit=command.limit,
+            actionable_only=True,
+            expired_after=command.expired_after,
+        )
+        released = cancelled = correct = conflicts = 0
+        for conversation_id in candidate_ids:
+            try:
+                outcome = execute_owner_savepoint(
+                    db,
+                    partial(
+                        team_inbox_assignment.release_expired_whatsapp_conversation,
+                        db,
+                        team_inbox_assignment.ReleaseExpiredWhatsAppConversationCommand(
+                            conversation_id=conversation_id,
+                            occurred_at=observed_at,
+                        ),
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - sweep isolates and reports one row
+                conflicts += 1
+                logger.exception(
+                    "team_inbox_whatsapp_expiry_conflict",
+                    extra={
+                        "event": "team_inbox_whatsapp_expiry_conflict",
+                        "conversation_id": str(conversation_id),
+                    },
+                )
+                continue
+            released += int(outcome.assignment_released)
+            cancelled += int(outcome.queue_cancelled)
+            correct += int(outcome.already_correct)
+            conflicts += int(outcome.conflict)
+        return WhatsAppWindowExpirySweepOutcome(
+            examined=len(candidate_ids),
+            expired_found=len(candidate_ids),
+            assignments_released=released,
+            queues_cancelled=cancelled,
+            already_correct=correct,
+            conflicts=conflicts,
+            errors=0,
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_MAINTENANCE_COMMAND,
+        context=command.context,
+        operation=operation,
+    )
+
+
+def repair_expired_whatsapp_assignments(
+    db: Session, command: RepairExpiredWhatsAppAssignmentsCommand
+) -> RepairExpiredWhatsAppAssignmentsOutcome:
+    """Dry-run-by-default repair for historical stale routing state."""
+
+    observed_at = command.now or datetime.now(UTC)
+
+    def operation() -> RepairExpiredWhatsAppAssignmentsOutcome:
+        candidate_ids = _expired_whatsapp_ids(
+            db,
+            now=observed_at,
+            limit=command.limit,
+            actionable_only=False,
+        )
+        stale = stale_queues = released = cancelled = correct = conflicts = errors = 0
+        for conversation_id in candidate_ids:
+            active_assignment = db.scalar(
+                select(InboxConversationAssignment.id).where(
+                    InboxConversationAssignment.conversation_id == conversation_id,
+                    InboxConversationAssignment.is_active.is_(True),
+                )
+            )
+            active_queue = db.scalar(
+                select(InboxConversationQueueEntry.id).where(
+                    InboxConversationQueueEntry.conversation_id == conversation_id,
+                    InboxConversationQueueEntry.status
+                    == InboxQueueEntryStatus.queued.value,
+                )
+            )
+            if active_assignment is None and active_queue is None:
+                correct += 1
+                continue
+            stale += int(active_assignment is not None)
+            stale_queues += int(active_queue is not None)
+            if command.dry_run:
+                continue
+            try:
+                outcome = execute_owner_savepoint(
+                    db,
+                    partial(
+                        team_inbox_assignment.release_expired_whatsapp_conversation,
+                        db,
+                        team_inbox_assignment.ReleaseExpiredWhatsAppConversationCommand(
+                            conversation_id=conversation_id,
+                            occurred_at=observed_at,
+                        ),
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - repair isolates and reports one row
+                errors += 1
+                logger.exception(
+                    "team_inbox_expired_assignment_repair_failed",
+                    extra={
+                        "event": "team_inbox_expired_assignment_repair_failed",
+                        "conversation_id": str(conversation_id),
+                    },
+                )
+                continue
+            released += int(outcome.assignment_released)
+            cancelled += int(outcome.queue_cancelled)
+            conflicts += int(outcome.conflict)
+            correct += int(outcome.already_correct)
+        return RepairExpiredWhatsAppAssignmentsOutcome(
+            examined=len(candidate_ids),
+            stale_assignments_found=stale,
+            stale_queues_found=stale_queues,
+            assignments_released=released,
+            queues_cancelled=cancelled,
+            already_correct=correct,
+            conflicts=conflicts,
+            errors=errors,
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_MAINTENANCE_COMMAND,
+        context=command.context,
+        operation=operation,
     )
 
 

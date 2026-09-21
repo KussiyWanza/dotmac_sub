@@ -541,12 +541,13 @@ def test_quote_payment_template_composes_server_owned_checkout_contract(subscrib
         payment=payment,
     )
 
-    assert "Pay with Paystack" in html
+    assert "Review quote deposit" in html
     assert "NGN 53,750.00" in html
     assert f"/portal/quotes/{quote_id}/pay/intent" in html
     assert "body: { idempotency_key: key }" in html
     assert "amount: amountMinor" in html
     assert 'name="amount"' not in html
+    assert "do not retry immediately after a charge" in html
 
 
 def test_quote_payment_routes_separate_read_and_mutation_methods():

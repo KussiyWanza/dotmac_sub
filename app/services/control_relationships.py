@@ -201,6 +201,12 @@ HANDLER_CONTROLS: dict[str, HandlerControl] = {
         60,
         ("credential_session_projection_invalidation",),
     ),
+    "AutomationEventHandler": HandlerControl(
+        "AutomationEventHandler",
+        HandlerStage.state,
+        65,
+        ("automation_execution",),
+    ),
     "IPAssignmentProjectionHandler": HandlerControl(
         "IPAssignmentProjectionHandler",
         HandlerStage.state,
@@ -301,6 +307,10 @@ def handler_event_types(handler_name: str) -> frozenset[str] | None:
         from app.services.events.types import SUBSCRIPTION_LIFECYCLE_MAP
 
         return frozenset(item.value for item in SUBSCRIPTION_LIFECYCLE_MAP)
+    if handler_name == "AutomationEventHandler":
+        from app.services.events.handlers.automation import HANDLED_EVENT_TYPES
+
+        return frozenset(item.value for item in HANDLED_EVENT_TYPES)
     if handler_name == "CredentialSessionProjectionHandler":
         from app.services.events.handlers.credential_session_projection import (
             HANDLED_EVENT_TYPES,

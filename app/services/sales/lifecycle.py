@@ -75,6 +75,8 @@ _CAPTURE_FIELDS = (
     "lead_source",
     "integration_inbox_id",
     "source_interaction_id",
+    "journey_id",
+    "customer_reference",
     "capture_fingerprint",
     "campaign_id",
     "campaign_recipient_id",
@@ -89,6 +91,7 @@ _CAPTURE_FIELDS = (
     "utm_content",
     "utm_term",
     "landing_path",
+    "submitted_at",
     "capture_source",
     "capture_reason",
 )
@@ -405,6 +408,8 @@ def _capture_values(payload: dict[str, Any], *, lead_source: str) -> dict[str, A
         "lead_source": lead_source,
         "integration_inbox_id": payload.get("integration_inbox_id"),
         "source_interaction_id": _optional(payload.get("source_interaction_id")),
+        "journey_id": payload.get("journey_id"),
+        "customer_reference": _optional(payload.get("customer_reference")),
         "capture_fingerprint": _optional(payload.get("capture_fingerprint")),
         "campaign_id": payload.get("campaign_id"),
         "campaign_recipient_id": payload.get("campaign_recipient_id"),
@@ -419,6 +424,7 @@ def _capture_values(payload: dict[str, Any], *, lead_source: str) -> dict[str, A
         "utm_content": _optional(payload.get("utm_content")),
         "utm_term": _optional(payload.get("utm_term")),
         "landing_path": landing_path,
+        "submitted_at": payload.get("submitted_at"),
         "capture_source": _required(payload.get("capture_source"), "capture_source"),
         "capture_reason": _required(payload.get("capture_reason"), "capture_reason"),
     }

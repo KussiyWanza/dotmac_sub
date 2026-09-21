@@ -529,6 +529,7 @@ def reset_dispatcher() -> None:
 def _initialize_handlers(dispatcher: EventDispatcher) -> None:
     """Initialize and register all event handlers."""
     from app.services.events.handlers.arrangements import ArrangementHandler
+    from app.services.events.handlers.automation import AutomationEventHandler
     from app.services.events.handlers.billing_lifecycle_projection import (
         BillingLifecycleProjectionHandler,
     )
@@ -580,6 +581,7 @@ def _initialize_handlers(dispatcher: EventDispatcher) -> None:
     dispatcher.register_handler(IPAssignmentProjectionHandler())
     dispatcher.register_handler(CredentialSessionProjectionHandler())
     dispatcher.register_handler(ArrangementHandler())
+    dispatcher.register_handler(AutomationEventHandler())
     from app.services.events.handlers.subscription_change_execution import (
         SubscriptionChangeExecutionHandler,
     )
@@ -603,6 +605,7 @@ def _initialize_handlers(dispatcher: EventDispatcher) -> None:
         "Event handlers initialized: integration_delivery, lifecycle, "
         "notification, provisioning, sales_lifecycle_projection, enforcement, "
         "ip_assignment_projection, credential_session_projection, arrangements, "
+        "automation, "
         "referral, prepaid_renewal, "
         "staff_invite, reseller_invite, password_recovery",
         extra={

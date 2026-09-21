@@ -2,8 +2,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+from sqlalchemy import Select
+from sqlalchemy.engine import ScalarResult
+from sqlalchemy.orm import Session
+
 from app.models.auth import Session as AuthSession
 from app.models.auth import SessionStatus
+from app.models.subscriber import Subscriber
+from app.services import auth_session_refresh
 from app.services.auth_session_refresh import (
     REFRESH_REPLAY_OVERLAP,
     RefreshDisposition,
@@ -105,3 +112,70 @@ def test_previous_token_from_different_browser_revokes_inside_overlap(
     assert refused.disposition is RefreshDisposition.REUSE_REVOKED
     db_session.refresh(session)
     assert session.status is SessionStatus.revoked
+
+
+@pytest.mark.parametrize(
+    "before_lock_seconds,after_lock_seconds,expected",
+    [
+        (-1, 1, RefreshDisposition.DUPLICATE),
+        (1, 6, RefreshDisposition.REUSE_REVOKED),
+    ],
+)
+def test_runtime_refresh_clock_is_sampled_after_row_lock(
+    db_session: Session,
+    person: Subscriber,
+    monkeypatch: pytest.MonkeyPatch,
+    before_lock_seconds: int,
+    after_lock_seconds: int,
+    expected: RefreshDisposition,
+) -> None:
+    """A delayed lock must neither falsely revoke nor extend the replay window."""
+    rotation_time = datetime.now(UTC)
+    old_token = "delayed-lock-refresh-token"
+    session = _session(db_session, person, old_token, rotation_time)
+    first = renew_authentication_session(
+        db=db_session, command=_command(old_token, rotation_time)
+    )
+    before_lock = rotation_time + timedelta(seconds=before_lock_seconds)
+    after_lock = rotation_time + timedelta(seconds=after_lock_seconds)
+    row_lock_acquired = False
+    original_scalars = db_session.scalars
+
+    class LockAwareClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            assert tz is UTC
+            return after_lock if row_lock_acquired else before_lock
+
+    def locked_scalars(
+        statement: Select[tuple[AuthSession]],
+    ) -> ScalarResult[AuthSession]:
+        nonlocal row_lock_acquired
+        result = original_scalars(statement)
+        if statement._for_update_arg is not None:
+            row_lock_acquired = True
+        return result
+
+    monkeypatch.setattr(auth_session_refresh, "datetime", LockAwareClock)
+    monkeypatch.setattr(db_session, "scalars", locked_scalars)
+    outcome = renew_authentication_session(
+        db=db_session,
+        command=RefreshSessionCommand(
+            context=_context(old_token),
+            refresh_token=old_token,
+            client_ip="203.0.113.8",
+            user_agent="browser/1",
+        ),
+    )
+    assert row_lock_acquired
+    assert outcome.disposition is expected
+    assert outcome.decided_at == after_lock
+    assert outcome.refresh_token is None
+    assert first.refresh_token is not None
+    db_session.refresh(session)
+    assert session.token_hash == hash_refresh_token(first.refresh_token)
+    assert session.status is (
+        SessionStatus.active
+        if expected is RefreshDisposition.DUPLICATE
+        else SessionStatus.revoked
+    )

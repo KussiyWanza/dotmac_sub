@@ -20,6 +20,7 @@ def test_domain_sot_relationships_cover_expected_domains():
         "observability",
         "workforce_operations",
         "support_operations",
+        "automation_control_plane",
         "tenancy",
         "ai_advisory",
         "provisioning_operations",
@@ -533,6 +534,7 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "financial.payments",
         "financial.billing_tax_resolution",
         "financial.prepaid_funding_reconstruction",
+        "financial.service_extensions",
         "financial.subscription_billing_grants",
         "financial.subscription_billing_treatments",
         "events.dispatcher",
@@ -610,10 +612,13 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "customer.accounts",
         "access.subscription_lifecycle",
         "financial.billing_profile",
+        "financial.invoices",
+        "financial.payments",
         "financial.subscription_billing_treatments",
         "service_intent.catalog_policy",
         "network.identity",
         "network.ip_assignment_lifecycle",
+        "support.ticket_lifecycle",
     )
     account_visibility = sot_relationships.owning_service_for(
         "legacy imported Subscriber deletion classification"

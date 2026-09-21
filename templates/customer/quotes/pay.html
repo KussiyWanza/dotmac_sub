@@ -10,8 +10,8 @@
             <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
             <span class="text-stone-900 dark:text-white">Pay quote</span>
         </nav>
-        <h1 class="text-2xl font-bold text-stone-900 dark:text-white">Pay with Paystack</h1>
-        <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">Review the server-calculated deposit before opening secure checkout.</p>
+        <h1 class="text-2xl font-bold text-stone-900 dark:text-white">Review quote deposit</h1>
+        <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">Confirm the server-calculated deposit before opening secure Paystack checkout.</p>
     </div>
 
     <section class="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm dark:border-stone-700 dark:bg-stone-800">
@@ -33,12 +33,16 @@
     <section class="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm dark:border-stone-700 dark:bg-stone-800">
         <h2 class="text-lg font-semibold text-stone-900 dark:text-white">Secure online payment</h2>
         <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">Your payable amount is derived from the current quotation and will be rechecked before a payment intent is created.</p>
-        <p x-show="errorMessage" x-cloak class="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300" x-text="errorMessage"></p>
+        <div class="mt-4 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 dark:border-sky-900/50 dark:bg-sky-900/20 dark:text-sky-100">
+            If checkout does not complete, do not retry immediately after a charge. Use the payment reference on the result page or contact support.
+        </div>
+        <p x-show="errorMessage" x-cloak role="alert" aria-live="assertive" class="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300" x-text="errorMessage"></p>
         <div class="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
             <button
                 type="button"
                 @click="startPayment()"
                 :disabled="processing"
+                :aria-busy="processing.toString()"
                 class="inline-flex items-center justify-center rounded-xl bg-[var(--color-brand-600)] px-8 py-3.5 text-sm font-semibold text-white shadow-lg transition hover:bg-[var(--color-brand-700)] disabled:cursor-not-allowed disabled:opacity-60">
                 <span x-text="processing ? 'Processing...' : 'Pay {{ payment.currency }} {{ "{:,.2f}".format(payment.payable_amount) }}'"></span>
             </button>

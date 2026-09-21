@@ -52,6 +52,8 @@ _EVENT_VARIABLES: frozenset[str] = frozenset(
         "total_amount",
         "receipt_number",
         "receipt_url",
+        "invoice_url",
+        "renewed_through",
     }
 )
 _BULK_VARIABLES: frozenset[str] = frozenset(
@@ -80,7 +82,7 @@ TEMPLATE_VARIABLES: tuple[tuple[str, str, str], ...] = (
     ("amount", "₦12,500.00", "Amount (currency-formatted)"),
     ("due_date", "Mar 01, 2026", "Invoice due date"),
     ("offer_name", "Fibre 100Mbps", "Plan / offer name"),
-    ("portal_url", "/portal", "Customer portal base URL"),
+    ("portal_url", "https://selfcare.dotmac.io/portal", "Customer portal base URL"),
     ("usage_percent", "85", "Data usage percentage"),
     ("service_order_id", "SO-1042", "Service order reference"),
     ("receipt_number", "#RCP-1A2B3C4D", "Payment receipt reference"),
@@ -89,6 +91,12 @@ TEMPLATE_VARIABLES: tuple[tuple[str, str, str], ...] = (
         "/portal/billing/payments/example/receipt",
         "Authorized receipt URL",
     ),
+    (
+        "invoice_url",
+        "https://selfcare.dotmac.io/portal/billing/invoices/example",
+        "Authorized invoice URL",
+    ),
+    ("renewed_through", "Mar 31, 2026", "Service renewal end date"),
 )
 
 # Sample values for every KNOWN placeholder so previews never show blanks.
@@ -99,7 +107,7 @@ _PREVIEW_SAMPLES: dict[str, str] = {
     "invoice_number": "INV-2026-0001",
     "amount": "₦12,500.00",
     "due_date": "Mar 01, 2026",
-    "portal_url": "/portal",
+    "portal_url": "https://selfcare.dotmac.io/portal",
     "device_serial": "HWTC12345678",
     "location": "Lekki Phase 1",
     "updated_fields": "email, phone",
@@ -111,6 +119,8 @@ _PREVIEW_SAMPLES: dict[str, str] = {
     "total_amount": "₦20,000.00",
     "receipt_number": "#RCP-1A2B3C4D",
     "receipt_url": "/portal/billing/payments/example/receipt",
+    "invoice_url": "https://selfcare.dotmac.io/portal/billing/invoices/example",
+    "renewed_through": "Mar 31, 2026",
 }
 
 
@@ -134,7 +144,7 @@ def render_template_text(
         key = match.group(1)
         return values[key] if key in values else match.group(0)
 
-    return _PLACEHOLDER_RE.sub(_replace, text)
+    return _SINGLE_NAME_RE.sub(_replace, text)
 
 
 def default_preview_variables() -> dict[str, str]:

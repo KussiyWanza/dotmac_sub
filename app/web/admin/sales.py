@@ -234,6 +234,9 @@ def leads_list(
     page: int = Query(default=1),
     per_page: int = Query(default=25),
     db: Session = Depends(get_db),
+    date_preset: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
 ):
     try:
         state = web_sales_service.build_leads_list_context(
@@ -243,6 +246,9 @@ def leads_list(
             stage_id=stage_id,
             owner_agent_id=owner_agent_id,
             lead_source=lead_source,
+            date_preset=date_preset,
+            date_from=date_from,
+            date_to=date_to,
             search=search,
             sort_by=sort_by,
             sort_dir=sort_dir,
@@ -252,6 +258,9 @@ def leads_list(
     except SQLAlchemyError:
         logger.exception("sales_leads_list_load_failed")
         state = web_sales_service.build_leads_failure_context(
+            date_preset=date_preset,
+            date_from=date_from,
+            date_to=date_to,
             search=search,
             page=page,
             per_page=per_page,
@@ -1167,6 +1176,9 @@ def quotes_list(
     request: Request,
     status: str | None = Query(default=None),
     lead_id: str | None = Query(default=None),
+    date_preset: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
     search: str | None = Query(default=None),
     sort_by: str | None = Query(default=None, alias="sort"),
     sort_dir: str | None = Query(default=None, alias="dir"),
@@ -1179,6 +1191,9 @@ def quotes_list(
             db,
             status=status,
             lead_id=lead_id,
+            date_preset=date_preset,
+            date_from=date_from,
+            date_to=date_to,
             search=search,
             sort_by=sort_by,
             sort_dir=sort_dir,
@@ -1197,6 +1212,9 @@ def quotes_list(
         state = web_sales_service.build_quotes_failure_context(
             status=status,
             lead_id=lead_id,
+            date_preset=date_preset,
+            date_from=date_from,
+            date_to=date_to,
             search=search,
             sort_by=sort_by,
             sort_dir=sort_dir,

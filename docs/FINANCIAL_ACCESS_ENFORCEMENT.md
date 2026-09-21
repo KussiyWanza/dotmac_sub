@@ -171,13 +171,15 @@ fingerprint-bound preview and explicitly allow retraction, and an applied
 service extension quarantines the candidate. Confirmation aligns the anchor to
 the entitlement end and records durable audit evidence without posting money.
 
-For a lapsed prepaid settlement, the replacement period starts on the
-payment's `Africa/Lagos` calendar date. The owner resolves WAT local midnight
-and advances the typed calendar cadence before converting the half-open period
-boundaries back to UTC for storage. A payment between 00:00 and 00:59 WAT is
-therefore part of the new WAT day even though its UTC timestamp is on the
-previous date. Date-only customer and operator projections convert the stored
-boundary back to the configured display timezone before rendering it.
+For a prepaid settlement, the replacement period starts after the exact
+uninterrupted coverage containing the payment instant. That coverage is the
+union of active entitlements and applied, non-reversed service-extension grant
+intervals; a mutable billing anchor alone is not evidence. If no exact coverage
+contains the payment, a lapsed replacement starts on the payment's
+`Africa/Lagos` calendar date. The owner advances the typed cadence from the
+selected boundary and stores UTC instants. Canceled or reversed extensions can
+therefore never defer a paid period, and an applied extension is not added a
+second time after the new paid month.
 
 A cash-funded prepaid renewal creates a document only after the complete charge
 is available. The owner creates one draft and base-subscription line, issues and
@@ -187,16 +189,18 @@ the paid line. Underfunding creates no invoice or partial application. New
 renewals no longer write the historical invoice-less account-adjustment debit.
 See `docs/designs/FUNDED_PREPAID_RENEWAL_INVOICING.md`.
 
-Historical paid periods that exactly match the retired UTC-midnight rule, plus
-paid lapsed periods proved by an older stale anchor and strict documentary/
-payment-period ordering, are owned by
+Historical paid periods that exactly match the retired UTC-midnight rule, paid
+lapsed periods proved by an older stale anchor and strict documentary/payment-
+period ordering, and the exact signature where an applied extension was carried
+forward twice are owned by
 `financial.prepaid_billing_calendar_reconciliation`. Its admin queue is
 preview-first and fingerprint-bound: only one unambiguous invoice, payment
 settlement, base line, entitlement, calendar defect, and access-lock snapshot
-can be corrected. Refunds, reversals, applied extensions, usage quota periods,
-coverage overlaps, multiple evidence rows, or an unproved anchor relationship
-are quarantined for manual review. Reversed extension history does not provide
-coverage and does not block an otherwise proved correction.
+can be corrected. An applied extension is accepted only for the exact double-
+extension signature; other applied extensions, refunds, reversals, usage quota
+periods, coverage overlaps, multiple evidence rows, or an unproved anchor
+relationship are quarantined for manual review. Canceled and reversed extension
+history does not provide coverage and does not block an otherwise proved correction.
 
 Every repair records zero economic delta and stages invoice evidence, audit,
 event, and idempotency rows atomically. A current lapsed-payment repair also
@@ -230,12 +234,16 @@ The same owner has a separate dry-run-first command for the historical case
 where generic conversion already made an onboarding document final and an
 exact allocation later made it `paid`, while its line and period remained
 unlinked. Repair requires one active paid non-proforma invoice, one positive
-unlinked line, one named matching prepaid subscription with either no billing
-anchor or a stale anchor at or before the paid settlement period, one active
-full-value allocation from a successful unreturned settlement, no credit-note
-funding, no overlapping entitlement or competing document, and exact equality
-with the shared taxed renewal charge. The Payment may also fund other invoices;
-only this invoice's allocation must equal its total.
+unlinked line, one named matching prepaid subscription, one active full-value
+allocation from a successful unreturned settlement, no credit-note funding or
+competing document, and exact equality with the shared taxed renewal charge.
+Ordinarily the subscription has no anchor or one stale at or before the paid
+settlement period, with no overlapping entitlement. A separately permission-
+gated staff repair may retain exactly one earlier unreversed adjustment-funded
+entitlement when its end equals the current anchor and falls strictly inside the
+new single payment-derived period. Automatic payment finalization never applies
+that reviewed overlap. The Payment may also fund other invoices; only this
+invoice's allocation must equal its total.
 
 Payment finalization invokes the same exact repair participant before prepaid
 entitlement and financial-access restoration run. If exactly one matching

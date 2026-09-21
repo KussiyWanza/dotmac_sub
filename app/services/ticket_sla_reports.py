@@ -12,7 +12,7 @@ from sqlalchemy import case, distinct, func
 from sqlalchemy.orm import Session
 
 from app.models.service_team import ServiceTeam
-from app.models.support import Ticket
+from app.models.support import Ticket, TicketStatus
 from app.models.system_user import SystemUser
 from app.models.ticket_workflow import (
     SlaBreach,
@@ -77,6 +77,61 @@ class TicketSlaViolationPage:
         return self.page < self.total_pages
 
 
+@dataclass(frozen=True, slots=True)
+class TicketSlaSummaryQuery:
+    """Current operational ticket scope, optionally bounded by creation time."""
+
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TicketSlaMetricBucket:
+    key: str
+    label: str
+    open_tickets: int
+    currently_breaching: int
+    breach_rate: float
+
+
+@dataclass(frozen=True, slots=True)
+class TicketSlaSummary:
+    generated_at: datetime
+    total_open_tickets: int
+    total_currently_breaching: int
+    current_breach_rate: float
+    by_status: tuple[TicketSlaMetricBucket, ...]
+    by_service_team: tuple[TicketSlaMetricBucket, ...]
+    by_region: tuple[TicketSlaMetricBucket, ...]
+    by_assignee: tuple[TicketSlaMetricBucket, ...]
+
+    def as_serializable(self) -> dict[str, object]:
+        def bucket_values(
+            buckets: tuple[TicketSlaMetricBucket, ...],
+        ) -> list[dict[str, object]]:
+            return [
+                {
+                    "key": bucket.key,
+                    "label": bucket.label,
+                    "open_tickets": bucket.open_tickets,
+                    "currently_breaching": bucket.currently_breaching,
+                    "breach_rate": bucket.breach_rate,
+                }
+                for bucket in buckets
+            ]
+
+        return {
+            "generated_at": self.generated_at.isoformat(),
+            "total_open_tickets": self.total_open_tickets,
+            "total_currently_breaching": self.total_currently_breaching,
+            "current_breach_rate": self.current_breach_rate,
+            "by_status": bucket_values(self.by_status),
+            "by_service_team": bucket_values(self.by_service_team),
+            "by_region": bucket_values(self.by_region),
+            "by_assignee": bucket_values(self.by_assignee),
+        }
+
+
 def _as_aware_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -125,48 +180,6 @@ def _apply_clock_window(query, start_at: datetime | None, end_at: datetime | Non
     return query
 
 
-def _bucket_rows(rows, *, none_key: str = "unknown") -> list[dict[str, Any]]:
-    buckets: list[dict[str, Any]] = []
-    for key, total, breached in rows:
-        total_count = int(total or 0)
-        breached_count = int(breached or 0)
-        buckets.append(
-            {
-                "key": str(getattr(key, "value", key) or none_key),
-                "total": total_count,
-                "breached": breached_count,
-                "breach_rate": round(
-                    float(breached_count) / float(total_count) if total_count else 0.0,
-                    4,
-                ),
-            }
-        )
-    return buckets
-
-
-def _labeled_bucket_rows(
-    rows, *, none_key: str = "unknown", none_label: str = "Unassigned"
-) -> list[dict[str, Any]]:
-    buckets: list[dict[str, Any]] = []
-    for key, label, total, breached in rows:
-        total_count = int(total or 0)
-        breached_count = int(breached or 0)
-        bucket_key = str(getattr(key, "value", key) or none_key)
-        buckets.append(
-            {
-                "key": bucket_key,
-                "label": str(label or none_label),
-                "total": total_count,
-                "breached": breached_count,
-                "breach_rate": round(
-                    float(breached_count) / float(total_count) if total_count else 0.0,
-                    4,
-                ),
-            }
-        )
-    return buckets
-
-
 def _apply_ticket_window(query, start_at: datetime | None, end_at: datetime | None):
     if start_at:
         query = query.filter(Ticket.created_at >= start_at)
@@ -175,61 +188,69 @@ def _apply_ticket_window(query, start_at: datetime | None, end_at: datetime | No
     return query
 
 
-def _ticket_buckets(rows, *, region: bool = False, none_key: str, none_label: str):
-    buckets: list[dict[str, Any]] = []
-    for row in rows:
-        if region:
-            key, total, breached, closed = row
-            label = key or none_label
-        else:
-            key, label, total, breached, closed = row
-        total_count = int(total or 0)
-        breached_count = int(breached or 0)
+def _current_ticket_buckets(
+    rows: list[tuple[object, object, int, int]],
+    *,
+    none_key: str,
+    none_label: str,
+) -> tuple[TicketSlaMetricBucket, ...]:
+    buckets: list[TicketSlaMetricBucket] = []
+    for key, label, open_tickets, currently_breaching in rows:
+        open_count = int(open_tickets or 0)
+        breach_count = int(currently_breaching or 0)
         buckets.append(
-            {
-                "key": str(key or none_key),
-                "label": str(label or none_label),
-                "total": total_count,
-                "breached": breached_count,
-                "closed_breached": int(closed or 0),
-                "breach_rate": round(breached_count / total_count, 4)
-                if total_count
-                else 0.0,
-            }
+            TicketSlaMetricBucket(
+                key=str(getattr(key, "value", key) or none_key),
+                label=str(getattr(label, "value", label) or none_label),
+                open_tickets=open_count,
+                currently_breaching=breach_count,
+                breach_rate=(
+                    round(breach_count / open_count, 4) if open_count else 0.0
+                ),
+            )
         )
-    return sorted(
-        buckets,
-        key=lambda item: (-item["breached"], -item["total"], item["label"].lower()),
+    return tuple(
+        sorted(
+            buckets,
+            key=lambda item: (
+                -item.currently_breaching,
+                -item.open_tickets,
+                item.label.lower(),
+            ),
+        )
     )
 
 
-def summary(
-    db: Session, start_at: datetime | None = None, end_at: datetime | None = None
-) -> dict[str, Any]:
-    """Summarize SLA clocks and distinct created tickets by ownership dimension."""
-    base = _apply_clock_window(_ticket_clock_query(db), start_at, end_at)
-    total_clocks = int(base.count())
-    breach_filter = (
-        SlaClock.status == SlaClockStatus.breached.value
-    ) | SlaClock.breached_at.is_not(None)
-    total_breaches = int(base.filter(breach_filter).count())
-    breached_expr = case((breach_filter, 1), else_=0)
-    by_status = (
-        base.with_entities(
-            SlaClock.status, func.count(SlaClock.id), func.sum(breached_expr)
-        )
-        .group_by(SlaClock.status)
-        .all()
+def summary(db: Session, *, query: TicketSlaSummaryQuery) -> TicketSlaSummary:
+    """Project currently breaching tickets over the current open workload."""
+
+    excluded_statuses = (
+        TicketStatus.closed.value,
+        TicketStatus.canceled.value,
+        "merged",
     )
     ticket_base = _apply_ticket_window(
-        db.query(Ticket).filter(Ticket.is_active.is_(True)), start_at, end_at
+        db.query(Ticket)
+        .filter(Ticket.is_active.is_(True))
+        .filter(Ticket.status.notin_(excluded_statuses)),
+        query.start_at,
+        query.end_at,
     )
     clock_join = (SlaClock.entity_id == Ticket.id) & (
         SlaClock.entity_type == WorkflowEntityType.ticket.value
     )
-    ticket_breach_id = case((breach_filter, Ticket.id), else_=None)
-    closed_breach_id = case(
-        (breach_filter & (Ticket.status == "closed"), Ticket.id), else_=None
+    current_breach_filter = SlaClock.status == SlaClockStatus.breached.value
+    current_breach_ticket_id = case((current_breach_filter, Ticket.id), else_=None)
+    by_status = (
+        ticket_base.outerjoin(SlaClock, clock_join)
+        .with_entities(
+            Ticket.status,
+            Ticket.status,
+            func.count(distinct(Ticket.id)),
+            func.count(distinct(current_breach_ticket_id)),
+        )
+        .group_by(Ticket.status)
+        .all()
     )
     by_team = (
         ticket_base.outerjoin(SlaClock, clock_join)
@@ -238,8 +259,7 @@ def summary(
             Ticket.service_team_id,
             ServiceTeam.name,
             func.count(distinct(Ticket.id)),
-            func.count(distinct(ticket_breach_id)),
-            func.count(distinct(closed_breach_id)),
+            func.count(distinct(current_breach_ticket_id)),
         )
         .group_by(Ticket.service_team_id, ServiceTeam.name)
         .all()
@@ -248,54 +268,57 @@ def summary(
         ticket_base.outerjoin(SlaClock, clock_join)
         .with_entities(
             Ticket.region,
+            Ticket.region,
             func.count(distinct(Ticket.id)),
-            func.count(distinct(ticket_breach_id)),
-            func.count(distinct(closed_breach_id)),
+            func.count(distinct(current_breach_ticket_id)),
         )
         .group_by(Ticket.region)
         .all()
     )
-    total_tickets = int(ticket_base.count())
-    total_breached_tickets = int(
+    total_open_tickets = int(ticket_base.count())
+    total_currently_breaching = int(
         ticket_base.outerjoin(SlaClock, clock_join)
-        .filter(breach_filter)
-        .distinct(Ticket.id)
-        .count()
+        .with_entities(func.count(distinct(Ticket.id)))
+        .filter(current_breach_filter)
+        .scalar()
+        or 0
     )
     by_assignee = (
-        base.outerjoin(SystemUser, SystemUser.id == Ticket.assigned_to_person_id)
+        ticket_base.outerjoin(SlaClock, clock_join)
+        .outerjoin(SystemUser, SystemUser.id == Ticket.assigned_to_person_id)
         .with_entities(
             Ticket.assigned_to_person_id,
             SystemUser.display_name,
-            func.count(SlaClock.id),
-            func.sum(breached_expr),
+            func.count(distinct(Ticket.id)),
+            func.count(distinct(current_breach_ticket_id)),
         )
         .group_by(Ticket.assigned_to_person_id, SystemUser.display_name)
         .all()
     )
-    return {
-        "total_clocks": total_clocks,
-        "total_breaches": total_breaches,
-        "breach_rate": round(total_breaches / total_clocks, 4) if total_clocks else 0.0,
-        "total_tickets": total_tickets,
-        "total_breached_tickets": total_breached_tickets,
-        "ticket_breach_rate": round(total_breached_tickets / total_tickets, 4)
-        if total_tickets
-        else 0.0,
-        "by_status": _bucket_rows(by_status),
-        "by_service_team": _ticket_buckets(
+    return TicketSlaSummary(
+        generated_at=datetime.now(UTC),
+        total_open_tickets=total_open_tickets,
+        total_currently_breaching=total_currently_breaching,
+        current_breach_rate=(
+            round(total_currently_breaching / total_open_tickets, 4)
+            if total_open_tickets
+            else 0.0
+        ),
+        by_status=_current_ticket_buckets(
+            by_status, none_key="unknown_status", none_label="Unknown Status"
+        ),
+        by_service_team=_current_ticket_buckets(
             by_team, none_key="unassigned_team", none_label="Unassigned Team"
         ),
-        "by_region": _ticket_buckets(
+        by_region=_current_ticket_buckets(
             by_region,
-            region=True,
             none_key="unassigned_region",
             none_label="Unassigned Region",
         ),
-        "by_assignee": _labeled_bucket_rows(
+        by_assignee=_current_ticket_buckets(
             by_assignee, none_key="unassigned_person", none_label="Unassigned Person"
         ),
-    }
+    )
 
 
 def trend_daily(

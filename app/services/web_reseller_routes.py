@@ -13,12 +13,12 @@ from app.db import get_db
 from app.models.auth import MFAMethod
 from app.services import auth_flow as auth_flow_service
 from app.services import (
-    crm_portal,
     customer_portal,
     customer_portal_flow_changes,
     customer_work_order_selfcare,
     reseller_crm_views,
     reseller_portal,
+    reseller_ticket_projection,
 )
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
@@ -187,26 +187,20 @@ def reseller_dashboard(
         offset=offset,
     )
 
-    # Add open tickets count from CRM. None means the CRM was unavailable.
-    open_tickets: int | None = None
-    try:
-        account_ids = [a["id"] for a in summary.get("accounts", [])]
-        if account_ids:
-            open_tickets = crm_portal.reseller_open_tickets_count(
-                db, str(context["reseller"].id), account_ids
-            )
-    except Exception:
-        logger.warning(
-            "Could not fetch CRM open tickets for reseller dashboard", exc_info=True
-        )
-
-    # Open-ticket count has no reseller-scoped cohort list, so it renders as a
-    # bare StateValue: an unreachable CRM shows "Unavailable", never a false 0.
-    open_tickets_state = (
-        reseller_portal.StateValue.present(open_tickets)
-        if open_tickets is not None
-        else reseller_portal.StateValue.unavailable()
+    account_ids = [
+        UUID(str(account["id"]))
+        for account in summary.get("accounts", [])
+        if account.get("id")
+    ]
+    ticket_count = reseller_ticket_projection.native_open_ticket_count(
+        db,
+        query=reseller_ticket_projection.ResellerTicketCountQuery(
+            reseller_id=UUID(str(context["reseller"].id)),
+            account_ids=tuple(account_ids),
+        ),
     )
+    open_tickets = ticket_count.value
+    open_tickets_state = reseller_portal.StateValue.present(ticket_count.value)
 
     return templates.TemplateResponse(
         "reseller/dashboard/index.html",
@@ -1019,7 +1013,7 @@ def reseller_account_tickets(
     db: Session,
     account_id: str,
 ):
-    """Show CRM tickets for a reseller's customer account."""
+    """Show native support tickets for a reseller's customer account."""
     context = _require_reseller_context(request, db)
     if not context:
         return RedirectResponse(url="/reseller/auth/login", status_code=303)
@@ -1041,17 +1035,24 @@ def reseller_account_tickets(
             status_code=404,
         )
 
-    ticket_context = crm_portal.reseller_account_tickets_context(
-        request,
+    tickets = reseller_ticket_projection.native_account_ticket_summaries(
         db,
-        account_id,
-        current_user=context["current_user"],
-        reseller=context["reseller"],
+        query=reseller_ticket_projection.ResellerAccountTicketsQuery(
+            reseller_id=UUID(str(context["reseller"].id)),
+            account_id=UUID(account_id),
+        ),
     )
-    ticket_context["account"] = detail
     return templates.TemplateResponse(
         "reseller/accounts/tickets.html",
-        ticket_context,
+        {
+            "request": request,
+            "active_page": "accounts",
+            "current_user": context["current_user"],
+            "reseller": context["reseller"],
+            "account": detail,
+            "account_id": account_id,
+            "tickets": [ticket.to_dict() for ticket in tickets],
+        },
     )
 
 

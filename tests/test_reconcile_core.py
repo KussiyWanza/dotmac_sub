@@ -609,7 +609,7 @@ def test_wifi_password_change_on_synced_ont_pushes_once(
     assert result.success is True
     assert result.sync_status == "synced"
     psk_writes = [
-        call for call in acs.spv_calls if "PreSharedKey" in next(iter(call[1]))
+        call for call in acs.spv_calls if "KeyPassphrase" in next(iter(call[1]))
     ]
     assert len(psk_writes) == 1
     # apply_proposed_change writes the new password into desired_config.
@@ -660,7 +660,7 @@ def test_persisted_wifi_password_scope_pushes_without_proposed_value(
     psk_writes = [
         call
         for call in acs.spv_calls
-        if any("PreSharedKey" in parameter for parameter in call[1])
+        if any("KeyPassphrase" in parameter for parameter in call[1])
     ]
     assert len(psk_writes) == 1
 
@@ -672,7 +672,7 @@ def test_readback_only_never_calls_set_parameter_values(
     the EXACT same pending-write scenario as
     ``test_persisted_wifi_password_scope_pushes_without_proposed_value``
     (that test is the near-miss: identical setup, ``readback_only`` simply
-    omitted, and it asserts exactly one ``PreSharedKey`` write happened)
+    omitted, and it asserts exactly one ``KeyPassphrase`` write happened)
     issues zero ACS writes. The only difference between the two tests is the
     ``readback_only=True`` argument.
     """
@@ -923,7 +923,7 @@ def test_bootstrap_mode_pushes_wifi_password_on_synced_ont(
     assert result.success is True
     # Bootstrap pushes WiFi PSK regardless.
     psk_pushes = [
-        call for call in acs.spv_calls if "PreSharedKey" in next(iter(call[1]))
+        call for call in acs.spv_calls if "KeyPassphrase" in next(iter(call[1]))
     ]
     assert len(psk_pushes) == 1
 
@@ -2314,7 +2314,7 @@ def test_wifi_only_delivery_with_cached_olt_data_does_not_trigger_the_unavailabl
     scenario ``_should_push_wifi_password`` uses cached OLT data for during
     planning (``mode == "sync" and not observed.olt.olt_present`` forces a
     password re-push): if the substitution's ``olt_present=True`` failed to
-    reach the plan, this would regress to a spurious ``PreSharedKey`` write
+    reach the plan, this would regress to a spurious password write
     and readback-pending failure instead of the success asserted below.
     """
     desired = stub_desired

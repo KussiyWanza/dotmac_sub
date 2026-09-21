@@ -26,7 +26,7 @@ from app.models.catalog import (
     SubscriptionStatus,
 )
 from app.models.network_monitoring import AlertSeverity
-from app.services.audit_adapter import stage_audit_event
+from app.services.audit_adapter import AuditActor, stage_audit_event
 from app.services.observability import Finding, record_finding, record_metric
 
 logger = logging.getLogger(__name__)
@@ -506,9 +506,22 @@ def stage_billing_catalog_change(
     changes: dict[str, Any] | None = None,
     actor_id: str | None = None,
     actor_type: str | AuditActorType | None = None,
+    actor: AuditActor | None = None,
     offer_id: object | None = None,
 ) -> None:
-    """Stage durable audit and operator visibility in the caller transaction."""
+    """Stage durable audit and operator visibility in the caller transaction.
+
+    New callers pass a typed actor. Scalar arguments remain for existing
+    callers until their separately reviewed audit-actor retirement slices.
+    """
+    if actor is not None and (actor_id is not None or actor_type is not None):
+        raise ValueError(
+            "typed audit actor cannot be combined with scalar actor fields"
+        )
+    effective_actor_type = (
+        actor.actor_type if actor is not None else _actor_type(actor_type)
+    )
+    effective_actor_id = actor.actor_id if actor is not None else actor_id
     safe_changes = {key: _json_value(value) for key, value in (changes or {}).items()}
     metadata: dict[str, object] = {
         "action": action,
@@ -516,15 +529,25 @@ def stage_billing_catalog_change(
     }
     if offer_id is not None:
         metadata["offer_id"] = str(offer_id)
-    stage_audit_event(
-        db,
-        action=f"catalog_billing_{action}",
-        entity_type=entity_type,
-        entity_id=str(entity_id),
-        actor_type=_actor_type(actor_type),
-        actor_id=actor_id,
-        metadata=metadata,
-    )
+    if actor is None:
+        stage_audit_event(
+            db,
+            action=f"catalog_billing_{action}",
+            entity_type=entity_type,
+            entity_id=str(entity_id),
+            actor_type=effective_actor_type,
+            actor_id=effective_actor_id,
+            metadata=metadata,
+        )
+    else:
+        stage_audit_event(
+            db,
+            action=f"catalog_billing_{action}",
+            entity_type=entity_type,
+            entity_id=str(entity_id),
+            actor=actor,
+            metadata=metadata,
+        )
     record_metric(
         domain="catalog",
         signal="billing_critical_change",
@@ -559,8 +582,8 @@ def stage_billing_catalog_change(
         action,
         entity_type,
         entity_id,
-        _actor_type(actor_type).value,
-        actor_id,
+        effective_actor_type.value,
+        effective_actor_id,
         safe_changes,
     )
 

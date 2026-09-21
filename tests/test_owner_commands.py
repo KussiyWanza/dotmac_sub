@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from app.models.network_monitoring import DeviceProjection
 from app.services.owner_commands import (
@@ -261,3 +263,64 @@ def test_uncontracted_owner_cannot_use_runtime_boundary(db_session) -> None:
 
     assert captured.value.code == "events.store.command_contract_violation"
     assert not db_session.in_transaction()
+
+
+def test_owner_savepoint_recovers_real_flush_constraint_failure(
+    db_session: Session,
+) -> None:
+    def insert_duplicate() -> None:
+        db_session.add(_projection("duplicate-source"))
+        db_session.flush()
+
+    def operation() -> None:
+        db_session.add(_projection("duplicate-source"))
+        db_session.flush()
+        with pytest.raises(IntegrityError):
+            execute_owner_savepoint(db_session, insert_duplicate)
+        assert db_session.is_active
+        assert not db_session.in_nested_transaction()
+        db_session.add(_projection("after-conflict"))
+
+    execute_owner_command(
+        db_session, definition=_DEFINITION, context=_context(), operation=operation
+    )
+
+    assert not db_session.in_transaction()
+    assert set(db_session.scalars(select(DeviceProjection.source_id))) == {
+        "duplicate-source",
+        "after-conflict",
+    }
+
+
+@pytest.mark.parametrize(
+    "action", ["commit", "rollback", "savepoint_commit", "savepoint_rollback"]
+)
+def test_owner_savepoint_still_rejects_participant_transaction_completion(
+    db_session: Session,
+    action: str,
+) -> None:
+    def participant() -> None:
+        db_session.add(_projection("illegal-participant"))
+        db_session.flush()
+        if action == "commit":
+            db_session.commit()
+        elif action == "rollback":
+            db_session.rollback()
+        else:
+            nested = db_session.get_nested_transaction()
+            assert nested is not None
+            if action == "savepoint_commit":
+                nested.commit()
+            else:
+                nested.rollback()
+
+    with pytest.raises(OwnerCommandError):
+        execute_owner_command(
+            db_session,
+            definition=_DEFINITION,
+            context=_context(),
+            operation=lambda: execute_owner_savepoint(db_session, participant),
+        )
+
+    assert not db_session.in_transaction()
+    assert _count(db_session) == 0

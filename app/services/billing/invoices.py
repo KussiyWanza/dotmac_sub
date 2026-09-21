@@ -81,6 +81,7 @@ logger = logging.getLogger(__name__)
 _VOID_IDEMPOTENCY_SCOPE = "invoice_void"
 _WRITE_OFF_IDEMPOTENCY_SCOPE = "invoice_write_off"
 _RECONCILIATION_IDEMPOTENCY_SCOPE = "invoice_closure_reconciliation"
+_HISTORICAL_TAX_CORRECTION_METADATA_KEY = "historical_invoice_tax_correction"
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._~-]{16,120}$")
 
 
@@ -202,6 +203,85 @@ class InvoiceIssuanceInput:
     due_date_basis_ref: str
     due_date_policy_version: str
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalInvoiceTaxCorrectionDocumentEvidence:
+    """Typed documentary link from a replacement invoice to its correction."""
+
+    account_id: UUID
+    source_invoice_id: UUID
+    source_invoice_line_id: UUID
+    source_invoice_closure_id: UUID
+    source_payment_allocation_id: UUID
+    void_evidence_invoice_id: UUID
+    subscription_invoice_id: UUID
+    payment_id: UUID
+    tax_rate_id: UUID
+    subscription_payment_allocation_id: UUID
+    replacement_payment_allocation_id: UUID
+    source_subtotal: Decimal
+    subscription_total: Decimal
+    tax_amount: Decimal
+    replacement_total: Decimal
+    currency: str
+    preview_fingerprint: str
+    command_id: UUID
+    reason: str
+
+    def __post_init__(self) -> None:
+        money = (
+            self.source_subtotal,
+            self.subscription_total,
+            self.tax_amount,
+            self.replacement_total,
+        )
+        if any(round_money(value) <= Decimal("0.00") for value in money):
+            raise ValueError("correction evidence amounts must be positive")
+        if round_money(self.source_subtotal + self.tax_amount) != round_money(
+            self.replacement_total
+        ):
+            raise ValueError("replacement total must equal source subtotal plus tax")
+        if (
+            self.currency != self.currency.strip().upper()
+            or len(self.currency) != 3
+            or not self.currency.isalpha()
+        ):
+            raise ValueError("correction evidence currency must be normalized")
+        if len(self.preview_fingerprint) != 64 or any(
+            character not in "0123456789abcdef"
+            for character in self.preview_fingerprint
+        ):
+            raise ValueError("correction evidence fingerprint must be SHA-256 hex")
+        if not self.reason.strip() or len(self.reason) > 500:
+            raise ValueError("correction evidence reason is invalid")
+
+    def as_metadata(self) -> dict[str, object]:
+        return {
+            "account_id": str(self.account_id),
+            "source_invoice_id": str(self.source_invoice_id),
+            "source_invoice_line_id": str(self.source_invoice_line_id),
+            "source_invoice_closure_id": str(self.source_invoice_closure_id),
+            "source_payment_allocation_id": str(self.source_payment_allocation_id),
+            "void_evidence_invoice_id": str(self.void_evidence_invoice_id),
+            "subscription_invoice_id": str(self.subscription_invoice_id),
+            "payment_id": str(self.payment_id),
+            "tax_rate_id": str(self.tax_rate_id),
+            "subscription_payment_allocation_id": str(
+                self.subscription_payment_allocation_id
+            ),
+            "replacement_payment_allocation_id": str(
+                self.replacement_payment_allocation_id
+            ),
+            "source_subtotal": str(round_money(self.source_subtotal)),
+            "subscription_total": str(round_money(self.subscription_total)),
+            "tax_amount": str(round_money(self.tax_amount)),
+            "replacement_total": str(round_money(self.replacement_total)),
+            "currency": self.currency,
+            "preview_fingerprint": self.preview_fingerprint,
+            "command_id": str(self.command_id),
+            "reason": self.reason,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -975,6 +1055,19 @@ class Invoices(ListResponseMixin):
         return _build_closure_preview(db, invoice, InvoiceClosureType.void)
 
     @staticmethod
+    def preview_void_for_owner(db: Session, invoice_id: UUID) -> InvoiceClosurePreview:
+        """Return a transport-neutral void preview to a composing owner."""
+
+        try:
+            return Invoices.preview_void(db, str(invoice_id))
+        except HTTPException as exc:
+            raise InvoiceOwnerError(
+                code="financial.invoice.void_preview_rejected",
+                message="Invoice owner rejected the composed void preview.",
+                details={"invoice_id": str(invoice_id), "reason": str(exc.detail)},
+            ) from exc
+
+    @staticmethod
     def preview_write_off(db: Session, invoice_id: str) -> InvoiceClosurePreview:
         invoice = get_by_id(db, Invoice, invoice_id)
         if not invoice:
@@ -1209,6 +1302,8 @@ class Invoices(ListResponseMixin):
                 preview=preview,
             )
         except IntegrityError as exc:
+            if not commit:
+                raise
             db.rollback()
             replay = Invoices._closure_replay(
                 db,
@@ -1223,7 +1318,8 @@ class Invoices(ListResponseMixin):
                 status_code=409, detail="Invoice already has terminal closure evidence"
             ) from exc
         except Exception:
-            db.rollback()
+            if commit:
+                db.rollback()
             raise
 
     @staticmethod
@@ -1247,6 +1343,38 @@ class Invoices(ListResponseMixin):
             stage_audit=stage_audit,
             reconcile_access=reconcile_access,
         )
+
+    @staticmethod
+    def confirm_void_for_owner(
+        db: Session,
+        invoice_id: UUID,
+        *,
+        preview_fingerprint: str,
+        idempotency_key: str,
+        reason: str,
+        reconcile_access: bool = False,
+    ) -> InvoiceClosureResult:
+        """Stage a reviewed void inside a wider registered owner transaction."""
+
+        try:
+            return Invoices.confirm_void(
+                db,
+                str(invoice_id),
+                InvoiceClosureConfirm(
+                    preview_fingerprint=preview_fingerprint,
+                    idempotency_key=idempotency_key,
+                    memo=reason,
+                ),
+                origin=InvoiceClosureOrigin.system,
+                commit=False,
+                reconcile_access=reconcile_access,
+            )
+        except HTTPException as exc:
+            raise InvoiceOwnerError(
+                code="financial.invoice.void_rejected",
+                message="Invoice owner rejected the composed void transition.",
+                details={"invoice_id": str(invoice_id), "reason": str(exc.detail)},
+            ) from exc
 
     @staticmethod
     def confirm_write_off(
@@ -1785,6 +1913,21 @@ class Invoices(ListResponseMixin):
             ) from exc
 
     @staticmethod
+    def recalculate_totals_for_owner(db: Session, invoice_id: UUID) -> Invoice:
+        """Rebuild one staged invoice summary inside its owner's transaction."""
+
+        invoice = lock_for_update(db, Invoice, invoice_id)
+        if invoice is None:
+            raise InvoiceOwnerError(
+                code="financial.invoice.invoice_not_found",
+                message="Invoice was not found.",
+                details={"invoice_id": str(invoice_id)},
+            )
+        _recalculate_invoice_totals(db, invoice)
+        db.flush()
+        return invoice
+
+    @staticmethod
     def issue_draft_system(
         db: Session,
         invoice_id: str,
@@ -2125,6 +2268,103 @@ class Invoices(ListResponseMixin):
                 code="financial.invoice.issue_rejected",
                 message="Invoice owner rejected the issue transition.",
                 details={"reason": str(exc.detail)},
+            ) from exc
+
+    @staticmethod
+    def stage_historical_tax_correction_evidence_for_owner(
+        db: Session,
+        invoice_id: UUID,
+        *,
+        evidence: HistoricalInvoiceTaxCorrectionDocumentEvidence,
+    ) -> Invoice:
+        """Persist exact correction lineage on the paid replacement document."""
+
+        invoice = lock_for_update(db, Invoice, invoice_id)
+        if (
+            invoice is None
+            or not invoice.is_active
+            or invoice.is_proforma
+            or invoice.status is not InvoiceStatus.paid
+            or invoice.account_id != evidence.account_id
+            or round_money(invoice.balance_due) != Decimal("0.00")
+            or round_money(invoice.subtotal) != round_money(evidence.source_subtotal)
+            or round_money(invoice.tax_total) != round_money(evidence.tax_amount)
+            or round_money(invoice.total) != round_money(evidence.replacement_total)
+            or invoice.currency.upper() != evidence.currency.upper()
+            or invoice.id
+            in {
+                evidence.source_invoice_id,
+                evidence.void_evidence_invoice_id,
+                evidence.subscription_invoice_id,
+            }
+        ):
+            raise InvoiceOwnerError(
+                code="financial.invoice.tax_correction_evidence_rejected",
+                message="Replacement invoice no longer matches correction evidence.",
+                details={"invoice_id": str(invoice_id)},
+            )
+        payload = evidence.as_metadata()
+        metadata = dict(invoice.metadata_ or {})
+        existing = metadata.get(_HISTORICAL_TAX_CORRECTION_METADATA_KEY)
+        if existing is not None and existing != payload:
+            raise InvoiceOwnerError(
+                code="financial.invoice.tax_correction_evidence_conflict",
+                message="Replacement invoice carries different correction evidence.",
+                details={"invoice_id": str(invoice_id)},
+            )
+        metadata[_HISTORICAL_TAX_CORRECTION_METADATA_KEY] = payload
+        invoice.metadata_ = metadata
+        db.flush()
+        return invoice
+
+    @staticmethod
+    def historical_tax_correction_evidence(
+        invoice: Invoice,
+    ) -> HistoricalInvoiceTaxCorrectionDocumentEvidence | None:
+        """Read and validate typed correction lineage from an invoice document."""
+
+        raw = dict(invoice.metadata_ or {}).get(_HISTORICAL_TAX_CORRECTION_METADATA_KEY)
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise InvoiceOwnerError(
+                code="financial.invoice.tax_correction_evidence_invalid",
+                message="Replacement invoice correction evidence is malformed.",
+                details={"invoice_id": str(invoice.id)},
+            )
+        try:
+            return HistoricalInvoiceTaxCorrectionDocumentEvidence(
+                account_id=UUID(str(raw["account_id"])),
+                source_invoice_id=UUID(str(raw["source_invoice_id"])),
+                source_invoice_line_id=UUID(str(raw["source_invoice_line_id"])),
+                source_invoice_closure_id=UUID(str(raw["source_invoice_closure_id"])),
+                source_payment_allocation_id=UUID(
+                    str(raw["source_payment_allocation_id"])
+                ),
+                void_evidence_invoice_id=UUID(str(raw["void_evidence_invoice_id"])),
+                subscription_invoice_id=UUID(str(raw["subscription_invoice_id"])),
+                payment_id=UUID(str(raw["payment_id"])),
+                tax_rate_id=UUID(str(raw["tax_rate_id"])),
+                subscription_payment_allocation_id=UUID(
+                    str(raw["subscription_payment_allocation_id"])
+                ),
+                replacement_payment_allocation_id=UUID(
+                    str(raw["replacement_payment_allocation_id"])
+                ),
+                source_subtotal=Decimal(str(raw["source_subtotal"])),
+                subscription_total=Decimal(str(raw["subscription_total"])),
+                tax_amount=Decimal(str(raw["tax_amount"])),
+                replacement_total=Decimal(str(raw["replacement_total"])),
+                currency=str(raw["currency"]),
+                preview_fingerprint=str(raw["preview_fingerprint"]),
+                command_id=UUID(str(raw["command_id"])),
+                reason=str(raw["reason"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise InvoiceOwnerError(
+                code="financial.invoice.tax_correction_evidence_invalid",
+                message="Replacement invoice correction evidence is malformed.",
+                details={"invoice_id": str(invoice.id)},
             ) from exc
 
     @staticmethod
@@ -2724,6 +2964,8 @@ class Invoices(ListResponseMixin):
         offset: int,
         *,
         updated_since: datetime | None = None,
+        after_updated_at: datetime | None = None,
+        after_id: UUID | None = None,
     ):
         """Return the ordered ERP invoice delta without detail-only relations."""
         query = db.query(Invoice).options(
@@ -2748,13 +2990,56 @@ class Invoices(ListResponseMixin):
             updated_since=updated_since,
             limit=limit,
             offset=offset,
+            after_updated_at=after_updated_at,
+            after_id=after_id,
         ).all()
 
     @classmethod
-    def sync_list_response(cls, db: Session, **kwargs):
-        limit = kwargs["limit"]
-        offset = kwargs["offset"]
-        items = cls.list_for_sync(db, **kwargs)
+    def sync_list_response(
+        cls,
+        db: Session,
+        *,
+        account_id: str | None = None,
+        status: str | None = None,
+        is_active: bool | None = None,
+        updated_since: datetime | None = None,
+        limit: int,
+        offset: int,
+        after_updated_at: datetime | None = None,
+        after_id: UUID | None = None,
+    ):
+        """Legacy accounting-sync page — typed-boundary deviation, documented.
+
+        This service (and ``list_for_sync`` below) predates this repo's typed
+        cross-component-boundary rule and still accepts transport-layer
+        ``str``/``bool`` primitives and returns a ``dict[str, Any]`` envelope,
+        unlike the v2 feed's ``InvoiceAccountingSyncQuery``/``ListResponse``.
+        This change only threads the two new optional keyset-cursor params
+        through the existing shape; it does not migrate it, because the
+        future ProductPort/Integrator work this cursor exists for targets the
+        v2 typed feed exclusively (see
+        ``docs/designs/ERP_INVOICE_ACCOUNTING_SYNC_V2.md``) — the legacy feed
+        stays as the pull job's existing backstop. A full typed migration of
+        this legacy boundary is tracked separately, not part of this slice.
+
+        A partial ``after_updated_at``/``after_id`` pair raises a plain
+        ``ValueError`` from ``apply_sync_page`` (not an HTTP-mapped error) if
+        called directly rather than through the API layer — the sole current
+        caller, ``app.api.billing.sync_invoices``, already validates the pair
+        and returns 422 before reaching here. Any new direct caller of this
+        service must perform the same validation itself.
+        """
+        items = cls.list_for_sync(
+            db,
+            account_id,
+            status,
+            is_active,
+            limit,
+            offset,
+            updated_since=updated_since,
+            after_updated_at=after_updated_at,
+            after_id=after_id,
+        )
         return sync_page_response(items, limit=limit, offset=offset)
 
     @staticmethod
@@ -3077,6 +3362,7 @@ class InvoiceLines(ListResponseMixin):
                 line.is_active = False
         db.flush()
         _recalculate_invoice_totals(db, invoice)
+        invoice.updated_at = datetime.now(UTC)
 
     @staticmethod
     def stage_system_line(

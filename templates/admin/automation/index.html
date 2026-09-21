@@ -1,0 +1,115 @@
+{% extends "layouts/admin.html" %}
+{% from "components/ui/macros.html" import page_header %}
+
+{% block title %}Automation Center - Admin{% endblock %}
+
+{% block content %}
+<div class="space-y-7">
+    {% set automation_icon %}
+    <svg class="h-7 w-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h6M14 6h6M8 6a2 2 0 11-4 0 2 2 0 014 0zm8 12h4M4 18h8m4 0a2 2 0 104 0 2 2 0 00-4 0zM4 12h12m0 0a2 2 0 104 0 2 2 0 00-4 0z"/>
+    </svg>
+    {% endset %}
+    {% call page_header(
+        title="Automation Center",
+        subtitle="One governed inventory for module capabilities, central rules, and execution evidence.",
+        icon=automation_icon,
+        color="indigo"
+    ) %}
+        <button type="button" disabled aria-describedby="authoring-note"
+                class="inline-flex min-h-10 cursor-not-allowed items-center gap-2 rounded-lg bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+            New rule
+        </button>
+    {% endcall %}
+
+    <section aria-labelledby="runtime-heading" class="overflow-hidden rounded-2xl border {% if runtime_state == 'blocked' %}border-red-300 bg-red-50 dark:border-red-900 dark:bg-red-950/25{% elif runtime_state == 'ready' %}border-emerald-300 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/25{% else %}border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/25{% endif %}">
+        <div class="flex flex-col gap-5 p-5 sm:flex-row sm:items-center sm:justify-between">
+            <div class="max-w-2xl">
+                <div class="flex items-center gap-2">
+                    <span class="h-2.5 w-2.5 rounded-full {% if runtime_state == 'blocked' %}bg-red-500{% elif runtime_state == 'ready' %}bg-emerald-500{% else %}bg-amber-500{% endif %}" aria-hidden="true"></span>
+                    <h2 id="runtime-heading" class="text-base font-semibold text-slate-950 dark:text-white">
+                        {% if runtime_state == 'blocked' %}Runtime blocked{% elif runtime_state == 'ready' %}Runtime ready{% else %}Runtime dormant{% endif %}
+                    </h2>
+                </div>
+                <p class="mt-2 max-w-[70ch] text-sm leading-6 text-slate-700 dark:text-slate-300">
+                    {% if runtime_state == 'blocked' %}
+                        Capability declarations and executable adapters do not match. Rules cannot execute until the code registry is corrected.
+                    {% elif runtime_state == 'ready' %}
+                        At least one module has a reviewed event trigger and an idempotent typed action adapter.
+                    {% else %}
+                        The control plane is installed, but no module can execute actions yet. Deployment creates no rules and causes no business side effects.
+                    {% endif %}
+                </p>
+                <p id="authoring-note" class="mt-1 text-xs text-slate-600 dark:text-slate-400">Rule authoring remains unavailable until the first complete module adapter is admitted.</p>
+            </div>
+            <dl class="grid min-w-full grid-cols-3 divide-x divide-slate-300/70 border-t border-slate-300/70 pt-4 text-center dark:divide-slate-700 dark:border-slate-700 sm:min-w-[22rem] sm:border-l sm:border-t-0 sm:pl-5 sm:pt-0">
+                <div class="px-3"><dt class="text-xs text-slate-600 dark:text-slate-400">Known</dt><dd class="mt-1 text-xl font-semibold tabular-nums text-slate-950 dark:text-white">{{ module_count }}</dd></div>
+                <div class="px-3"><dt class="text-xs text-slate-600 dark:text-slate-400">Declared</dt><dd class="mt-1 text-xl font-semibold tabular-nums text-slate-950 dark:text-white">{{ declared_module_count }}</dd></div>
+                <div class="px-3"><dt class="text-xs text-slate-600 dark:text-slate-400">Ready</dt><dd class="mt-1 text-xl font-semibold tabular-nums text-slate-950 dark:text-white">{{ ready_module_count }}</dd></div>
+            </dl>
+        </div>
+        {% if registry_errors %}
+        <div class="border-t border-red-300 px-5 py-3 text-sm text-red-800 dark:border-red-900 dark:text-red-300">
+            <p class="font-semibold">Registry validation failed</p>
+            <ul class="mt-1 list-disc space-y-1 pl-5">{% for error in registry_errors %}<li>{{ error }}</li>{% endfor %}</ul>
+        </div>
+        {% endif %}
+    </section>
+
+    <section aria-labelledby="modules-heading" class="overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+        <div class="border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+            <h2 id="modules-heading" class="text-base font-semibold text-slate-950 dark:text-white">Module registry</h2>
+            <p class="mt-1 text-sm text-slate-600 dark:text-slate-400">Every source-of-truth domain is listed. Only reviewed code declarations can expose triggers or actions.</p>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-slate-200 text-left text-sm dark:divide-slate-800">
+                <thead class="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-950/50 dark:text-slate-400">
+                    <tr><th scope="col" class="px-5 py-3 font-semibold">Module</th><th scope="col" class="px-4 py-3 font-semibold">State</th><th scope="col" class="px-4 py-3 text-right font-semibold">Targets</th><th scope="col" class="px-4 py-3 text-right font-semibold">Triggers</th><th scope="col" class="px-5 py-3 text-right font-semibold">Actions</th></tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                    {% for row in modules %}
+                    <tr class="hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
+                        <td class="px-5 py-3.5"><p class="font-medium text-slate-900 dark:text-white">{{ row.manifest.label }}</p><p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{{ row.manifest.module_key }}</p></td>
+                        <td class="px-4 py-3.5"><span class="inline-flex rounded-full px-2.5 py-1 text-xs font-medium {% if row.state == 'ready' %}bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300{% elif row.state == 'blocked' %}bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300{% elif row.state == 'declared' %}bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300{% else %}bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300{% endif %}">{{ row.state_label }}</span></td>
+                        <td class="px-4 py-3.5 text-right tabular-nums text-slate-700 dark:text-slate-300">{{ row.manifest.target_types|length }}</td>
+                        <td class="px-4 py-3.5 text-right tabular-nums text-slate-700 dark:text-slate-300">{{ row.manifest.triggers|length }}</td>
+                        <td class="px-5 py-3.5 text-right tabular-nums text-slate-700 dark:text-slate-300">{{ row.manifest.actions|length }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <div class="grid gap-7 xl:grid-cols-2">
+        <section aria-labelledby="rules-heading" class="overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+            <div class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 id="rules-heading" class="text-base font-semibold text-slate-950 dark:text-white">Central rules</h2><p class="mt-1 text-sm text-slate-600 dark:text-slate-400">Immutable published versions; legacy engines are not included.</p></div>
+            {% if not can_read_rules %}
+                <p class="px-5 py-8 text-sm text-slate-600 dark:text-slate-400">You need <code class="rounded bg-slate-100 px-1.5 py-0.5 text-xs dark:bg-slate-800">automation:rule:read</code> to view this section.</p>
+            {% elif rules %}
+                <ul class="divide-y divide-slate-100 dark:divide-slate-800">{% for rule in rules %}<li class="flex items-center justify-between gap-4 px-5 py-3.5"><div class="min-w-0"><p class="truncate font-medium text-slate-900 dark:text-white">{{ rule.name }}</p><p class="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">{{ rule.trigger_key }}</p></div><span class="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium capitalize text-slate-700 dark:bg-slate-800 dark:text-slate-300">{{ rule.status }}</span></li>{% endfor %}</ul>
+            {% else %}
+                <div class="px-5 py-8"><p class="font-medium text-slate-900 dark:text-white">No central rules yet</p><p class="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-400">Rules will appear here after a module adapter and its authoring surface are approved.</p></div>
+            {% endif %}
+        </section>
+
+        <section aria-labelledby="runs-heading" class="overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+            <div class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 id="runs-heading" class="text-base font-semibold text-slate-950 dark:text-white">Recent execution</h2><p class="mt-1 text-sm text-slate-600 dark:text-slate-400">Latest tenant-scoped run evidence, without payload values.</p></div>
+            {% if not can_read_runs %}
+                <p class="px-5 py-8 text-sm text-slate-600 dark:text-slate-400">You need <code class="rounded bg-slate-100 px-1.5 py-0.5 text-xs dark:bg-slate-800">automation:run:read</code> to view this section.</p>
+            {% elif runs %}
+                <ul class="divide-y divide-slate-100 dark:divide-slate-800">{% for run in runs %}<li class="flex items-center justify-between gap-4 px-5 py-3.5"><div class="min-w-0"><p class="truncate font-medium text-slate-900 dark:text-white">{{ run.event_type }}</p><p class="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">{{ run.target_type }} - {{ run.created_at }}</p></div><span class="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium capitalize text-slate-700 dark:bg-slate-800 dark:text-slate-300">{{ run.status.value }}</span></li>{% endfor %}</ul>
+            {% else %}
+                <div class="px-5 py-8"><p class="font-medium text-slate-900 dark:text-white">No execution recorded</p><p class="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-400">The runtime ledger begins when a published rule receives its registered event.</p></div>
+            {% endif %}
+        </section>
+    </div>
+
+    <section aria-labelledby="legacy-heading" class="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+        <h2 id="legacy-heading" class="text-base font-semibold text-slate-950 dark:text-white">Existing automation ownership</h2>
+        <p class="mt-1 max-w-[75ch] text-sm leading-6 text-slate-600 dark:text-slate-400">Existing engines remain authoritative and are never rewritten by this hub. Registered links provide one inventory without introducing a second writer.</p>
+        {% if legacy_surfaces %}<ul class="mt-4 divide-y divide-slate-100 border-y border-slate-100 dark:divide-slate-800 dark:border-slate-800">{% for surface in legacy_surfaces %}<li class="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between"><div><p class="font-medium text-slate-900 dark:text-white">{{ surface.label }}</p><p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Owned by {{ surface.owner_service }}</p></div>{% if surface.management_path %}<a href="{{ surface.management_path }}" class="text-sm font-semibold text-indigo-700 underline decoration-indigo-300 underline-offset-4 hover:text-indigo-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:text-indigo-300 dark:hover:text-indigo-200">Open existing setup</a>{% endif %}</li>{% endfor %}</ul>{% else %}<p class="mt-4 text-sm text-slate-500 dark:text-slate-400">No legacy management links have been registered yet.</p>{% endif %}
+    </section>
+</div>
+{% endblock %}

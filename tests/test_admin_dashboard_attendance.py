@@ -98,6 +98,53 @@ def test_inactive_system_user_never_calls_provider(monkeypatch):
 
     provider.assert_not_called()
     assert "not available" in captured["error_message"].lower()
+    assert captured["attendance_error_code"] == "authorization_failed"
+    assert captured["attendance_retryable"] is False
+
+
+def test_permanent_eligibility_error_stops_short_interval_polling(monkeypatch):
+    captured = {}
+    service = MagicMock()
+    service.today.side_effect = WorkforceAttendanceError(
+        "employee_not_linked",
+        "Attendance is not available for this account.",
+    )
+    monkeypatch.setattr(
+        web_admin_attendance, "WorkforceAttendanceService", lambda _db: service
+    )
+    monkeypatch.setattr(
+        web_admin_attendance.templates,
+        "TemplateResponse",
+        lambda _name, context: captured.update(context) or context,
+    )
+
+    web_admin_attendance.load(_request(_user()), MagicMock())
+
+    assert captured["attendance_error_code"] == "employee_not_linked"
+    assert captured["attendance_retryable"] is False
+
+
+def test_transient_error_keeps_short_retry_enabled(monkeypatch):
+    captured = {}
+    service = MagicMock()
+    service.today.side_effect = WorkforceAttendanceError(
+        "attendance_unavailable",
+        "Attendance is temporarily unavailable.",
+        unavailable=True,
+    )
+    monkeypatch.setattr(
+        web_admin_attendance, "WorkforceAttendanceService", lambda _db: service
+    )
+    monkeypatch.setattr(
+        web_admin_attendance.templates,
+        "TemplateResponse",
+        lambda _name, context: captured.update(context) or context,
+    )
+
+    web_admin_attendance.load(_request(_user()), MagicMock())
+
+    assert captured["attendance_error_code"] == "attendance_unavailable"
+    assert captured["attendance_retryable"] is True
 
 
 def test_dashboard_punch_forwards_only_browser_location(monkeypatch):
@@ -303,17 +350,22 @@ def test_dashboard_templates_and_script_preserve_lazy_safe_states():
     assert "data-attendance-state" in partial
     assert "data-attendance-date" in partial
     assert "data-attendance-can-check-in" in partial
+    assert "data-attendance-error-code" in partial
+    assert "data-attendance-retryable" in partial
     assert "data-attendance-start" in partial
     assert "data-attendance-end" in partial
     assert "formatElapsed" in script
     assert "clearAttendanceTimer" in script
     assert "maximumAge: 0" in script
+    assert "data-attendance-subject" in layout
     assert "enableHighAccuracy: true" in script
     assert "X-CSRF-Token" in script
     assert "employee_id" not in script
     assert "fetch(attendanceUrl" in reminder
     assert "checkIntervalMs = 10 * 60 * 1000" in reminder
     assert "unavailableRetryMs = 5 * 60 * 1000" in reminder
+    assert "dataset.attendanceSubject" in reminder
+    assert "eligibilityRetryMs = 12 * 60 * 60 * 1000" in reminder
     assert "snoozeMs = 10 * 60 * 1000" in reminder
     assert "dismissedDateKey" in reminder
     assert "window.location.href = dashboardUrl" in reminder

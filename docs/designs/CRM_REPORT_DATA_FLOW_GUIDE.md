@@ -200,6 +200,31 @@ Ownership: Self-Care-owned.
 Data freshness/synchronization: Live date-bounded recomputation using the same explicit period as the page and export.
 Plain-English flow: The common agent calculation is narrowed to the authenticated person before it reaches the UI or export.
 
+## Ticket SLA current operations
+
+REPORT: Ticket SLA Current Operations
+Data source: Ticket, SlaClock, SlaBreach, ServiceTeam, and SystemUser.
+Backend query/service: typed `ticket_sla_reports.summary`, `violation_page`, and
+`trend_daily` projections.
+Transformation/calculation: Counts distinct canonical not-closed Tickets as the
+current workload and counts the subset with a current `breached` SLA clock.
+Status, team, region, and assignee buckets use the same
+`currently breaching / currently open` denominator. Optional dates bound Ticket
+creation time before current state is evaluated.
+Route/API: `/admin/reports/ticket-sla`; CSV under `/export`.
+UI component/template: `templates/admin/reports/ticket_sla.html`.
+Displayed as: Currently Open, Currently Breaching, Current Breach Rate, current
+status/team/region breakdowns, plus explicitly labelled breach-record and
+historical clock-start evidence.
+Permission: `reports:support:read`.
+Ownership: `ui.ticket_sla_report` composes Ticket lifecycle, SLA-clock, and
+service-team owner facts without copying them.
+Data freshness/synchronization: Live on-demand recomputation with a generated-at
+timestamp; no result cache is authoritative.
+Plain-English flow: The page first selects the current not-closed Ticket workload,
+then identifies which of those Tickets have an active breached clock, so a region
+card reconciles with the same not-closed Ticket-list drill-down.
+
 ## Operations SLA violations
 
 REPORT: Operations SLA Violations

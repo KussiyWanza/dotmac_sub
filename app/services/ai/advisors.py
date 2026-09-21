@@ -129,11 +129,11 @@ advisor_registry = AdvisorRegistry()
 
 
 # ── ticket SLA advisor ──────────────────────────────────────────────────────
-# Advises on `ticket_sla_reports.summary(db, start_at, end_at)` — the owned
+# Advises on the typed `ticket_sla_reports.summary` projection — the owned
 # projection behind /admin/reports (app/web/admin/reports.py). Its shape:
-#   total_clocks, total_breaches, breach_rate,
-#   by_status / by_service_team / by_assignee:
-#       [{key, label?, total, breached, breach_rate}]
+#   generated_at, total_open_tickets, total_currently_breaching,
+#   current_breach_rate, by_status / by_service_team / by_region / by_assignee:
+#       [{key, label, open_tickets, currently_breaching, breach_rate}]
 # The prompt describes only those fields; nothing here invents any.
 
 TICKET_SLA_PROJECTION_KEY = "ticket_sla_reports.summary"
@@ -166,14 +166,15 @@ TICKET_SLA_ADVISOR = AdvisorSpec(
     system_prompt=(
         "You are an ISP support operations analyst. You are given a ticket "
         "SLA summary computed by the operator's own reporting system. Fields:\n"
-        "  total_clocks: SLA clocks in the window\n"
-        "  total_breaches: how many breached\n"
-        "  breach_rate: breaches / clocks (0..1)\n"
+        "  generated_at: when the live projection was calculated\n"
+        "  total_open_tickets: current not-closed ticket workload\n"
+        "  total_currently_breaching: open tickets with an active breached clock\n"
+        "  current_breach_rate: currently breaching / currently open (0..1)\n"
         # Braces doubled: the engine renders this through str.format() to fill
         # {output_instructions}, so a literal brace must be escaped or format()
         # reads it as a field and raises KeyError.
-        "  by_status, by_service_team, by_assignee: buckets of "
-        "{{key, label, total, breached, breach_rate}}\n\n"
+        "  by_status, by_service_team, by_region, by_assignee: buckets of "
+        "{{key, label, open_tickets, currently_breaching, breach_rate}}\n\n"
         "Explain where breaches concentrate and what to investigate first. "
         "Cite only numbers present in the report — do not estimate, "
         "extrapolate, or invent causes. If the report is empty or too small "

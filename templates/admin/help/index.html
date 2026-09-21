@@ -17,19 +17,22 @@
         <button class="w-full rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700">Search</button>
     </form>
 
-    <nav class="mt-6 space-y-5" aria-label="Help articles">
+    <nav class="mt-6 space-y-2" aria-label="Help articles">
         {% for group in grouped_articles %}
-        <section>
-            <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{{ group.category }}</h2>
-            <div class="mt-2 space-y-1">
+        <details class="group rounded-lg border border-slate-200 dark:border-slate-700" {% if group.selected %}open{% endif %}>
+            <summary class="flex cursor-pointer list-none items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800 [&::-webkit-details-marker]:hidden">
+                <span>{{ group.category }}</span>
+                <svg class="h-4 w-4 flex-shrink-0 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m6 9 6 6 6-6"/></svg>
+            </summary>
+            <div class="space-y-1 border-t border-slate-200 p-2 dark:border-slate-700">
                 {% for item in group.articles %}
-                <a href="/admin/help?article={{ item.slug }}{% if query %}&q={{ query|urlencode }}{% endif %}{% if selected_category %}&category={{ selected_category|urlencode }}{% endif %}"
+                <a href="/admin/help?article={{ item.id }}"
                    class="block rounded-lg px-3 py-2 text-sm {% if selected_article and selected_article.slug == item.slug %}bg-teal-50 font-semibold text-teal-800 ring-1 ring-teal-200 dark:bg-teal-950/40 dark:text-teal-200 dark:ring-teal-800{% else %}text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white{% endif %}">
                     {{ item.title }}
                 </a>
                 {% endfor %}
             </div>
-        </section>
+        </details>
         {% else %}
         <p class="rounded-lg border border-dashed border-slate-300 px-3 py-4 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">No articles found.</p>
         {% endfor %}
@@ -41,7 +44,7 @@
 <div class="mx-auto max-w-[1600px]">
     <div class="mb-6">
         <h1 class="text-2xl font-bold text-slate-900 dark:text-white">Help center</h1>
-        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Search practical guides for Selfcare workflows.</p>
+        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Find practical guides for Admin pages and actions.</p>
     </div>
 
     <details class="mb-4 rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900 lg:hidden">
@@ -82,7 +85,9 @@
                         </summary>
                         <nav class="mt-3 grid gap-1 border-t border-slate-200 pt-3 dark:border-slate-700" aria-label="On this page">
                             <a href="#overview" data-help-section-link="Overview" class="rounded-md px-2 py-1.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white">Overview</a>
-                            <a href="#steps" data-help-section-link="Steps" class="rounded-md px-2 py-1.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white">Steps</a>
+                            {% for action in selected_article.actions %}
+                            <a href="#action-{{ action.id }}" data-help-section-link="{{ action.title }}" class="rounded-md px-2 py-1.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white">{{ action.title }}</a>
+                            {% endfor %}
                         </nav>
                     </details>
                 </div>
@@ -94,10 +99,11 @@
                         {% if selected_article.audience %}<p class="mt-3 text-sm text-slate-500 dark:text-slate-400">For: {{ selected_article.audience }}</p>{% endif %}
                     </section>
 
-                    <section id="steps" data-help-section="Steps" class="scroll-mt-24">
-                        <h3 class="text-lg font-semibold text-slate-950 dark:text-white">Steps</h3>
+                    {% for action in selected_article.actions %}
+                    <section id="action-{{ action.id }}" data-help-section="{{ action.title }}" class="scroll-mt-24 border-t border-slate-200 pt-8 dark:border-slate-700">
+                        <h3 class="text-lg font-semibold text-slate-950 dark:text-white">{{ action.title }}</h3>
                         <ol class="mt-4 space-y-3">
-                            {% for step in selected_article.steps %}
+                            {% for step in action.steps %}
                             <li class="flex gap-3 text-sm leading-6 text-slate-700 dark:text-slate-300">
                                 <span class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">{{ loop.index }}</span>
                                 <span>{{ step }}</span>
@@ -105,6 +111,7 @@
                             {% endfor %}
                         </ol>
                     </section>
+                    {% endfor %}
                     {% if selected_article.notes %}<section aria-label="Important guidance" class="rounded-lg bg-amber-50 p-4 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"><h3 class="font-semibold">Important</h3><ul class="mt-2 list-disc space-y-1 pl-5">{% for note in selected_article.notes %}<li>{{ note }}</li>{% endfor %}</ul></section>{% endif %}
                 </div>
             </article>
@@ -121,7 +128,9 @@
                 <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">On this page</h2>
                 <nav class="mt-3 space-y-1">
                     <a href="#overview" data-help-section-link="Overview" class="block rounded-md px-2 py-1.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white">Overview</a>
-                    <a href="#steps" data-help-section-link="Steps" class="block rounded-md px-2 py-1.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white">Steps</a>
+                    {% for action in selected_article.actions %}
+                    <a href="#action-{{ action.id }}" data-help-section-link="{{ action.title }}" class="block rounded-md px-2 py-1.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white">{{ action.title }}</a>
+                    {% endfor %}
                 </nav>
             </div>
         </aside>

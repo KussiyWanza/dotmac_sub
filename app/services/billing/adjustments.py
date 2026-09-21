@@ -1085,6 +1085,22 @@ def _stage_reversal(
     )
 
 
+def stage_account_adjustment_reversal_for_renewal_owner(
+    db: Session,
+    command: ReverseAccountAdjustmentCommand,
+) -> AccountAdjustmentReversalResult:
+    """Stage one required reversal inside the prepaid-renewal owner command."""
+
+    from app.services.owner_commands import owner_command_active
+
+    if not owner_command_active(db, owner="financial.prepaid_service_renewals"):
+        raise _error(
+            "participant_owner_required",
+            "Adjustment reversal participant requires the prepaid renewal owner.",
+        )
+    return _stage_reversal(db, command)
+
+
 def _stage_adjustment_reversal_posting(db: Session, adjustment, reversal) -> None:
     """Link the shadow reversal to the original adjustment posting group.
 
@@ -1098,7 +1114,10 @@ def _stage_adjustment_reversal_posting(db: Session, adjustment, reversal) -> Non
         owner_command_active,
     )
 
-    if not owner_command_active(db, owner="financial.account_adjustments"):
+    if not (
+        owner_command_active(db, owner="financial.account_adjustments")
+        or owner_command_active(db, owner="financial.prepaid_service_renewals")
+    ):
         return
     from app.models.customer_subledger import (
         CustomerPostingGroup,
@@ -1175,6 +1194,7 @@ __all__ = [
     "PreviewAccountAdjustmentQuery",
     "PreviewAccountAdjustmentReversalQuery",
     "ReverseAccountAdjustmentCommand",
+    "stage_account_adjustment_reversal_for_renewal_owner",
     "StageSystemAccountAdjustmentCommand",
     "confirm_account_adjustment",
     "inspect_account_adjustment_evidence",

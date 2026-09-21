@@ -35,6 +35,7 @@ from app.services import (
     team_inbox_status,
 )
 from app.services.list_query import PageMeta
+from app.services.workqueue.permissions import WorkqueuePrincipal
 from tests.staff_identity_fixtures import add_bound_staff_user
 
 
@@ -414,7 +415,11 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert "stale.xhr.abort()" in javascript
     assert "event.detail.shouldSwap = false" in javascript
     assert "if (this.filterLoading) return" in javascript
-    assert 'document.body.addEventListener("htmx:sendAbort", release)' in javascript
+    # Aborted navigation must release loading state as a failure, never success.
+    assert (
+        'document.body.addEventListener("htmx:sendAbort", (event) => '
+        "release(event, true), );"
+    ) in " ".join(javascript.split())
     assert (
         "SAFE_INLINE_VIDEO_CONTENT_TYPES"
         in Path("app/services/team_inbox_projection.py").read_text()
@@ -1300,13 +1305,21 @@ def test_only_saved_view_owner_can_delete(db_session):
 
 def test_bulk_priority_action_uses_existing_command_owner(db_session):
     conversation_id = _conversation(db_session)
+    actor_id = uuid.uuid4()
 
     outcome = team_inbox_commands.bulk_action(
         db_session,
+        principal=WorkqueuePrincipal(
+            person_id=actor_id,
+            roles=frozenset({"admin"}),
+            scopes=frozenset(),
+            can_view=True,
+            can_act=True,
+        ),
         conversation_ids=[conversation_id],
         action="priority",
         priority=25,
-        actor_person_id=uuid.uuid4(),
+        actor_person_id=actor_id,
     )
 
     conversation = db_session.get(InboxConversation, conversation_id)

@@ -1,5 +1,6 @@
 """Admin billing management web routes."""
 
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
@@ -20,7 +21,7 @@ from app.services import web_billing_invoice_cache as web_billing_invoice_cache_
 from app.services import web_billing_invoice_forms as web_billing_invoice_forms_service
 from app.services import web_billing_invoices as web_billing_invoices_service
 from app.services import web_billing_overview as web_billing_overview_service
-from app.services.auth_dependencies import require_permission
+from app.services.auth_dependencies import has_permission, require_permission
 from app.services.inclusive_date_range import InclusiveDateRangeError
 from app.services.list_query import ListQuery
 
@@ -207,7 +208,7 @@ def invoices_list(
     assert isinstance(effective_query, ListQuery)
     invoices = state["invoices"]
     assert isinstance(invoices, list)
-    state["invoice_bulk_action_contract"] = (
+    invoice_bulk_action_contract = (
         web_billing_invoice_bulk_actions_service.build_invoice_bulk_action_contract(
             db,
             auth=getattr(request.state, "auth", None) or {},
@@ -222,6 +223,7 @@ def invoices_list(
             {
                 "request": request,
                 **state,
+                "invoice_bulk_action_contract": invoice_bulk_action_contract,
             },
         )
         if page_was_clamped:
@@ -247,6 +249,7 @@ def invoices_list(
         {
             "request": request,
             **state,
+            "invoice_bulk_action_contract": invoice_bulk_action_contract,
             "active_page": "invoices",
             "active_menu": "billing",
             "current_user": current_user,
@@ -321,6 +324,7 @@ def invoice_new(
     customer_id: str | None = Query(None),
     customer_type: str | None = Query(None),
     db: Session = Depends(get_db),
+    auth: dict = Depends(require_permission("billing:invoice:create")),
 ):
     resolved_account_id = _resolve_invoice_new_account_id(
         db,
@@ -350,6 +354,7 @@ def invoice_new(
             "active_menu": "billing",
             "current_user": get_current_user(request),
             "sidebar_stats": get_sidebar_stats(db),
+            "can_edit_issue_date": has_permission(auth, db, "billing:invoice:update"),
         },
     )
 
@@ -382,7 +387,18 @@ def invoice_create(
     issue_immediately: str | None = Form(None),
     send_notification: str | None = Form(None),
     db: Session = Depends(get_db),
+    auth: dict = Depends(require_permission("billing:invoice:create")),
 ):
+    today_iso = datetime.now(UTC).date().isoformat()
+    if (
+        issued_at
+        and issued_at != today_iso
+        and not has_permission(auth, db, "billing:invoice:update")
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Finance permission is required to set a historical invoice date.",
+        )
     try:
         invoice, resolved_account_id = web_billing_invoices_service.create_invoice_web(
             db,
@@ -429,6 +445,9 @@ def invoice_create(
                 "active_menu": "billing",
                 "current_user": get_current_user(request),
                 "sidebar_stats": get_sidebar_stats(db),
+                "can_edit_issue_date": has_permission(
+                    auth, db, "billing:invoice:update"
+                ),
             },
             status_code=400,
         )
@@ -480,7 +499,7 @@ def invoice_generate_from_subscription(
         )
         invoices = state["invoices"]
         assert isinstance(invoices, list)
-        state["invoice_bulk_action_contract"] = (
+        invoice_bulk_action_contract = (
             web_billing_invoice_bulk_actions_service.build_invoice_bulk_action_contract(
                 db,
                 auth=getattr(request.state, "auth", None) or {},
@@ -494,6 +513,7 @@ def invoice_generate_from_subscription(
             {
                 "request": request,
                 **state,
+                "invoice_bulk_action_contract": invoice_bulk_action_contract,
                 "error": error,
                 "active_page": "invoices",
                 "active_menu": "billing",

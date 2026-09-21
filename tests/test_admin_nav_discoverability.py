@@ -51,3 +51,10 @@ def test_quotes_and_sales_orders_are_reachable_from_the_sales_landing() -> None:
     leads = _read("admin/sales/leads/index.html")
     assert "/admin/sales/quotes" in leads
     assert "/admin/sales/sales-order" in leads
+
+
+def test_system_settings_is_linked_from_the_system_overview_header() -> None:
+    overview = _read("admin/system/index.html")
+    header = overview.split("{% call page_header", 1)[1].split("{% endcall %}", 1)[0]
+
+    assert 'action_button("System Settings", "/admin/system/settings"' in header

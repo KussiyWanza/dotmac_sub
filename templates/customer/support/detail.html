@@ -4,7 +4,7 @@
 {% block content %}
 <div class="space-y-6">
     {% if crm_error or not ticket %}
-    <div class="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-900/30">
+    <div role="alert" class="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-900/30">
         <div class="flex items-center gap-3">
             <svg class="h-5 w-5 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/>
@@ -12,7 +12,7 @@
             <p class="text-sm font-medium text-amber-800 dark:text-amber-200">{{ crm_error_message or 'Ticket not found.' }}</p>
         </div>
     </div>
-    <a href="/portal/support" class="inline-flex items-center gap-2 text-sm font-medium text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white">
+    <a href="{{ support_return_path | default('/portal/support', true) }}" class="inline-flex items-center gap-2 text-sm font-medium text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white">
         <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
         Back to Support
     </a>
@@ -20,17 +20,19 @@
     <!-- Breadcrumb & Header -->
     <div>
         <nav class="flex items-center gap-2 text-sm text-stone-500 dark:text-stone-400 mb-2">
-            <a href="/portal/support" class="hover:text-[var(--color-brand-600)]">Support</a>
+            <a href="{{ support_return_path | default('/portal/support', true) }}" class="hover:text-[var(--color-brand-600)]">Support</a>
             <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
             <span class="text-stone-900 dark:text-white">{{ ticket.get('ticket_number', ticket.get('id', '')) }}</span>
         </nav>
-        <h1 class="text-2xl font-display font-bold text-stone-900 dark:text-white">{{ ticket.get('title', 'Ticket') }}</h1>
-        <button type="button"
-                onclick="window.dmLiveChat && window.dmLiveChat.openWith('/api/v1/me/chat/session?ticket_id={{ ticket.get('id') }}')"
-                class="mt-2 inline-flex items-center gap-2 rounded-xl bg-[var(--color-brand-600)] px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90">
-            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.418-4.03 8-9 8a9.9 9.9 0 01-4-.8L3 20l1.3-3.9A7.9 7.9 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
-            Chat about this ticket
-        </button>
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <h1 class="text-2xl font-display font-bold text-stone-900 dark:text-white">{{ ticket.get('title', 'Ticket') }}</h1>
+            <button type="button"
+                    onclick="window.dmLiveChat && window.dmLiveChat.openWith('/api/v1/me/chat/session?ticket_id={{ ticket.get('id') }}')"
+                    class="inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--color-brand-600)] px-3 py-2 text-sm font-semibold text-white hover:opacity-90">
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.418-4.03 8-9 8a9.9 9.9 0 01-4-.8L3 20l1.3-3.9A7.9 7.9 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+                Chat about this ticket
+            </button>
+        </div>
         <div class="mt-2 flex flex-wrap items-center gap-2">
             {% set t_status = ticket.get('status', 'open') %}
             {% set t_priority = ticket.get('priority', 'normal') %}
@@ -103,14 +105,16 @@
         <form action="/portal/support/{{ ticket.get('id') }}/comment" method="POST" enctype="multipart/form-data" class="space-y-4">
             {% include "components/forms/csrf_input.html" %}
             <textarea name="body" required rows="3" placeholder="Type your reply..."
-                      class="block w-full rounded-xl border-2 border-stone-200 bg-white px-4 py-3 text-sm text-stone-900 transition-all focus:border-[var(--color-brand-500)] focus:outline-none focus:ring-4 focus:ring-[var(--color-brand-500)]/10 dark:border-stone-600 dark:bg-stone-700 dark:text-white dark:placeholder-stone-400"></textarea>
+                      class="block w-full rounded-xl border-2 border-stone-200 bg-white px-4 py-3 text-sm text-stone-900 transition-all focus:border-[var(--color-brand-500)] focus:outline-none focus:ring-4 focus:ring-[var(--color-brand-500)]/10 dark:border-stone-600 dark:bg-stone-700 dark:text-white dark:placeholder-stone-400">{{ comment_form_values.body if comment_form_values is defined and comment_form_values else '' }}</textarea>
             <div>
                 <label for="comment-attachments" class="block text-sm font-semibold text-stone-700 dark:text-stone-300 mb-2">Attachments <span class="font-normal text-stone-400">(optional)</span></label>
                 <input id="comment-attachments" name="attachments" type="file" multiple
                        accept=".jpg,.jpeg,.png,.gif,.webp,.pdf,image/jpeg,image/png,image/gif,image/webp,application/pdf"
                        data-max-bytes="{{ max_attachment_bytes or 5242880 }}"
+                       aria-describedby="comment-attachments-help comment-attachments-error"
                        class="block w-full rounded-xl border-2 border-stone-200 bg-white px-4 py-3 text-sm text-stone-900 file:mr-4 file:rounded-lg file:border-0 file:bg-stone-100 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-stone-700 hover:file:bg-stone-200 dark:border-stone-600 dark:bg-stone-700 dark:text-white dark:file:bg-stone-600 dark:file:text-stone-200">
-                <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">Images or PDF, up to {{ max_attachment_mb or 5 }} MB each. Attachments stay with this portal ticket if CRM sync is delayed.</p>
+                <p id="comment-attachments-help" class="mt-1 text-sm text-stone-500 dark:text-stone-400">Images or PDF, up to {{ max_attachment_mb or 5 }} MB each. Attachments stay with this portal ticket if CRM sync is delayed.</p>
+                <p id="comment-attachments-error" data-attachment-error aria-live="polite" class="mt-2 hidden rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-900/50 dark:bg-rose-900/20 dark:text-rose-300"></p>
             </div>
             <div class="flex justify-end">
                 <button type="submit"
@@ -149,7 +153,9 @@
     </section>
     <section class="mt-4 rounded-2xl border border-stone-200/60 bg-white p-6 shadow-premium dark:border-stone-700/60 dark:bg-stone-800">
         <p class="text-sm text-stone-600 dark:text-stone-300">This ticket is closed. Create a new ticket if you still need help.</p>
+        {% if not (customer and customer.read_only) %}
         <a href="/portal/support/new" class="mt-4 inline-flex items-center gap-2 rounded-xl bg-[var(--color-brand-600)] px-4 py-2 text-sm font-semibold text-white hover:bg-[var(--color-brand-700)]">New Ticket</a>
+        {% endif %}
     </section>
     {% endif %}
     {% endif %}
@@ -163,7 +169,12 @@ document.addEventListener("change", function (event) {
     const oversized = Array.from(input.files || []).find((file) => file.size > maxBytes);
     if (oversized) {
         input.value = "";
-        alert(`"${oversized.name}" is larger than the attachment limit.`);
+        const error = input.closest("div") && input.closest("div").querySelector("[data-attachment-error]");
+        const message = `"${oversized.name}" is larger than the attachment limit. Choose a smaller image or PDF.`;
+        if (error) {
+            error.textContent = message;
+            error.classList.remove("hidden");
+        }
     }
 });
 </script>

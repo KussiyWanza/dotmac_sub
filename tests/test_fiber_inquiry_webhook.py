@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+from datetime import datetime
 
 import pytest
 from fastapi import HTTPException
@@ -14,7 +15,7 @@ from starlette.requests import Request
 from app.api.fiber_inquiry_webhooks import receive_fiber_inquiry
 from app.models.integration_platform import IntegrationInbox
 from app.models.party import Party
-from app.models.sales import Lead
+from app.models.sales import Lead, LeadOriginCapture
 from app.models.subscriber import Subscriber, SubscriberStatus
 from app.models.team_inbox import (
     InboxChannelType,
@@ -61,6 +62,45 @@ def _payload(*, email: str = "prospect@example.com", phone: str = "08031234567")
         "interest": "new_connection",
         "message": "Please check my coverage.",
         "submitted_at": "2026-08-09T14:30:00Z",
+    }
+
+
+def _coverage_payload(
+    *,
+    email: str | None = "coverage@example.com",
+    phone: str = "+2348031234567",
+    coordinates: bool = True,
+) -> dict:
+    location = {
+        "address": "12 Example Close, Wuse 2, Abuja",
+        "area": "Wuse 2",
+    }
+    if coordinates:
+        location.update({"latitude": "9.0765", "longitude": "7.3986"})
+    return {
+        "form_version": "fiber-coverage-v1",
+        "full_name": "Coverage Prospect",
+        "phone": phone,
+        "email": email,
+        "interest": "new_connection",
+        "message": "Coverage and quotation request",
+        "submitted_at": "2026-09-19T12:30:00+01:00",
+        "attribution": {
+            "journey_id": "70a978cc-60a6-4caa-af1d-b1328df690e4",
+            "utm_source": "google",
+            "utm_medium": "cpc",
+            "utm_campaign": "abuja_home",
+            "utm_content": "search_01",
+            "utm_term": "fiber internet abuja",
+            "campaign_id": "campaign-123",
+            "ad_set_id": "ad-set-456",
+            "ad_id": "ad-789",
+            "click_id": "gclid-example",
+            "landing_path": "/coverage/",
+            "captured_at": "2026-09-19T12:15:00+01:00",
+        },
+        "location": location,
+        "selected_plan": {"name": "Home Elite"},
     }
 
 
@@ -231,3 +271,160 @@ def test_conflicting_email_and_phone_fail_closed_for_identity(
     assert conversation.metadata_["identity_review_required"] is True
     assert db_session.query(Lead).count() == 0
     assert db_session.query(Party).count() == 0
+
+
+def test_signed_coverage_request_captures_origin_and_returns_safe_coverage(
+    db_session, monkeypatch
+) -> None:
+    binding = _binding(db_session, monkeypatch)
+    monkeypatch.setattr(
+        "app.services.team_inbox_receive.compute_feasibility",
+        lambda _db, _lat, _lon: {
+            "feasible": True,
+            "coverage": "covered",
+            "nearest_fap_id": "internal-fap-id",
+            "nearest_fap_name": "Internal FAP name",
+            "distance_meters": 12.3,
+        },
+    )
+
+    response = _post(
+        db_session,
+        binding.id,
+        _coverage_payload(),
+        "fiber-coverage-valid",
+    )
+
+    lead = db_session.query(Lead).one()
+    origin = db_session.query(LeadOriginCapture).one()
+    assert response.reference.startswith("FBR-")
+    assert response.coverage.status == "covered"
+    assert "FAP" not in response.model_dump_json()
+    assert "distance" not in response.model_dump_json()
+    assert origin.integration_inbox_id is not None
+    assert str(origin.journey_id) == "70a978cc-60a6-4caa-af1d-b1328df690e4"
+    assert origin.utm_source == "google"
+    assert origin.utm_medium == "cpc"
+    assert origin.utm_campaign == "abuja_home"
+    assert origin.utm_content == "search_01"
+    assert origin.utm_term == "fiber internet abuja"
+    assert origin.external_campaign_id == "campaign-123"
+    assert origin.external_ad_set_id == "ad-set-456"
+    assert origin.external_ad_id == "ad-789"
+    assert origin.external_click_id == "gclid-example"
+    assert origin.landing_path == "/coverage/"
+    expected_captured_at = datetime.fromisoformat("2026-09-19T12:15:00+01:00")
+    if origin.captured_at.tzinfo is None:
+        assert origin.captured_at == expected_captured_at.replace(tzinfo=None)
+    else:
+        assert origin.captured_at == expected_captured_at
+    assert lead.address == "12 Example Close, Wuse 2, Abuja"
+    assert lead.region == "Wuse 2"
+    assert lead.metadata_["fiber_request"]["requested_plan_name"] == "Home Elite"
+    assert lead.metadata_["fiber_request"]["map_pin"] == {
+        "latitude": "9.0765",
+        "longitude": "7.3986",
+    }
+
+
+def test_coverage_delivery_replay_preserves_reference_and_result(
+    db_session, monkeypatch
+) -> None:
+    binding = _binding(db_session, monkeypatch)
+    monkeypatch.setattr(
+        "app.services.team_inbox_receive.compute_feasibility",
+        lambda _db, _lat, _lon: {"coverage": "survey_required"},
+    )
+    payload = _coverage_payload()
+
+    first = _post(db_session, binding.id, payload, "fiber-coverage-replay")
+    replay = _post(db_session, binding.id, payload, "fiber-coverage-replay")
+
+    assert replay.replayed is True
+    assert replay.reference == first.reference
+    assert replay.coverage == first.coverage
+    assert db_session.query(Lead).count() == 1
+    assert db_session.query(IntegrationInbox).count() == 1
+    assert db_session.query(InboxProviderObservation).count() == 1
+
+
+def test_coverage_without_coordinates_still_creates_lead(
+    db_session, monkeypatch
+) -> None:
+    binding = _binding(db_session, monkeypatch)
+
+    response = _post(
+        db_session,
+        binding.id,
+        _coverage_payload(coordinates=False),
+        "fiber-coverage-manual-survey",
+    )
+
+    assert response.coverage is None
+    assert response.reference.startswith("FBR-")
+    assert db_session.query(Lead).count() == 1
+
+
+def test_coverage_exact_subscriber_creates_party_linked_lead(
+    db_session, monkeypatch
+) -> None:
+    party = Party(party_type="person", display_name="Existing Customer")
+    db_session.add(party)
+    db_session.flush()
+    subscriber = _subscriber(
+        db_session,
+        email="linked@example.com",
+        phone="+2348031234567",
+    )
+    subscriber.party_id = party.id
+    subscriber.party_bound_at = datetime.fromisoformat("2026-09-19T12:30:00+01:00")
+    subscriber.party_binding_source = "pytest"
+    subscriber.party_binding_reason = "Reviewed exact Subscriber identity fixture"
+    db_session.commit()
+    binding = _binding(db_session, monkeypatch)
+    monkeypatch.setattr(
+        "app.services.team_inbox_receive.compute_feasibility",
+        lambda _db, _lat, _lon: {"coverage": "covered"},
+    )
+
+    response = _post(
+        db_session,
+        binding.id,
+        _coverage_payload(email="LINKED@example.com"),
+        "fiber-coverage-linked",
+    )
+
+    lead = db_session.query(Lead).one()
+    assert response.resolution_status == "linked_subscriber"
+    assert lead.party_id == party.id
+    assert lead.subscriber_id == subscriber.id
+    assert db_session.query(Party).count() == 1
+
+
+def test_coverage_ambiguous_identity_records_review_and_returns_conflict(
+    db_session, monkeypatch
+) -> None:
+    _subscriber(
+        db_session,
+        email="coverage-email-owner@example.com",
+        phone="+2348030000001",
+    )
+    _subscriber(
+        db_session,
+        email="coverage-phone-owner@example.com",
+        phone="+2348031234567",
+    )
+    binding = _binding(db_session, monkeypatch)
+
+    with pytest.raises(HTTPException) as exc:
+        _post(
+            db_session,
+            binding.id,
+            _coverage_payload(email="coverage-email-owner@example.com"),
+            "fiber-coverage-ambiguous",
+        )
+
+    assert exc.value.status_code == 409
+    assert db_session.query(Lead).count() == 0
+    conversation = db_session.query(InboxConversation).one()
+    assert conversation.metadata_["identity_review_required"] is True

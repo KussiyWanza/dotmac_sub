@@ -378,7 +378,7 @@ def test_agent_performance_metrics_tracks_active_assignments_and_wait(db_session
         now=base + timedelta(days=1),
     )
 
-    assert metrics.active_assignment_count == 1
+    assert metrics.active_assignment_count == 0
     assert metrics.handled_conversation_count == 1
     assert metrics.resolved_conversation_count == 1
     assert metrics.average_first_response_seconds == 540
@@ -481,7 +481,7 @@ def test_agent_performance_report_lists_active_team_members(db_session):
     assert rows[0].person_id == person_id
     assert rows[0].agent_name == "Test Staff"
     assert rows[0].service_team_capabilities == ("customer_support",)
-    assert rows[0].metrics.active_assignment_count == 1
+    assert rows[0].metrics.active_assignment_count == 0
     assert rows[0].metrics.handled_conversation_count == 1
     assert rows[0].metrics.resolved_conversation_count == 1
     assert rows[0].metrics.average_queue_wait_seconds == 180
@@ -687,7 +687,7 @@ def test_agent_performance_analytics_matches_raw_inbox_events(db_session):
     assert page.summary.agent_count == 1
     assert page.summary.assigned_conversation_count == 1
     assert page.summary.resolved_conversation_count == 1
-    assert page.summary.active_assignment_count == 1
+    assert page.summary.active_assignment_count == 0
     assert page.summary.average_resolution_seconds == 1800
     assert page.summary.average_first_response_seconds == 300
     row = page.rows[0]

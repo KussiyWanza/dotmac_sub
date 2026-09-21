@@ -50,6 +50,7 @@ class CreateCustomerCompletionPolicyCommand:
     actor_person_id: UUID | None
     actor_type: AuditActorType
     decision_source: str
+    identity_guard_enabled: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +58,7 @@ class CustomerCompletionPolicyOutcome:
     policy_id: UUID
     version: int
     required_fields: tuple[CustomerCompletionField, ...]
+    identity_guard_enabled: bool = True
 
 
 _CREATE = OwnerCommandDefinition(
@@ -104,6 +106,7 @@ def snapshot_active_policy_id(db: Session) -> UUID:
             id=uuid5(_DEFAULT_POLICY_NAMESPACE, "initial-customer-completion-policy"),
             version=1,
             required_fields=list(DEFAULT_REQUIRED_FIELDS),
+            identity_guard_enabled=True,
             decision_source="unit_test_baseline",
         )
         db.add(policy)
@@ -134,6 +137,7 @@ def create_policy_version(
         policy = InboxCustomerCompletionPolicyVersion(
             version=(current.version if current is not None else 0) + 1,
             required_fields=[field.value for field in required],
+            identity_guard_enabled=command.identity_guard_enabled,
             created_by_person_id=command.actor_person_id,
             decision_source=source,
         )
@@ -156,10 +160,16 @@ def create_policy_version(
                 "decision_source": source,
                 "policy_version": policy.version,
                 "required_fields": [field.value for field in required],
+                "identity_guard_enabled": command.identity_guard_enabled,
                 "correlation_id": str(command.context.correlation_id),
             },
         )
-        return CustomerCompletionPolicyOutcome(policy.id, policy.version, required)
+        return CustomerCompletionPolicyOutcome(
+            policy.id,
+            policy.version,
+            required,
+            policy.identity_guard_enabled,
+        )
 
     return execute_owner_command(
         db,

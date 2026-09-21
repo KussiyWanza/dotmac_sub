@@ -1,0 +1,20 @@
+<div class="grid gap-2 sm:grid-cols-3" aria-describedby="lead-date-help">
+    <div>
+        <label for="lead-date-preset" class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">Created date</label>
+        <select id="lead-date-preset" name="date_preset" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+            <option value="">All time</option>
+            <option value="last_7_days" {% if list_query.filter_value('date_preset') == 'last_7_days' %}selected{% endif %}>Last 7 days</option>
+            <option value="last_30_days" {% if list_query.filter_value('date_preset') == 'last_30_days' %}selected{% endif %}>Last 30 days</option>
+            <option value="custom" {% if list_query.filter_value('date_preset') == 'custom' %}selected{% endif %}>Custom range</option>
+        </select>
+    </div>
+    <div>
+        <label for="lead-date-from" class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">Start date</label>
+        <input id="lead-date-from" type="date" name="date_from" value="{{ list_query.filter_value('date_from') or '' }}" max="9999-12-30" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm disabled:opacity-50 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+    </div>
+    <div>
+        <label for="lead-date-to" class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">End date</label>
+        <input id="lead-date-to" type="date" name="date_to" value="{{ list_query.filter_value('date_to') or '' }}" max="9999-12-30" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm disabled:opacity-50 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+    </div>
+</div>
+<p id="lead-date-help" class="text-xs text-slate-500 dark:text-slate-400">Filters use the lead creation date in UTC. Recent ranges include today; custom ranges include both start and end dates.</p>

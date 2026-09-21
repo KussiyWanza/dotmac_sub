@@ -88,10 +88,14 @@ behavior and accessibility, not the product's visual theme.
 
 The customer CSV export consumes the same canonical list scope and stable sort
 as the current filtered customer view. The default full export contains identity,
-contact, account, subscription,
-service-access, IP, NAS, POP, and contact-completeness columns. The admin export
-menu may project any selected subset of those columns in the browser, but it
-must not scrape the paginated table or derive additional domain state.
+contact, account, subscription, service-access, IP, NAS, POP,
+contact-completeness, open-ticket identifiers, successful-payment total, and
+last-billing-date columns. Open tickets use the support owner's active status
+scope, payments include active succeeded records, and the last billing date is
+the newest active invoice's issue date with its creation date as the legacy
+fallback. The admin export menu may project any selected subset of those columns
+in the browser, but it must not scrape the paginated table or derive additional
+domain state.
 
 ### Portal Account Health contract
 
@@ -160,7 +164,9 @@ Invoice and payment list periods use explicit optional `start_date` and
 `end_date` filters against each document's UTC `created_at`. Both calendar dates
 are inclusive; owners translate the end date to the exclusive start of the next
 UTC day. List totals, pagination, status summaries, deep links, and CSV exports
-consume the same normalized range.
+consume the same normalized range. The invoice UI labels this basis as Created
+From/To (UTC), renders a sortable Created (UTC) column, and preserves the
+human-readable label for an active typed customer selection after HTMX refreshes.
 
 The support-ticket queue is the next list adoption. `app.services.support.Tickets`
 owns the canonical filtered domain query, while
@@ -1001,6 +1007,14 @@ The filtered invoice CSV at `GET /admin/billing/invoices/export.csv` uses the
 same uncapped filter and stable-sort scope as the list. Its customer identity
 column is `customer_name`, populated from the same customer display-name
 contract used by the invoice table; internal account UUIDs are not exported.
+Invoice filters intersect when combined. The selected customer label remains
+visible after partial refreshes, and **Clear filters** removes user-selected
+criteria while preserving an `account_id` entry-point scope. The date controls
+are labelled **Created From** and **Created To** because they bound UTC
+`created_at`, with the ending calendar date included. The synthetic **Unpaid**
+status remains visibly selected and uses the dashboard receivables scope:
+issued, partially paid, or overdue collectible non-proforma invoices with a
+positive balance due. Draft invoices are not unpaid receivables.
 
 #### `GET /admin/billing`
 **Template:** `admin/billing/index.html`
@@ -1033,6 +1047,10 @@ contract used by the invoice table; internal account UUIDs are not exported.
     "proforma_only": bool,
     "proforma_summary": {"count": int},
     "customer_ref": str | None,
+    "customer_filter": InvoiceCustomerFilterSelection | None,  # typed reference + human label
+    "customer_label": str | None,                 # flattened compatibility label
+    "has_active_filters": bool,
+    "clear_filters_url": str,
     "search": str | None,
     "start_date": str | None,                  # inclusive YYYY-MM-DD, UTC
     "end_date": str | None,                    # inclusive YYYY-MM-DD, UTC

@@ -11,9 +11,9 @@
     {
       "id": "dependency-manifest",
       "source_path": "pyproject.toml",
-      "source_blob_sha256": "415926233f43a980bbfc77ddec755d5cce2c3b032c5e6559891a0d80233d3581",
+      "source_blob_sha256": "61333b73218ad1cb2528ce02f8fc3c1ca438426fe83ce38395958c06a34ef132",
       "selector": "whole-file.v1",
-      "extract_sha256": "415926233f43a980bbfc77ddec755d5cce2c3b032c5e6559891a0d80233d3581"
+      "extract_sha256": "61333b73218ad1cb2528ce02f8fc3c1ca438426fe83ce38395958c06a34ef132"
     },
     {
       "id": "dependency-lock",
@@ -53,9 +53,9 @@
     {
       "id": "boot-entry-point",
       "source_path": "app/main.py",
-      "source_blob_sha256": "73dbea280c058553e4e6030e4d7d6d3f8fca2affa7191b98f9f540ca80ba06de",
+      "source_blob_sha256": "f1d58a00c8e59d95865d6df9df633e796f40b0504b04af5bd3a87dd85aef4e16",
       "selector": "whole-file.v1",
-      "extract_sha256": "73dbea280c058553e4e6030e4d7d6d3f8fca2affa7191b98f9f540ca80ba06de"
+      "extract_sha256": "f1d58a00c8e59d95865d6df9df633e796f40b0504b04af5bd3a87dd85aef4e16"
     },
     {
       "id": "migration-config",

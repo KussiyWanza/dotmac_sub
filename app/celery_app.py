@@ -170,6 +170,7 @@ celery_app.conf.task_routes = {
     "app.tasks.billing.check_billing_switch": {"queue": "billing"},
     "app.tasks.billing.refresh_billing_health_snapshot": {"queue": "billing"},
     "app.tasks.catalog.expire_subscriptions": {"queue": "billing"},
+    "app.tasks.catalog.send_expiry_reminders": {"queue": "billing"},
     "app.tasks.enforcement.cleanup_subscription_block_sessions": {"queue": "billing"},
     "app.tasks.usage.run_usage_rating": {"queue": "billing"},
     "app.tasks.usage.evaluate_fup_rules": {"queue": "billing"},

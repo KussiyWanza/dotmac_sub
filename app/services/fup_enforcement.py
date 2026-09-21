@@ -10,6 +10,7 @@ from typing import Any, TypeVar
 from uuid import UUID
 
 from sqlalchemy import or_
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.models.catalog import Subscription, SubscriptionStatus
@@ -105,6 +106,28 @@ class FupSubscriptionOutcome:
     notified: int = 0
     submonthly_no_data: int = 0
     throttle_unconfigured: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class FupSweepOutcome:
+    """Committed totals and the exact subset safe to revisit after contention."""
+
+    totals: FupSubscriptionOutcome
+    retried: int = 0
+    deferred_subscription_ids: tuple[UUID, ...] = ()
+
+
+# Retry only PostgreSQL lock/deadlock/serialization failures, never an arbitrary
+# DBAPI exception or an ambiguous transport/commit failure.
+_FUP_CONTENTION_SQLSTATES = frozenset({"55P03", "40P01", "40001"})
+_FUP_CONTENTION_ATTEMPTS = 2
+
+
+def _contention_sqlstate(error: DBAPIError) -> str | None:
+    state = getattr(error.orig, "sqlstate", None) or getattr(error.orig, "pgcode", None)
+    return (
+        state if isinstance(state, str) and state in _FUP_CONTENTION_SQLSTATES else None
+    )
 
 
 def stage_fup_runtime_state(
@@ -614,53 +637,67 @@ def evaluate_fup_subscription(
 def run_fup_evaluation(
     db: Session,
     request: RunFupSweepRequest,
-) -> dict[str, int]:
-    """Discover candidates, then commit one complete owner command per subscription."""
+) -> FupSweepOutcome:
+    """Isolate each command; defer only known, rolled-back database contention."""
     source = _validate_source(request.source)
     totals = FupSubscriptionOutcome(processed=0)
+    retried = 0
+    deferred: list[UUID] = []
     now = datetime.now(UTC)
     warning_enabled, warning_ratio, throttle_configured = _sweep_policy(db)
     candidate_ids = _candidate_subscription_ids(
-        db,
-        request.subscription_ids,
-        source=source,
+        db, request.subscription_ids, source=source
     )
     _release_read_transaction(db)
     for subscription_id in candidate_ids:
-        outcome = evaluate_fup_subscription(
-            db,
-            EvaluateFupSubscriptionCommand(
-                context=_command_context(
-                    correlation_id=request.correlation_id,
-                    subscription_id=subscription_id,
-                    source=source,
-                ),
+        command = EvaluateFupSubscriptionCommand(
+            context=_command_context(
+                correlation_id=request.correlation_id,
                 subscription_id=subscription_id,
-                evaluated_at=now,
-                warning_enabled=warning_enabled,
-                warning_ratio=warning_ratio,
-                throttle_profile_configured=throttle_configured,
+                source=source,
             ),
+            subscription_id=subscription_id,
+            evaluated_at=now,
+            warning_enabled=warning_enabled,
+            warning_ratio=warning_ratio,
+            throttle_profile_configured=throttle_configured,
         )
+        outcome = None
+        for attempt in range(_FUP_CONTENTION_ATTEMPTS):
+            try:
+                outcome = evaluate_fup_subscription(db, command)
+                break
+            except DBAPIError as exc:
+                sqlstate = _contention_sqlstate(exc)
+                if sqlstate is None or db.in_transaction():
+                    # The owner must have completed its rollback. Never hide a
+                    # broken boundary or retry an unknown/ambiguous failure.
+                    raise
+                if attempt + 1 < _FUP_CONTENTION_ATTEMPTS:
+                    retried += 1
+                    continue
+                deferred.append(subscription_id)
+                logger.warning(
+                    "fup_subscription_deferred",
+                    extra={
+                        "subscription_id": str(subscription_id),
+                        "correlation_id": str(request.correlation_id),
+                        "sqlstate": sqlstate,
+                        "attempts": _FUP_CONTENTION_ATTEMPTS,
+                    },
+                )
+        if outcome is None:
+            continue
         totals = FupSubscriptionOutcome(
             processed=totals.processed + outcome.processed,
             enforced=totals.enforced + outcome.enforced,
             reset=totals.reset + outcome.reset,
             notified=totals.notified + outcome.notified,
             submonthly_no_data=totals.submonthly_no_data + outcome.submonthly_no_data,
-            throttle_unconfigured=(
-                totals.throttle_unconfigured + outcome.throttle_unconfigured
-            ),
+            throttle_unconfigured=totals.throttle_unconfigured
+            + outcome.throttle_unconfigured,
         )
-    result = {
-        "processed": totals.processed,
-        "enforced": totals.enforced,
-        "reset": totals.reset,
-        "notified": totals.notified,
-        "submonthly_no_data": totals.submonthly_no_data,
-        "throttle_unconfigured": totals.throttle_unconfigured,
-        "targeted": int(request.subscription_ids is not None),
-    }
+    result = FupSweepOutcome(totals, retried, tuple(deferred))
     logger.info("FUP evaluation complete source=%s result=%s", source, result)
     return result
 
@@ -907,6 +944,7 @@ __all__ = [
     "LiftExpiredFupSubscriptionCommand",
     "RunExpiredFupLiftRequest",
     "RunFupSweepRequest",
+    "FupSweepOutcome",
     "evaluate_fup_subscription",
     "lift_expired_fup_subscription",
     "run_expired_fup_lift",

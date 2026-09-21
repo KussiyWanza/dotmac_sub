@@ -1,8 +1,10 @@
 """Admin network monitoring and alarms web routes."""
 
 import uuid
+from datetime import datetime
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Form, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -408,7 +410,12 @@ def cabinet_notice_submit(
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("monitoring:read"))],
 )
-def outages_console(request: Request, db: Session = Depends(get_db)):
+def outages_console(
+    request: Request,
+    error: str | None = None,
+    reachability_page: int = Query(1, ge=1),
+    db: Session = Depends(get_db),
+):
     """Manual outage console: declare against infrastructure, list/resolve open
     incidents. No auto-detection, no notification sending."""
     from app.models.network import FdhCabinet
@@ -423,15 +430,35 @@ def outages_console(request: Request, db: Session = Depends(get_db)):
     )
     from app.services.topology.outage import (
         is_stale_open,
+        latest_scope_revision,
         list_operator_open_incidents,
     )
     from app.services.topology.outage_tickets import infrastructure_link_for
+    from app.services.topology.outage_work_order_handoff import (
+        issue_action,
+        list_for_incident,
+        ticket_issue_action,
+    )
     from app.services.topology.reachability import reachability_overview
 
     context = _base_context(request, db, active_page="monitoring")
+    context["error"] = error
+    context["ticket_notice"] = request.query_params.get("ticket")
     # Root-cause view of everything currently down: devices behind a down
     # parent are unreachable, not independent outages (one failure, not N).
-    context["reachability"] = reachability_overview(db)
+    all_reachability = reachability_overview(db)
+    reachability_per_page = 20
+    reachability_total = len(all_reachability)
+    reachability_total_pages = max(
+        1, (reachability_total + reachability_per_page - 1) // reachability_per_page
+    )
+    reachability_page = min(reachability_page, reachability_total_pages)
+    start = (reachability_page - 1) * reachability_per_page
+    context["reachability"] = all_reachability[start : start + reachability_per_page]
+    context["reachability_page"] = reachability_page
+    context["reachability_per_page"] = reachability_per_page
+    context["reachability_total"] = reachability_total
+    context["reachability_total_pages"] = reachability_total_pages
     context["basestations"] = list_basestations(db)
     context["fdh_cabinets"] = list_fdh_cabinets(db)
     context["network_nodes"] = list_network_nodes(db)
@@ -459,6 +486,13 @@ def outages_console(request: Request, db: Session = Depends(get_db)):
                 "impact": summarize_incident_impact(db, inc),
                 # The one canonical infrastructure ticket, when bound.
                 "infrastructure_link": infrastructure_link_for(db, inc.id),
+                "ticket_issue_action": ticket_issue_action(db, inc),
+                "latest_scope_revision": latest_scope_revision(db, inc.id),
+                "infrastructure_work_orders": list_for_incident(db, inc.id),
+                "issue_work_order_action": issue_action(
+                    db, inc, actor_id=_actor_id(request)
+                ),
+                "issue_work_order_key": str(uuid.uuid4()),
                 "delivery_audit": delivery_audit_for_entity(
                     db,
                     entity_type="outage",
@@ -468,6 +502,144 @@ def outages_console(request: Request, db: Session = Depends(get_db)):
         )
     context["incidents"] = rows
     return templates.TemplateResponse("admin/network/outages.html", context)
+
+
+@router.post(
+    "/outages/{incident_id}/infrastructure-ticket",
+    dependencies=[
+        Depends(require_permission("monitoring:write")),
+        Depends(require_permission("support:ticket:create")),
+    ],
+)
+def outages_create_infrastructure_ticket(
+    incident_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Create and bind one canonical infrastructure ticket for an outage."""
+    from app.services.domain_errors import DomainError
+    from app.services.owner_commands import CommandContext
+    from app.services.topology.outage_work_order_handoff import (
+        TICKET_CREATE_SCOPE,
+        OutageInfrastructureTicketIssueCommand,
+        create_infrastructure_ticket,
+    )
+
+    actor_id = _actor_id(request)
+    try:
+        incident_uuid = uuid.UUID(incident_id)
+        if actor_id is None:
+            raise ValueError("An authenticated operator is required")
+        result = create_infrastructure_ticket(
+            db,
+            OutageInfrastructureTicketIssueCommand(
+                incident_id=incident_uuid,
+                actor_id=actor_id,
+                permissions=frozenset({"monitoring:write", "support:ticket:create"}),
+                context=CommandContext.system(
+                    actor=str(actor_id),
+                    scope=TICKET_CREATE_SCOPE,
+                    reason="Create canonical infrastructure ticket from outage console",
+                    idempotency_key=f"outage-infrastructure-ticket:{incident_uuid}",
+                ),
+                request_id=str(getattr(request.state, "request_id", "")),
+            ),
+        )
+    except (ValueError, TypeError, DomainError, HTTPException) as exc:
+        message = quote(str(getattr(exc, "message", exc)), safe="")
+        return RedirectResponse(
+            f"/admin/network/outages?error={message}", status_code=303
+        )
+    return RedirectResponse(
+        f"/admin/network/outages?ticket={quote(str(result.ticket.number or result.ticket.id), safe='')}",
+        status_code=303,
+    )
+
+
+@router.post(
+    "/outages/{incident_id}/work-orders",
+    dependencies=[
+        Depends(require_permission("monitoring:write")),
+        Depends(require_permission("operations:dispatch:write")),
+    ],
+)
+def outages_issue_work_order(
+    incident_id: str,
+    request: Request,
+    title: str = Form(...),
+    reason: str = Form(...),
+    description: str | None = Form(default=None),
+    priority: str = Form(default="high"),
+    work_type: str = Form(default="repair"),
+    address: str | None = Form(default=None),
+    scheduled_start: str | None = Form(default=None),
+    scheduled_end: str | None = Form(default=None),
+    estimated_duration_minutes: int | None = Form(default=None),
+    access_notes: str | None = Form(default=None),
+    expected_scope_revision_sequence: int | None = Form(default=None),
+    idempotency_key: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    """Issue shared-outage field work through its owning coordinator."""
+    from app.schemas.network import InfrastructureWorkOrderIssueRequest
+    from app.services.domain_errors import DomainError
+    from app.services.owner_commands import CommandContext
+    from app.services.topology.outage_work_order_handoff import (
+        HandoffActorType,
+        OutageWorkOrderIssueCommand,
+        issue_work_order,
+    )
+
+    actor_id = _actor_id(request)
+    key = str(idempotency_key or uuid.uuid4()).strip()
+
+    def _datetime(value: str | None) -> datetime | None:
+        text = (value or "").strip()
+        return datetime.fromisoformat(text.replace("Z", "+00:00")) if text else None
+
+    try:
+        incident_uuid = uuid.UUID(incident_id)
+        if actor_id is None:
+            raise ValueError("An authenticated operator is required")
+        payload = InfrastructureWorkOrderIssueRequest(
+            title=title,
+            reason=reason,
+            description=description,
+            priority=priority,
+            work_type=work_type,
+            address=address,
+            scheduled_start=_datetime(scheduled_start),
+            scheduled_end=_datetime(scheduled_end),
+            estimated_duration_minutes=estimated_duration_minutes,
+            access_notes=access_notes,
+            expected_scope_revision_sequence=expected_scope_revision_sequence,
+        )
+        context = CommandContext.system(
+            actor=str(actor_id),
+            scope="network.outage_work_order:issue",
+            reason=reason,
+            idempotency_key=key,
+        )
+        issue_work_order(
+            db,
+            OutageWorkOrderIssueCommand(
+                incident_id=incident_uuid,
+                request=payload,
+                actor_id=actor_id,
+                actor_type=HandoffActorType.SYSTEM_USER,
+                permissions=frozenset(
+                    {"monitoring:write", "operations:dispatch:write"}
+                ),
+                context=context,
+                request_id=str(context.command_id),
+            ),
+        )
+    except (ValueError, TypeError, DomainError, HTTPException) as exc:
+        message = quote(str(getattr(exc, "message", exc)), safe="")
+        return RedirectResponse(
+            f"/admin/network/outages?error={message}", status_code=303
+        )
+    return RedirectResponse("/admin/network/outages", status_code=303)
 
 
 @router.post(
@@ -546,12 +718,13 @@ def detected_outages_console(
 ):
     """Classifier-driven outage console (design §P4a).
 
-    PRIMARY source is the PERSISTED, debounced classifier incidents from the
-    §7.6 reconcile loop (suspected/confirmed/clearing) — the debounced truth,
-    not the raw live-computed verdict. The live P1/P2/P3 verdict is kept as a
-    clearly-separate SECONDARY "candidates" view (raw, un-debounced). Optional
-    ``node_id`` drills into one failure domain (per-customer P2 verdicts + P3
-    branch alerts). No operator declaration, no notification sending here."""
+        PRIMARY source is the PERSISTED, debounced classifier incidents from the
+        §7.6 reconcile loop (suspected/confirmed/clearing) — the debounced truth,
+        not the raw live-computed verdict. The live P1/P2/P3 verdict is kept as a
+        clearly-separate SECONDARY "candidates" view (raw, un-debounced). Optional
+        `
+    ode_id`` drills into one failure domain (per-customer P2 verdicts + P3
+        branch alerts). No operator declaration, no notification sending here."""
     import uuid as _uuid
 
     from app.models.network_monitoring import NetworkDevice, PopSite

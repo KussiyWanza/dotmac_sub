@@ -10,10 +10,12 @@ path is asserted to send nothing (the inert guarantee).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.orm import Session
 
 import app.models  # noqa: F401 — registers every model on Base.metadata
 from app.models.dispatch import TechnicianProfile
@@ -817,3 +819,108 @@ def test_signed_observation_rejects_manual_request(db_session):
         )
 
     assert exc_info.value.code.endswith("manual_delivery_conflict")
+
+
+@pytest.mark.parametrize("provider_status", ["PENDING_STOCK", "fulfilled", None])
+def test_refresh_real_capability_lookup_releases_its_read_before_owner(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    provider_status: str | None,
+) -> None:
+    from app.services.integrations.backoffice_contracts import ERP_STATUS_CAPABILITY
+    from app.services.integrations.connectors.dotmac_erp import DotmacErpRunner
+    from app.services.integrations.runtime import (
+        OperationEnvelope,
+        OperationResult,
+        OperationStatus,
+    )
+
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.material_request.value})
+    monkeypatch.setenv("ERP_TEST_TOKEN", "test-material-status-credential")
+    monkeypatch.setenv("ERP_TEST_WEBHOOK_SECRET", "test-material-status-webhook")
+    enable_erp_capability(db_session, ERP_STATUS_CAPABILITY)
+    request = _make_approved_request(db_session)
+    request.support_system = "dotmac_erp"
+    request.support_reference = "ERP-MR-READ-BOUNDARY"
+    request.support_status = "PENDING_STOCK"
+    request.status = "pending_stock"
+    request_id = request.id
+    db_session.commit()
+    calls: list[str] = []
+
+    def execute_status(
+        runner: DotmacErpRunner,
+        envelope: OperationEnvelope,
+        *,
+        config: Mapping[str, object],
+        secret_material: Mapping[str, str],
+    ) -> OperationResult:
+        # Only the external transport is replaced. The production facade,
+        # enabled binding, context resolution and material owner are real.
+        assert db_session.in_transaction()
+        assert envelope.capability_id == ERP_STATUS_CAPABILITY
+        assert envelope.payload["action"] == "material_request_status"
+        calls.append(str(envelope.payload["params"]["source_request_id"]))
+        item = (
+            None
+            if provider_status is None
+            else {
+                "request_id": "ERP-MR-READ-BOUNDARY",
+                "status": provider_status,
+            }
+        )
+        return OperationResult(
+            operation_id=envelope.operation_id,
+            status=OperationStatus.succeeded,
+            output={"item": item},
+        )
+
+    monkeypatch.setattr(DotmacErpRunner, "execute", execute_status)
+    result = material_sync.refresh_material_request_statuses(db_session)
+    assert result.processed == 1
+    assert result.failed == 0
+    assert result.observed == int(provider_status is not None)
+    assert calls == [str(request_id)]
+    assert not db_session.in_transaction()
+    db_session.refresh(request)
+    assert request.status == (
+        "issued" if provider_status == "fulfilled" else "pending_stock"
+    )
+
+
+def test_refresh_does_not_commit_mutations_introduced_by_a_status_reader(
+    db_session: Session,
+) -> None:
+    from sqlalchemy import select
+
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.material_request.value})
+    request = _make_approved_request(db_session)
+    request.support_system = "dotmac_erp"
+    request.support_reference = "ERP-MR-DIRTY-READER"
+    request.support_status = "pending_stock"
+    request.status = "pending_stock"
+    db_session.commit()
+    unexpected_id = uuid4()
+
+    class DirtyReader(_FakeERPClient):
+        def get_material_request_status(self, source_request_id: str) -> dict[str, str]:
+            db_session.add(
+                Subscriber(
+                    id=unexpected_id,
+                    first_name="Unexpected",
+                    last_name="Mutation",
+                    email="unexpected-material-reader@example.test",
+                )
+            )
+            return {"request_id": "ERP-MR-DIRTY-READER", "status": "fulfilled"}
+
+    result = material_sync.refresh_material_request_statuses(
+        db_session, client=DirtyReader()
+    )
+    assert result.failed == 1
+    assert result.observed == 0
+    assert "pending session mutations" in result.errors[0]
+    assert (
+        db_session.scalar(select(Subscriber.id).where(Subscriber.id == unexpected_id))
+        is None
+    )

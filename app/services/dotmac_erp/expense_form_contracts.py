@@ -49,15 +49,23 @@ class VerifyExpenseDestination(BaseModel):
     mode: ExpenseDestinationMode
     bank_code: str | None = Field(default=None, min_length=2, max_length=20)
     account_number: str | None = Field(default=None, min_length=6, max_length=30)
-    beneficiary_name: str | None = Field(default=None, min_length=2, max_length=150)
+    beneficiary_name: str | None = Field(
+        default=None,
+        min_length=2,
+        max_length=150,
+        description=(
+            "Deprecated rolling-deployment input; ERP uses the bank-resolved "
+            "account name."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_override(self) -> VerifyExpenseDestination:
-        values = (self.bank_code, self.account_number, self.beneficiary_name)
+        values = (self.bank_code, self.account_number)
         if self.mode is ExpenseDestinationMode.EXPENSE_OVERRIDE and any(
             not str(value or "").strip() for value in values
         ):
-            raise ValueError("Bank, account number, and beneficiary name are required")
+            raise ValueError("Bank and account number are required")
         if self.mode is ExpenseDestinationMode.ERP_PROFILE and any(
             value is not None for value in values
         ):

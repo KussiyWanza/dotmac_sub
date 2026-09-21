@@ -12,6 +12,8 @@ ordering for deterministic forward paging.
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from app.models.billing import (
     CreditNote,
     CreditNoteLine,
@@ -348,3 +350,99 @@ def test_credit_note_sync_feed_only_loads_active_lines(db_session, subscriber_ac
     payload = CreditNoteSyncRead.model_validate(response["items"][0]).model_dump()
     assert [line["description"] for line in payload["lines"]] == ["Valid correction"]
     assert "applications" not in payload
+
+
+# ---------------------------------------------------------------------------
+# Additive keyset cursor (after_updated_at / after_id) on the legacy feed.
+#
+# This shares its implementation (app.services.sync_feeds.apply_sync_page)
+# with the v2 accounting-sync feed, whose test module carries the full
+# tie-group / mid-walk-update / replay property tests. These two are the
+# narrower legacy-feed checks: cursor omitted stays byte-identical, and the
+# cursor mode itself does the basic right thing here too.
+# ---------------------------------------------------------------------------
+
+
+def test_invoice_sync_feed_omitting_cursor_is_byte_identical_to_offset_only(
+    db_session, subscriber_account
+):
+    a = _make_invoice(db_session, subscriber_account.id, _T0)
+    b = _make_invoice(db_session, subscriber_account.id, _T0 + timedelta(days=1))
+
+    without_cursor_kwargs = billing_service.invoices.sync_list_response(
+        db_session,
+        account_id=None,
+        status=None,
+        is_active=None,
+        updated_since=None,
+        limit=500,
+        offset=0,
+    )
+    explicit_none_cursor = billing_service.invoices.sync_list_response(
+        db_session,
+        account_id=None,
+        status=None,
+        is_active=None,
+        updated_since=None,
+        limit=500,
+        offset=0,
+        after_updated_at=None,
+        after_id=None,
+    )
+
+    assert [row.id for row in without_cursor_kwargs["items"]] == [a.id, b.id]
+    assert [row.id for row in explicit_none_cursor["items"]] == [a.id, b.id]
+    assert without_cursor_kwargs == explicit_none_cursor
+
+
+def test_invoice_sync_feed_keyset_walk_covers_every_row_once(
+    db_session, subscriber_account
+):
+    a = _make_invoice(db_session, subscriber_account.id, _T0)
+    b = _make_invoice(db_session, subscriber_account.id, _T0 + timedelta(days=1))
+    c = _make_invoice(db_session, subscriber_account.id, _T0 + timedelta(days=2))
+
+    page1 = billing_service.invoices.sync_list_response(
+        db_session,
+        account_id=None,
+        status=None,
+        is_active=None,
+        updated_since=None,
+        limit=2,
+        offset=0,
+    )
+    assert [row.id for row in page1["items"]] == [a.id, b.id]
+
+    cursor = page1["items"][-1]
+    page2 = billing_service.invoices.sync_list_response(
+        db_session,
+        account_id=None,
+        status=None,
+        is_active=None,
+        updated_since=None,
+        limit=2,
+        offset=0,
+        after_updated_at=cursor.updated_at,
+        after_id=cursor.id,
+    )
+    assert [row.id for row in page2["items"]] == [c.id]
+
+
+def test_invoice_sync_feed_rejects_a_partial_cursor_pair_defensively(
+    db_session, subscriber_account
+):
+    # Belt-and-suspenders check inside the shared helper itself, independent
+    # of the HTTP-layer 422 validation covered in
+    # tests/test_invoice_accounting_sync_v2.py.
+    with pytest.raises(ValueError, match="after_updated_at and after_id"):
+        billing_service.invoices.sync_list_response(
+            db_session,
+            account_id=None,
+            status=None,
+            is_active=None,
+            updated_since=None,
+            limit=500,
+            offset=0,
+            after_updated_at=_T0,
+            after_id=None,
+        )

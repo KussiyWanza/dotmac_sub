@@ -528,6 +528,93 @@ def _stage_stale_prepaid_lock(db, account, subscription) -> None:
     db.commit()
 
 
+def _stage_reviewed_prior_coverage_overlap(
+    db,
+    account,
+    subscription,
+    invoice,
+    payment,
+) -> ServiceEntitlement:
+    paid_at = datetime(2026, 8, 31, 14, 8, 52, tzinfo=UTC)
+    prior_start = datetime(2026, 8, 7, tzinfo=UTC)
+    prior_end = datetime(2026, 9, 7, tzinfo=UTC)
+    invoice.issued_at = paid_at
+    invoice.paid_at = paid_at
+    invoice.due_at = datetime(2026, 10, 5, tzinfo=UTC)
+    payment.paid_at = paid_at
+    payment.created_at = paid_at
+    payment.settlement.created_at = paid_at
+    account.status = SubscriberStatus.suspended
+    subscription.status = SubscriptionStatus.suspended
+    subscription.access_state = "suspended"
+    subscription.next_billing_at = prior_end
+    ledger_entry = LedgerEntry(
+        account_id=account.id,
+        entry_type=LedgerEntryType.debit,
+        source=LedgerSource.adjustment,
+        category=LedgerCategory.internet_service,
+        amount=invoice.total,
+        currency="NGN",
+        memo="Prior scheduled prepaid renewal",
+        effective_date=prior_start,
+        created_at=prior_start,
+        is_active=True,
+        affects_customer_position=True,
+    )
+    db.add(ledger_entry)
+    db.flush()
+    db.add(
+        AccountAdjustment(
+            account_id=account.id,
+            category=LedgerCategory.internet_service,
+            amount=invoice.total,
+            currency="NGN",
+            memo="Prior scheduled prepaid renewal",
+            reason="Reviewed prior funded service period",
+            origin="prepaid_service_renewal",
+            origin_ref=(
+                f"{subscription.id}:{prior_start.isoformat()}:{prior_end.isoformat()}"
+            ),
+            prepaid_funding_before=invoice.total,
+            prepaid_funding_after=Decimal("0.00"),
+            postpaid_receivables=Decimal("0.00"),
+            collection_blocking_balance=Decimal("0.00"),
+            access_consequence="none_adjustment_only",
+            preview_fingerprint="b" * 64,
+            idempotency_key=f"prior-renewal-{subscription.id}",
+            ledger_entry_id=ledger_entry.id,
+        )
+    )
+    entitlement = ServiceEntitlement(
+        account_id=account.id,
+        subscription_id=subscription.id,
+        source_ledger_entry_id=ledger_entry.id,
+        starts_at=prior_start,
+        ends_at=prior_end,
+        amount_funded=invoice.total,
+        currency="NGN",
+        status=ServiceEntitlementStatus.active,
+        metadata_={"source": "scheduled_prepaid_service_renewal"},
+    )
+    db.add(entitlement)
+    db.add(
+        EnforcementLock(
+            subscription_id=subscription.id,
+            subscriber_id=account.id,
+            reason=EnforcementReason.prepaid,
+            source="prepaid_balance_sweep",
+            notes="pytest prior-coverage overlap lock",
+        )
+    )
+    materialize_test_prepaid_opening_balance(
+        db,
+        account.id,
+        Decimal("0.00"),
+    )
+    db.commit()
+    return entitlement
+
+
 def test_historical_paid_unlinked_invoice_repairs_coverage_and_requests_access(
     db_session,
     subscriber,
@@ -1047,6 +1134,187 @@ def test_historical_paid_invoice_repair_accepts_same_business_day_due_anchor(
     assert subscription.next_billing_at == next_anchor.replace(tzinfo=None)
     assert subscription.status is SubscriptionStatus.active
     assert subscriber.status is SubscriberStatus.active
+
+
+def test_reviewed_paid_invoice_repair_retains_exact_prior_coverage_and_restores(
+    db_session,
+    subscriber,
+    subscription,
+):
+    invoice, payment, allocation = _historical_paid_unlinked_invoice(
+        db_session,
+        subscriber,
+        subscription,
+    )
+    prior_entitlement = _stage_reviewed_prior_coverage_overlap(
+        db_session,
+        subscriber,
+        subscription,
+        invoice,
+        payment,
+    )
+    prior_start = prior_entitlement.starts_at
+    prior_end = prior_entitlement.ends_at
+    invoice_total = invoice.total
+    allocation_amount = allocation.amount
+    ledger_count = db_session.query(LedgerEntry).count()
+    adjustment_count = db_session.query(AccountAdjustment).count()
+
+    preview = preview_historical_paid_prepaid_invoice_repair(
+        db_session,
+        PaidPrepaidInvoiceRepairQuery(
+            invoice_id=invoice.id,
+            subscription_id=subscription.id,
+        ),
+    )
+
+    assert preview.disposition is (
+        PaidPrepaidInvoiceRepairDisposition.reviewed_paid_unlinked_invoice_with_prior_coverage
+    )
+    assert preview.actionable is True
+    assert preview.automatically_actionable is False
+    assert preview.retained_overlapping_entitlement_ids == (prior_entitlement.id,)
+    assert preview.billing_period_start == datetime(2026, 8, 30, 23, tzinfo=UTC)
+    assert preview.billing_period_end == datetime(2026, 9, 29, 23, tzinfo=UTC)
+    fingerprint = preview.fingerprint
+    invoice_id = invoice.id
+    subscription_id = subscription.id
+    db_session.commit()
+
+    command = RepairHistoricalPaidPrepaidInvoiceCommand(
+        context=CommandContext.system(
+            actor="pytest:billing-operator",
+            scope=REPAIR_SCOPE,
+            reason=("Reviewed exact paid invoice and retained prior funded coverage"),
+            idempotency_key=f"pytest-paid-prior-coverage-{invoice_id}",
+        ),
+        invoice_id=invoice_id,
+        subscription_id=subscription_id,
+        preview_fingerprint=fingerprint,
+        permission_granted=True,
+    )
+    result = repair_historical_paid_prepaid_invoice(db_session, command)
+    replay = repair_historical_paid_prepaid_invoice(db_session, command)
+
+    db_session.refresh(invoice)
+    db_session.refresh(subscription)
+    db_session.refresh(subscriber)
+    db_session.refresh(allocation)
+    db_session.refresh(payment)
+    db_session.refresh(prior_entitlement)
+    repaired_entitlement = (
+        db_session.query(ServiceEntitlement)
+        .filter(ServiceEntitlement.source_invoice_id == invoice.id)
+        .one()
+    )
+    lock = (
+        db_session.query(EnforcementLock)
+        .filter(EnforcementLock.subscription_id == subscription.id)
+        .one()
+    )
+    assert result.replayed is False
+    assert replay.replayed is True
+    assert result.retained_overlapping_entitlement_ids == (prior_entitlement.id,)
+    assert replay.retained_overlapping_entitlement_ids == (prior_entitlement.id,)
+    assert result.subscriptions_restored == 1
+    assert invoice.billing_period_start == datetime(2026, 8, 30, 23)
+    assert invoice.billing_period_end == datetime(2026, 9, 29, 23)
+    assert invoice.total == invoice_total
+    assert invoice.balance_due == Decimal("0.00")
+    assert allocation.amount == allocation_amount
+    assert allocation.is_active is True
+    assert payment.status is PaymentStatus.succeeded
+    assert prior_entitlement.starts_at == prior_start
+    assert prior_entitlement.ends_at == prior_end
+    assert repaired_entitlement.starts_at == datetime(2026, 8, 30, 23)
+    assert repaired_entitlement.ends_at == datetime(2026, 9, 29, 23)
+    assert subscription.next_billing_at == datetime(2026, 9, 29, 23)
+    assert subscription.status is SubscriptionStatus.active
+    assert subscriber.status is SubscriberStatus.active
+    assert lock.is_active is False
+    assert db_session.query(LedgerEntry).count() == ledger_count
+    assert db_session.query(AccountAdjustment).count() == adjustment_count
+
+
+def test_paid_invoice_auto_repair_requires_review_for_prior_coverage_overlap(
+    db_session,
+    subscriber,
+    subscription,
+):
+    invoice, payment, _allocation = _historical_paid_unlinked_invoice(
+        db_session,
+        subscriber,
+        subscription,
+    )
+    prior_entitlement = _stage_reviewed_prior_coverage_overlap(
+        db_session,
+        subscriber,
+        subscription,
+        invoice,
+        payment,
+    )
+
+    result = repair_exact_paid_prepaid_invoice_after_settlement_for_owner(
+        db_session,
+        AutoRepairPaidPrepaidInvoiceAfterSettlementCommand(
+            invoice_id=invoice.id,
+            actor="pytest:financial.payments",
+            evidence_ref=f"pytest-prior-coverage:{invoice.id}",
+        ),
+    )
+
+    db_session.refresh(invoice)
+    db_session.refresh(subscription)
+    db_session.refresh(prior_entitlement)
+    assert result.disposition is (
+        PaidPrepaidInvoiceAutoRepairDisposition.manual_review_required
+    )
+    assert invoice.billing_period_start is None
+    assert invoice.billing_period_end is None
+    assert subscription.next_billing_at == datetime(2026, 9, 7)
+    assert prior_entitlement.ends_at == datetime(2026, 9, 7)
+    assert (
+        db_session.query(ServiceEntitlement)
+        .filter(ServiceEntitlement.source_invoice_id == invoice.id)
+        .count()
+        == 0
+    )
+
+
+def test_reviewed_prior_coverage_overlap_rejects_amount_drift(
+    db_session,
+    subscriber,
+    subscription,
+):
+    invoice, payment, _allocation = _historical_paid_unlinked_invoice(
+        db_session,
+        subscriber,
+        subscription,
+    )
+    prior_entitlement = _stage_reviewed_prior_coverage_overlap(
+        db_session,
+        subscriber,
+        subscription,
+        invoice,
+        payment,
+    )
+    prior_entitlement.amount_funded -= Decimal("0.01")
+    db_session.commit()
+
+    preview = preview_historical_paid_prepaid_invoice_repair(
+        db_session,
+        PaidPrepaidInvoiceRepairQuery(
+            invoice_id=invoice.id,
+            subscription_id=subscription.id,
+        ),
+    )
+
+    assert preview.disposition is PaidPrepaidInvoiceRepairDisposition.manual_review
+    assert preview.actionable is False
+    assert preview.retained_overlapping_entitlement_ids == ()
+    assert preview.reason == (
+        "subscription billing anchor is not stale for the paid settlement period"
+    )
 
 
 def test_paid_invoice_auto_repair_restores_stale_locked_prepaid_service(

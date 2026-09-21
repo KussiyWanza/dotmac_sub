@@ -280,7 +280,7 @@ def search_live_map(
         )
         work_orders = (
             db.query(WorkOrder)
-            .join(Subscriber, Subscriber.id == WorkOrder.subscriber_id)
+            .outerjoin(Subscriber, Subscriber.id == WorkOrder.subscriber_id)
             .filter(WorkOrder.is_active.is_(True))
             .filter(
                 or_(
@@ -315,7 +315,11 @@ def search_live_map(
         )
         for work_order in work_orders:
             location = _location(work_order)
-            canonical_address = service_address(db, work_order.subscriber_id)
+            canonical_address = (
+                service_address(db, work_order.subscriber_id)
+                if work_order.subscriber_id is not None
+                else None
+            )
             work_order_coordinates = _validated_coordinates(
                 location.latitude,
                 location.longitude,

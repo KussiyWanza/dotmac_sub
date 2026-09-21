@@ -287,8 +287,9 @@ def test_staff_edit_template_password_controls_default_to_no_forced_reset() -> N
         PROJECT_ROOT / "templates" / "admin" / "system" / "users" / "edit.html"
     ).read_text()
 
-    assert 'name="new_password" id="new_password" minlength="8"' in template
-    assert 'name="confirm_password" id="confirm_password" minlength="8"' in template
+    assert 'name="new_password" id="new_password"' in template
+    assert 'name="confirm_password" id="confirm_password"' in template
+    assert 'minlength="8"' in template
     assert (
         'name="require_password_change" id="require_password_change" checked'
         not in template

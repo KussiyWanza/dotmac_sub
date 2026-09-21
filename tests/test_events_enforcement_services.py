@@ -1320,6 +1320,20 @@ class TestNotificationHandler:
         # Should not raise
         handler.handle(db_session, event)
 
+    @patch(
+        "app.services.events.handlers.notification.get_brand",
+        return_value={"app_url": "https://selfcare.example.test/"},
+    )
+    def test_render_context_uses_absolute_portal_url_without_payment(
+        self, _get_brand, db_session
+    ):
+        context = NotificationHandler()._build_render_context(
+            db_session,
+            Event(event_type=EventType.subscriber_updated, payload={}),
+        )
+
+        assert context["portal_url"] == "https://selfcare.example.test/portal"
+
     def test_payment_event_queues_receipt_aware_email(self, db_session, subscriber):
         payment = Payment(
             account_id=subscriber.id,
@@ -2388,7 +2402,7 @@ class TestProvisioningHandler:
             subscription_id=sub_id,
         )
         handler.handle(db_session, event)
-        mock_prov_svc.ensure_ip_assignments_for_subscription.assert_called_once_with(
+        mock_prov_svc.ensure_ipv4_assignment_for_subscription.assert_called_once_with(
             db_session, str(sub_id)
         )
 
@@ -2405,7 +2419,7 @@ class TestProvisioningHandler:
             payload={"subscription_id": str(sub_id)},
         )
         handler.handle(db_session, event)
-        mock_prov_svc.ensure_ip_assignments_for_subscription.assert_called_once_with(
+        mock_prov_svc.ensure_ipv4_assignment_for_subscription.assert_called_once_with(
             db_session, str(sub_id)
         )
 
@@ -2414,14 +2428,14 @@ class TestProvisioningHandler:
         handler = ProvisioningHandler()
         event = self._make_event(EventType.subscription_activated)
         handler.handle(db_session, event)
-        mock_prov_svc.ensure_ip_assignments_for_subscription.assert_not_called()
+        mock_prov_svc.ensure_ipv4_assignment_for_subscription.assert_not_called()
 
     @patch("app.services.events.handlers.provisioning.provisioning_service")
     def test_subscription_activated_handles_failure_gracefully(
         self, mock_prov_svc, db_session
     ):
-        mock_prov_svc.ensure_ip_assignments_for_subscription.side_effect = RuntimeError(
-            "IP pool exhausted"
+        mock_prov_svc.ensure_ipv4_assignment_for_subscription.side_effect = (
+            RuntimeError("IP pool exhausted")
         )
         handler = ProvisioningHandler()
         sub_id = uuid.uuid4()

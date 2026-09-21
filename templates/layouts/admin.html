@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "components/ui/workflow_help.html" import workflow_help_control %}
+{% from "components/ui/workflow_help.html" import workflow_help_control with context %}
 {% if admin_workflow_guidance_for_path is defined and request is defined and request and request.url %}
 {% set workflow_guide = admin_workflow_guidance_for_path(request.url.path) %}
 {% else %}
@@ -535,6 +535,7 @@
                     'gis': 'GIS / Map',
                     'integrations': 'Integrations',
                     'notifications': 'Notifications',
+                    'automation-center': 'Automation Center',
                     'settings-hub': 'Settings',
                     'configuration': 'Configuration',
                     'users': 'Users',
@@ -886,9 +887,10 @@
 {% block scripts %}
 {{ super() }}
 {% if can(request, "attendance:self:use") %}
-<script src="/static/js/admin-attendance-reminder.js"></script>
+<script src="/static/js/admin-attendance-reminder.js"
+        data-attendance-subject="{{ ((request.state.auth|default({})).get('principal_id', '')) | e }}"></script>
 {% endif %}
-<script src="/static/js/session-refresh.js"></script>
+<script src="/static/js/session-refresh.js?v=20260914a"></script>
 <script src="/static/js/admin-workflow-help.js?v=20260910a"></script>
 <script>
     if (typeof initSessionRefresh === 'function') {

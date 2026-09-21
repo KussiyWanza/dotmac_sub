@@ -1428,15 +1428,21 @@ def update_staff_identity(
                 actor_type=actor_type,
                 actor_id=actor_id,
             )
-            from app.services.auth_flow import hash_password, password_min_length_for
+            from app.services.auth_flow import (
+                hash_password,
+                password_min_length_for,
+                password_policy_violations,
+            )
 
             minimum = password_min_length_for(db, "system_user")
             assert command.new_password is not None
-            if len(command.new_password) < minimum:
+            violations = password_policy_violations(command.new_password, minimum)
+            if violations:
                 raise _error(
                     "invalid_password",
-                    f"Password must be at least {minimum} characters.",
+                    violations[0],
                     minimum_length=minimum,
+                    requirements=violations,
                 )
             credential.password_hash = hash_password(command.new_password)
             credential.must_change_password = command.require_password_change

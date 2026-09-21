@@ -124,7 +124,10 @@ class HttpWebhookRunner:
         }
         authorization = secret_material.get("authorization")
         if authorization:
-            headers["Authorization"] = authorization
+            scheme = str(config.get("authorization_scheme") or "").strip()
+            headers["Authorization"] = (
+                f"{scheme} {authorization}" if scheme else authorization
+            )
         signing_secret = secret_material.get("signing_secret")
         if signing_secret:
             signature = hmac.new(

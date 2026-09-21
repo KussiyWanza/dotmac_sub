@@ -77,6 +77,6 @@ def reseller_stop_impersonation_get(
     )
 
 
-@router.get("/refresh")
+@router.post("/refresh")
 def reseller_refresh(request: Request):
     return web_reseller_auth_service.reseller_refresh(request)

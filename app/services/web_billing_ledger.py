@@ -91,6 +91,7 @@ class CustomerLedgerEntryView:
     description: str
     occurred_at: datetime | None
     detail_url: str
+    running_balance: Decimal
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,7 +338,9 @@ def build_ledger_entries_data(
             else:
                 debit_count += int(row.entry_count or 0)
 
-        row_query = ledger_query.options(joinedload(LedgerEntry.account))
+        row_query = ledger_query.options(
+            joinedload(LedgerEntry.account), joinedload(LedgerEntry.invoice)
+        )
         if want_type is not None:
             row_query = row_query.filter(LedgerEntry.entry_type == want_type)
         ledger_rows = (
@@ -528,6 +531,28 @@ def build_customer_ledger_view(
     offset = (page - 1) * CUSTOMER_LEDGER_PAGE_SIZE
     page_entries = raw_entries[offset : offset + CUSTOMER_LEDGER_PAGE_SIZE]
 
+    # The projection is newest-first. Start from the filtered closing net per
+    # currency and walk backward through the loaded rows so every page gets a
+    # balance that includes older activity, without loading the full ledger.
+    raw_net_amounts = totals.get("net_amounts", {})
+    if not isinstance(raw_net_amounts, dict):
+        raise TypeError("Ledger projection returned invalid net amounts")
+    balance_by_currency = {
+        str(currency): Decimal(str(amount or 0))
+        for currency, amount in raw_net_amounts.items()
+    }
+    running_balances: dict[UUID, Decimal] = {}
+    for raw_entry in raw_entries:
+        entry_id = UUID(str(raw_entry.id))
+        currency = display_format.currency_code(raw_entry.currency)
+        current = balance_by_currency.get(currency, Decimal("0"))
+        running_balances[entry_id] = current
+        amount = Decimal(str(raw_entry.amount or 0))
+        if raw_entry.entry_type == LedgerEntryType.credit:
+            balance_by_currency[currency] = current - amount
+        else:
+            balance_by_currency[currency] = current + amount
+
     entries: list[CustomerLedgerEntryView] = []
     for entry in page_entries:
         raw_entry_type = getattr(getattr(entry, "entry_type", None), "value", None)
@@ -547,6 +572,7 @@ def build_customer_ledger_view(
                     if isinstance(entry, LedgerEntry)
                     else f"/admin/billing/invoices/{entry.id}"
                 ),
+                running_balance=running_balances[UUID(str(entry.id))],
             )
         )
 
@@ -629,6 +655,7 @@ def render_ledger_csv(entries: list[LedgerEntry]) -> str:
             "customer_name",
             "entry_type",
             "source",
+            "invoice_number",
             "debit_amount",
             "credit_amount",
             "currency",
@@ -642,12 +669,17 @@ def render_ledger_csv(entries: list[LedgerEntry]) -> str:
         # Prefer the real transaction date; created_at is the import instant for
         # migrated rows and would mislabel every one as 2026-03-15.
         entry_date = getattr(entry, "effective_date", None) or entry.created_at
+        invoice = getattr(entry, "invoice", None)
+        invoice_number = getattr(invoice, "invoice_number", None) or getattr(
+            entry, "invoice_number", None
+        )
         writer.writerow(
             [
                 str(entry.id),
                 _entry_customer_name(entry),
                 entry_type,
                 getattr(getattr(entry, "source", None), "value", "") or "",
+                invoice_number or "",
                 f"{amount:.2f}" if entry_type == "debit" else "",
                 f"{amount:.2f}" if entry_type == "credit" else "",
                 display_format.currency_code(entry.currency),

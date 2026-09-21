@@ -528,6 +528,7 @@ def customer_support_create(
 def customer_support_detail(
     request: Request,
     ticket_id: str,
+    return_to: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> Response:
     customer = get_current_customer_from_request(request, db)
@@ -540,6 +541,9 @@ def customer_support_detail(
     subscriber_ids = resolve_allowed_subscriber_ids(customer, db)
     context = crm_portal.ticket_detail_context(
         request, db, customer, subscriber_ids, ticket_id
+    )
+    context["support_return_path"] = (
+        _safe_portal_return_path(return_to) if return_to else "/portal/support"
     )
     return templates.TemplateResponse("customer/support/detail.html", context)
 
@@ -618,6 +622,7 @@ def customer_support_add_comment(
         )
         context["crm_error"] = True
         context["crm_error_message"] = result.get("error") or "Unable to add comment."
+        context["comment_form_values"] = {"body": body}
         return templates.TemplateResponse(
             "customer/support/detail.html",
             context,

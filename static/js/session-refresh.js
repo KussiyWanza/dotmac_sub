@@ -119,6 +119,16 @@
     async function fetchRefresh(win, refreshUrl, loginUrl) {
         const csrfToken =
             typeof win.getCsrfToken === "function" ? win.getCsrfToken() : "";
+        if (!csrfToken) {
+            return {
+                completedAt: nowMs(win),
+                status: 403,
+                redirectTo: null,
+                expiresAt: 0,
+                terminal: true,
+                reload: true,
+            };
+        }
         const response = await win.fetch(refreshUrl, {
             method: "POST",
             cache: "no-store",
@@ -136,11 +146,14 @@
             response.status === 401 || responseReachedLogin(win, response, loginUrl)
                 ? loginRedirect(win, loginUrl)
                 : null;
+        const reload = response.status === 403;
         return {
             completedAt: nowMs(win),
             status: response.status,
             redirectTo,
             expiresAt: Number(expiresAtHeader || 0),
+            terminal: Boolean(redirectTo || reload),
+            reload,
         };
     }
 
@@ -211,7 +224,17 @@
     function applyRefreshResult(win, result) {
         if (result && result.redirectTo) {
             win.location.href = result.redirectTo;
+        } else if (result && result.reload) {
+            if (typeof win.location.reload === "function") {
+                win.location.reload();
+            } else {
+                win.location.href = win.location.href;
+            }
         }
+    }
+
+    function shouldRetryRefreshResult(result) {
+        return !result || !result.terminal;
     }
 
     function createSessionRefreshCoordinator(win, config) {
@@ -337,7 +360,7 @@
         }
         event.preventDefault();
         coordinator.refreshSession().then((result) => {
-            if (!result || (result.status !== 401 && !result.redirectTo)) {
+            if (result && result.status >= 200 && result.status < 300) {
                 event.detail.issueRequest(true);
             }
         });
@@ -361,7 +384,7 @@
                 const result = await coordinator.refreshSession();
                 if (result && result.status >= 200 && result.status < 300) {
                     scheduleRefresh();
-                } else if (!result || result.status !== 401) {
+                } else if (shouldRetryRefreshResult(result)) {
                     refreshTimer = root.setTimeout(scheduleRefresh, 30 * 1000);
                 }
             }, delay);
@@ -411,6 +434,7 @@
                 shouldUseRecentResult,
                 tryAcquireRefreshLock,
                 pauseHtmxForRefresh,
+                shouldRetryRefreshResult,
             },
         };
     }

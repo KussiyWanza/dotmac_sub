@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -354,8 +356,15 @@ def test_customer_ledger_view_pages_newest_activity_in_ten_entry_slices(
     assert [entry.id for entry in first_page.entries] == [
         entry.id for entry in reversed(entries[2:])
     ]
+    assert [entry.running_balance for entry in first_page.entries] == [
+        Decimal(str(sum(range(1, index + 1)))) for index in range(12, 2, -1)
+    ]
     assert [entry.id for entry in second_page.entries] == [
         entry.id for entry in reversed(entries[:2])
+    ]
+    assert [entry.running_balance for entry in second_page.entries] == [
+        Decimal("3"),
+        Decimal("1"),
     ]
     assert first_page.summary.credit_count == 12
     assert second_page.summary.credit_count == 12
@@ -446,10 +455,23 @@ def test_render_ledger_csv_contains_split_debit_and_credit(db_session, subscribe
     csv_text = render_ledger_csv([debit_entry, credit_entry])
 
     assert (
-        "entry_id,customer_name,entry_type,source,debit_amount,credit_amount,currency,description,date"
+        "entry_id,customer_name,entry_type,source,invoice_number,debit_amount,credit_amount,currency,description,date"
         in csv_text
     )
     assert subscriber.name in csv_text
     assert str(subscriber.id) not in csv_text
-    assert ",debit,invoice,15.00,,NGN," in csv_text
-    assert ",credit,payment,,22.00,NGN," in csv_text
+    rows = list(csv.DictReader(io.StringIO(csv_text)))
+    assert len(rows) == 2
+    assert rows[0]["entry_id"] == str(debit_entry.id)
+    assert rows[0]["entry_type"] == "debit"
+    assert rows[0]["source"] == "invoice"
+    assert rows[0]["invoice_number"] == ""
+    assert rows[0]["debit_amount"] == "15.00"
+    assert rows[0]["credit_amount"] == ""
+    assert rows[1]["entry_id"] == str(credit_entry.id)
+    assert rows[1]["entry_type"] == "credit"
+    assert rows[1]["source"] == "payment"
+    assert rows[1]["invoice_number"] == ""
+    assert rows[1]["debit_amount"] == ""
+    assert rows[1]["credit_amount"] == "22.00"
+    assert all(row["currency"] == "NGN" for row in rows)

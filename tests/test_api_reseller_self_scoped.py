@@ -200,14 +200,12 @@ def test_account_tickets_404_for_foreign_account(monkeypatch):
     assert exc.value.status_code == 404
 
 
-def test_account_tickets_soft_fails_when_crm_down(monkeypatch):
-    from app.services import crm_portal
-    from app.services.crm_client import CRMClientError
-
+def test_account_tickets_uses_native_projection(monkeypatch):
+    reseller_id = uuid.uuid4()
     monkeypatch.setattr(
         reseller_api.reseller_portal,
         "reseller_id_for_subscriber",
-        lambda db, sid: "res-1",
+        lambda db, sid: str(reseller_id),
     )
     monkeypatch.setattr(
         reseller_api.reseller_portal,
@@ -215,69 +213,34 @@ def test_account_tickets_soft_fails_when_crm_down(monkeypatch):
         lambda db, reseller_id, account_id: {"id": account_id},
     )
 
-    def _boom(db, account_id):
-        raise CRMClientError("down")
-
-    monkeypatch.setattr(crm_portal, "resolve_crm_subscriber_id", _boom)
-
-    out = reseller_api.my_reseller_account_tickets(
-        account_id=str(uuid.uuid4()),
-        db=None,
-        principal=_subscriber_principal(),
-    )
-    assert out == {"items": [], "crm_available": False}
-
-
-def test_account_tickets_normalizes_crm_fields(monkeypatch):
-    from app.services import crm_portal
-
-    monkeypatch.setattr(
-        reseller_api.reseller_portal,
-        "reseller_id_for_subscriber",
-        lambda db, sid: "res-1",
-    )
-    monkeypatch.setattr(
-        reseller_api.reseller_portal,
-        "get_account_detail",
-        lambda db, reseller_id, account_id: {"id": account_id},
-    )
-    monkeypatch.setattr(
-        crm_portal, "resolve_crm_subscriber_id", lambda db, account_id: "crm-9"
-    )
-
-    class _Client:
-        def list_tickets(self, subscriber_id):
-            assert subscriber_id == "crm-9"
-            return [
-                {
-                    "name": "TCK-1",
-                    "title": "No internet",
-                    "status": "open",
-                    "creation": "2026-06-01T10:00:00",
-                }
-            ]
-
-    monkeypatch.setattr(
-        "app.services.integrations.crm_capability.capability_client",
-        lambda *_: _Client(),
-    )
-
-    out = reseller_api.my_reseller_account_tickets(
-        account_id=str(uuid.uuid4()),
-        db=None,
-        principal=_subscriber_principal(),
-    )
-    assert out["crm_available"] is True
-    assert out["items"] == [
-        {
-            "id": "TCK-1",
+    ticket = SimpleNamespace(
+        to_dict=lambda: {
+            "id": "native-1",
             "subject": "No internet",
             "status": "open",
-            "priority": None,
-            "created_at": "2026-06-01T10:00:00",
-            "updated_at": None,
         }
-    ]
+    )
+    monkeypatch.setattr(
+        reseller_api.reseller_ticket_projection,
+        "native_account_ticket_summaries",
+        lambda db, *, query: (ticket,),
+    )
+
+    out = reseller_api.my_reseller_account_tickets(
+        account_id=str(uuid.uuid4()),
+        db=None,
+        principal=_subscriber_principal(),
+    )
+    assert out == {
+        "items": [
+            {
+                "id": "native-1",
+                "subject": "No internet",
+                "status": "open",
+            }
+        ],
+        "source": "native",
+    }
 
 
 def test_profile_403_for_non_reseller(monkeypatch):
