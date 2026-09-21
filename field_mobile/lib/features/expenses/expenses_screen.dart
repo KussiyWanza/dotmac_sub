@@ -1027,7 +1027,7 @@ class _NewExpenseRequestScreenState
         loading: true,
       ),
       error: (_, _) => _WorkOrderAvailability(
-        message: 'Could not load assigned work orders.',
+        message: 'Work orders could not be loaded. Please refresh the page.',
         onRetry: () => ref.invalidate(allAssignedJobsProvider),
       ),
     );
@@ -1070,12 +1070,12 @@ class _NewExpenseRequestScreenState
       setState(
         () => _lineError = _expenseErrorMessage(
           error,
-          'Could not upload receipt.',
+          'Receipt upload failed. Please try again.',
         ),
       );
     } catch (_) {
       if (!mounted) return;
-      setState(() => _lineError = 'Could not upload receipt.');
+      setState(() => _lineError = 'Receipt upload failed. Please try again.');
     } finally {
       if (mounted) setState(() => _receiptUploading = false);
     }
@@ -1137,14 +1137,14 @@ class _NewExpenseRequestScreenState
     if (formContext == null) {
       setState(
         () => _submitError =
-            'Expense approvers and payment details are unavailable. Retry above.',
+            'Expense setup is temporarily unavailable. Please try again.',
       );
       return;
     }
     if (formContext.approvers.isEmpty) {
       setState(
-        () => _submitError =
-            'No eligible expense approvers are available for your account.',
+        () =>
+            _submitError = 'No expense approver is available for your account.',
       );
       return;
     }
@@ -1165,7 +1165,7 @@ class _NewExpenseRequestScreenState
     if (categories == null || categories.isEmpty) {
       setState(
         () => _submitError =
-            'Expense categories are unavailable. Retry the category list above.',
+            'Expense categories could not be loaded. Please try again.',
       );
       return;
     }
@@ -1191,7 +1191,7 @@ class _NewExpenseRequestScreenState
         formContext.banks.isEmpty) {
       setState(
         () => _submitError =
-            'No banks are available for different payment details. Retry above.',
+            'Bank details are unavailable. Please try again later.',
       );
       return;
     }
@@ -1257,8 +1257,7 @@ class _NewExpenseRequestScreenState
     } on DioException catch (error) {
       if (!mounted) return;
       if (error.response == null) {
-        const message =
-            'Connect to the internet to verify payment details and submit. You can save the non-sensitive draft.';
+        const message = 'Please connect to the internet and try again.';
         setState(() => _submitError = message);
         ScaffoldMessenger.of(
           context,
@@ -1458,7 +1457,7 @@ class _NewExpenseRequestScreenState
                           _ExpenseDataAvailability(
                             label: 'Expense approver',
                             message:
-                                'No eligible expense approvers are available. Ask an administrator to check the ERP approver and active user accounts.',
+                                'No expense approver is available for your account.',
                             onRetry: _retryFormContext,
                             retryKey: const Key('expense-approver-retry'),
                           )
@@ -1500,7 +1499,7 @@ class _NewExpenseRequestScreenState
                           _ExpenseDataAvailability(
                             label: 'Payment destination',
                             message:
-                                'No payment destination is available. Ask an administrator to check your ERP bank profile and bank list.',
+                                'No payment account is available. Please contact an administrator.',
                             onRetry: _retryFormContext,
                             retryKey: const Key('expense-payment-retry'),
                           )
@@ -1645,7 +1644,8 @@ class _NewExpenseRequestScreenState
             ),
             error: (_, _) => _ExpenseDataAvailability(
               label: 'Expense category',
-              message: 'Could not load expense categories.',
+              message:
+                  'Expense categories could not be loaded. Please try again.',
               onRetry: _retryCategories,
               retryKey: const Key('expense-category-retry'),
             ),
@@ -1709,7 +1709,7 @@ class _NewExpenseRequestScreenState
                   },
                   decoration: InputDecoration(
                     labelText: _selectedCategory?.requiresReceipt == true
-                        ? 'Receipt URL required'
+                        ? 'Add a receipt URL or upload a receipt.'
                         : 'Receipt URL',
                     helperText: _receiptFileName.isEmpty
                         ? null
@@ -2116,6 +2116,10 @@ Color _expenseStatusColor(BuildContext context, String status) {
 }
 
 String _expenseErrorMessage(DioException error, String fallback) {
+  if (error.requestOptions.path.endsWith('/payment-destination/verify') &&
+      error.response?.statusCode == 422) {
+    return 'Please check your payment details and try again.';
+  }
   final data = error.response?.data;
   if (data is Map) {
     final detail = data['detail'];

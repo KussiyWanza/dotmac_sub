@@ -53,6 +53,17 @@ already absorbed, leaving false partial debt and understating customer credit.
 
 ## Canonical policy
 
+### Reviewed paid-coverage correction
+
+When a paid prepaid invoice already has a valid entitlement but its coverage
+end is wrong, `correct_paid_prepaid_invoice_coverage` is the only approved
+correction path. It requires an explicit target end, a fresh preview
+fingerprint, operator permission, and an idempotency key. It may shorten only
+the exact invoice-backed entitlement, preserves earlier entitlements, and
+projects the same target as `Subscription.next_billing_at`. Invoice totals,
+balance, payment, allocation, ledger entries, and adjustments are unchanged;
+the command records zero economic delta and a durable audit/event record.
+
 - `financial.invoices` owns invoice lifecycle and document state.
 - `financial.account_credit_applications` owns the exact payment-backed credit
   projection and payment allocation.

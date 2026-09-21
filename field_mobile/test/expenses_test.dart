@@ -1195,7 +1195,9 @@ void main() {
     expect(find.byKey(const Key('expense-category-code')), findsNothing);
     expect(find.byKey(const Key('expense-category')), findsNothing);
     expect(
-      find.textContaining('No expense categories are available.'),
+      find.textContaining(
+        'No expense categories are available. Ask an administrator to check the ERP category list.',
+      ),
       findsOneWidget,
     );
     final addExpense = tester.widget<OutlinedButton>(
@@ -1236,7 +1238,10 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Could not load expense categories.'), findsOneWidget);
+    expect(
+      find.text('Expense categories could not be loaded. Please try again.'),
+      findsOneWidget,
+    );
     expect(find.byKey(const Key('expense-category')), findsNothing);
 
     await tester.tap(find.byKey(const Key('expense-category-retry')));
@@ -1244,7 +1249,10 @@ void main() {
 
     expect(categoryLoads, 2);
     expect(find.byKey(const Key('expense-category')), findsOneWidget);
-    expect(find.text('Could not load expense categories.'), findsNothing);
+    expect(
+      find.text('Expense categories could not be loaded. Please try again.'),
+      findsNothing,
+    );
   });
 
   testWidgets('new expense request retries unavailable approver context', (
@@ -1356,11 +1364,13 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.textContaining('No eligible expense approvers are available.'),
+      find.textContaining('No expense approver is available for your account.'),
       findsOneWidget,
     );
     expect(
-      find.textContaining('No payment destination is available.'),
+      find.textContaining(
+        'No payment account is available. Please contact an administrator.',
+      ),
       findsOneWidget,
     );
     expect(find.byKey(const Key('expense-approver')), findsNothing);

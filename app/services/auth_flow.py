@@ -1025,10 +1025,9 @@ def password_min_length(db: Session | None = None) -> int:
     return _setting_int(db, "password_min_length", 8)
 
 
-# Privileged (staff/admin) accounts carry a higher password floor than the
-# general minimum. Configurable via the ``system_user_password_min_length``
-# auth setting; defaults to 12.
-SYSTEM_USER_PASSWORD_MIN_LENGTH = 12
+# Privileged (staff/admin) accounts use the same configurable minimum as other
+# local accounts. The shared default is eight characters.
+SYSTEM_USER_PASSWORD_MIN_LENGTH = 8
 
 
 def password_min_length_for(db: Session | None, principal_type: str | None) -> int:
@@ -1044,6 +1043,25 @@ def password_min_length_for(db: Session | None, principal_type: str | None) -> i
         )
         return max(base, floor)
     return base
+
+
+def password_policy_violations(password: str, minimum: int) -> tuple[str, ...]:
+    """Return the unmet local-password requirements in display order."""
+
+    violations: list[str] = []
+    if len(password) < minimum:
+        violations.append(f"Password must be at least {minimum} characters.")
+    if not any(character.isupper() for character in password):
+        violations.append("Password must include at least one uppercase letter.")
+    if not any(character.islower() for character in password):
+        violations.append("Password must include at least one lowercase letter.")
+    if not any(character.isdigit() for character in password):
+        violations.append("Password must include at least one number.")
+    if not any(
+        character.isascii() and not character.isalnum() for character in password
+    ):
+        violations.append("Password must include at least one special character.")
+    return tuple(violations)
 
 
 def ensure_mfa_not_locked(method: MFAMethod) -> None:
@@ -2120,6 +2138,18 @@ def change_password(
 
     if current_password == new_password:
         raise HTTPException(status_code=400, detail="New password must be different")
+
+    principal_type_for_policy = (
+        "system_user"
+        if credential.system_user_id is not None
+        else "reseller_user"
+        if getattr(credential, "reseller_user_id", None) is not None
+        else "subscriber"
+    )
+    minimum = password_min_length_for(db, principal_type_for_policy)
+    violations = password_policy_violations(new_password, minimum)
+    if violations:
+        raise HTTPException(status_code=400, detail=violations[0])
 
     now = _now()
     credential.password_hash = hash_password(new_password)

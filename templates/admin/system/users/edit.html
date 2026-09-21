@@ -31,7 +31,8 @@
     {% endif %}
 
     <div class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
-        <form method="post" action="/admin/system/users/{{ user.id }}/edit" class="space-y-6 p-6">
+        <form method="post" action="/admin/system/users/{{ user.id }}/edit" class="space-y-6 p-6"
+              x-data="{ newPassword: '', confirmation: '', passwordFocused: false, confirmationFocused: false, requirements(value) { return { length: value.length >= 8, uppercase: /[A-Z]/.test(value), lowercase: /[a-z]/.test(value), number: /[0-9]/.test(value), special: /[^A-Za-z0-9]/.test(value) }; }, get passwordValid() { return (!this.newPassword && !this.confirmation) || (Object.values(this.requirements(this.newPassword)).every(Boolean) && Object.values(this.requirements(this.confirmation)).every(Boolean) && this.newPassword === this.confirmation); } }">
             {% include "components/forms/csrf_input.html" %}
             <div class="grid gap-4 sm:grid-cols-2">
                 <div>
@@ -89,13 +90,28 @@
                 <div class="mt-4 grid gap-4 sm:grid-cols-2">
                     <div>
                         <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">New Password</label>
-                        <input type="password" name="new_password" id="new_password" minlength="8" autocomplete="new-password"
+                        <input type="password" name="new_password" id="new_password" x-model="newPassword" x-on:focus="passwordFocused = true" minlength="8" autocomplete="new-password"
                                class="block w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                        <ul x-show="passwordFocused || newPassword.length > 0" x-cloak class="mt-2 space-y-1 text-xs" aria-live="polite">
+                            <li :class="requirements(newPassword).length ? 'text-green-600 dark:text-green-400' : 'text-slate-500 dark:text-slate-400'"><span x-text="requirements(newPassword).length ? '✓' : '○'"></span> At least 8 characters</li>
+                            <li :class="requirements(newPassword).uppercase ? 'text-green-600 dark:text-green-400' : 'text-slate-500 dark:text-slate-400'"><span x-text="requirements(newPassword).uppercase ? '✓' : '○'"></span> One uppercase letter</li>
+                            <li :class="requirements(newPassword).lowercase ? 'text-green-600 dark:text-green-400' : 'text-slate-500 dark:text-slate-400'"><span x-text="requirements(newPassword).lowercase ? '✓' : '○'"></span> One lowercase letter</li>
+                            <li :class="requirements(newPassword).number ? 'text-green-600 dark:text-green-400' : 'text-slate-500 dark:text-slate-400'"><span x-text="requirements(newPassword).number ? '✓' : '○'"></span> One number</li>
+                            <li :class="requirements(newPassword).special ? 'text-green-600 dark:text-green-400' : 'text-slate-500 dark:text-slate-400'"><span x-text="requirements(newPassword).special ? '✓' : '○'"></span> One special character</li>
+                        </ul>
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Confirm Password</label>
-                        <input type="password" name="confirm_password" id="confirm_password" minlength="8" autocomplete="new-password"
+                        <input type="password" name="confirm_password" id="confirm_password" x-model="confirmation" x-on:focus="confirmationFocused = true" minlength="8" autocomplete="new-password"
                                class="block w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                        <ul x-show="confirmationFocused || confirmation.length > 0" x-cloak class="mt-2 space-y-1 text-xs" aria-live="polite">
+                            <li :class="requirements(confirmation).length ? 'text-green-600 dark:text-green-400' : 'text-slate-500 dark:text-slate-400'"><span x-text="requirements(confirmation).length ? '✓' : '○'"></span> At least 8 characters</li>
+                            <li :class="requirements(confirmation).uppercase ? 'text-green-600 dark:text-green-400' : 'text-slate-500 dark:text-slate-400'"><span x-text="requirements(confirmation).uppercase ? '✓' : '○'"></span> One uppercase letter</li>
+                            <li :class="requirements(confirmation).lowercase ? 'text-green-600 dark:text-green-400' : 'text-slate-500 dark:text-slate-400'"><span x-text="requirements(confirmation).lowercase ? '✓' : '○'"></span> One lowercase letter</li>
+                            <li :class="requirements(confirmation).number ? 'text-green-600 dark:text-green-400' : 'text-slate-500 dark:text-slate-400'"><span x-text="requirements(confirmation).number ? '✓' : '○'"></span> One number</li>
+                            <li :class="requirements(confirmation).special ? 'text-green-600 dark:text-green-400' : 'text-slate-500 dark:text-slate-400'"><span x-text="requirements(confirmation).special ? '✓' : '○'"></span> One special character</li>
+                            <li :class="newPassword === confirmation ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'"><span x-text="newPassword === confirmation ? '✓' : '○'"></span> Passwords match</li>
+                        </ul>
                     </div>
                 </div>
                 <div class="mt-3 flex items-center gap-2">
@@ -110,7 +126,7 @@
                    class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600">
                     Cancel
                 </a>
-                <button type="submit"
+                <button type="submit" :disabled="!passwordValid"
                         class="inline-flex items-center justify-center rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700">
                     Save Profile
                 </button>

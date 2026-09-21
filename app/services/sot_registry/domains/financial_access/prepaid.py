@@ -2593,6 +2593,11 @@ SERVICES: tuple[SOTService, ...] = (
                     "identity, entitlement, reviewed anchor projection, access "
                     "consequence, audit, event, and idempotency evidence with "
                     "zero economic delta. The "
+                    "reviewed paid-coverage correction is a separate owner "
+                    "command: it locks the exact paid invoice, subscription, "
+                    "and entitlement, shortens only the reviewed coverage end, "
+                    "reprojects the billing anchor, and records zero economic "
+                    "delta while preserving all payment and ledger evidence. The "
                     "missing-invoice repair is another owner root: it locks "
                     "the named account, subscription, and payment, rechecks "
                     "the preview, and commits document construction, issue, "
@@ -2697,6 +2702,7 @@ SERVICES: tuple[SOTService, ...] = (
                 event_types=(
                     "prepaid_proforma.adopted",
                     "prepaid_paid_invoice.repaired",
+                    "prepaid_paid_invoice.coverage_corrected",
                     "prepaid_draft.reconciled",
                 ),
                 schema_version=1,

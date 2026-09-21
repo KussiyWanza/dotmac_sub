@@ -710,18 +710,24 @@ def complete_password_reset(
 
     def operation() -> PasswordResetOutcome:
         _validate_context(command.context)
-        from app.services.auth_flow import hash_password, password_min_length_for
+        from app.services.auth_flow import (
+            hash_password,
+            password_min_length_for,
+            password_policy_violations,
+        )
 
         payload = _decode_capability(db, command.token)
         principal_type = str(payload.get("principal_type") or "subscriber")
         principal_id = _uuid_claim(payload)
         # Enforce the principal-type-aware floor (staff/admin > general minimum).
         minimum = password_min_length_for(db, principal_type)
-        if len(command.new_password) < minimum:
+        violations = password_policy_violations(command.new_password, minimum)
+        if violations:
             raise _error(
                 "invalid_password",
-                f"Password must be at least {minimum} characters.",
+                violations[0],
                 minimum_length=minimum,
+                requirements=violations,
             )
         token_email = str(payload.get("email") or "").strip().lower()
         if not token_email:

@@ -647,12 +647,18 @@ def complete_referral_enrollment(
         _validate_command_context(command.context)
         context = _decode_token(db, command.token)
         minimum = _policy_integer(db, "password_min_length")
-        if len(command.new_password) < minimum or len(command.new_password) > 255:
+        violations = auth_flow_service.password_policy_violations(
+            command.new_password, minimum
+        )
+        if len(command.new_password) > 255:
+            violations = (*violations, "Password must be 255 characters or fewer.")
+        if violations:
             raise _error(
                 "invalid_password",
-                f"Password must be between {minimum} and 255 characters.",
+                violations[0],
                 minimum_length=minimum,
                 maximum_length=255,
+                requirements=violations,
             )
         _, subscriber, canonical = _canonical_context(
             db,

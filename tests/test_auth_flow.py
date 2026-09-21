@@ -697,6 +697,7 @@ def test_refresh_expired_token_marks_session(db_session, person):
 
 
 def test_request_and_reset_password(db_session, person, monkeypatch):
+    # Use a password that satisfies the complete local policy.
     monkeypatch.setenv("JWT_SECRET", "test-secret")
     credential = UserCredential(
         person_id=person.id,
@@ -710,7 +711,7 @@ def test_request_and_reset_password(db_session, person, monkeypatch):
 
     result = request_password_reset(db_session, person.email)
     assert result
-    reset_at = reset_password(db_session, result["token"], "new-secret")
+    reset_at = reset_password(db_session, result["token"], "Resetpass1!")
     assert isinstance(reset_at, datetime)
     db_session.refresh(credential)
     assert credential.must_change_password is False
@@ -821,12 +822,12 @@ def test_reset_password_updates_only_local_credential(db_session, person, monkey
 
     result = request_password_reset(db_session, person.email)
     assert result
-    reset_password(db_session, result["token"], "new-secret")
+    reset_password(db_session, result["token"], "Resetpass1!")
 
     db_session.refresh(radius_credential)
     db_session.refresh(local_credential)
     assert radius_credential.password_hash is None
-    assert verify_password("new-secret", local_credential.password_hash)
+    assert verify_password("Resetpass1!", local_credential.password_hash)
     assert local_credential.must_change_password is False
     assert local_credential.failed_login_attempts == 0
 
@@ -850,12 +851,12 @@ def test_change_password_updates_only_local_credential(db_session, person):
     db_session.add_all([radius_credential, local_credential])
     db_session.commit()
 
-    change_password(db_session, str(person.id), "secret", "new-secret")
+    change_password(db_session, str(person.id), "secret", "Resetpass1!")
 
     db_session.refresh(radius_credential)
     db_session.refresh(local_credential)
     assert radius_credential.password_hash is None
-    assert verify_password("new-secret", local_credential.password_hash)
+    assert verify_password("Resetpass1!", local_credential.password_hash)
     assert local_credential.must_change_password is False
 
 
@@ -935,11 +936,11 @@ def test_reset_password_uses_configured_min_length(db_session, person, monkeypat
     result = request_password_reset(db_session, person.email)
     assert result
     with pytest.raises(HTTPException) as exc:
-        reset_password(db_session, result["token"], "12345678901")
+        reset_password(db_session, result["token"], "Abcdef1!xyz")
     assert exc.value.status_code == 400
     assert exc.value.detail == "Password must be at least 12 characters"
 
-    reset_at = reset_password(db_session, result["token"], "123456789012")
+    reset_at = reset_password(db_session, result["token"], "Abcdefgh123!")
     assert reset_at.tzinfo is not None
 
 
@@ -963,9 +964,9 @@ def test_reset_token_is_single_use(db_session, person, monkeypatch):
         result = request_password_reset(db_session, person.email)
     assert result
 
-    reset_password(db_session, result["token"], "new-secret-one")
+    reset_password(db_session, result["token"], "Resetpass1!one")
     with pytest.raises(HTTPException) as exc:
-        reset_password(db_session, result["token"], "new-secret-two")
+        reset_password(db_session, result["token"], "Resetpass1!two")
     assert exc.value.status_code == 401
 
 
@@ -987,7 +988,7 @@ def test_reset_password_rejects_inactive_principal(db_session, person, monkeypat
     db_session.commit()
 
     with pytest.raises(HTTPException) as exc:
-        reset_password(db_session, result["token"], "new-secret-one")
+        reset_password(db_session, result["token"], "Resetpass1!one")
     assert exc.value.status_code == 401
 
 
@@ -1009,7 +1010,7 @@ def test_reset_password_revokes_active_sessions(db_session, monkeypatch):
 
     result = request_password_reset(db_session, system_user.email)
     assert result
-    reset_password(db_session, result["token"], "brand-new-secret")
+    reset_password(db_session, result["token"], "Brandnew1!")
 
     db_session.refresh(session)
     assert session.status == SessionStatus.revoked
@@ -1125,10 +1126,10 @@ def test_password_reset_does_not_bypass_mfa(db_session, person, monkeypatch):
 
     result = request_password_reset(db_session, person.email)
     assert result
-    reset_password(db_session, result["token"], "brand-new-secret")
+    reset_password(db_session, result["token"], "Brandnew1!")
 
     login_result = AuthFlow.login(
-        db_session, person.email, "brand-new-secret", _make_request(), None
+        db_session, person.email, "Brandnew1!", _make_request(), None
     )
     assert login_result["mfa_required"] is True
     assert "access_token" not in login_result
@@ -1642,7 +1643,7 @@ def test_change_password_revokes_other_sessions(db_session, person, monkeypatch)
         db_session,
         str(person.id),
         "secret",
-        "new-secret",
+        "Resetpass1!",
         current_session_id=str(current.id),
     )
 
@@ -1651,7 +1652,7 @@ def test_change_password_revokes_other_sessions(db_session, person, monkeypatch)
     assert sessions[0].status == SessionStatus.active
     assert sessions[1].status == SessionStatus.revoked
     db_session.refresh(credential)
-    assert verify_password("new-secret", credential.password_hash)
+    assert verify_password("Resetpass1!", credential.password_hash)
 
 
 def test_reset_password_rejects_canceled_subscriber(db_session, person, monkeypatch):
@@ -1674,7 +1675,7 @@ def test_reset_password_rejects_canceled_subscriber(db_session, person, monkeypa
     db_session.commit()
 
     with pytest.raises(HTTPException) as exc:
-        reset_password(db_session, result["token"], "new-secret")
+        reset_password(db_session, result["token"], "Resetpass1!")
     assert exc.value.status_code == 401
 
 
@@ -1693,9 +1694,9 @@ def test_reset_token_replay_rejected_even_same_second(db_session, person, monkey
     # Issue and consume within the same second: the consumption must still
     # spend the token (password_updated_at is nudged past iat).
     result = request_password_reset(db_session, person.email)
-    reset_password(db_session, result["token"], "new-secret-1")
+    reset_password(db_session, result["token"], "Resetpass1!one")
     with pytest.raises(HTTPException) as exc:
-        reset_password(db_session, result["token"], "new-secret-2")
+        reset_password(db_session, result["token"], "Resetpass1!two")
     assert exc.value.status_code == 401
 
 

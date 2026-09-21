@@ -179,7 +179,7 @@ def test_completion_changes_credential_revokes_sessions_and_spends_token(
         credential_recovery.CompletePasswordResetCommand(
             context=_context("redeem recovery capability"),
             token=capability.token,
-            new_password="replacement-password",
+            new_password="Replacement-password1",
         ),
     )
 
@@ -189,14 +189,14 @@ def test_completion_changes_credential_revokes_sessions_and_spends_token(
             credential_recovery.CompletePasswordResetCommand(
                 context=_context("reject capability replay"),
                 token=capability.token,
-                new_password="another-replacement-password",
+                new_password="Another-replacement-password1",
             ),
         )
     assert captured.value.code == ("auth.credential_recovery.invalid_reset_capability")
 
     db_session.refresh(credential)
     db_session.refresh(session)
-    assert verify_password("replacement-password", credential.password_hash)
+    assert verify_password("Replacement-password1", credential.password_hash)
     assert credential.must_change_password is False
     assert session.status == SessionStatus.revoked
     assert outcome.sessions_revoked == 1
@@ -314,13 +314,24 @@ def _system_user_credential(db_session, *, email: str):
 def test_password_min_length_for_applies_system_user_floor(db_session) -> None:
     from app.services.auth_flow import password_min_length_for
 
-    assert password_min_length_for(db_session, "system_user") >= 12
+    assert password_min_length_for(db_session, "system_user") == 8
     assert password_min_length_for(db_session, "subscriber") == password_min_length_for(
         db_session, None
     )
 
 
-def test_system_user_reset_rejects_password_below_admin_floor(
+def test_password_policy_requires_all_user_facing_requirements() -> None:
+    from app.services.auth_flow import password_policy_violations
+
+    assert password_policy_violations("abcdefgh", 8) == (
+        "Password must include at least one uppercase letter.",
+        "Password must include at least one number.",
+        "Password must include at least one special character.",
+    )
+    assert password_policy_violations("Abcdef1!", 8) == ()
+
+
+def test_system_user_reset_rejects_password_below_shared_minimum(
     db_session, monkeypatch
 ) -> None:
     monkeypatch.setenv("JWT_SECRET", "credential-recovery-test-secret")
@@ -333,18 +344,18 @@ def test_system_user_reset_rejects_password_below_admin_floor(
     assert capability is not None
     db_session.commit()
 
-    # 11 chars: below the system_user floor (12), above the general minimum (8).
+    # Seven characters: below the shared minimum of eight.
     with pytest.raises(DomainError) as captured:
         credential_recovery.complete_password_reset(
             db_session,
             credential_recovery.CompletePasswordResetCommand(
-                context=_context(), token=capability.token, new_password="Abcdefgh123"
+                context=_context(), token=capability.token, new_password="Abcdefg!"
             ),
         )
     assert captured.value.code == "auth.credential_recovery.invalid_password"
 
 
-def test_system_user_reset_accepts_password_at_admin_floor(
+def test_system_user_reset_accepts_password_at_shared_minimum(
     db_session, monkeypatch
 ) -> None:
     monkeypatch.setenv("JWT_SECRET", "credential-recovery-test-secret")
@@ -359,9 +370,9 @@ def test_system_user_reset_accepts_password_at_admin_floor(
     outcome = credential_recovery.complete_password_reset(
         db_session,
         credential_recovery.CompletePasswordResetCommand(
-            context=_context(), token=capability.token, new_password="Abcdefgh1234"
+            context=_context(), token=capability.token, new_password="Abcdef1!"
         ),
     )
     assert outcome.principal_type == "system_user"
     db_session.refresh(credential)
-    assert verify_password("Abcdefgh1234", credential.password_hash)
+    assert verify_password("Abcdef1!", credential.password_hash)
