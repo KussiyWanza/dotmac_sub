@@ -259,6 +259,29 @@ def test_historical_paid_invoice_repair_has_a_permission_gate():
     )
 
 
+def test_paid_invoice_coverage_correction_is_registered():
+    service = service_relationship("financial.prepaid_draft_reconciliation")
+
+    concern = next(
+        item
+        for item in service.contract.concerns
+        if item.name == "reviewed paid prepaid invoice coverage correction"
+    )
+    assert concern.role.value == "reconciler"
+    assert "canonical paid prepaid coverage document" in concern.input_names
+    assert "canonical prepaid subscription contract" in concern.input_names
+    assert "canonical paid invoice allocation evidence" in concern.input_names
+    assert "canonical funded service entitlement" in concern.input_names
+    assert concern.canonical_writer == "financial.prepaid_draft_reconciliation"
+
+    coverage_document = next(
+        item
+        for item in service.contract.authoritative_inputs
+        if item.name == "canonical paid prepaid coverage document"
+    )
+    assert coverage_document.owner == "financial.invoices"
+
+
 def test_reconciliation_cli_checks_a_real_staff_permission_before_repair():
     """The CLI resolves a real principal's RBAC grants, not a free-text actor.
 

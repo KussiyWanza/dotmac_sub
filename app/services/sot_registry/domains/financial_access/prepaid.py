@@ -2208,6 +2208,7 @@ SERVICES: tuple[SOTService, ...] = (
         owns=(
             "funded onboarding proforma documentary adoption",
             "historical paid prepaid invoice identity and coverage repair",
+            "reviewed paid prepaid invoice coverage correction",
             "reviewed missing prepaid paid-invoice repair",
             "reviewed pre-opening invoice settlement correction",
             "stranded prepaid draft classification",
@@ -2332,6 +2333,18 @@ SERVICES: tuple[SOTService, ...] = (
                     canonical_writer="financial.prepaid_draft_reconciliation",
                 ),
                 ConcernContract(
+                    name="reviewed paid prepaid invoice coverage correction",
+                    role=OwnerRole.RECONCILER,
+                    input_names=(
+                        "reviewed reconciliation command",
+                        "canonical paid prepaid coverage document",
+                        "canonical prepaid subscription contract",
+                        "canonical paid invoice allocation evidence",
+                        "canonical funded service entitlement",
+                    ),
+                    canonical_writer="financial.prepaid_draft_reconciliation",
+                ),
+                ConcernContract(
                     name="reviewed missing prepaid paid-invoice repair",
                     role=OwnerRole.RECONCILER,
                     input_names=(
@@ -2426,6 +2439,16 @@ SERVICES: tuple[SOTService, ...] = (
                         "preview fingerprint, invoice, subscription, and optional "
                         "line identity, actor, reason, command, correlation, and "
                         "idempotency evidence"
+                    ),
+                ),
+                AuthorityInput(
+                    name="canonical paid prepaid coverage document",
+                    owner="financial.invoices",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "locked active paid non-proforma invoice with its exact "
+                        "prepaid service line, immutable totals, zero balance, "
+                        "and existing settlement evidence"
                     ),
                 ),
                 AuthorityInput(
