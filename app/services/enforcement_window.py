@@ -15,6 +15,7 @@ window comparisons here use the ``scheduler.timezone`` setting (local TZ).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
 from zoneinfo import ZoneInfo
@@ -23,6 +24,8 @@ from sqlalchemy.orm import Session
 
 from app.models.domain_settings import SettingDomain
 from app.services import settings_spec
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -108,18 +111,32 @@ def within_send_window(db: Session, run_at: datetime) -> bool:
     ``scheduler.timezone``: sends are allowed only during the
     ``[send_hour, send_hour+1)`` local hour, so an hourly notifications runner
     emits once per day at the configured hour. Returns ``True`` (no gate) when
-    the hour is unset or invalid — callers stay backwards-compatible until an
-    operator configures a send hour.
+    the hour is unset. A malformed (non-integer) configured value fails
+    CLOSED — treated as "not in window" — rather than silently degrading to
+    "always send"; a clear warning is logged so an operator notices the
+    misconfiguration.
     """
     hour_value = settings_spec.resolve_value(
         db, SettingDomain.collections, "billing_notif_send_hour"
     )
+    if hour_value is None:
+        return True
     try:
         hour = int(str(hour_value))
     except (TypeError, ValueError):
-        return True
+        logger.warning(
+            "billing_notif_send_hour is not a valid integer (%r); "
+            "failing closed (treating as outside the send window)",
+            hour_value,
+        )
+        return False
     if not (0 <= hour <= 23):
-        return True
+        logger.warning(
+            "billing_notif_send_hour %r is out of range 0-23; "
+            "failing closed (treating as outside the send window)",
+            hour,
+        )
+        return False
     local_run_at = to_local(db, run_at)
     return (
         window_block_reason(

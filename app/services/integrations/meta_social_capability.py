@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Callable
 
 from pydantic import ValidationError
@@ -106,16 +107,33 @@ def send_direct_message(
             "provider_account_id": command.provider_account_id,
             "recipient_id": command.recipient_id,
             "body": command.body,
+            "attachment": (
+                {
+                    "asset_id": str(command.attachment.asset_id),
+                    "attachment_type": command.attachment.attachment_type.value,
+                    "filename": command.attachment.filename,
+                    "content_type": command.attachment.content_type,
+                    "content_base64": base64.b64encode(
+                        command.attachment.content
+                    ).decode("ascii"),
+                }
+                if command.attachment is not None
+                else None
+            ),
             "preview": command.preview,
         },
     )
     provider_message_id = result.external_receipt.get("provider_message_id")
+    provider_attachment_id = result.external_receipt.get("provider_attachment_id")
     provider_recipient_id = result.external_receipt.get("provider_recipient_id")
     return MetaDirectMessageOutcome(
         accepted=result.status is OperationStatus.succeeded,
         operation_status=result.status.value,
         provider_message_id=(
             str(provider_message_id) if provider_message_id is not None else None
+        ),
+        provider_attachment_id=(
+            str(provider_attachment_id) if provider_attachment_id is not None else None
         ),
         provider_recipient_id=(
             str(provider_recipient_id) if provider_recipient_id is not None else None

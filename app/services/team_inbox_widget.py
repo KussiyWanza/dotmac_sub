@@ -33,6 +33,7 @@ from app.services import (
     conversation_lead_relationships,
     team_inbox_automation,
     team_inbox_channel_receive,
+    team_inbox_customer_completion_policy,
     team_inbox_participants,
     team_inbox_realtime,
     team_inbox_routing,
@@ -353,6 +354,9 @@ def _conversation(
     if conversation is None:
         now = datetime.now(UTC)
         conversation = InboxConversation(
+            customer_completion_policy_version_id=team_inbox_customer_completion_policy.snapshot_active_policy_id(
+                db
+            ),
             subscriber_id=subscriber_id,
             channel_type=InboxChannelType.chat_widget.value,
             status=InboxConversationStatus.open.value,

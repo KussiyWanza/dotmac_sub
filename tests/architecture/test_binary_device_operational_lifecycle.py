@@ -39,6 +39,7 @@ PUBLIC_OPERATIONAL_SURFACES = (
     "templates/admin/network/monitoring/_kpi_partial.html",
     "templates/admin/network/monitoring/index.html",
     "templates/admin/network/olts/index.html",
+    "templates/admin/network/olts/detail.html",
     "templates/admin/network/onts/index.html",
     "templates/admin/network/onts/detail.html",
     "templates/admin/network/onts/_hero_header.html",
@@ -184,3 +185,28 @@ def test_topology_keeps_device_operation_separate_from_asset_lifecycle() -> None
     assert "operational_status" in service_source + template_source
     assert "lifecycle_status" in service_source + template_source
     assert "node.status" not in template_source
+
+
+def test_olt_list_and_detail_share_freshness_aware_status_owner() -> None:
+    owner = (PROJECT_ROOT / "app/services/device_operational_status.py").read_text(
+        encoding="utf-8"
+    )
+    readers = "\n".join(
+        (PROJECT_ROOT / relative).read_text(encoding="utf-8")
+        for relative in (
+            "app/services/web_network_core_devices_inventory.py",
+            "app/services/web_network_core_devices_views.py",
+        )
+    )
+    detail = (PROJECT_ROOT / "templates/admin/network/olts/detail.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'getattr(olt, "last_poll_at", None)' in owner
+    assert "trusted_live_status(" in owner
+    assert "linked_live_status=" not in readers
+    assert "linked_device=" in readers
+    assert "derive_olt_health_evidence" in readers
+    assert "olt_status_evidence.operational.presentation" in detail
+    assert "resolved_device_info.last_ping_ok" not in detail
+    assert "resolved_device_info.last_snmp_ok" not in detail

@@ -69,12 +69,14 @@ function broadcastChannelClass() {
 
 function fakeWindow({ storage, channelClass, fetch }) {
     const listeners = new Map();
+    const documentListeners = new Map();
     return {
         Date,
         URL,
         crypto: { randomUUID: () => `tab-${Math.random()}` },
         localStorage: storage,
         BroadcastChannel: channelClass,
+        navigator: {},
         fetch,
         location: {
             href: 'https://oss.example.test/admin/dashboard',
@@ -99,7 +101,17 @@ function fakeWindow({ storage, channelClass, fetch }) {
         document: {
             readyState: 'complete',
             hidden: false,
-            addEventListener() {},
+            addEventListener(type, listener) {
+                if (!documentListeners.has(type)) {
+                    documentListeners.set(type, new Set());
+                }
+                documentListeners.get(type).add(listener);
+            },
+            dispatchEvent(event) {
+                for (const listener of documentListeners.get(event.type) || []) {
+                    listener(event);
+                }
+            },
         },
     };
 }
@@ -114,17 +126,17 @@ test('session refresh is shared by tabs instead of duplicated', async () => {
         return {
             status: 204,
             redirected: false,
-            url: 'https://oss.example.test/admin/session/refresh',
+            url: 'https://oss.example.test/auth/session/refresh',
         };
     };
 
     const first = sessionRefresh.createSessionRefreshCoordinator(
         fakeWindow({ storage, channelClass, fetch }),
-        { refreshUrl: '/admin/session/refresh', loginUrl: '/auth/login' },
+        { refreshUrl: '/auth/session/refresh', loginUrl: '/auth/login' },
     );
     const second = sessionRefresh.createSessionRefreshCoordinator(
         fakeWindow({ storage, channelClass, fetch }),
-        { refreshUrl: '/admin/session/refresh', loginUrl: '/auth/login' },
+        { refreshUrl: '/auth/session/refresh', loginUrl: '/auth/login' },
     );
 
     const results = await Promise.all([
@@ -157,11 +169,11 @@ test('a login redirect is shared across waiting tabs', async () => {
     const secondWindow = fakeWindow({ storage, channelClass, fetch });
     const first = sessionRefresh.createSessionRefreshCoordinator(
         firstWindow,
-        { refreshUrl: '/admin/session/refresh', loginUrl: '/auth/login' },
+        { refreshUrl: '/auth/session/refresh', loginUrl: '/auth/login' },
     );
     const second = sessionRefresh.createSessionRefreshCoordinator(
         secondWindow,
-        { refreshUrl: '/admin/session/refresh', loginUrl: '/auth/login' },
+        { refreshUrl: '/auth/session/refresh', loginUrl: '/auth/login' },
     );
 
     await Promise.all([first.refreshSession(), second.refreshSession()]);
@@ -171,4 +183,93 @@ test('a login redirect is shared across waiting tabs', async () => {
     assert.match(secondWindow.location.href, /\/auth\/login\?next=/);
     first.close();
     second.close();
+});
+
+test('several requests in one tab share one renewal promise', async () => {
+    const storage = sharedStorage();
+    let fetchCount = 0;
+    const fetch = async (_url, options) => {
+        fetchCount += 1;
+        assert.equal(options.method, 'POST');
+        await delay(25);
+        return {
+            status: 204,
+            redirected: false,
+            url: 'https://oss.example.test/auth/session/refresh',
+            headers: { get: () => '2000000000' },
+        };
+    };
+    const coordinator = sessionRefresh.createSessionRefreshCoordinator(
+        fakeWindow({ storage, channelClass: broadcastChannelClass(), fetch }),
+        { refreshUrl: '/auth/session/refresh', loginUrl: '/auth/login' },
+    );
+
+    const results = await Promise.all([
+        coordinator.refreshSession(),
+        coordinator.refreshSession(),
+        coordinator.refreshSession(),
+        coordinator.refreshSession(),
+        coordinator.refreshSession(),
+    ]);
+
+    assert.equal(fetchCount, 1);
+    assert.equal(results.length, 5);
+    assert.equal(coordinator.expiresAtMs(), 2000000000 * 1000);
+    coordinator.close();
+});
+
+test('an HTMX request waits when renewal is due', async () => {
+    const storage = sharedStorage();
+    let fetchCount = 0;
+    const fetch = async () => {
+        fetchCount += 1;
+        await delay(20);
+        return {
+            status: 204,
+            redirected: false,
+            url: 'https://oss.example.test/auth/session/refresh',
+            headers: { get: () => String(Math.floor(Date.now() / 1000) + 900) },
+        };
+    };
+    const win = fakeWindow({
+        storage,
+        channelClass: broadcastChannelClass(),
+        fetch,
+    });
+    const browserCoordinator = sessionRefresh.createSessionRefreshCoordinator(
+        win,
+        { refreshUrl: '/auth/session/refresh', loginUrl: '/auth/login', expiresAt: 0 },
+    );
+    let prevented = false;
+    let issued = false;
+    const event = {
+        preventDefault() {
+            prevented = true;
+        },
+        detail: {
+            issueRequest(skipConfirmation) {
+                assert.equal(skipConfirmation, true);
+                issued = true;
+            },
+        },
+    };
+
+    const paused = sessionRefresh._internal.pauseHtmxForRefresh(
+        browserCoordinator,
+        event,
+    );
+    assert.equal(paused, true);
+    assert.equal(prevented, true);
+    assert.equal(issued, false);
+    await new Promise((resolve) => {
+        const timer = setInterval(() => {
+            if (issued) {
+                clearInterval(timer);
+                resolve();
+            }
+        }, 5);
+    });
+    assert.equal(fetchCount, 1);
+    assert.equal(issued, true);
+    browserCoordinator.close();
 });

@@ -84,7 +84,6 @@ class _InvoicesScreenState extends ConsumerState<InvoicesScreen>
       body: Column(
         children: [
           const OfflineBanner(),
-          const _BillingPrimaryAction(),
           Expanded(
             child: TabBarView(
               controller: _tabController,
@@ -241,29 +240,6 @@ class _InvoicesScreenState extends ConsumerState<InvoicesScreen>
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-/// Account-level payment entry point. Invoice rows keep their contextual Pay
-/// action, while this remains available across every Billing tab and empty
-/// state for customers who want to add credit before an invoice is due.
-class _BillingPrimaryAction extends StatelessWidget {
-  const _BillingPrimaryAction();
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-      child: SizedBox(
-        width: double.infinity,
-        child: FilledButton.icon(
-          key: const ValueKey('billing-add-funds'),
-          onPressed: () => context.push('/topup'),
-          icon: const Icon(Icons.account_balance_wallet_outlined),
-          label: const Text('Add funds / Pay'),
-        ),
       ),
     );
   }

@@ -1,5 +1,8 @@
+import 'dart:math';
+
 import 'package:dio/dio.dart';
 
+import '../config/env.dart';
 import '../core/http.dart';
 import '../models/quote.dart';
 
@@ -46,17 +49,24 @@ class QuotesRepository {
     String quoteId, {
     String? provider,
   }) async {
+    final idempotencyKey =
+        'quote-$quoteId-${DateTime.now().microsecondsSinceEpoch}-'
+        '${Random.secure().nextInt(1 << 32)}';
     final data = await guard(
       () => dio.post(
         '/me/quotes/$quoteId/deposit/initiate',
-        data: {if (provider != null) 'provider': provider},
+        data: {
+          if (provider != null) 'provider': provider,
+          'redirect_url': '${Brand.paymentScheme}://success',
+          'idempotency_key': idempotencyKey,
+        },
       ),
     );
     return QuoteDepositInitiation.fromJson(data as Map<String, dynamic>);
   }
 
   /// POST /me/quotes/{id}/deposit/verify — confirm payment; on settlement the
-  /// quote is accepted in the CRM (sales order + install project).
+  /// quote is accepted natively (sales order + install project).
   Future<QuoteDepositResult> verifyDeposit(
     String quoteId, {
     required String reference,

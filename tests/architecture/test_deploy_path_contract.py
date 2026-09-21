@@ -207,13 +207,9 @@ def test_openbao_initializer_seeds_optional_material_without_requiring_it() -> N
 
     initializer = (ROOT / "scripts/setup/openbao_init.sh").read_text(encoding="utf-8")
     source = (ROOT / "app/services/kernel_secret_source.py").read_text(encoding="utf-8")
-    provider = (ROOT / "app/services/kernel_key_provider.py").read_text(
-        encoding="utf-8"
-    )
 
     optional_source = source[source.index("OPTIONAL_SECRET_REFS:") :]
     bindings = set(re.findall(r"bao://secret/([^#]+)#([a-z_]+)", optional_source))
-    bindings |= set(re.findall(r"bao://secret/([^#]+)#([a-z_]+)", provider))
     assert bindings, "no optional bindings found to check"
 
     for path, field in bindings:
@@ -221,3 +217,14 @@ def test_openbao_initializer_seeds_optional_material_without_requiring_it() -> N
         assert field in initializer, f"{field} is never seeded"
         # Seeded by the helper that skips under `--strict`, not by `seed_group`.
         assert f"seed_optional_group {path}" in initializer
+
+
+def test_openbao_initializer_provisions_settings_keyring_once() -> None:
+    initializer = (ROOT / "scripts/setup/openbao_init.sh").read_text(encoding="utf-8")
+
+    assert "seed_settings_encryption_keyring()" in initializer
+    assert "openssl rand -base64 32" in initializer
+    assert 'kv get -field="$field" "secret/${path}"' in initializer
+    assert "already contains a different settings keyring" in initializer
+    assert "seed_settings_encryption_keyring\n" in initializer
+    assert "seed_optional_group settings/crypto" not in initializer

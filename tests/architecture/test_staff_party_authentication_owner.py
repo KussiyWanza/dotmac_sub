@@ -35,7 +35,7 @@ BRIDGE = "resolve_staff_principal_assertion"
 #: resolution moved to the shared resolver.
 ENTRY_POINTS = (
     (Path("app/services/auth_flow.py"), "_principal_for_credential"),
-    (Path("app/services/auth_flow.py"), "refresh"),
+    (Path("app/services/auth_session_refresh.py"), "renew_authentication_session"),
     (Path("app/services/auth_flow.py"), "validate_active_session"),
     (Path("app/services/field/vendor_auth.py"), "resolve_vendor_login_eligibility"),
 )
@@ -161,7 +161,7 @@ SESSION_RESOLVER = "resolve_staff_session_principal"
 #: for a subject that carries `party_id`.
 PARTY_KEYED = (
     (Path("app/services/auth_flow.py"), "validate_active_session"),
-    (Path("app/services/auth_flow.py"), "refresh"),
+    (Path("app/services/auth_session_refresh.py"), "renew_authentication_session"),
     (Path("app/services/auth_flow.py"), "_issue_tokens"),
     (Path("app/services/auth_flow.py"), "mfa_verify"),
     (Path("app/services/auth_flow.py"), "_principal_for_credential"),

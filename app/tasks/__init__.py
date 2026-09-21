@@ -47,6 +47,7 @@ from app.tasks.dotmac_erp_outbox import (
     refresh_material_request_statuses,
     refresh_purchase_invoice_statuses,
     repair_purchase_invoice_sync,
+    repair_purchase_order_writebacks,
     sync_erp_operational_domains,
 )
 from app.tasks.dotmac_erp_outbox import (
@@ -67,6 +68,7 @@ from app.tasks.forwarding_control_observations import (
 )
 from app.tasks.gis import run_batch_geocode_job, sync_gis_sources
 from app.tasks.imports import run_import_job
+from app.tasks.inbox_sla import evaluate_inbox_sla
 from app.tasks.infrastructure_availability import (
     prune_infrastructure_availability,
     snapshot_infrastructure_availability,
@@ -75,6 +77,9 @@ from app.tasks.infrastructure_polling import run_infrastructure_poll
 from app.tasks.integration_delivery import (
     deliver_integration_event,
     deliver_meta_lead_conversion,
+)
+from app.tasks.integration_inbox import (
+    reclaim_stale_claims as reclaim_stale_integration_inbox_claims,
 )
 from app.tasks.integrations import run_integration_job
 from app.tasks.invoice_pdf import generate_invoice_pdf_export
@@ -253,6 +258,7 @@ __all__ = [
     "run_integration_job",
     "deliver_integration_event",
     "deliver_meta_lead_conversion",
+    "reclaim_stale_integration_inbox_claims",
     "process_due_campaigns",
     "process_due_campaign_steps",
     "send_campaign_batch",
@@ -285,6 +291,7 @@ __all__ = [
     "recover_stale_inbox_ai_intake",
     "repair_inbox_whatsapp_locations",
     "auto_resolve_stale_inbox_conversations",
+    "evaluate_inbox_sla",
     "run_scheduled_export",
     "run_export_job",
     "prune_field_location_history_task",
@@ -300,6 +307,7 @@ __all__ = [
     "refresh_material_catalog",
     "refresh_purchase_invoice_statuses",
     "repair_purchase_invoice_sync",
+    "repair_purchase_order_writebacks",
     "sync_erp_operational_domains",
     "run_usage_rating",
     "import_radius_accounting",

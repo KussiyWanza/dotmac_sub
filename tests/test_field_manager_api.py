@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from decimal import Decimal
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -15,19 +17,47 @@ from app.models.field_erp_sync import (
     SyncFlowOwner,
     SyncFlowOwnership,
 )
+from app.models.field_expense import FieldExpenseRequest
 from app.models.field_location import FieldTechPresence
 from app.models.subscriber import Subscriber, UserType
 from app.models.system_user import SystemUser
 from app.models.work_order import WorkOrder
+from app.schemas.field import FieldManagerTechniciansQuery
+from app.schemas.geocoding import ReverseGeocodeResult
 from app.services.auth_dependencies import require_user_auth
+from app.services.field import expense_categories as expense_categories_module
+from app.services.field.expense_recovery import ExpensePaymentDeliveryRecoveryPreview
 from app.services.field.expense_requests import (
     ApproveFieldExpenseRequest,
+    ExpenseCategoryRule,
+    ExpenseRequestLineInput,
+    ExpenseWorkOrderIdentity,
+    RejectFieldExpenseRequest,
+    SubmitFieldExpenseRequest,
     approve_field_expense_request_command,
     field_expense_requests,
+    reject_field_expense_request_command,
+    submit_field_expense_request_command,
 )
 from app.services.field.jobs import field_jobs
 from app.services.field.manager import field_manager
 from app.services.owner_commands import CommandContext
+
+
+@pytest.fixture(autouse=True)
+def _authoritative_expense_rules(monkeypatch):
+    monkeypatch.setattr(
+        expense_categories_module,
+        "list_expense_categories",
+        lambda _db, _query: (
+            ExpenseCategoryRule(
+                category_code="transport",
+                category_name="Transport",
+                requires_receipt=False,
+                max_amount_per_claim=Decimal("10000.00"),
+            ),
+        ),
+    )
 
 
 def _user(db_session, name: str = "Manager") -> SystemUser:
@@ -145,28 +175,58 @@ def _presence(db_session, profile: TechnicianProfile, **overrides) -> FieldTechP
 
 
 def _expense(db_session, tech_user, profile, work_order, status="submitted") -> dict:
-    created = field_expense_requests.create(
+    assert status == "submitted"
+    _enable_expense_flow(db_session)
+    request_id = uuid4()
+    tech_user_id = tech_user.id
+    requester_person_id = profile.person_id
+    work_order_public_id = work_order.public_id
+    db_session.commit()
+    outcome = submit_field_expense_request_command(
         db_session,
-        _auth(tech_user, roles=[]),
-        crm_work_order_id=work_order.crm_work_order_id,
-        purpose="Transport",
-        expense_date=date.today(),
-        currency="NGN",
-        notes=None,
-        client_ref=None,
-        items=[
-            {
-                "category_code": "transport",
-                "description": "Bike delivery",
-                "amount": "2500.00",
-            }
-        ],
+        SubmitFieldExpenseRequest(
+            context=CommandContext(
+                command_id=request_id,
+                correlation_id=request_id,
+                actor=f"user:{tech_user_id}",
+                scope="field:expense_requests:write",
+                reason="manager test expense submission",
+                idempotency_key=str(request_id),
+            ),
+            requester_person_id=requester_person_id,
+            work_order=ExpenseWorkOrderIdentity(public_id=work_order_public_id),
+            request_id=request_id,
+            purpose="Transport",
+            expense_date=date.today(),
+            currency="NGN",
+            notes=None,
+            items=(
+                ExpenseRequestLineInput(
+                    category_code="transport",
+                    category_name="Transport",
+                    description="Bike delivery",
+                    amount=Decimal("2500.00"),
+                    expense_date=date.today(),
+                    vendor_name=None,
+                    receipt_url=None,
+                    receipt_attachment_id=None,
+                    notes=None,
+                ),
+            ),
+        ),
     )
-    if status != "draft":
-        created = field_expense_requests.submit(
-            db_session, _auth(tech_user, roles=[]), str(created["id"])
-        )
-    return created
+    return field_expense_requests.get(
+        db_session,
+        {
+            "principal_id": str(tech_user_id),
+            "person_id": str(tech_user_id),
+            "subscriber_id": str(tech_user_id),
+            "principal_type": "system_user",
+            "roles": [],
+            "scopes": [],
+        },
+        str(outcome.id),
+    )
 
 
 def test_manager_me_summary_and_technicians(db_session):
@@ -204,17 +264,21 @@ def test_manager_me_summary_and_technicians(db_session):
     assert summary["unassigned_jobs"] == baseline["unassigned_jobs"] + 1
     assert summary["pending_expenses"] == baseline["pending_expenses"] + 1
 
-    technicians = field_manager.list_technicians(db_session)
-    item = next(
-        entry for entry in technicians if entry["person_id"] == profile.person_id
+    technicians = field_manager.list_technicians(
+        db_session,
+        FieldManagerTechniciansQuery(),
     )
-    assert item["person_label"] == "Tech Staff"
-    assert item["status"] == "on_shift"
-    assert item["is_live"] is True
-    assert item["last_latitude"] == pytest.approx(9.0765)
-    assert item["active_work_order"]["id"] == "wo-mgr-assigned"
-    assert item["active_work_order"]["status"] == "in_progress"
-    assert item["active_work_order"]["status_presentation"].model_dump(mode="json") == {
+    item = next(
+        entry for entry in technicians.items if entry.person_id == profile.person_id
+    )
+    assert item.person_label == "Tech Staff"
+    assert item.status == "on_shift"
+    assert item.is_live is True
+    assert not hasattr(item, "last_latitude")
+    assert item.active_work_order is not None
+    assert item.active_work_order.id == "wo-mgr-assigned"
+    assert item.active_work_order.status == "in_progress"
+    assert item.active_work_order.status_presentation.model_dump(mode="json") == {
         "value": "in_progress",
         "label": "In progress",
         "tone": "info",
@@ -313,6 +377,7 @@ def test_manager_assign_validation(db_session):
 
 
 def test_manager_expense_approve_and_reject(db_session):
+    manager = _user(db_session, "ExpenseManager")
     tech_user = _user(db_session, "Tech")
     profile = _profile(db_session, tech_user, crm_person_id="crm-exp-tech")
     subscriber = _subscriber(db_session)
@@ -325,6 +390,16 @@ def test_manager_expense_approve_and_reject(db_session):
     )
     first = _expense(db_session, tech_user, profile, work_order)
     second = _expense(db_session, tech_user, profile, work_order)
+    legacy_first = db_session.get(FieldExpenseRequest, first["id"])
+    assert legacy_first is not None
+    legacy_first.requested_by_system_user_id = None
+    legacy_second = db_session.get(FieldExpenseRequest, second["id"])
+    assert legacy_second is not None
+    legacy_person_id = uuid4()
+    profile.person_id = legacy_person_id
+    legacy_second.requested_by_person_id = legacy_person_id
+    legacy_second.requested_by_system_user_id = None
+    legacy_second.requested_by_technician_id = None
     _enable_expense_flow(db_session)
     db_session.commit()
 
@@ -333,22 +408,44 @@ def test_manager_expense_approve_and_reject(db_session):
         str(first["id"]),
         str(second["id"]),
     }
+    assert {
+        item["requested_by_name"]
+        for item in pending
+        if item["id"] in {first["id"], second["id"]}
+    } == {"Tech Staff"}
 
     approved = _approve_expense(
-        db_session, request_id=first["id"], reviewer_id=tech_user.id
+        db_session, request_id=first["id"], reviewer_id=manager.id
     )
     assert approved.status == "approved"
     assert approved.approved_at is not None
     assert approved.erp_sync_status.value == "pending"
 
-    rejected = field_expense_requests.reject(
-        db_session, str(second["id"]), "No receipt provided"
+    rejection_id = uuid4()
+    reviewer_id = manager.id
+    second_id = second["id"]
+    db_session.commit()
+    rejected_outcome = reject_field_expense_request_command(
+        db_session,
+        command=RejectFieldExpenseRequest(
+            context=CommandContext(
+                command_id=rejection_id,
+                correlation_id=rejection_id,
+                actor=f"user:{reviewer_id}",
+                scope="operations:expense_request:write",
+                reason=f"reject_expense_request:{second_id}",
+                idempotency_key=str(rejection_id),
+            ),
+            expense_request_id=second_id,
+            reviewer_system_user_id=reviewer_id,
+            reason="No receipt provided",
+        ),
     )
-    assert rejected["status"] == "rejected"
-    assert rejected["rejection_reason"] == "No receipt provided"
+    assert rejected_outcome.status == "rejected"
+    assert rejected_outcome.rejection_reason == "No receipt provided"
 
     re_approved = _approve_expense(
-        db_session, request_id=first["id"], reviewer_id=tech_user.id
+        db_session, request_id=first["id"], reviewer_id=manager.id
     )
     assert re_approved.status == "approved"
     assert re_approved.erp_sync_event_id == approved.erp_sync_event_id
@@ -392,6 +489,7 @@ def test_manager_api(db_session):
     me = client.get("/api/v1/field/manager/me")
     assert me.status_code == 200
     assert me.json()["is_manager"] is True
+    assert "*" in me.json()["permissions"]
 
     summary = client.get("/api/v1/field/manager/summary")
     assert summary.status_code == 200
@@ -414,6 +512,33 @@ def test_manager_api(db_session):
         "tone": "info",
         "icon": "clock",
     }
+    assert "last_latitude" not in item
+    assert "last_longitude" not in item
+
+    team_map = client.get("/api/v1/field/manager/team-map")
+    assert team_map.status_code == 200
+    map_item = next(
+        entry
+        for entry in team_map.json()["items"]
+        if entry["person_id"] == str(profile.person_id)
+    )
+    assert map_item["latitude"] == pytest.approx(9.0765)
+    assert map_item["longitude"] == pytest.approx(7.3986)
+
+    with patch(
+        "app.services.field_maps.geocoding.resolve_coordinates",
+        return_value=ReverseGeocodeResult(
+            display_name="Central District, Abuja",
+            latitude=9.0765,
+            longitude=7.3986,
+        ),
+    ):
+        location_detail = client.get(
+            f"/api/v1/field/manager/team-map/{profile.id}/location-detail"
+        )
+    assert location_detail.status_code == 200
+    assert location_detail.json()["address_text"] == "Central District, Abuja"
+    assert location_detail.json()["position"]["person_id"] == str(profile.person_id)
 
     jobs = client.get("/api/v1/field/manager/jobs")
     assert jobs.status_code == 200
@@ -451,12 +576,22 @@ def test_manager_api(db_session):
 
     expenses = client.get("/api/v1/field/manager/expenses")
     assert expenses.status_code == 200
-    assert str(expense["id"]) in [entry["id"] for entry in expenses.json()["items"]]
+    manager_expense = next(
+        entry for entry in expenses.json()["items"] if entry["id"] == str(expense["id"])
+    )
+    assert manager_expense["requested_by_name"] == "Tech Staff"
 
     approved = client.post(f"/api/v1/field/manager/expenses/{expense['id']}/approve")
     assert approved.status_code == 200
     assert approved.json()["status"] == "approved"
     assert approved.json()["erp_sync_status"] == "pending"
+
+    payment = client.post(f"/api/v1/field/manager/expenses/{expense['id']}/pay")
+    assert payment.status_code == 200
+    assert payment.json()["status"] == "approved"
+    assert payment.json()["payment_status"] == "queued"
+    assert payment.json()["payment_command_id"]
+    assert payment.json()["erp_sync_event_id"]
 
     short_reason = client.post(
         f"/api/v1/field/manager/expenses/{expense['id']}/reject",
@@ -477,3 +612,43 @@ def test_manager_api_forbidden_without_permissions(db_session):
 
     response = client.get("/api/v1/field/manager/me")
     assert response.status_code == 403
+
+
+def test_payment_recovery_preview_requires_exact_pay_scope(db_session):
+    user = _user(db_session, "Recovery")
+    db_session.commit()
+    event_id = uuid4()
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[require_user_auth] = lambda: {
+        **_auth(user, roles=[]),
+        "scopes": ["operations:expense_request:write"],
+    }
+    client = TestClient(app)
+
+    denied = client.get(
+        f"/api/v1/field/manager/expenses/payment-deliveries/{event_id}/recovery-preview"
+    )
+    assert denied.status_code == 403
+
+    app.dependency_overrides[require_user_auth] = lambda: {
+        **_auth(user, roles=[]),
+        "scopes": ["operations:expense_request:pay"],
+    }
+    with patch(
+        "app.api.field.manager.preview_expense_payment_delivery_recovery",
+        return_value=ExpensePaymentDeliveryRecoveryPreview(
+            dead_event_id=event_id,
+            expense_request_id=uuid4(),
+            idempotency_key="exp-payment-recovery-test",
+            fingerprint="a" * 64,
+            erp_claim_status="approved",
+        ),
+    ):
+        allowed = client.get(
+            "/api/v1/field/manager/expenses/payment-deliveries/"
+            f"{event_id}/recovery-preview"
+        )
+    assert allowed.status_code == 200

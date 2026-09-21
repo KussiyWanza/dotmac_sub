@@ -290,6 +290,12 @@ class QuoteItem(BaseModel):
     deposit_amount: str | None = None
     deposit_paid: bool = False
     deposit_reference: str | None = None
+    payment_review_status: Literal["pending", "approved", "rejected"] = "pending"
+    payment_review_message: str = (
+        "Your estimate is under staff review. We will notify you before payment."
+    )
+    payment_reviewed_at: str | None = None
+    can_pay_deposit: bool = False
     line_items: list[QuoteLineItem] = Field(default_factory=list)
     sales_order_id: str | None = None
     project_id: str | None = None
@@ -313,6 +319,7 @@ class QuoteDepositInitiateRequest(BaseModel):
 
     provider: str | None = None
     redirect_url: str | None = None
+    idempotency_key: str = Field(min_length=16, max_length=120)
 
 
 class QuoteDepositInitiateResponse(BaseModel):

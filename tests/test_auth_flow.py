@@ -161,7 +161,9 @@ def _route_requires_auth(path: str) -> bool:
     raise AssertionError(f"Route not found: {path}")
 
 
-def test_login_and_refresh_reuse_detection(db_session, person, monkeypatch):
+def test_login_allows_immediate_same_browser_refresh_replay(
+    db_session, person, monkeypatch
+):
     credential = UserCredential(
         person_id=person.id,
         provider=AuthProvider.local,
@@ -178,16 +180,15 @@ def test_login_and_refresh_reuse_detection(db_session, person, monkeypatch):
     old_refresh = tokens["refresh_token"]
 
     rotated = AuthFlow.refresh(db_session, old_refresh, request)
-    assert rotated["refresh_token"] != old_refresh
+    assert rotated.refresh_token != old_refresh
 
-    with pytest.raises(HTTPException) as exc:
-        AuthFlow.refresh(db_session, old_refresh, request)
-    assert exc.value.status_code == 401
-    assert "reuse" in str(exc.value.detail).lower()
+    duplicate = AuthFlow.refresh(db_session, old_refresh, request)
+    assert duplicate.access_token
+    assert duplicate.refresh_token is None
 
     session = db_session.query(AuthSession).first()
-    assert session.status == SessionStatus.revoked
-    assert session.revoked_at is not None
+    assert session.status == SessionStatus.active
+    assert session.revoked_at is None
 
 
 def test_login_rejects_unsupported_provider(db_session, person):

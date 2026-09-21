@@ -45,6 +45,7 @@ from app.schemas.status_presentation import (
     StatusPresentation,
     StatusTone,
 )
+from app.services.action_readiness import ReadinessState
 from app.services.field.work_order_status import WorkOrderStatus
 from app.services.topology.connection_status import ConnectionHealthState
 from app.services.topology.outage import OutageStatus
@@ -1162,6 +1163,14 @@ def field_expense_status_presentation(status: str | None) -> StatusPresentation:
 _FIELD_MATERIAL_REQUEST_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
     "draft": ("Draft", StatusTone.neutral, StatusIcon.archive),
     "submitted": ("Submitted", StatusTone.info, StatusIcon.clock),
+    "accepted_by_erp": ("Accepted by ERP", StatusTone.info, StatusIcon.clock),
+    "pending_stock": ("Pending stock", StatusTone.warning, StatusIcon.clock),
+    "cancellation_pending": (
+        "Cancellation pending",
+        StatusTone.warning,
+        StatusIcon.clock,
+    ),
+    "sync_failed": ("Sync failed", StatusTone.negative, StatusIcon.alert),
     "approved": ("Approved", StatusTone.positive, StatusIcon.check),
     "rejected": ("Rejected", StatusTone.negative, StatusIcon.x),
     "issued": ("Issued", StatusTone.info, StatusIcon.info),
@@ -1342,3 +1351,25 @@ _CONTROL_PLANE_PHASE_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]
 def control_plane_phase_presentation(status: object) -> StatusPresentation:
     """Project the control-plane convergence phase (server-owned tone)."""
     return _presentation(_status_value(status), _CONTROL_PLANE_PHASE_PRESENTATIONS)
+
+
+# ReadinessState (owner: ui.action_readiness_contracts) values.
+_ACTION_READINESS_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
+    ReadinessState.ready.value: ("Ready", StatusTone.positive, StatusIcon.check),
+    ReadinessState.blocked.value: ("Blocked", StatusTone.negative, StatusIcon.x),
+    ReadinessState.waiting.value: ("Waiting", StatusTone.warning, StatusIcon.clock),
+    ReadinessState.needs_verification.value: (
+        "Needs verification",
+        StatusTone.warning,
+        StatusIcon.alert,
+    ),
+    ReadinessState.failed.value: ("Failed", StatusTone.negative, StatusIcon.x),
+    ReadinessState.complete.value: ("Complete", StatusTone.positive, StatusIcon.check),
+}
+
+
+def action_readiness_presentation(
+    state: ReadinessState | str | None,
+) -> StatusPresentation:
+    """Project an ``ActionReadiness.state`` value (server-owned tone)."""
+    return _presentation(_status_value(state), _ACTION_READINESS_PRESENTATIONS)

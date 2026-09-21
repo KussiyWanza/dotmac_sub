@@ -82,6 +82,12 @@ def refresh(request: Request, next: str | None = None, db: Session = Depends(get
     return web_auth_service.refresh(request, db, next)
 
 
+@router.post("/session/refresh", include_in_schema=False)
+def refresh_session(request: Request, db: Session = Depends(get_db)):
+    """Renew the current browser session for background admin requests."""
+    return web_auth_service.refresh_session(request, db)
+
+
 @router.get("/forgot-password", response_class=HTMLResponse)
 def forgot_password_page(request: Request, success: bool = False):
     """Display the forgot password page."""

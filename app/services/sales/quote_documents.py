@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.models.audit import AuditActorType
 from app.models.sales import Quote, QuotePdfExport
 from app.models.stored_file import StoredFile
+from app.models.subscriber import Subscriber
 from app.services import party as party_service
 from app.services.audit_adapter import stage_audit_event
 from app.services.billing.collection_accounts import CollectionAccounts
@@ -65,7 +66,7 @@ class GenerateQuotePdfOutcome:
 
 @dataclass(frozen=True)
 class QuoteRecipient:
-    contact_point_id: UUID
+    contact_point_id: UUID | None
     email: str
     display_name: str
 
@@ -332,23 +333,43 @@ def download_filename(quote: Quote | QuotePdfExport) -> str:
 
 
 def resolve_quote_recipient(db: Session, quote: Quote) -> QuoteRecipient | None:
-    """The Quote's deliverable email, via the quote's lead's party.
+    """Resolve the Quote email from its Lead Party or direct Customer account.
 
-    Only the quote -> party hop is quote-specific. Which of a party's addresses
-    is deliverable is owned by ``party.resolve_email_recipient``, so a second
-    delivery path (a shared catalog, say) cannot grow its own copy of that rule.
+    Lead-backed Quotes keep Party contact-point precedence. Customer-backed
+    Quotes deliberately use the selected Subscriber directly and do not require
+    a Party binding or manufacture a Lead.
     """
     lead = quote.lead
-    party = lead.party if lead is not None else None
-    if party is None:
+    if lead is not None:
+        party = lead.party
+        if party is None:
+            return None
+        recipient = party_service.resolve_email_recipient(db, party.id)
+        if recipient is None:
+            return None
+        return QuoteRecipient(
+            contact_point_id=recipient.contact_point_id,
+            email=recipient.email,
+            display_name=recipient.display_name or party.display_name,
+        )
+
+    subscriber = quote.subscriber
+    if subscriber is None and quote.subscriber_id is not None:
+        subscriber = db.get(Subscriber, quote.subscriber_id)
+    if subscriber is None or not subscriber.is_active:
         return None
-    recipient = party_service.resolve_email_recipient(db, party.id)
-    if recipient is None:
+    email = (subscriber.email or "").strip()
+    if not email:
         return None
     return QuoteRecipient(
-        contact_point_id=recipient.contact_point_id,
-        email=recipient.email,
-        display_name=recipient.display_name or party.display_name,
+        contact_point_id=None,
+        email=email,
+        display_name=(
+            subscriber.company_name
+            or subscriber.display_name
+            or subscriber.full_name
+            or email
+        ),
     )
 
 

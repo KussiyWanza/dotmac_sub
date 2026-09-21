@@ -375,7 +375,12 @@ def _set_pppoe_config_omci(
 
 
 def set_wifi_ssid(
-    db: Session, ont_id: str, ssid: str, *, request: Request | None = None
+    db: Session,
+    ont_id: str,
+    ssid: str,
+    *,
+    timeout_sec: int | None = None,
+    request: Request | None = None,
 ) -> ActionResult:
     """Set WiFi SSID by routing through ``reconcile_ont`` in sync mode.
 
@@ -383,14 +388,23 @@ def set_wifi_ssid(
     password this push DOES land on the device immediately — the planner
     emits ``AcsSetWifiSsid`` whenever ``desired.wifi_ssid`` differs from
     the observed value, in any mode.
+
+    ``timeout_sec``: optional override of ``reconcile_ont``'s outer deadline
+    (default 60s), for slow OLT shelves (e.g. Huawei MA5608T under
+    ``slow_send`` pacing). ``None`` uses ``reconcile_ont``'s own default.
     """
     from app.services.network.reconcile import reconcile_ont
+
+    kwargs: dict[str, object] = {}
+    if timeout_sec is not None:
+        kwargs["timeout_sec"] = timeout_sec
 
     result_obj = reconcile_ont(
         db,
         ont_id,
         proposed_change={"wifi_ssid": ssid},
         mode="sync",
+        **kwargs,
     )
 
     action_result = _reconcile_to_action_result(
@@ -480,7 +494,12 @@ def _emit_wifi_password_event(
 
 
 def set_wifi_password(
-    db: Session, ont_id: str, password: str, *, request: Request | None = None
+    db: Session,
+    ont_id: str,
+    password: str,
+    *,
+    timeout_sec: int | None = None,
+    request: Request | None = None,
 ) -> ActionResult:
     """Set WiFi password by routing through ``reconcile_ont`` in sync mode.
 
@@ -490,14 +509,23 @@ def set_wifi_password(
     drift. The push happens on the next BOOTSTRAP event (after a factory
     reset, where the device's PSK was wiped) or via ``force_push_wifi_password``
     (which uses ``mode=bootstrap`` to force an immediate push).
+
+    ``timeout_sec``: optional override of ``reconcile_ont``'s outer deadline
+    (default 60s), for slow OLT shelves. ``None`` uses ``reconcile_ont``'s
+    own default.
     """
     from app.services.network.reconcile import reconcile_ont
+
+    kwargs: dict[str, object] = {}
+    if timeout_sec is not None:
+        kwargs["timeout_sec"] = timeout_sec
 
     result_obj = reconcile_ont(
         db,
         ont_id,
         proposed_change={"wifi_password_ref": password},
         mode="sync",
+        **kwargs,
     )
 
     action_result = _reconcile_to_action_result(
@@ -523,7 +551,12 @@ def set_wifi_password(
 
 
 def force_push_wifi_password(
-    db: Session, ont_id: str, password: str, *, request: Request | None = None
+    db: Session,
+    ont_id: str,
+    password: str,
+    *,
+    timeout_sec: int | None = None,
+    request: Request | None = None,
 ) -> ActionResult:
     """Force-push the WiFi password to the device.
 
@@ -532,6 +565,10 @@ def force_push_wifi_password(
     The legacy ``set_wifi_password`` semantics — "push every time, trust it
     landed" — are restored here for operators who explicitly want immediate
     push. Sync-mode remains the default for routine changes.
+
+    ``timeout_sec``: optional override of ``reconcile_ont``'s outer deadline
+    (default 60s), for slow OLT shelves. ``None`` uses ``reconcile_ont``'s
+    own default.
 
     Use cases:
       * Customer reports WiFi password doesn't work after a sync change
@@ -542,11 +579,16 @@ def force_push_wifi_password(
     """
     from app.services.network.reconcile import reconcile_ont
 
+    kwargs: dict[str, object] = {}
+    if timeout_sec is not None:
+        kwargs["timeout_sec"] = timeout_sec
+
     result_obj = reconcile_ont(
         db,
         ont_id,
         proposed_change={"wifi_password_ref": password},
         mode="bootstrap",
+        **kwargs,
     )
 
     action_result = _reconcile_to_action_result(
@@ -574,7 +616,11 @@ def force_push_wifi_password(
 
 
 def force_resync_ont(
-    db: Session, ont_id: str, *, request: Request | None = None
+    db: Session,
+    ont_id: str,
+    *,
+    timeout_sec: int | None = None,
+    request: Request | None = None,
 ) -> ActionResult:
     """Force a reconcile in sweep mode — used to clear an ``out_of_sync`` row.
 
@@ -586,14 +632,23 @@ def force_resync_ont(
 
     No ``proposed_change`` — the function only triggers reconciliation of the
     existing desired state against live observed state.
+
+    ``timeout_sec``: optional override of ``reconcile_ont``'s outer deadline
+    (default 60s), for slow OLT shelves. ``None`` uses ``reconcile_ont``'s
+    own default.
     """
     from app.services.network.reconcile import reconcile_ont
+
+    kwargs: dict[str, object] = {}
+    if timeout_sec is not None:
+        kwargs["timeout_sec"] = timeout_sec
 
     result_obj = reconcile_ont(
         db,
         ont_id,
         proposed_change=None,
         mode="sweep",
+        **kwargs,
     )
 
     action_result = _reconcile_to_action_result(
@@ -882,9 +937,14 @@ def set_pppoe_credentials(
     password: str,
     instance_index: int = 1,
     wan_vlan: int | None = None,
+    timeout_sec: int | None = None,
     request: Request | None = None,
 ) -> ActionResult:
     """Write the CPE's PPPoE dialer values, via ``reconcile_ont``.
+
+    ``timeout_sec``: optional override of ``reconcile_ont``'s outer deadline
+    (default 60s), for slow OLT shelves. ``None`` uses ``reconcile_ont``'s
+    own default.
 
     SCOPE — this changes what the customer's ONT *dials with*. It does not
     touch RADIUS. The authoritative access credential is ``AccessCredential`` /
@@ -918,11 +978,16 @@ def set_pppoe_credentials(
     if instance_index != 1:
         proposed["wan_pppoe_instance_index"] = instance_index
 
+    kwargs: dict[str, object] = {}
+    if timeout_sec is not None:
+        kwargs["timeout_sec"] = timeout_sec
+
     result_obj = reconcile_ont(
         db,
         ont_id,
         proposed_change=proposed,
         mode="sync",
+        **kwargs,
     )
 
     action_result = _reconcile_to_action_result(

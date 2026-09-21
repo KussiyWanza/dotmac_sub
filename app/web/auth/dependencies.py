@@ -1,12 +1,15 @@
 """Web authentication dependencies for cookie-based auth with redirects."""
 
 import time
+from typing import TypedDict, cast
 from urllib.parse import quote, urlparse
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.db import get_db as _get_db
+from app.models.subscriber import ResellerUser, Subscriber
+from app.models.system_user import SystemUser
 from app.services import auth_cache
 from app.services.auth_flow import (
     _load_rbac_claims,
@@ -14,6 +17,17 @@ from app.services.auth_flow import (
     is_admin_portal_principal,
     validate_active_session,
 )
+
+
+class WebAuthInfo(TypedDict):
+    subscriber_id: str
+    principal_id: str
+    principal_type: str
+    session_id: str
+    roles: list[str]
+    scopes: list[str]
+    subscriber: Subscriber | ResellerUser | SystemUser
+    access_expires_at: int | None
 
 
 class AuthenticationRequired(Exception):
@@ -71,7 +85,7 @@ def get_session_token(request: Request) -> str | None:
 def validate_session_token(
     request: Request,
     db: Session = Depends(_get_db),
-) -> dict | None:
+) -> WebAuthInfo | None:
     """Validate session token and return user info if valid.
 
     Returns None if not authenticated (doesn't raise).
@@ -148,21 +162,25 @@ def validate_session_token(
         ttl_seconds=ttl_seconds,
     )
 
-    return {
-        "subscriber_id": str(principal_id),
-        "principal_id": str(principal_id),
-        "principal_type": resolved_type or principal_type,
-        "session_id": str(session_id),
-        "roles": roles if isinstance(roles, list) else [],
-        "scopes": scopes if isinstance(scopes, list) else [],
-        "subscriber": principal,
-    }
+    return cast(
+        WebAuthInfo,
+        {
+            "subscriber_id": str(principal_id),
+            "principal_id": str(principal_id),
+            "principal_type": resolved_type or principal_type,
+            "session_id": str(session_id),
+            "roles": roles if isinstance(roles, list) else [],
+            "scopes": scopes if isinstance(scopes, list) else [],
+            "subscriber": principal,
+            "access_expires_at": exp if isinstance(exp, int) else None,
+        },
+    )
 
 
 def require_web_auth(
     request: Request,
     db: Session = Depends(_get_db),
-) -> dict:
+) -> WebAuthInfo:
     """Require authentication for web routes.
 
     Raises AuthenticationRequired if not authenticated.
@@ -170,7 +188,7 @@ def require_web_auth(
     """
     existing = getattr(request.state, "auth", None)
     if isinstance(existing, dict) and existing.get("principal_id"):
-        return existing
+        return cast(WebAuthInfo, existing)
 
     auth_info = validate_session_token(request, db)
     if not auth_info:
@@ -199,10 +217,10 @@ def require_web_auth(
 
 
 def require_admin_web_auth(
-    auth: dict = Depends(require_web_auth),
-    request: Request = None,  # type: ignore[assignment]
+    request: Request,
+    auth: WebAuthInfo = Depends(require_web_auth),
     db: Session = Depends(_get_db),
-) -> dict:
+) -> WebAuthInfo:
     """Require an authenticated *staff* principal for admin web routes.
 
     ``require_web_auth`` already guarantees the request is authenticated (and
@@ -220,15 +238,14 @@ def require_admin_web_auth(
         )
     from app.services import erp_staff_access
 
-    restriction = (
-        erp_staff_access.staff_write_restricted(db, auth, method=request.method)
-        if request is not None
-        else None
+    auth_values: dict[str, object] = dict(auth)
+    restriction = erp_staff_access.staff_write_restricted(
+        db, auth_values, method=request.method
     )
     if restriction is not None:
         erp_staff_access.record_denied_write(
             db,
-            auth=auth,
+            auth=auth_values,
             restriction=restriction,
             request_id=str(request.headers.get("x-request-id") or "") or None,
             permission_key="admin:web",

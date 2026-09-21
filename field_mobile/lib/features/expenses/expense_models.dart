@@ -25,6 +25,173 @@ class ExpenseCategory {
       );
 }
 
+class ExpenseApprover {
+  const ExpenseApprover({
+    required this.erpEmployeeId,
+    required this.systemUserId,
+    required this.displayName,
+    required this.email,
+  });
+  final String erpEmployeeId;
+  final String systemUserId;
+  final String displayName;
+  final String email;
+  factory ExpenseApprover.fromJson(Map<String, dynamic> json) =>
+      ExpenseApprover(
+        erpEmployeeId: json['erp_employee_id'].toString(),
+        systemUserId: json['system_user_id'].toString(),
+        displayName: json['display_name'].toString(),
+        email: json['email'].toString(),
+      );
+  Map<String, dynamic> toJson() => {
+    'erp_employee_id': erpEmployeeId,
+    'system_user_id': systemUserId,
+    'display_name': displayName,
+    'email': email,
+  };
+}
+
+class ExpenseBank {
+  const ExpenseBank({required this.bankCode, required this.bankName});
+  final String bankCode;
+  final String bankName;
+  factory ExpenseBank.fromJson(Map<String, dynamic> json) => ExpenseBank(
+    bankCode: json['bank_code'].toString(),
+    bankName: json['bank_name'].toString(),
+  );
+}
+
+class ExpenseProfileDestination {
+  const ExpenseProfileDestination({
+    required this.available,
+    this.bankCode,
+    this.bankName,
+    this.maskedAccountNumber,
+    this.beneficiaryName,
+  });
+  final bool available;
+  final String? bankCode;
+  final String? bankName;
+  final String? maskedAccountNumber;
+  final String? beneficiaryName;
+  factory ExpenseProfileDestination.fromJson(Map<String, dynamic> json) =>
+      ExpenseProfileDestination(
+        available: json['available'] == true,
+        bankCode: _string(json['bank_code']),
+        bankName: _string(json['bank_name']),
+        maskedAccountNumber: _string(json['masked_account_number']),
+        beneficiaryName: _string(json['beneficiary_name']),
+      );
+}
+
+class ExpenseFormContext {
+  const ExpenseFormContext({
+    required this.approvers,
+    required this.banks,
+    required this.profileDestination,
+  });
+  final List<ExpenseApprover> approvers;
+  final List<ExpenseBank> banks;
+  final ExpenseProfileDestination profileDestination;
+  factory ExpenseFormContext.fromJson(Map<String, dynamic> json) =>
+      ExpenseFormContext(
+        approvers: _mapList(
+          json['approvers'],
+        ).map(ExpenseApprover.fromJson).toList(),
+        banks: _mapList(json['banks']).map(ExpenseBank.fromJson).toList(),
+        profileDestination: ExpenseProfileDestination.fromJson(
+          (json['profile_destination'] as Map).cast<String, dynamic>(),
+        ),
+      );
+}
+
+enum ExpensePaymentMode {
+  erpProfile('erp_profile'),
+  expenseOverride('expense_override');
+
+  const ExpensePaymentMode(this.apiValue);
+
+  final String apiValue;
+
+  factory ExpensePaymentMode.fromApiValue(Object? value) => switch (value) {
+    'erp_profile' => ExpensePaymentMode.erpProfile,
+    'expense_override' => ExpensePaymentMode.expenseOverride,
+    _ => throw FormatException('Unknown expense payment mode: $value'),
+  };
+}
+
+class VerifiedExpenseDestination {
+  const VerifiedExpenseDestination({
+    required this.destinationToken,
+    required this.mode,
+    required this.bankCode,
+    required this.bankName,
+    required this.maskedAccountNumber,
+    required this.verifiedBeneficiaryName,
+    required this.verifiedAt,
+    required this.expiresAt,
+  });
+
+  final String destinationToken;
+  final ExpensePaymentMode mode;
+  final String bankCode;
+  final String bankName;
+  final String maskedAccountNumber;
+  final String verifiedBeneficiaryName;
+  final DateTime verifiedAt;
+  final DateTime expiresAt;
+
+  factory VerifiedExpenseDestination.fromJson(Map<String, dynamic> json) =>
+      VerifiedExpenseDestination(
+        destinationToken: _requiredString(json, 'destination_token'),
+        mode: ExpensePaymentMode.fromApiValue(json['mode']),
+        bankCode: _requiredString(json, 'bank_code'),
+        bankName: _requiredString(json, 'bank_name'),
+        maskedAccountNumber: _requiredString(json, 'masked_account_number'),
+        verifiedBeneficiaryName: _requiredString(
+          json,
+          'verified_beneficiary_name',
+        ),
+        verifiedAt: _requiredDate(json, 'verified_at'),
+        expiresAt: _requiredDate(json, 'expires_at'),
+      );
+
+  Map<String, dynamic> toJson() => {
+    'destination_token': destinationToken,
+    'mode': mode.apiValue,
+    'bank_code': bankCode,
+    'bank_name': bankName,
+    'masked_account_number': maskedAccountNumber,
+    'verified_beneficiary_name': verifiedBeneficiaryName,
+    'verified_at': verifiedAt.toUtc().toIso8601String(),
+    'expires_at': expiresAt.toUtc().toIso8601String(),
+  };
+}
+
+class ExpenseReceiptUploadResult {
+  const ExpenseReceiptUploadResult({
+    required this.attachmentId,
+    required this.downloadPath,
+  });
+
+  final String attachmentId;
+  final String downloadPath;
+
+  factory ExpenseReceiptUploadResult.fromJson(Map<String, dynamic> json) {
+    final attachmentId = json['id']?.toString().trim() ?? '';
+    final downloadPath = json['download_path']?.toString().trim() ?? '';
+    if (attachmentId.isEmpty || downloadPath.isEmpty) {
+      throw const FormatException(
+        'Receipt upload did not return an attachment ID and download path.',
+      );
+    }
+    return ExpenseReceiptUploadResult(
+      attachmentId: attachmentId,
+      downloadPath: downloadPath,
+    );
+  }
+}
+
 class ExpenseItemDraft {
   const ExpenseItemDraft({
     required this.categoryCode,
@@ -34,6 +201,7 @@ class ExpenseItemDraft {
     this.expenseDate,
     this.vendorName,
     this.receiptUrl,
+    this.receiptAttachmentId,
     this.notes,
   });
 
@@ -44,6 +212,7 @@ class ExpenseItemDraft {
   final String? expenseDate;
   final String? vendorName;
   final String? receiptUrl;
+  final String? receiptAttachmentId;
   final String? notes;
 
   Map<String, dynamic> toJson() => {
@@ -58,8 +227,39 @@ class ExpenseItemDraft {
       'vendor_name': vendorName!.trim(),
     if (receiptUrl != null && receiptUrl!.trim().isNotEmpty)
       'receipt_url': receiptUrl!.trim(),
+    if (receiptAttachmentId != null && receiptAttachmentId!.trim().isNotEmpty)
+      'receipt_attachment_id': receiptAttachmentId!.trim(),
     if (notes != null && notes!.trim().isNotEmpty) 'notes': notes!.trim(),
   };
+
+  Map<String, dynamic> toDraftJson() => {
+    'category_code': categoryCode,
+    'category_name': categoryName,
+    'description': description,
+    'amount': amount,
+    'expense_date': expenseDate,
+    'vendor_name': vendorName,
+    'receipt_url': receiptUrl,
+    'receipt_attachment_id': receiptAttachmentId,
+    'notes': notes,
+  };
+
+  factory ExpenseItemDraft.fromDraftJson(Map<String, dynamic> json) =>
+      ExpenseItemDraft(
+        categoryCode: json['category_code'] as String? ?? '',
+        categoryName: json['category_name'] as String?,
+        description: json['description'] as String? ?? '',
+        amount: switch (json['amount']) {
+          num value => value.toDouble(),
+          String value => double.tryParse(value) ?? 0,
+          _ => 0,
+        },
+        expenseDate: json['expense_date'] as String?,
+        vendorName: json['vendor_name'] as String?,
+        receiptUrl: json['receipt_url'] as String?,
+        receiptAttachmentId: json['receipt_attachment_id'] as String?,
+        notes: json['notes'] as String?,
+      );
 }
 
 class ExpenseRequestItem {
@@ -120,6 +320,15 @@ class ExpenseRequest {
     this.erpClaimStatus,
     this.erpSyncStatus,
     this.erpSyncError,
+    this.paymentStatus,
+    this.paymentIntentId,
+    this.paymentError,
+    this.requestedByName,
+    this.selectedApproverName,
+    this.paymentDestinationMode,
+    this.recipientBankName,
+    this.maskedAccountNumber,
+    this.verifiedBeneficiaryName,
     this.total,
     this.ticketId,
     this.projectId,
@@ -145,6 +354,15 @@ class ExpenseRequest {
   final String? erpClaimStatus;
   final String? erpSyncStatus;
   final String? erpSyncError;
+  final String? paymentStatus;
+  final String? paymentIntentId;
+  final String? paymentError;
+  final String? requestedByName;
+  final String? selectedApproverName;
+  final String? paymentDestinationMode;
+  final String? recipientBankName;
+  final String? maskedAccountNumber;
+  final String? verifiedBeneficiaryName;
   final double? total;
   final String? ticketId;
   final String? projectId;
@@ -174,6 +392,15 @@ class ExpenseRequest {
     ),
     erpSyncStatus: _string(json['erp_sync_status'] ?? json['expense_system']),
     erpSyncError: _string(json['erp_sync_error']),
+    paymentStatus: _string(json['payment_status']),
+    paymentIntentId: _string(json['payment_intent_id']),
+    paymentError: _string(json['payment_error']),
+    requestedByName: _string(json['requested_by_name']),
+    selectedApproverName: _string(json['selected_approver_name']),
+    paymentDestinationMode: _string(json['payment_destination_mode']),
+    recipientBankName: _string(json['recipient_bank_name']),
+    maskedAccountNumber: _string(json['masked_account_number']),
+    verifiedBeneficiaryName: _string(json['verified_beneficiary_name']),
     total: _double(json['total_amount']),
     ticketId: json['ticket_id']?.toString(),
     projectId: json['project_id']?.toString(),
@@ -193,10 +420,39 @@ class ExpenseRequest {
   double get totalAmount =>
       total ?? items.fold<double>(0, (sum, item) => sum + item.amount);
 
-  String get statusLabel => status.replaceAll('_', ' ');
+  String get statusLabel {
+    final value = status.replaceAll('_', ' ');
+    return value.isEmpty
+        ? value
+        : '${value[0].toUpperCase()}${value.substring(1)}';
+  }
+}
+
+class ExpenseRequestHistory {
+  const ExpenseRequestHistory({required this.items, required this.totalCount});
+
+  final List<ExpenseRequest> items;
+  final int totalCount;
 }
 
 String? _string(Object? value) => value?.toString();
+
+String _requiredString(Map<String, dynamic> json, String key) {
+  final value = _string(json[key])?.trim() ?? '';
+  if (value.isEmpty) {
+    throw FormatException('Expense payment response is missing $key.');
+  }
+  return value;
+}
+
+DateTime _requiredDate(Map<String, dynamic> json, String key) {
+  final value = _requiredString(json, key);
+  final parsed = DateTime.tryParse(value);
+  if (parsed == null) {
+    throw FormatException('Expense payment response has an invalid $key.');
+  }
+  return parsed;
+}
 
 double? _double(Object? value) => switch (value) {
   num() => value.toDouble(),

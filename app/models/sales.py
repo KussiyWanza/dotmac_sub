@@ -117,6 +117,17 @@ class QuoteDeliveryRequestStatus(enum.StrEnum):
     suppressed = "suppressed"
 
 
+class QuotePaymentReviewStatus(enum.StrEnum):
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
+
+
+class QuotePaymentReviewDecision(enum.StrEnum):
+    approve = "approve"
+    reject = "reject"
+
+
 class SalesOrderStatus(enum.Enum):
     draft = "draft"
     confirmed = "confirmed"
@@ -332,7 +343,7 @@ class Lead(Base):
 
 
 class CustomerQuoteLeadLink(Base):
-    """The one system Lead that represents an existing customer in quoting."""
+    """Historical synthetic-Lead linkage retained as immutable legacy evidence."""
 
     __tablename__ = "customer_quote_lead_links"
 
@@ -528,6 +539,26 @@ class Quote(Base):
             name="ck_quotes_discount_revision_nonnegative",
         ),
         CheckConstraint(
+            "payment_review_revision >= 0",
+            name="ck_quotes_payment_review_revision_nonnegative",
+        ),
+        CheckConstraint(
+            "payment_review_status IN ('pending', 'approved', 'rejected')",
+            name="ck_quotes_payment_review_status",
+        ),
+        CheckConstraint(
+            "(payment_review_status = 'pending' AND "
+            "payment_reviewed_by_system_user_id IS NULL AND "
+            "payment_reviewed_at IS NULL AND "
+            "payment_review_fingerprint IS NULL) OR "
+            "(payment_review_status IN ('approved', 'rejected') AND "
+            "payment_review_revision > 0 AND "
+            "payment_reviewed_by_system_user_id IS NOT NULL AND "
+            "payment_reviewed_at IS NOT NULL AND "
+            "payment_review_fingerprint IS NOT NULL)",
+            name="ck_quotes_payment_review_current_state",
+        ),
+        CheckConstraint(
             "(discount_type IS NULL AND discount_value IS NULL AND "
             "discount_amount = 0 AND discount_reason IS NULL AND "
             "discount_applied_by_system_user_id IS NULL "
@@ -574,6 +605,20 @@ class Quote(Base):
         DateTime(timezone=True)
     )
     discount_revision: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    payment_review_status: Mapped[str] = mapped_column(
+        String(20), default=QuotePaymentReviewStatus.pending.value, nullable=False
+    )
+    payment_review_revision: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    payment_reviewed_by_system_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("system_users.id", ondelete="RESTRICT")
+    )
+    payment_reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    payment_review_reason: Mapped[str | None] = mapped_column(Text)
+    payment_review_fingerprint: Mapped[str | None] = mapped_column(String(64))
     # Applied tax rate percent (e.g. 7.5). When set, tax_total is auto-derived
     # from the subtotal on every recalculation; null = manual tax_total.
     tax_rate: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
@@ -613,6 +658,14 @@ class Quote(Base):
     )
     discount_applied_by = relationship(
         "SystemUser", foreign_keys=[discount_applied_by_system_user_id]
+    )
+    payment_reviewed_by = relationship(
+        "SystemUser", foreign_keys=[payment_reviewed_by_system_user_id]
+    )
+    payment_review_history = relationship(
+        "QuotePaymentReview",
+        back_populates="quote",
+        order_by="QuotePaymentReview.revision",
     )
     discount_history = relationship(
         "QuoteDiscountHistory",
@@ -726,6 +779,71 @@ def _reject_quote_discount_history_update(*_args: object) -> None:
 @event.listens_for(QuoteDiscountHistory, "before_delete")
 def _reject_quote_discount_history_delete(*_args: object) -> None:
     raise QuoteDiscountHistoryImmutableError("Quote discount history is append-only")
+
+
+class QuotePaymentReview(Base):
+    """Append-only evidence for a staff payment-review decision."""
+
+    __tablename__ = "quote_payment_reviews"
+    __table_args__ = (
+        UniqueConstraint(
+            "quote_id", "revision", name="uq_quote_payment_reviews_revision"
+        ),
+        UniqueConstraint("command_id", name="uq_quote_payment_reviews_command_id"),
+        CheckConstraint(
+            "revision > 0", name="ck_quote_payment_reviews_revision_positive"
+        ),
+        CheckConstraint(
+            "decision IN ('approve', 'reject')",
+            name="ck_quote_payment_reviews_decision",
+        ),
+        CheckConstraint(
+            "length(command_fingerprint) = 64 AND length(quote_fingerprint) = 64",
+            name="ck_quote_payment_reviews_fingerprints",
+        ),
+        Index("ix_quote_payment_reviews_reviewed_at", "reviewed_at"),
+        Index("ix_quote_payment_reviews_reviewer", "reviewed_by_system_user_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    quote_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("quotes.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    decision: Mapped[str] = mapped_column(String(20), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    reviewed_by_system_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("system_users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    reviewed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    quote_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    command_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    quote = relationship("Quote", back_populates="payment_review_history")
+    reviewer = relationship("SystemUser", foreign_keys=[reviewed_by_system_user_id])
+
+
+class QuotePaymentReviewImmutableError(RuntimeError):
+    """Raised when code attempts to rewrite payment-review evidence."""
+
+
+@event.listens_for(QuotePaymentReview, "before_update")
+def _reject_quote_payment_review_update(*_args: object) -> None:
+    raise QuotePaymentReviewImmutableError("Quote payment reviews are append-only")
+
+
+@event.listens_for(QuotePaymentReview, "before_delete")
+def _reject_quote_payment_review_delete(*_args: object) -> None:
+    raise QuotePaymentReviewImmutableError("Quote payment reviews are append-only")
 
 
 class QuotePdfExport(Base):
@@ -886,6 +1004,10 @@ class QuoteDeliveryRequest(Base):
             "request_status IN ('queued', 'suppressed')",
             name="ck_quote_delivery_requests_status",
         ),
+        CheckConstraint(
+            "recipient_contact_point_id IS NOT NULL OR recipient_masked IS NOT NULL",
+            name="ck_quote_delivery_requests_recipient_evidence",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -902,11 +1024,12 @@ class QuoteDeliveryRequest(Base):
         ForeignKey("quote_pdf_exports.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    recipient_contact_point_id: Mapped[uuid.UUID] = mapped_column(
+    recipient_contact_point_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("party_contact_points.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
     )
+    recipient_masked: Mapped[str | None] = mapped_column(String(320))
     communication_intent_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("communication_intents.id", ondelete="RESTRICT"),

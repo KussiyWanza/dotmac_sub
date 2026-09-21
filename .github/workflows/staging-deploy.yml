@@ -39,6 +39,7 @@ jobs:
       source_tree: ${{ steps.evidence.outputs.source_tree }}
       image_digest: ${{ steps.evidence.outputs.image_digest }}
       build_run_id: ${{ steps.evidence.outputs.build_run_id }}
+      evidence_run_id: ${{ steps.evidence.outputs.evidence_run_id }}
     steps:
       - name: Resolve immutable candidate
         id: candidate
@@ -71,7 +72,12 @@ jobs:
         id: evidence
         env:
           CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
-          BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
+          # The run whose completion triggered this workflow is the run that
+          # wrote (or, on a resumed candidate build, re-wrote) the evidence
+          # artifact just downloaded above -- that is evidence_run_id, never
+          # build_run_id, which may legitimately name an earlier resumed
+          # build whose image this run is reusing.
+          EVIDENCE_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
           source_tree="$(git rev-parse 'HEAD^{tree}')"
@@ -79,7 +85,7 @@ jobs:
             --path "$RUNNER_TEMP/release-candidate-evidence/candidate.json" \
             --expected-source-revision "$CANDIDATE_SHA" \
             --expected-source-tree "$source_tree" \
-            --expected-build-run-id "$BUILD_RUN_ID" \
+            --expected-evidence-run-id "$EVIDENCE_RUN_ID" \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Require current main tip and green push checks

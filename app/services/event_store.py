@@ -216,7 +216,18 @@ def failed_handler_names(record: EventStore) -> set[str]:
     # Historical attempt rows intentionally retain earlier failures for audit;
     # consulting them first would re-run handlers that already recovered.
     if record.failed_handlers is not None:
-        return {failure["handler"] for failure in record.failed_handlers}
+        # A handler that classified its OWN failure as permanent
+        # (`app.services.events.dispatcher`'s ``retryable`` marker) never
+        # resolves itself on a bare retry — including it here would let
+        # `retry_event` keep re-selecting a handler that will never succeed.
+        # A missing key (a record written before this classification
+        # existed) defaults to retryable, preserving behavior for
+        # historical rows.
+        return {
+            failure["handler"]
+            for failure in record.failed_handlers
+            if str(failure.get("retryable", "True")).lower() != "false"
+        }
 
     attempts = getattr(record, "handler_attempts", None) or []
     latest_by_handler: dict[str, EventHandlerAttempt] = {}

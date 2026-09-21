@@ -26,6 +26,7 @@ from app.models.subscriber import (
 from app.schemas.subscriber import (
     AddressCreate,
     AddressUpdate,
+    CustomerServiceLocationUpdate,
     ResellerCreate,
     ResellerUpdate,
     SubscriberAccountCreate,
@@ -38,7 +39,8 @@ from app.schemas.subscriber import (
 )
 from app.services import billing_day as billing_day_service
 from app.services import geocoding as geocoding_service
-from app.services import numbering, settings_spec
+from app.services import gis_sync, numbering, settings_spec
+from app.services.audit_adapter import AuditActor, stage_audit_event
 from app.services.common import (
     apply_ordering,
     apply_pagination,
@@ -1704,6 +1706,80 @@ def create_address(
     address = Address(**data)
     db.add(address)
     db.flush()
+    return address
+
+
+def update_customer_service_location(
+    db: Session, payload: CustomerServiceLocationUpdate
+) -> Address:
+    """Save a customer's service address and authoritative map pin atomically."""
+    subscriber = db.get(Subscriber, payload.subscriber_id)
+    if not subscriber:
+        raise AddressOwnerError(
+            code="customer.accounts.subscriber_not_found",
+            message="Subscriber not found",
+            details={"subscriber_id": str(payload.subscriber_id)},
+        )
+
+    from app.services.service_address import service_address
+
+    address = service_address(db, payload.subscriber_id)
+    if address is None:
+        address = create_address(
+            db,
+            AddressCreate(
+                **{
+                    **payload.model_dump(),
+                    "address_type": AddressType.service,
+                    "label": payload.label or "Primary service",
+                    "is_primary": True,
+                }
+            ),
+            geocode=False,
+        )
+    else:
+        values = _apply_validated_lga(
+            payload.model_dump(exclude={"subscriber_id", "latitude", "longitude"}),
+            current_region=address.region,
+            current_lga=address.lga,
+        )
+        for field in (
+            "address_line1",
+            "address_line2",
+            "city",
+            "region",
+            "lga",
+            "postal_code",
+            "country_code",
+        ):
+            setattr(address, field, values.get(field))
+        address.address_type = AddressType.service
+        address.is_primary = True
+
+    gis_sync.project_address_point(
+        db, address, latitude=payload.latitude, longitude=payload.longitude
+    )
+    db.flush()
+    stage_audit_event(
+        db,
+        actor=(
+            AuditActor.user(str(payload.actor_id), label=payload.actor_name)
+            if payload.actor_id
+            else AuditActor.system(
+                "customer-service-location", label=payload.actor_name
+            )
+        ),
+        action="customer_service_address_updated",
+        entity_type="address",
+        entity_id=str(address.id),
+        status_code=200,
+        is_success=True,
+        metadata={
+            "subscriber_id": str(payload.subscriber_id),
+            "latitude": payload.latitude,
+            "longitude": payload.longitude,
+        },
+    )
     return address
 
 

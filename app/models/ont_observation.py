@@ -66,6 +66,16 @@ class OntObservation(Base):
 
     # ── OLT-observed (from `display ont info / ipconfig / optical-info`) ────
     olt_present: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # "present" / "absent" / "unavailable" — the tri-state outcome of the most
+    # RECENT read attempt, updated every pass regardless of whether it moved
+    # ``olt_observed_at`` forward. Nullable because rows written before this
+    # column existed carry no history to backfill (expand-only migration).
+    olt_read_status: Mapped[str | None] = mapped_column(String(20))
+    # When the OLT-observed columns above were last genuinely refreshed by a
+    # "present" or "absent" read. Distinct from ``updated_at`` (bumped on
+    # every write, including an "unavailable" pass that leaves these columns
+    # untouched) — this is the freshness signal for the OLT half specifically.
+    olt_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # match/mismatch/initial — kept as plain strings to avoid coupling this
     # table to OLT-vendor-specific enum churn.
     olt_match_state: Mapped[str | None] = mapped_column(String(20))

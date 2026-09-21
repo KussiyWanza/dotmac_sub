@@ -69,45 +69,11 @@
       <div id="ai-insight-slot" class="mt-3"></div>
     </div>
 
-    <div class="grid gap-6 lg:grid-cols-3">
-        {% call card("By Status", color="teal") %}
-        <div class="space-y-3">
-            {% for item in summary.by_status %}
-            <div class="flex items-center justify-between gap-3">
-                <span class="text-sm text-slate-700 dark:text-slate-300">{{ item.key | replace('_', ' ') | title }}</span>
-                <span class="text-sm font-semibold text-slate-900 dark:text-white">{{ item.breached }} / {{ item.total }}</span>
-            </div>
-            {% else %}
-            <p class="text-sm text-slate-500 dark:text-slate-400">No SLA clocks.</p>
-            {% endfor %}
-        </div>
-        {% endcall %}
-
-        {% call card("By Team", color="cyan") %}
-        <div class="space-y-3">
-            {% for item in summary.by_service_team[:8] %}
-            <div class="flex items-center justify-between gap-3">
-                <span class="truncate text-sm text-slate-700 dark:text-slate-300">{{ item.label }}</span>
-                <span class="text-sm font-semibold text-slate-900 dark:text-white">{{ item.breached }} / {{ item.total }}</span>
-            </div>
-            {% else %}
-            <p class="text-sm text-slate-500 dark:text-slate-400">No team data.</p>
-            {% endfor %}
-        </div>
-        {% endcall %}
-
-        {% call card("Daily Trend", color="blue") %}
-        <div class="space-y-3">
-            {% for point in trend[-8:] %}
-            <div class="flex items-center justify-between gap-3">
-                <span class="text-sm text-slate-700 dark:text-slate-300">{{ point.date }}</span>
-                <span class="text-sm font-semibold text-slate-900 dark:text-white">{{ point.breached }} / {{ point.total }}</span>
-            </div>
-            {% else %}
-            <p class="text-sm text-slate-500 dark:text-slate-400">No trend data.</p>
-            {% endfor %}
-        </div>
-        {% endcall %}
+    <div class="grid gap-6 lg:grid-cols-4">
+        {% call card("By Status", color="teal") %}<div class="space-y-3">{% for item in summary.by_status %}<div class="flex items-center justify-between gap-3"><span class="text-sm text-slate-700 dark:text-slate-300">{{ item.key | replace('_', ' ') | title }}</span><span class="text-sm font-semibold text-slate-900 dark:text-white">{{ item.breached }} / {{ item.total }}</span></div>{% else %}<p class="text-sm text-slate-500 dark:text-slate-400">No SLA clocks.</p>{% endfor %}</div>{% endcall %}
+        {% call card("By Service Team", color="cyan") %}<div class="space-y-2">{% for item in summary.by_service_team %}<a href="{{ item.drilldown_url }}" class="block rounded-lg px-2 py-1.5 hover:bg-cyan-50 dark:hover:bg-slate-700" title="{{ item.breached }} breached tickets, {{ item.closed_breached }} now closed; {{ ((item.breach_rate or 0) * 100) | round(1) }}% of {{ item.total }} created tickets breached."><div class="flex items-center justify-between gap-3"><span class="truncate text-sm text-slate-700 dark:text-slate-300">{{ item.label }}</span><span class="text-sm font-semibold text-slate-900 dark:text-white">{{ item.breached }} / {{ item.total }}</span></div><div class="text-right text-xs text-cyan-700 dark:text-cyan-300">{{ ((item.breach_rate or 0) * 100) | round(1) }}% breached</div></a>{% else %}<p class="text-sm text-slate-500 dark:text-slate-400">No service-team data.</p>{% endfor %}</div>{% endcall %}
+        {% call card("By Region", color="indigo") %}<div class="space-y-2">{% for item in summary.by_region %}<a href="{{ item.drilldown_url }}" class="block rounded-lg px-2 py-1.5 hover:bg-indigo-50 dark:hover:bg-slate-700" title="{{ item.breached }} breached tickets, {{ item.closed_breached }} now closed; {{ ((item.breach_rate or 0) * 100) | round(1) }}% of {{ item.total }} created tickets breached."><div class="flex items-center justify-between gap-3"><span class="truncate text-sm text-slate-700 dark:text-slate-300">{{ item.label }}</span><span class="text-sm font-semibold text-slate-900 dark:text-white">{{ item.breached }} / {{ item.total }}</span></div><div class="text-right text-xs text-indigo-700 dark:text-indigo-300">{{ ((item.breach_rate or 0) * 100) | round(1) }}% breached</div></a>{% else %}<p class="text-sm text-slate-500 dark:text-slate-400">No region data.</p>{% endfor %}</div>{% endcall %}
+        {% call card("Daily Trend", color="blue") %}<div class="space-y-3">{% for point in trend[-8:] %}<div class="flex items-center justify-between gap-3"><span class="text-sm text-slate-700 dark:text-slate-300">{{ point.date }}</span><span class="text-sm font-semibold text-slate-900 dark:text-white">{{ point.breached }} / {{ point.total }}</span></div>{% else %}<p class="text-sm text-slate-500 dark:text-slate-400">No trend data.</p>{% endfor %}</div>{% endcall %}
     </div>
 
     {% call card("SLA Breach Queue", color="teal", padding=False) %}

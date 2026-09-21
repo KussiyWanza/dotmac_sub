@@ -13,6 +13,8 @@ ticket / project / project task requires material
   -> assigned native work order selected   [context projection; one owner]
   -> material request submitted            [operations.material_dependencies]
   -> ERP issue requested                  [receipted consumer -> durable outbox]
+  -> cancellation requested               [Sub cancellation_pending -> durable outbox]
+  -> cancellation confirmed               [ERP cancelled observation -> Sub canceled]
   -> ERP issue observed                   [polling write-back, fail-atomic]
   -> material allocated                   [allocation rows + fulfilled output]
   -> field consumption verified           [operations.material_consumption]
@@ -28,7 +30,7 @@ vendor project completed                  [operations.vendor_project_lifecycle]
 ```
 
 Typed outputs stage atomically with each owning transition:
-`field_material_request.approved` / `.fulfilled`,
+`field_material_request.approved` / `.cancellation_requested` / `.fulfilled`,
 `field_material.consumption_recorded`, `vendor_project.completed`,
 `vendor_purchase_invoice.approved` / `.payment_observed`. The
 `MaterialsLifecycleProjectionHandler` delivers the completion and approval
@@ -64,6 +66,21 @@ best-effort enqueue whose only trace was a metadata breadcrumb.
   observations (`refresh_material_request_statuses`,
   `refresh_purchase_invoice_statuses`) — legitimate observation of
   ERP-owned reality, not drift repair.
+- Material-status reconciliation orders active ERP requests by
+  `last_reconciled_at NULLS FIRST, id`, processes a bounded page, and advances
+  freshness through the typed ERP observation command even when status is
+  unchanged. The per-request observation timestamp is therefore the durable
+  rotation cursor: successfully observed rows cannot permanently hide newer
+  in-flight requests, and every consequence still belongs to
+  `operations.material_dependencies`.
+- A technician or authorized staff member may cancel a draft, submitted,
+  ERP-accepted, or pending-stock request. Manual drafts cancel immediately.
+  ERP-backed requests move to `cancellation_pending` and emit a receipted,
+  idempotent cancellation outbox intent. Only ERP's `CANCELLED` observation
+  makes the request `canceled`; if ERP reports `ISSUED` concurrently, issuance
+  wins and Sub creates the normal allocation evidence. This prevents Selfcare
+  or the field app from claiming that ERP-owned stock was canceled before ERP
+  confirms it.
 - Vendor project completion is the automatic payables determinant for PO-backed
   vendor work. The consumer creates one system-approved vendor purchase invoice
   from the approved quote when no active vendor invoice already exists, then
@@ -119,3 +136,33 @@ best-effort enqueue whose only trace was a metadata breadcrumb.
   control, validation, section-divider, and footer-action conventions as other
   admin editors. Two-column fields and material lines stack without losing
   context, required-field meaning, or the primary action.
+
+## Requester-owned field history and repair
+
+The field app's material list is requester-owned history, not an assignment or
+global operations queue. `operations.material_dependencies` resolves ownership
+from any exact requester link recorded on the request: technician profile,
+canonical Person Party, or authenticated SystemUser. Reassignment or completion
+of the related work order never removes the request from its requester's list.
+The live query starts from the authenticated SystemUser and includes every exact
+linked identity without requiring an active technician profile. It returns an
+authoritative total before pagination. The field app labels the list **My
+requests (N)**, preserves that personal-history destination for users who also
+have manager capabilities, and refreshes list/detail state from the API. Request
+cards use the owner-provided contextual label; they do not invent an operational
+request number from a UUID.
+
+The requester read model exposes the complete local lifecycle vocabulary and
+the facts Sub actually owns: contextual identifiers and label, request and ERP
+support status, rejection reason, and recorded submission, approval, rejection,
+issue, and fulfilment timestamps. It does not infer stock, approval quantities,
+or issue quantities that remain owned by the back-office system.
+
+Alembic revision `587_field_request_requester_history` is the bounded repair
+for older requests created before the durable SystemUser link was consistently
+recorded. It fills identity only through an exact technician-profile,
+SystemUser, or unique Person Party binding and adds indexes for the three-way
+history lookup. Ambiguous rows remain unchanged and hidden. The migration is
+idempotent, never changes request lifecycle or ERP state, and never replays a
+material request. `operations.material_dependencies` remains the repair owner;
+the migration is its one-time deployment adapter.

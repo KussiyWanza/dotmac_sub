@@ -33,7 +33,7 @@ class NccWeeklyReportRunStatus(enum.StrEnum):
 
 
 class NccWeeklyReportRun(Base):
-    """Immutable workbook artifact plus durable queue/failure evidence."""
+    """Immutable CSV artifact plus durable queue/failure evidence."""
 
     __tablename__ = "ncc_weekly_report_runs"
     __table_args__ = (

@@ -20,3 +20,18 @@ class GeocodePreviewResult(BaseModel):
     class_name: str | None = Field(default=None, alias="class")
     type_name: str | None = Field(default=None, alias="type")
     importance: float | None = None
+
+
+class ReverseGeocodeQuery(BaseModel):
+    """Validated coordinate lookup requested by another application owner."""
+
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+
+
+class ReverseGeocodeResult(BaseModel):
+    """Provider-neutral nearest-address result."""
+
+    display_name: str
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)

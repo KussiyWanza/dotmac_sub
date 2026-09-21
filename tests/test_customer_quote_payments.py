@@ -13,14 +13,29 @@ from pydantic import ValidationError
 from starlette.responses import Response
 
 from app.models.billing import Invoice, InvoiceStatus, TopupIntent
-from app.models.sales import Quote, QuoteDepositInvoiceLink, QuoteStatus
+from app.models.sales import (
+    Quote,
+    QuoteDepositInvoiceLink,
+    QuotePaymentReviewStatus,
+    QuoteStatus,
+)
+from app.models.system_user import SystemUser
 from app.schemas.portal import QuotePaymentIntentRequest
 from app.services import quote_deposits
 from app.services.customer_context import resolve_customer_context
+from app.services.sales import quote_payment_review
 from app.web.customer import quotes as quote_routes
 
 
 def _quote(db_session, subscriber, **overrides) -> Quote:
+    reviewer = SystemUser(
+        first_name="Quote",
+        last_name="Reviewer",
+        email=f"quote-reviewer-{uuid4()}@example.com",
+        is_active=True,
+    )
+    db_session.add(reviewer)
+    db_session.flush()
     values = {
         "subscriber_id": subscriber.id,
         "status": QuoteStatus.sent.value,
@@ -35,6 +50,15 @@ def _quote(db_session, subscriber, **overrides) -> Quote:
     values.update(overrides)
     quote = Quote(**values)
     db_session.add(quote)
+    db_session.flush()
+    # Staff review reads persisted values, including database numeric scales
+    # and the fast unit database's timestamp representation.
+    db_session.refresh(quote)
+    quote.payment_review_status = QuotePaymentReviewStatus.approved.value
+    quote.payment_review_revision = 1
+    quote.payment_reviewed_by_system_user_id = reviewer.id
+    quote.payment_reviewed_at = datetime.now(UTC)
+    quote.payment_review_fingerprint = quote_payment_review.quote_fingerprint(quote)
     db_session.commit()
     return quote
 
@@ -72,6 +96,73 @@ def test_quote_payment_get_query_is_side_effect_free_and_server_priced(
     assert page.provider_type == "paystack"
     assert db_session.query(Invoice).count() == invoice_count
     assert db_session.query(TopupIntent).count() == intent_count
+
+
+def test_direct_payment_commands_cannot_bypass_pending_staff_review(
+    db_session, subscriber, monkeypatch
+):
+    quote = _quote(db_session, subscriber)
+    quote.payment_review_status = QuotePaymentReviewStatus.pending.value
+    quote.payment_review_revision = 0
+    quote.payment_reviewed_by_system_user_id = None
+    quote.payment_reviewed_at = None
+    quote.payment_review_fingerprint = None
+    db_session.commit()
+    _enable_paystack(monkeypatch)
+    monkeypatch.setattr(
+        quote_deposits,
+        "initiate_deposit",
+        lambda *_args, **_kwargs: pytest.fail("unapproved Quote reached checkout"),
+    )
+    monkeypatch.setattr(
+        quote_deposits,
+        "verify_deposit",
+        lambda *_args, **_kwargs: pytest.fail("unapproved Quote reached verification"),
+    )
+    customer = resolve_customer_context(
+        db_session,
+        {"subscriber_id": str(subscriber.id), "email": subscriber.email},
+    )
+    invoice_count = db_session.query(Invoice).count()
+
+    with pytest.raises(quote_deposits.QuoteDepositError) as initiate_error:
+        quote_deposits.initiate_quote_deposit(
+            db_session,
+            customer,
+            quote_deposits.InitiateQuoteDepositCommand(
+                quote_id=quote.id,
+                idempotency_key="pending-review-direct-api-attempt",
+                redirect_url="dotmacpay://success",
+            ),
+        )
+    with pytest.raises(quote_deposits.QuoteDepositError) as verify_error:
+        quote_deposits.verify_quote_deposit(
+            db_session,
+            customer,
+            quote_deposits.VerifyQuoteDepositCommand(
+                quote_id=quote.id,
+                reference="DMAC-DIRECT-BYPASS-ATTEMPT",
+            ),
+        )
+
+    assert initiate_error.value.code == "sales.quote_deposits.approval_required"
+    assert verify_error.value.code == "sales.quote_deposits.approval_required"
+    assert db_session.query(Invoice).count() == invoice_count
+
+
+def test_changed_quote_snapshot_invalidates_staff_payment_approval(
+    db_session, subscriber, monkeypatch
+):
+    quote = _quote(db_session, subscriber)
+    _enable_paystack(monkeypatch)
+    quote.total = Decimal("108000.00")
+    db_session.commit()
+
+    with pytest.raises(quote_deposits.QuoteDepositError) as exc_info:
+        quote_deposits.quote_payment_page(db_session, _query(quote, subscriber))
+
+    assert exc_info.value.code == "sales.quote_deposits.approval_required"
+    assert "changed after approval" in exc_info.value.message
 
 
 def test_quote_payment_query_hides_another_customers_quote(

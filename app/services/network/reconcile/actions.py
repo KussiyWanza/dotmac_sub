@@ -347,7 +347,7 @@ class AcsSetWifiSsid:
 
 @dataclass(frozen=True)
 class AcsSetWifiPassword:
-    """``setParameterValues`` for ``WLANConfiguration.1.PreSharedKey.1.KeyPassphrase``.
+    """``setParameterValues`` for ``WLANConfiguration.1.PreSharedKey.1.PreSharedKey``.
 
     Write-only field on HG8546M — the firmware doesn't expose the PSK on
     reads, so the planner emits this only on explicit triggers:

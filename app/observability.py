@@ -9,11 +9,17 @@ from starlette.datastructures import MutableHeaders
 from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.metrics import REQUEST_COUNT, REQUEST_ERRORS, REQUEST_LATENCY
+from app.metrics import (
+    INTEGRATION_ROUTE_404,
+    REQUEST_COUNT,
+    REQUEST_ERRORS,
+    REQUEST_LATENCY,
+)
 
 logger = logging.getLogger(__name__)
 _UNMATCHED_METRIC_PATH = "<unmatched>"
 _SKIP_OBSERVABILITY_PATHS = {"/health", "/metrics"}
+_INTEGRATION_ROUTE_PATHS = frozenset({"/api/v1/subscribers/sync"})
 
 # The current request's x-request-id, for propagation onto outbound
 # integration calls (crm, erp). Set by ObservabilityMiddleware; empty outside
@@ -158,6 +164,8 @@ class ObservabilityMiddleware:
         )
         if status_code >= 500:
             REQUEST_ERRORS.labels(request.method, metric_path, str(status_code)).inc()
+        if status_code == 404 and request_path in _INTEGRATION_ROUTE_PATHS:
+            INTEGRATION_ROUTE_404.labels(path=request_path).inc()
         logger.info(
             "request_completed",
             extra={

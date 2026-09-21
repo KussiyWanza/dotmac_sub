@@ -184,6 +184,24 @@ groups:
             cycle age (see cycle_age_seconds), not per-run deferral.
           runbook: "docs/adr/0007-end-to-end-billing-target-architecture.md"
 
+      - alert: PrepaidSweepLockContentionPersistent
+        expr: observability_state{domain="prepaid_enforcement",signal="lock_deferred"} > 0
+        for: 15m
+        labels:
+          severity: warning
+          area: database-pressure
+          owner: financial-collections
+        annotations:
+          summary: "Prepaid enforcement accounts are repeatedly busy"
+          description: >
+            The scheduled prepaid sweep deferred one or more accounts because
+            their Subscriber rows were locked by another transaction. The
+            sweep intentionally retries on the next run rather than waiting
+            until PostgreSQL cancels the worker. Correlate this alert with
+            PostgreSQL lock waits and transaction-span logs to identify the
+            blocking owner.
+          runbook: "docs/runbooks/DATABASE_TRANSACTION_PRESSURE.md"
+
       - alert: PrepaidNoticeShieldPersistent
         expr: observability_state{domain="prepaid_enforcement",signal="notice_suppressed"} > 0
         for: 24h

@@ -79,6 +79,20 @@ class Settings:
     db_idle_in_transaction_session_timeout_ms: int = int(
         os.getenv("DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS", "60000")
     )
+    # Postgres idle_in_transaction_session_timeout for the ALEMBIC MIGRATION
+    # connection (env.py). context.run_migrations() has to load, import and
+    # topologically sort every file under alembic/versions/ (632+ and
+    # growing) INSIDE the already-open migration transaction before the first
+    # statement runs -- pure Python work with zero DB activity. Production's
+    # session-level idle_in_transaction_session_timeout is tuned for request
+    # connections, not this one-shot setup cost, and killed the connection
+    # before the first migration ran (2026-09-09 failed deploy). The default
+    # below is a judgment call, not a measured figure -- tune it from real
+    # observed load/parse timing as that data accumulates. Sanitized in
+    # app.db.resolve_migration_idle_transaction_timeout; "0" disables.
+    alembic_idle_transaction_timeout: str = os.getenv(
+        "ALEMBIC_IDLE_TRANSACTION_TIMEOUT", "10min"
+    )
 
     # Dedicated team-inbox SMTP process. Compose explicitly enables this only
     # for its profile-gated listener; web and worker processes leave it off.

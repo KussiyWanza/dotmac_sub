@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -37,9 +38,11 @@ from app.models.work_order import WorkOrder
 from app.schemas.field import (
     FieldLiveMapFeedQuery,
     FieldLiveMapSearchQuery,
+    FieldLiveMapTechnicianDetailQuery,
     FieldMovementPlaybackFeed,
     FieldMovementPlaybackQuery,
 )
+from app.schemas.geocoding import ReverseGeocodeResult
 from app.services import field_maps as field_maps_service
 from app.services import vendor_routes_api
 from app.web.admin import field_maps as web_field_maps
@@ -365,6 +368,44 @@ def test_technician_positions_marks_stale(db_session):
     assert feed.items[0].is_live is False
 
 
+def test_selected_technician_detail_resolves_address_on_demand(db_session):
+    user = _user(db_session)
+    profile = _technician(db_session, user)
+    db_session.add(
+        FieldTechPresence(
+            technician_id=profile.id,
+            person_id=user.id,
+            status="on_shift",
+            location_sharing_enabled=True,
+            last_latitude=6.5244,
+            last_longitude=3.3792,
+            last_location_accuracy_m=8.0,
+            last_location_at=datetime.now(UTC),
+        )
+    )
+    db_session.flush()
+
+    with patch(
+        "app.services.field_maps.geocoding.resolve_coordinates",
+        return_value=ReverseGeocodeResult(
+            display_name="Marina Road, Lagos",
+            latitude=6.5244,
+            longitude=3.3792,
+        ),
+    ) as resolve:
+        detail = field_maps_service.get_technician_detail(
+            db_session,
+            FieldLiveMapTechnicianDetailQuery(technician_id=profile.id),
+        )
+
+    assert detail is not None
+    assert detail.position.technician_id == profile.id
+    assert detail.position.is_live is True
+    assert detail.address_text == "Marina Road, Lagos"
+    assert detail.address_status == "available"
+    resolve.assert_called_once()
+
+
 def test_technician_positions_excludes_disabled_location_sharing(db_session):
     user = _user(db_session)
     profile = _technician(db_session, user)
@@ -388,6 +429,38 @@ def test_technician_positions_excludes_disabled_location_sharing(db_session):
 
     assert feed.count == 0
     assert feed.items == []
+
+    with patch("app.services.field_maps.geocoding.resolve_coordinates") as resolve:
+        detail = field_maps_service.get_technician_detail(
+            db_session,
+            FieldLiveMapTechnicianDetailQuery(technician_id=profile.id),
+        )
+    assert detail is None
+    resolve.assert_not_called()
+
+
+def test_technician_positions_excludes_invalid_coordinates(db_session):
+    user = _user(db_session)
+    profile = _technician(db_session, user)
+    db_session.add(
+        FieldTechPresence(
+            technician_id=profile.id,
+            person_id=user.id,
+            status="on_shift",
+            location_sharing_enabled=True,
+            last_latitude=float("nan"),
+            last_longitude=3.3,
+            last_location_at=datetime.now(UTC),
+        )
+    )
+    db_session.flush()
+
+    feed = field_maps_service.list_technician_positions(
+        db_session,
+        FieldLiveMapFeedQuery(),
+    )
+
+    assert all(item.technician_id != profile.id for item in feed.items)
 
 
 def test_live_map_search_matches_canonical_service_street(db_session):

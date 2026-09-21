@@ -13,6 +13,14 @@ The version-pinned `meta.social` 1.2 connector adds
 must explicitly adopt the 1.2 manifest before those capabilities can be bound;
 changing configuration does not silently upgrade a deployed connector.
 
+The connector's typed `messaging.send.v1` boundary accepts exactly one text or
+private Inbox attachment leg per operation. For an attachment it uploads the
+materialized bytes to the account-scoped Meta attachment endpoint, then sends
+the returned attachment ID to the recipient. The sanitized outcome exposes
+only provider attachment/message identifiers and status; credentials, private
+content, and raw provider responses are not retained. Instagram attachment
+commands are limited to image, audio, and video.
+
 Lead notifications arrive through the signed Meta webhook but receive their own
 provider-event identity based on the Meta Lead ID. Lead details are retrieved
 with the enabled installation credential before `sales.capture` decides the
@@ -568,8 +576,8 @@ delivery/inbox evidence remain intact.
    deployment/scheduler readiness invariant preventing an enabled control from
    running without its binding and job.
 10. Meta social inbox transport with distinct Facebook Page and Instagram
-    Login account bindings, Meta-owned webhook verification, and no WhatsApp or
-    expired-OAuth credential fallback.
+    Login account bindings, typed text/private-attachment sends, Meta-owned
+    webhook verification, and no WhatsApp or expired-OAuth credential fallback.
 11. Nextcloud Talk staff notification transport with a pinned installation,
     OpenBao app-password reference, public-HTTPS egress validation, explicit
     `SystemUser` mappings to exact immutable Nextcloud user IDs, cached one-to-one

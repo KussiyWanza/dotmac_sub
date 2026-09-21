@@ -45,7 +45,27 @@ os.environ["VAULT_TOKEN"] = ""
 # Keep import-time globals such as Celery scheduler configuration from touching
 # the deployment database URL loaded from .env. Tests that need a real database
 # use TEST_DATABASE_URL or explicit SQLite engines below.
-os.environ["DATABASE_URL"] = (
+#
+# Conditional on TEST_DATABASE_URL (2026-09, round 10): `app.db`'s engine
+# (and therefore `app.services.db_session_adapter.db_session_adapter
+# .create_session()`, which production code uses for a genuinely
+# independent second connection -- e.g.
+# `prepaid_service_renewals._record_review_item_out_of_band`) is built
+# ONCE, at `app.db` import time, from `settings.database_url` (this env
+# var). The unconditional stomp below made that path permanently
+# unreachable in EVERY pytest run, including the PostgreSQL integration
+# lane -- where the CI job already sets both `DATABASE_URL` and
+# `TEST_DATABASE_URL` to the same real, reachable database before pytest
+# even starts, and this line silently overwrote the legitimate one with
+# the discard-port safety value meant only for the unit-test lane. The
+# unit-test lane's guarantee is unaffected: it never sets
+# `TEST_DATABASE_URL`, so it still gets the poison value exactly as
+# before. The integration lane (`TEST_DATABASE_URL` set) now lets
+# `DATABASE_URL` agree with it, so a genuinely independent
+# `db_session_adapter.create_session()` connection resolves to the same
+# real database the test's own `engine`/`db_session` fixtures use, instead
+# of always failing with `connection refused` on port 9.
+os.environ["DATABASE_URL"] = os.environ.get("TEST_DATABASE_URL") or (
     "postgresql+psycopg://postgres:postgres@127.0.0.1:9/dotmac_sub_test"
     "?connect_timeout=1"
 )
@@ -586,7 +606,7 @@ def network_device(db_session, pop_site):
 
 
 @pytest.fixture()
-def olt_device(db_session):
+def olt_device(db_session, region):
     """OLT device for fiber tests."""
     olt = network_service.olt_devices.create(
         db_session,
@@ -595,6 +615,11 @@ def olt_device(db_session):
             hostname="olt-01.test.local",
         ),
     )
+    from tests.network_fixture_helpers import attach_test_olt_config_pack
+
+    attach_test_olt_config_pack(db_session, olt=olt, region=region)
+    db_session.commit()
+    db_session.refresh(olt)
     return olt
 
 
@@ -628,24 +653,36 @@ def catalog_offer(db_session):
 
 @pytest.fixture()
 def subscription(db_session, subscriber, catalog_offer):
-    """Active subscription for usage tests.
+    """Pending subscription for tests that choose their lifecycle explicitly.
 
     Defaults to POSTPAID (the invoice-eligible mode). The model column default
     is prepaid, but generic invoice-generation tests use postpaid by default.
     Prepaid monthly-invoicing tests override billing_mode explicitly.
     """
-    from app.models.catalog import BillingMode
+    from app.models.catalog import BillingMode, SubscriptionStatus
 
     subscription = catalog_service.subscriptions.create(
         db_session,
         SubscriptionCreate(
             account_id=subscriber.id,
             offer_id=catalog_offer.id,
+            status=SubscriptionStatus.pending,
         ),
     )
     subscription.billing_mode = BillingMode.postpaid
     db_session.commit()
     return subscription
+
+
+@pytest.fixture()
+def active_subscription(db_session, subscription):
+    """Active subscription created through the lifecycle and anchor owners."""
+    from tests.subscription_fixture_helpers import activate_test_subscription
+
+    activated = activate_test_subscription(db_session, subscription)
+    db_session.commit()
+    db_session.refresh(activated)
+    return activated
 
 
 @pytest.fixture()

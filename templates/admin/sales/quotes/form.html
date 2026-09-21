@@ -42,6 +42,9 @@
 
     <form method="post" action="{{ action_url }}"
           x-data='quoteAuthoringForm({{ quote_form["items"]|tojson }}, {{ suggestions|tojson }}, {{ tax_rates|tojson }}, {{ quote_form.tax_rate_id|tojson }}, {{ quote_form.manual_tax_total|tojson }}, {{ quote_form.initial_subtotal|default("0.00")|tojson }}, {{ quote_form.discount_type|tojson }}, {{ quote_form.discount_value|tojson }})'
+          x-init="captureInitialEditState($el)"
+          @input="clearAcceptanceError()"
+          @change="clearAcceptanceError()"
           @submit="handleSubmit($event)"
           class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
         {% include "components/forms/csrf_input.html" %}
@@ -50,30 +53,86 @@
         <div class="space-y-6 p-4 sm:p-6">
             <section class="space-y-4" aria-labelledby="quote-details-heading">
                 <h2 id="quote-details-heading" class="sr-only">Quote details</h2>
+                {% if is_editing %}
                 <div>
-                    <label for="quote-lead" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Lead <span class="text-slate-400">or</span></label>
-                    <select id="quote-lead" name="lead_id" x-model="recipientLead" @change="if (recipientLead) clearCustomer()" :disabled="Boolean(customerId)" :required="!customerId"
-                            class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
-                        <option value="">Select a Lead</option>
-                        {% for lead in leads %}
-                        <option value="{{ lead.id }}" {% if quote_form.lead_id == lead.id %}selected{% endif %}>{{ lead.label }}</option>
-                        {% endfor %}
-                    </select>
-                    <p class="mt-1.5 text-xs text-slate-500 dark:text-slate-400">The linked Person is resolved securely from the selected Lead.</p>
+                    <span class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Quote recipient</span>
+                    <input type="hidden" name="lead_id" value="{{ quote_form.lead_id }}">
+                    <div class="flex min-h-11 items-center rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-700 dark:border-slate-600 dark:bg-slate-900/40 dark:text-slate-200">
+                        {% if selected_customer %}{{ selected_customer.label }} · Customer{% elif selected_lead %}{{ selected_lead.label }} · Lead{% else %}Recipient unavailable{% endif %}
+                    </div>
+                    <p class="mt-1.5 text-xs text-slate-500 dark:text-slate-400">The recipient is fixed after Quote creation.</p>
                 </div>
-                {% if not is_editing %}
-                <div>
-                    <label for="quote-customer-search" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Customer <span class="text-slate-400">or</span></label>
-                    <input type="hidden" name="customer_id" :value="customerId">
-                    <input id="quote-customer-search" type="search" x-model="customerQuery" @input.debounce.300ms="searchCustomers()" :disabled="Boolean(recipientLead)"
-                           autocomplete="off" placeholder="Search active customer by name, account, email, or phone"
-                           class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm disabled:cursor-not-allowed disabled:bg-slate-100 focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                    <p x-show="customerId" class="mt-1 text-xs font-medium text-cyan-700 dark:text-cyan-300">Selected: <span x-text="customerLabel"></span> <button type="button" @click="clearCustomer()" class="underline">Clear</button></p>
-                    <ul x-show="customerResults.length && !customerId" class="mt-2 divide-y rounded-lg border border-slate-200 bg-white text-sm dark:border-slate-600 dark:bg-slate-800">
-                        <template x-for="customer in customerResults" :key="customer.id"><li><button type="button" @click="selectCustomer(customer)" class="w-full px-3 py-2 text-left hover:bg-cyan-50 dark:hover:bg-slate-700" x-text="customer.label"></button></li></template>
-                    </ul>
-                    <p class="mt-1.5 text-xs text-slate-500 dark:text-slate-400">Only active customer accounts with reviewed Party bindings can be used.</p>
-                </div>
+                {% else %}
+                <fieldset class="space-y-4">
+                    <legend class="text-sm font-semibold text-slate-700 dark:text-slate-200">Quote recipient <span class="font-normal text-slate-500 dark:text-slate-400">— select one</span></legend>
+                    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <div class="relative min-w-0" @keydown.escape.stop="closeLeadResults()">
+                            <label for="quote-lead-search" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Lead</label>
+                            <input type="hidden" name="lead_id" :value="leadId">
+                            <input id="quote-lead-search" type="search" x-model="leadQuery"
+                                   @input="editLead()" @input.debounce.300ms="searchLeads()" @focus="searchLeads()"
+                                   @keydown.arrow-down.prevent="moveLead(1)" @keydown.arrow-up.prevent="moveLead(-1)"
+                                   @keydown.enter="chooseActiveLead($event)"
+                                   :disabled="Boolean(customerId)" :required="!customerId"
+                                   role="combobox" aria-autocomplete="list" aria-controls="quote-lead-results"
+                                   :aria-expanded="leadOpen" :aria-activedescendant="leadActive >= 0 ? 'quote-lead-option-' + leadActive : null"
+                                   autocomplete="off" placeholder="Search Lead name or contact"
+                                   class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm disabled:cursor-not-allowed disabled:bg-slate-100 focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:disabled:bg-slate-900/50 dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
+                            <div x-show="leadOpen" x-cloak @click.outside="closeLeadResults()"
+                                 class="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl dark:border-slate-600 dark:bg-slate-800">
+                                <p x-show="leadLoading" role="status" class="px-3 py-2 text-sm text-slate-600 dark:text-slate-300">Searching Leads…</p>
+                                <p x-show="leadError" role="alert" class="px-3 py-2 text-sm text-red-700 dark:text-red-300" x-text="leadError"></p>
+                                <p x-show="!leadLoading && !leadError && leadQuery.trim().length < 2" class="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">Type at least two characters.</p>
+                                <p x-show="leadSearched && !leadLoading && !leadError && !leadResults.length" class="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">No eligible Leads match this search.</p>
+                                <ul id="quote-lead-results" role="listbox">
+                                    <template x-for="(lead, index) in leadResults" :key="lead.id">
+                                        <li role="option" :id="'quote-lead-option-' + index" :aria-selected="leadActive === index">
+                                            <button type="button" @click="selectLead(lead)"
+                                                    :class="leadActive === index ? 'bg-cyan-50 dark:bg-slate-700' : ''"
+                                                    class="min-h-11 w-full rounded-lg px-3 py-2 text-left text-sm text-slate-900 hover:bg-cyan-50 focus:bg-cyan-50 focus:outline-none dark:text-white dark:hover:bg-slate-700 dark:focus:bg-slate-700"
+                                                    x-text="lead.label"></button>
+                                        </li>
+                                    </template>
+                                </ul>
+                            </div>
+                            <p x-show="leadId" class="mt-1.5 text-xs font-medium text-cyan-700 dark:text-cyan-300">Selected Lead. <button type="button" @click="clearLead()" class="rounded-sm underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-cyan-500">Clear</button></p>
+                            <p class="mt-1.5 text-xs text-slate-500 dark:text-slate-400">For a new opportunity already tracked in Sales.</p>
+                        </div>
+
+                        <div class="relative min-w-0" @keydown.escape.stop="closeCustomerResults()">
+                            <label for="quote-customer-search" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Customer</label>
+                            <input type="hidden" name="customer_id" :value="customerId">
+                            <input id="quote-customer-search" type="search" x-model="customerQuery"
+                                   @input="editCustomer()" @input.debounce.300ms="searchCustomers()" @focus="searchCustomers()"
+                                   @keydown.arrow-down.prevent="moveCustomer(1)" @keydown.arrow-up.prevent="moveCustomer(-1)"
+                                   @keydown.enter="chooseActiveCustomer($event)"
+                                   :disabled="Boolean(leadId)" :required="!leadId"
+                                   role="combobox" aria-autocomplete="list" aria-controls="quote-customer-results"
+                                   :aria-expanded="customerOpen" :aria-activedescendant="customerActive >= 0 ? 'quote-customer-option-' + customerActive : null"
+                                   autocomplete="off" placeholder="Search name, account, email, or phone"
+                                   class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm disabled:cursor-not-allowed disabled:bg-slate-100 focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:disabled:bg-slate-900/50 dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
+                            <div x-show="customerOpen" x-cloak @click.outside="closeCustomerResults()"
+                                 class="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl dark:border-slate-600 dark:bg-slate-800">
+                                <p x-show="customerLoading" role="status" class="px-3 py-2 text-sm text-slate-600 dark:text-slate-300">Searching Customers…</p>
+                                <p x-show="customerError" role="alert" class="px-3 py-2 text-sm text-red-700 dark:text-red-300" x-text="customerError"></p>
+                                <p x-show="!customerLoading && !customerError && customerQuery.trim().length < 2" class="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">Type at least two characters.</p>
+                                <p x-show="customerSearched && !customerLoading && !customerError && !customerResults.length" class="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">No active Customers match this search.</p>
+                                <ul id="quote-customer-results" role="listbox">
+                                    <template x-for="(customer, index) in customerResults" :key="customer.id">
+                                        <li role="option" :id="'quote-customer-option-' + index" :aria-selected="customerActive === index">
+                                            <button type="button" @click="selectCustomer(customer)"
+                                                    :class="customerActive === index ? 'bg-cyan-50 dark:bg-slate-700' : ''"
+                                                    class="min-h-11 w-full rounded-lg px-3 py-2 text-left text-sm text-slate-900 hover:bg-cyan-50 focus:bg-cyan-50 focus:outline-none dark:text-white dark:hover:bg-slate-700 dark:focus:bg-slate-700"
+                                                    x-text="customer.label"></button>
+                                        </li>
+                                    </template>
+                                </ul>
+                            </div>
+                            <p x-show="customerId" class="mt-1.5 text-xs font-medium text-cyan-700 dark:text-cyan-300">Selected Customer. <button type="button" @click="clearCustomer()" class="rounded-sm underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-cyan-500">Clear</button></p>
+                            <p class="mt-1.5 text-xs text-slate-500 dark:text-slate-400">Uses the active customer account directly; no Lead or Party binding is created.</p>
+                        </div>
+                    </div>
+                </fieldset>
                 {% endif %}
 
                 <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -85,6 +144,11 @@
                             <option value="{{ value }}" {% if quote_form.status == value %}selected{% endif %}>{{ value|replace('_', ' ')|title }}</option>
                             {% endfor %}
                         </select>
+                        {% if is_editing %}
+                        <p x-show="acceptanceError" x-cloak x-ref="acceptanceError" tabindex="-1"
+                           role="alert" aria-live="assertive" x-text="acceptanceError"
+                           class="mt-1.5 text-sm font-medium text-red-700 focus:outline-none dark:text-red-300"></p>
+                        {% endif %}
                     </div>
                     <div>
                         <label for="quote-currency" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Currency</label>
@@ -344,6 +408,8 @@ window.quoteAuthoringForm = function(initialRows, suggestionRows, taxRateRows, s
     });
     return {
         submitting: false,
+        initialEditState: '',
+        acceptanceError: '',
         rows: (initialRows && initialRows.length ? initialRows : [emptyRow()]).map(normalizeRow),
         suggestions: suggestionRows || [],
         taxRates: taxRateRows || [],
@@ -352,19 +418,193 @@ window.quoteAuthoringForm = function(initialRows, suggestionRows, taxRateRows, s
         discountType: String(initialDiscountType || ''),
         discountValue: String(initialDiscountValue || ''),
         currency: {{ quote_form.currency|tojson }},
-        recipientLead: {{ quote_form.lead_id|tojson }},
+        leadId: {{ quote_form.lead_id|tojson }},
+        leadLabel: {{ (selected_lead.label if selected_lead else '')|tojson }},
+        leadQuery: {{ (selected_lead.label if selected_lead else '')|tojson }},
+        leadResults: [],
+        leadOpen: false,
+        leadLoading: false,
+        leadSearched: false,
+        leadError: '',
+        leadActive: -1,
+        leadController: null,
         customerId: {{ quote_form.customer_id|tojson }},
         customerLabel: {{ (selected_customer.label if selected_customer else '')|tojson }},
         customerQuery: {{ (selected_customer.label if selected_customer else '')|tojson }},
         customerResults: [],
-        clearCustomer() { this.customerId = ''; this.customerLabel = ''; this.customerQuery = ''; this.customerResults = []; },
-        selectCustomer(customer) { this.customerId = String(customer.id); this.customerLabel = String(customer.label); this.customerQuery = this.customerLabel; this.customerResults = []; this.recipientLead = ''; },
+        customerOpen: false,
+        customerLoading: false,
+        customerSearched: false,
+        customerError: '',
+        customerActive: -1,
+        customerController: null,
+        clearRecipientValidity() {
+            const leadInput = document.getElementById('quote-lead-search');
+            const customerInput = document.getElementById('quote-customer-search');
+            if (leadInput) leadInput.setCustomValidity('');
+            if (customerInput) customerInput.setCustomValidity('');
+        },
+        closeLeadResults() {
+            this.leadOpen = false;
+            this.leadActive = -1;
+        },
+        clearLead() {
+            if (this.leadController) this.leadController.abort();
+            this.leadId = '';
+            this.leadLabel = '';
+            this.leadQuery = '';
+            this.leadResults = [];
+            this.leadError = '';
+            this.leadSearched = false;
+            this.closeLeadResults();
+            this.clearRecipientValidity();
+        },
+        editLead() {
+            this.clearRecipientValidity();
+            if (this.leadQuery !== this.leadLabel) {
+                this.leadId = '';
+                this.leadLabel = '';
+            }
+            if (this.leadQuery.trim().length < 2) {
+                if (this.leadController) this.leadController.abort();
+                this.leadResults = [];
+                this.leadError = '';
+                this.leadSearched = false;
+                this.leadOpen = Boolean(this.leadQuery);
+            }
+        },
+        selectLead(lead) {
+            this.clearCustomer();
+            this.leadId = String(lead.id);
+            this.leadLabel = String(lead.label);
+            this.leadQuery = this.leadLabel;
+            this.leadResults = [];
+            this.leadError = '';
+            this.leadSearched = true;
+            this.closeLeadResults();
+            this.clearRecipientValidity();
+        },
+        moveLead(delta) {
+            if (!this.leadOpen || !this.leadResults.length) return;
+            this.leadActive = (this.leadActive + delta + this.leadResults.length) % this.leadResults.length;
+        },
+        chooseActiveLead(event) {
+            if (!this.leadOpen || this.leadActive < 0 || !this.leadResults[this.leadActive]) return;
+            event.preventDefault();
+            this.selectLead(this.leadResults[this.leadActive]);
+        },
+        async searchLeads() {
+            const query = this.leadQuery.trim();
+            if (this.customerId || this.leadId || query.length < 2) return;
+            if (this.leadController) this.leadController.abort();
+            this.leadController = new AbortController();
+            const controller = this.leadController;
+            this.leadLoading = true;
+            this.leadSearched = false;
+            this.leadError = '';
+            this.leadOpen = true;
+            this.leadActive = -1;
+            try {
+                const response = await fetch(`/admin/sales/quotes/leads/search?q=${encodeURIComponent(query)}`, {
+                    credentials: 'same-origin',
+                    headers: { 'Accept': 'application/json' },
+                    signal: controller.signal
+                });
+                if (!response.ok) throw new Error('search unavailable');
+                const payload = await response.json();
+                if (controller !== this.leadController || query !== this.leadQuery.trim()) return;
+                this.leadResults = Array.isArray(payload.items) ? payload.items : [];
+                this.leadSearched = true;
+            } catch (error) {
+                if (error.name !== 'AbortError') {
+                    this.leadResults = [];
+                    this.leadError = 'Lead search is unavailable. Check your connection and try again.';
+                    this.leadSearched = true;
+                }
+            } finally {
+                if (controller === this.leadController) this.leadLoading = false;
+            }
+        },
+        closeCustomerResults() {
+            this.customerOpen = false;
+            this.customerActive = -1;
+        },
+        clearCustomer() {
+            if (this.customerController) this.customerController.abort();
+            this.customerId = '';
+            this.customerLabel = '';
+            this.customerQuery = '';
+            this.customerResults = [];
+            this.customerError = '';
+            this.customerSearched = false;
+            this.closeCustomerResults();
+            this.clearRecipientValidity();
+        },
+        editCustomer() {
+            this.clearRecipientValidity();
+            if (this.customerQuery !== this.customerLabel) {
+                this.customerId = '';
+                this.customerLabel = '';
+            }
+            if (this.customerQuery.trim().length < 2) {
+                if (this.customerController) this.customerController.abort();
+                this.customerResults = [];
+                this.customerError = '';
+                this.customerSearched = false;
+                this.customerOpen = Boolean(this.customerQuery);
+            }
+        },
+        selectCustomer(customer) {
+            this.clearLead();
+            this.customerId = String(customer.id);
+            this.customerLabel = String(customer.label);
+            this.customerQuery = this.customerLabel;
+            this.customerResults = [];
+            this.customerError = '';
+            this.customerSearched = true;
+            this.closeCustomerResults();
+            this.clearRecipientValidity();
+        },
+        moveCustomer(delta) {
+            if (!this.customerOpen || !this.customerResults.length) return;
+            this.customerActive = (this.customerActive + delta + this.customerResults.length) % this.customerResults.length;
+        },
+        chooseActiveCustomer(event) {
+            if (!this.customerOpen || this.customerActive < 0 || !this.customerResults[this.customerActive]) return;
+            event.preventDefault();
+            this.selectCustomer(this.customerResults[this.customerActive]);
+        },
         async searchCustomers() {
-            if (this.recipientLead || this.customerId || this.customerQuery.trim().length < 2) { this.customerResults = []; return; }
-            const response = await fetch(`/admin/sales/quotes/customers/search?q=${encodeURIComponent(this.customerQuery.trim())}`, { credentials: 'same-origin' });
-            if (!response.ok) { this.customerResults = []; return; }
-            const payload = await response.json();
-            this.customerResults = Array.isArray(payload.items) ? payload.items : [];
+            const query = this.customerQuery.trim();
+            if (this.leadId || this.customerId || query.length < 2) return;
+            if (this.customerController) this.customerController.abort();
+            this.customerController = new AbortController();
+            const controller = this.customerController;
+            this.customerLoading = true;
+            this.customerSearched = false;
+            this.customerError = '';
+            this.customerOpen = true;
+            this.customerActive = -1;
+            try {
+                const response = await fetch(`/admin/sales/quotes/customers/search?q=${encodeURIComponent(query)}`, {
+                    credentials: 'same-origin',
+                    headers: { 'Accept': 'application/json' },
+                    signal: controller.signal
+                });
+                if (!response.ok) throw new Error('search unavailable');
+                const payload = await response.json();
+                if (controller !== this.customerController || query !== this.customerQuery.trim()) return;
+                this.customerResults = Array.isArray(payload.items) ? payload.items : [];
+                this.customerSearched = true;
+            } catch (error) {
+                if (error.name !== 'AbortError') {
+                    this.customerResults = [];
+                    this.customerError = 'Customer search is unavailable. Check your connection and try again.';
+                    this.customerSearched = true;
+                }
+            } finally {
+                if (controller === this.customerController) this.customerLoading = false;
+            }
         },
         initialSubtotal: Number(initialSubtotal || 0),
         get subtotal() {
@@ -428,8 +668,44 @@ window.quoteAuthoringForm = function(initialRows, suggestionRows, taxRateRows, s
         recalculate() {
             if (this.taxRateId) this.manualTaxTotal = this.configuredTaxTotal.toFixed(2);
         },
+        editState(form) {
+            return JSON.stringify(
+                Array.from(new FormData(form).entries())
+                    .filter(([name]) => name !== '_csrf_token' && name !== 'status')
+                    .map(([name, value]) => [name, String(value)])
+            );
+        },
+        captureInitialEditState(form) {
+            {% if is_editing %}this.initialEditState = this.editState(form);{% endif %}
+        },
+        clearAcceptanceError() {
+            this.acceptanceError = '';
+        },
         handleSubmit(event) {
             if (this.submitting) { event.preventDefault(); return; }
+            {% if not is_editing %}
+            if (!this.leadId && !this.customerId) {
+                event.preventDefault();
+                this.submitting = false;
+                const target = this.customerQuery.trim()
+                    ? document.getElementById('quote-customer-search')
+                    : document.getElementById('quote-lead-search');
+                target.setCustomValidity('Select a Lead or Customer from the search results.');
+                target.reportValidity();
+                return;
+            }
+            {% endif %}
+            {% if is_editing %}
+            const statusInput = event.target.elements.namedItem('status');
+            if (statusInput && statusInput.value === 'accepted' &&
+                    this.editState(event.target) !== this.initialEditState) {
+                event.preventDefault();
+                this.submitting = false;
+                this.acceptanceError = 'Save the quote changes first, then accept it.';
+                this.$nextTick(() => this.$refs.acceptanceError.focus());
+                return;
+            }
+            {% endif %}
             if (!event.target.checkValidity()) {
                 event.preventDefault();
                 this.submitting = false;

@@ -80,6 +80,11 @@ def _map_action_error(exc: DomainError) -> HTTPException:
         return HTTPException(status_code=403, detail=exc.message)
     if exc.code.endswith("item_not_found"):
         return HTTPException(status_code=404, detail=exc.message)
+    if exc.code.endswith("ai_owned"):
+        return HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": exc.message, "details": exc.details},
+        )
     if exc.code.endswith("idempotency_conflict"):
         return HTTPException(status_code=409, detail=exc.message)
     return HTTPException(status_code=422, detail=exc.message)

@@ -88,6 +88,40 @@ class InvoiceOwnerError(DomainError):
     """Transport-neutral failure from an invoice-owner participant."""
 
 
+def build_transient_classification_invoice_shell(
+    *,
+    account_id: UUID,
+    currency: str,
+    balance_due: Decimal,
+) -> Invoice:
+    """Build an in-memory-only ``Invoice`` shell for funding classification.
+
+    The invoice owner (this module) is the only approved constructor of
+    ``Invoice``/``InvoiceLine`` (``test_only_the_invoice_owner_constructs_invoice_documents_and_lines``
+    in ``tests/architecture/test_financial_ownership.py``). A caller that
+    needs to classify funding for an amount that has not been invoiced yet
+    — e.g. deciding which settlement branch a due prepaid renewal will take
+    BEFORE creating the document that branch settles — still needs that
+    ownership boundary respected, so it asks the owner for a shell rather
+    than constructing one itself.
+
+    The returned ``Invoice`` is NEVER added to a session, flushed, or
+    committed by this function or by any caller of it; it exists only so
+    read-only funding-math helpers (``AccountCreditApplications
+    .preview_invoice_funding``, opening-funding preview) that only ever read
+    ``account_id``/``currency``/``balance_due`` off the invoice they're given
+    can be reused without a persisted document. Callers must not add it to
+    a session — doing so would silently insert a phantom draft.
+    """
+
+    return Invoice(
+        account_id=account_id,
+        currency=currency,
+        balance_due=round_money(balance_due),
+        status=InvoiceStatus.draft,
+    )
+
+
 def _apply_available_account_credit(db: Session, invoice: Invoice) -> None:
     """Hand an allocatable invoice to the canonical account-credit owner."""
     if (

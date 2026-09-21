@@ -47,18 +47,22 @@ SOURCE_TREE = GitTreeSha("2" * 40)
 IMAGE_DIGEST = OCIImageDigest("sha256:" + "3" * 64)
 PRODUCT_MANIFEST_DIGEST = ProductManifestDigest("sha256:" + "4" * 64)
 BUILD_RUN_ID = WorkflowRunId(400)
+EVIDENCE_RUN_ID = WorkflowRunId(400)
 
 
 def _candidate(
     *,
     conclusion: EvidenceConclusion = EvidenceConclusion.SUCCESS,
+    build_run_id: WorkflowRunId = BUILD_RUN_ID,
+    evidence_run_id: WorkflowRunId = EVIDENCE_RUN_ID,
 ) -> ReleaseArtifactEvidence:
     return ReleaseArtifactEvidence(
         source_revision=SOURCE_REVISION,
         source_tree=SOURCE_TREE,
         image_digest=IMAGE_DIGEST,
         product_manifest_digest=PRODUCT_MANIFEST_DIGEST,
-        build_run_id=BUILD_RUN_ID,
+        build_run_id=build_run_id,
+        evidence_run_id=evidence_run_id,
         source_ci_conclusion=conclusion,
     )
 
@@ -70,22 +74,45 @@ def test_candidate_evidence_round_trips_exact_typed_identity(tmp_path: Path) -> 
 
     assert read_candidate_evidence(path) == _candidate()
     assert json.loads(path.read_text(encoding="utf-8")) == {
-        "schema_version": 2,
+        "schema_version": 3,
         "kind": "dotmac.release_candidate",
         "source_revision": SOURCE_REVISION.value,
         "source_tree": SOURCE_TREE.value,
         "image_digest": IMAGE_DIGEST.value,
         "product_manifest_digest": PRODUCT_MANIFEST_DIGEST.value,
         "build_run_id": BUILD_RUN_ID.value,
+        "evidence_run_id": EVIDENCE_RUN_ID.value,
         "source_ci_conclusion": "success",
     }
+
+
+def test_candidate_evidence_distinguishes_build_run_from_evidence_run(
+    tmp_path: Path,
+) -> None:
+    """A resumed candidate build writes evidence under a different run.
+
+    The image itself -- and therefore `build_run_id` -- still names the
+    original build; only `evidence_run_id` names the run that (re-)wrote this
+    document. Conflating them is exactly what made a resume unable to satisfy
+    both downstream checks at once.
+    """
+
+    path = tmp_path / "candidate.json"
+    resumed = _candidate(build_run_id=BUILD_RUN_ID, evidence_run_id=WorkflowRunId(999))
+
+    write_candidate_evidence(path, resumed)
+    restored = read_candidate_evidence(path)
+
+    assert restored.build_run_id == BUILD_RUN_ID
+    assert restored.evidence_run_id == WorkflowRunId(999)
+    assert restored.build_run_id != restored.evidence_run_id
 
 
 @pytest.mark.parametrize(
     ("revision", "tree", "run_id", "message"),
     [
-        (GitCommitSha("4" * 40), SOURCE_TREE, BUILD_RUN_ID, "source revision"),
-        (SOURCE_REVISION, GitTreeSha("5" * 40), BUILD_RUN_ID, "source tree"),
+        (GitCommitSha("4" * 40), SOURCE_TREE, EVIDENCE_RUN_ID, "source revision"),
+        (SOURCE_REVISION, GitTreeSha("5" * 40), EVIDENCE_RUN_ID, "source tree"),
         (SOURCE_REVISION, SOURCE_TREE, WorkflowRunId(401), "workflow run"),
     ],
 )
@@ -100,8 +127,25 @@ def test_candidate_verification_rejects_trigger_identity_mismatch(
             _candidate(),
             expected_source_revision=revision,
             expected_source_tree=tree,
-            expected_build_run_id=run_id,
+            expected_evidence_run_id=run_id,
         )
+
+
+def test_candidate_verification_checks_evidence_run_not_build_run() -> None:
+    """A resume's `build_run_id` legitimately differs from the triggering run.
+
+    Verification must accept it anyway, because it only binds
+    `evidence_run_id` to the run that is actually downloading this artifact.
+    """
+
+    resumed = _candidate(build_run_id=WorkflowRunId(111), evidence_run_id=BUILD_RUN_ID)
+
+    verify_candidate_evidence(
+        resumed,
+        expected_source_revision=SOURCE_REVISION,
+        expected_source_tree=SOURCE_TREE,
+        expected_evidence_run_id=BUILD_RUN_ID,
+    )
 
 
 def test_candidate_verification_rejects_non_green_source_ci() -> None:
@@ -110,7 +154,7 @@ def test_candidate_verification_rejects_non_green_source_ci() -> None:
             _candidate(conclusion=EvidenceConclusion.FAILURE),
             expected_source_revision=SOURCE_REVISION,
             expected_source_tree=SOURCE_TREE,
-            expected_build_run_id=BUILD_RUN_ID,
+            expected_evidence_run_id=EVIDENCE_RUN_ID,
         )
 
 

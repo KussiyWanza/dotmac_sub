@@ -108,7 +108,12 @@ void main() {
     final queue = PhotoQueue(
       db: store.database,
       source: FakeImageSource(Uint8List.fromList(utf8.encode(_customerName))),
-      location: FakeLocation((latitude: 6.4954, longitude: 3.3543)),
+      location: FakeLocation((
+        latitude: 6.4954,
+        longitude: 3.3543,
+        accuracy: 5.0,
+        timestamp: DateTime.utc(2026, 6, 1, 8),
+      )),
       evidence: store.evidence,
     );
 
@@ -122,6 +127,7 @@ void main() {
       store.locationQueueFile,
       cipher: store.cipher,
       scopeKey: store.scopeKey,
+      work: store.work,
     ).save([
       LocationPingPayload(
         latitude: 6.4954,

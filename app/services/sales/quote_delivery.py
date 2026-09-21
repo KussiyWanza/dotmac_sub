@@ -29,7 +29,6 @@ from app.services.owner_commands import (
     OwnerCommandDefinition,
     execute_owner_command,
 )
-from app.services.party import EmailRecipient
 from app.services.sales import quote_documents
 
 _SEND_QUOTE_EMAIL = OwnerCommandDefinition(
@@ -261,13 +260,18 @@ def _existing_delivery(
     request: QuoteDeliveryRequest,
 ) -> document_delivery.ExistingDelivery:
     notifications = tuple(request.communication_intent.notifications)
+    recipient_masked = request.recipient_masked
+    if not recipient_masked and request.recipient_contact_point is not None:
+        recipient_masked = mask_email(request.recipient_contact_point.normalized_value)
+    if not recipient_masked and notifications:
+        recipient_masked = mask_email(notifications[0].recipient)
     return document_delivery.ExistingDelivery(
         delivery_id=request.id,
         entity_id=request.quote_id,
         artifact_id=request.pdf_export_id,
         communication_intent_id=request.communication_intent_id,
         queued=request.request_status == QuoteDeliveryRequestStatus.queued.value,
-        recipient_masked=mask_email(request.recipient_contact_point.normalized_value),
+        recipient_masked=recipient_masked or "unavailable",
         suppression_reasons=tuple(
             request.communication_intent.suppression_reasons or ()
         ),
@@ -376,6 +380,7 @@ def send_quote_email(
                     quote_id=entry.entity_id,
                     pdf_export_id=entry.artifact_id,
                     recipient_contact_point_id=entry.recipient_contact_point_id,
+                    recipient_masked=entry.recipient_masked,
                     communication_intent_id=entry.communication_intent_id,
                     requested_by_id=entry.actor_id,
                     idempotency_key=entry.idempotency_key,
@@ -402,11 +407,7 @@ def send_quote_email(
                 actor=command.context.actor,
                 actor_id=actor_id,
                 request_id=str(command.context.command_id),
-                recipient=EmailRecipient(
-                    contact_point_id=recipient.contact_point_id,
-                    email=recipient.email,
-                    display_name=recipient.display_name,
-                ),
+                recipient=recipient,
                 artifact=document_delivery.DocumentArtifact(
                     artifact_id=export.id,
                     filename=quote_documents.download_filename(export),

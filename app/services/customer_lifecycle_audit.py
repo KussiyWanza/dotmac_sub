@@ -543,6 +543,12 @@ def _quote_counts(
     for quote in quotes:
         if quote.lead_id is None:
             counts["without_lead"] += 1
+            if quote.subscriber_id is None:
+                counts["missing_recipient"] += 1
+            elif quote.subscriber_id not in subscribers:
+                counts["missing_subscriber"] += 1
+            else:
+                counts["customer_backed"] += 1
             continue
         counts["with_lead"] += 1
         lead = leads.get(quote.lead_id)
@@ -567,6 +573,8 @@ def _quote_counts(
     keys = (
         "total",
         "without_lead",
+        "customer_backed",
+        "missing_recipient",
         "with_lead",
         "missing_lead",
         "missing_subscriber",

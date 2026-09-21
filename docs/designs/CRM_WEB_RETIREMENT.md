@@ -100,7 +100,7 @@ until the normal route retirement gate above is complete.
 Two legacy surfaces are explicitly outside this migration:
 
 - the orphaned manually populated Quarterly Report and its local XLSX inputs
-  are not recreated in Self-Care; the supported NCC complaints workbook is a
+  are not recreated in Self-Care; the supported NCC complaints CSV is a
   separate native capability;
 - raw customer-retention engagement history, agent notes, dispositions,
   follow-up dates, pipeline state, campaign/outreach history, contact

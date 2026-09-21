@@ -1,0 +1,72 @@
+{% from "components/ui/macros.html" import status_presentation_badge %}
+
+{% macro action_readiness_panel(panel, heading=None, compact=False) %}
+{% set panel_id = "action-readiness-" ~ (panel.presentation.value | replace('.', '-')) %}
+<section class="status-panel status-panel-{{ panel.presentation.tone.value }} status-foreground status-tone-{{ panel.presentation.tone.value }} rounded-lg border p-4"
+         role="status"
+         aria-labelledby="{{ panel_id }}-title"
+         data-action-readiness="{{ panel.presentation.value }}">
+    <div class="flex items-center justify-between gap-3">
+        <h3 id="{{ panel_id }}-title" class="text-sm font-semibold">
+            {{ heading or panel.headline }}
+        </h3>
+        {{ status_presentation_badge(panel.presentation) }}
+    </div>
+
+    {% if not compact and panel.headline and heading %}
+    <p class="mt-1 text-sm">{{ panel.headline }}</p>
+    {% endif %}
+
+    {% if panel.blockers %}
+    <ul class="mt-3 space-y-2">
+        {% for row in panel.blockers %}
+        <li class="rounded-md border px-3 py-2 text-sm" data-blocker-code="{{ row.code }}">
+            <p>{{ row.message }}</p>
+            {% if not compact and row.detail %}
+            <p class="mt-1 text-xs opacity-80">{{ row.detail }}</p>
+            {% endif %}
+            {% if row.evidence and row.evidence.observed_at %}
+            <p class="mt-1 text-xs opacity-70">
+                Observed {{ row.evidence.observed_at | app_datetime('%Y-%m-%d %H:%M', 'unknown') }}
+            </p>
+            {% endif %}
+            {% if row.repair_label and row.repair_url %}
+            <p class="mt-2">
+                <a class="underline" href="{{ row.repair_url }}">{{ row.repair_label }}</a>
+            </p>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if panel.next_actions %}
+    <ul class="mt-3 space-y-1">
+        {% for next_action in panel.next_actions %}
+        <li class="text-sm">
+            {% if next_action.url %}
+            <a class="underline" href="{{ next_action.url }}">{{ next_action.label }}</a>
+            {% else %}
+            {{ next_action.label }}
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if panel.show_correlation and panel.correlation %}
+    <dl class="mt-3 grid grid-cols-1 gap-1 text-xs opacity-70 sm:grid-cols-2">
+        <div>
+            <dt class="font-semibold">Correlation</dt>
+            <dd>{{ panel.correlation.correlation_id }}</dd>
+        </div>
+        {% if panel.correlation.idempotency_key %}
+        <div>
+            <dt class="font-semibold">Idempotency key</dt>
+            <dd>{{ panel.correlation.idempotency_key }}</dd>
+        </div>
+        {% endif %}
+    </dl>
+    {% endif %}
+</section>
+{% endmacro %}

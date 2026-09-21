@@ -1478,13 +1478,30 @@ def test_tr069_dashboard_linked_inventory_cpe_uses_device_label_not_inventory_na
     ).first()
     assert parked_cpe is not None
 
-    linked_device = Tr069CpeDevice(
-        acs_server_id=acs_server.id,
-        serial_number="LINKED-PARKED-ONT",
-        cpe_device_id=parked_cpe.id,
-        is_active=True,
-    )
-    db_session.add(linked_device)
+    # ``_assign_ont`` above already auto-registers a TR-069 identity for this
+    # serial via the same production auto-registration path CPE provisioning
+    # uses (app/services/network/cpe.py) whenever an ACS server is configured
+    # -- which this test's own ``acs_server`` fixture provides. Reuse that
+    # row rather than constructing a second active one for the same
+    # ``cpe_device_id``: the partial unique index added in migration
+    # 595_active_cpe_identity now correctly rejects exactly that duplicate.
+    linked_device = db_session.scalars(
+        select(Tr069CpeDevice).where(
+            Tr069CpeDevice.cpe_device_id == parked_cpe.id,
+            Tr069CpeDevice.is_active.is_(True),
+        )
+    ).first()
+    if linked_device is not None:
+        linked_device.acs_server_id = acs_server.id
+        linked_device.serial_number = "LINKED-PARKED-ONT"
+    else:
+        linked_device = Tr069CpeDevice(
+            acs_server_id=acs_server.id,
+            serial_number="LINKED-PARKED-ONT",
+            cpe_device_id=parked_cpe.id,
+            is_active=True,
+        )
+        db_session.add(linked_device)
     db_session.commit()
 
     data = web_network_tr069_service.tr069_dashboard_data(

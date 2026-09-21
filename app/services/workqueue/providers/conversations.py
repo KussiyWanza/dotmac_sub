@@ -22,6 +22,7 @@ from app.models.team_inbox import (
     InboxMessage,
     InboxMessageDirection,
 )
+from app.services import ai_conversation_ownership
 from app.services.workqueue.providers import register
 from app.services.workqueue.providers.common import as_utc, score_item, seconds_until
 from app.services.workqueue.scope import WorkqueueScope
@@ -52,6 +53,7 @@ class ConversationProvider:
             )
             .filter(InboxConversation.is_active.is_(True))
             .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
+            .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
         )
 
         # Team inbox has its own per-conversation snooze; respect it.

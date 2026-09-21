@@ -5,20 +5,60 @@ import 'package:dotmac_field/core/api/api_client.dart';
 import 'package:dotmac_field/core/api/token_store.dart';
 import 'package:dotmac_field/core/offline/draft_store.dart';
 import 'package:dotmac_field/features/auth/auth_state.dart';
+import 'package:dotmac_field/features/jobs/job_models.dart';
+import 'package:dotmac_field/features/jobs/jobs_providers.dart';
 import 'package:dotmac_field/features/materials/material_models.dart';
 import 'package:dotmac_field/features/materials/materials_providers.dart';
 import 'package:dotmac_field/features/materials/materials_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:sqlite3/open.dart';
 
 import 'helpers/fake_http.dart';
 import 'helpers/secure_store.dart';
 
+JobList _testAssignedJobs() => JobList([
+  JobSummary(
+    id: 'wo-1',
+    title: 'Campus fiber repair',
+    status: 'dispatched',
+    workType: 'repair',
+    priority: 'normal',
+  ),
+  JobSummary(
+    id: 'wo-2',
+    title: 'Library router installation',
+    status: 'scheduled',
+    workType: 'install',
+    priority: 'normal',
+  ),
+]);
+
+JobDetail _testJobDetail() => JobDetail(
+  job: _testAssignedJobs().jobs.first,
+  location: const JobLocation(source: 'none'),
+  customerExperience: const JobCustomerExperience(
+    project: JobLifecycleReference(
+      id: 'project-1',
+      number: 'PRJ-001',
+      title: 'Campus rollout',
+      status: 'active',
+    ),
+    originTicket: JobLifecycleReference(
+      id: 'ticket-1',
+      number: 'TKT-001',
+      title: 'Fiber signal fault',
+      status: 'open',
+    ),
+  ),
+);
+
 void main() {
   late ProviderContainer container;
   late FakeHttpAdapter adapter;
+  late ApiClient client;
 
   setUpAll(() {
     open.overrideFor(
@@ -38,7 +78,7 @@ void main() {
     );
     final dio = Dio(BaseOptions(baseUrl: 'https://test.local'))
       ..httpClientAdapter = adapter;
-    final client = ApiClient(
+    client = ApiClient(
       baseUrl: 'https://test.local',
       tokenStore: store,
       dio: dio,
@@ -190,8 +230,9 @@ void main() {
         .read(materialsRepositoryProvider)
         .fetchRequests();
 
-    expect(requests.single.number, 'MR-0001');
-    expect(requests.single.status, 'submitted');
+    expect(requests.totalCount, 1);
+    expect(requests.items.single.number, 'MR-0001');
+    expect(requests.items.single.status, 'submitted');
   });
 
   test('fetchRequests accepts nested response envelopes', () async {
@@ -212,7 +253,43 @@ void main() {
         .read(materialsRepositoryProvider)
         .fetchRequests();
 
-    expect(requests.single.number, 'MR-0002');
+    expect(requests.items.single.number, 'MR-0002');
+  });
+
+  test('cancelRequest posts reason and idempotency identity', () async {
+    adapter.on('POST', '/api/v1/field/material-requests/mr-2/cancel', (
+      options,
+    ) {
+      expect(options.data, {
+        'client_ref': 'cancel-client-ref',
+        'reason': 'Job scope changed',
+      });
+      return (
+        200,
+        {'id': 'mr-2', 'status': 'cancellation_pending', 'can_cancel': false},
+      );
+    });
+
+    final request = await container
+        .read(materialsRepositoryProvider)
+        .cancelRequest(
+          id: 'mr-2',
+          clientRef: 'cancel-client-ref',
+          reason: ' Job scope changed ',
+        );
+
+    expect(request.status, 'cancellation_pending');
+    expect(request.canCancel, isFalse);
+  });
+
+  test('material request reads owner-provided cancellation eligibility', () {
+    final request = MaterialRequest.fromJson({
+      'id': 'mr-pending',
+      'status': 'pending_stock',
+      'can_cancel': true,
+    });
+
+    expect(request.canCancel, isTrue);
   });
 
   test('fetchRequests skips malformed rows instead of crashing', () async {
@@ -233,35 +310,50 @@ void main() {
         .read(materialsRepositoryProvider)
         .fetchRequests();
 
-    expect(requests, hasLength(1));
-    expect(requests.single.id, 'mr-3');
-    expect(requests.single.number, '3003');
+    expect(requests.items, hasLength(1));
+    expect(requests.items.single.id, 'mr-3');
+    expect(requests.items.single.number, '3003');
   });
 
   testWidgets('materials screen shows request list before inventory', (
     tester,
   ) async {
+    await tester.binding.setSurfaceSize(const Size(320, 640));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
           materialRequestsProvider.overrideWith(
-            (ref) async => [
-              MaterialRequest.fromJson({
-                'id': 'mr-1',
-                'number': 'MR-0001',
-                'status': 'submitted',
-                'priority': 'high',
-              }),
-            ],
+            (ref) async => MaterialRequestHistory(
+              totalCount: 1,
+              items: [
+                MaterialRequest.fromJson({
+                  'id': 'mr-1',
+                  'number': 'MR-0001',
+                  'status': 'submitted',
+                  'priority': 'high',
+                }),
+              ],
+            ),
           ),
           inventorySearchProvider.overrideWith((ref) async => const []),
         ],
-        child: const MaterialApp(home: MaterialsScreen()),
+        child: MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(
+              context,
+            ).copyWith(textScaler: const TextScaler.linear(2)),
+            child: child!,
+          ),
+          home: const MaterialsScreen(),
+        ),
       ),
     );
     await tester.pump();
 
-    expect(find.text('Requests'), findsOneWidget);
+    expect(find.text('My requests (1)'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Request'), findsNothing);
     expect(find.text('MR-0001'), findsOneWidget);
     expect(find.text('Inventory'), findsOneWidget);
   });
@@ -274,14 +366,17 @@ void main() {
       ProviderScope(
         overrides: [
           materialRequestsProvider.overrideWith(
-            (ref) async => [
-              MaterialRequest.fromJson({
-                'id': clientRef,
-                'number': 'Queued materials',
-                'status': 'queued',
-                'priority': 'high',
-              }),
-            ],
+            (ref) async => MaterialRequestHistory(
+              totalCount: 1,
+              items: [
+                MaterialRequest.fromJson({
+                  'id': clientRef,
+                  'number': 'Queued materials',
+                  'status': 'queued',
+                  'priority': 'high',
+                }),
+              ],
+            ),
           ),
           inventorySearchProvider.overrideWith((ref) async => const []),
         ],
@@ -302,11 +397,26 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(360, 640));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
+    const longLocationLabel =
+        'Regional operations and materials distribution warehouse (WH-REGIONAL-OPS)';
+
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
-          inventoryLocationsProvider.overrideWith((ref) async => const []),
+          inventoryLocationsProvider.overrideWith(
+            (ref) async => const [
+              InventoryLocation(
+                id: 'warehouse-with-long-label',
+                name:
+                    'Regional operations and materials distribution warehouse',
+                code: 'WH-REGIONAL-OPS',
+              ),
+            ],
+          ),
           inventorySearchProvider.overrideWith((ref) async => const []),
+          allAssignedJobsProvider.overrideWith(
+            (ref) async => _testAssignedJobs(),
+          ),
         ],
         child: const MaterialApp(home: NewMaterialRequestScreen()),
       ),
@@ -316,7 +426,184 @@ void main() {
     expect(find.text('New material request'), findsOneWidget);
     expect(find.text('Submit request'), findsOneWidget);
     expect(find.text('Save draft'), findsOneWidget);
+    expect(find.byKey(const Key('material-work-order')), findsOneWidget);
+    expect(find.text('Work order ID'), findsNothing);
+    expect(find.text('Project ID'), findsNothing);
+    expect(find.text('Ticket ID'), findsNothing);
+    final workOrderDecorator = tester.widget<InputDecorator>(
+      find.descendant(
+        of: find.byKey(const Key('material-work-order')),
+        matching: find.byType(InputDecorator),
+      ),
+    );
+    expect(workOrderDecorator.isEmpty, isFalse);
+
+    await tester.tap(find.byKey(const Key('source-location')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(longLocationLabel).last);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('destination-location')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(longLocationLabel).last);
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
   });
+
+  testWidgets('unavailable work order message keeps its label separate', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          inventoryLocationsProvider.overrideWith((ref) async => const []),
+          inventorySearchProvider.overrideWith((ref) async => const []),
+          allAssignedJobsProvider.overrideWith(
+            (ref) async => const JobList([]),
+          ),
+        ],
+        child: const MaterialApp(home: NewMaterialRequestScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final message = find.text('No assigned work orders are available.');
+    expect(message, findsOneWidget);
+    final workOrderDecorator = tester.widget<InputDecorator>(
+      find.ancestor(of: message, matching: find.byType(InputDecorator)),
+    );
+    expect(workOrderDecorator.isEmpty, isFalse);
+  });
+
+  testWidgets(
+    'new material request selects an assigned work order and derives its context',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(800, 1600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      Map<String, dynamic>? posted;
+      adapter.on('POST', '/api/v1/field/material-requests/submit', (options) {
+        posted = (options.data as Map).cast<String, dynamic>();
+        return (
+          201,
+          {
+            'id': 'mr-9',
+            'number': 'MR-0009',
+            'status': 'submitted',
+            'priority': 'medium',
+            'items': <Object>[],
+          },
+        );
+      });
+
+      final router = GoRouter(
+        initialLocation: '/materials/new',
+        routes: [
+          GoRoute(
+            path: '/materials/new',
+            builder: (_, _) => const NewMaterialRequestScreen(),
+          ),
+          GoRoute(
+            path: '/materials',
+            builder: (_, _) => const Scaffold(body: Text('Materials list')),
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            apiClientProvider.overrideWithValue(client),
+            inventoryLocationsProvider.overrideWith(
+              (ref) async => const [
+                InventoryLocation(
+                  id: 'warehouse-1',
+                  name: 'Main warehouse',
+                  code: 'WH-MAIN',
+                ),
+              ],
+            ),
+            inventorySearchProvider.overrideWith(
+              (ref) async => const [
+                InventoryItem(
+                  id: 'item-1',
+                  name: 'Drop cable',
+                  sku: 'DC-100',
+                  availableQuantity: 50,
+                ),
+              ],
+            ),
+            allAssignedJobsProvider.overrideWith(
+              (ref) async => _testAssignedJobs(),
+            ),
+            jobDetailProvider(
+              'wo-1',
+            ).overrideWith((ref) async => _testJobDetail()),
+            materialRequestsProvider.overrideWith(
+              (ref) async =>
+                  const MaterialRequestHistory(items: [], totalCount: 0),
+            ),
+          ],
+          child: MaterialApp.router(routerConfig: router),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('source-location')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Main warehouse (WH-MAIN)').last);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('material-work-order')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('material-work-order-search')),
+        findsOneWidget,
+      );
+      await tester.enterText(
+        find.byKey(const Key('material-work-order-search')),
+        'fiber',
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Campus fiber repair'), findsOneWidget);
+      expect(find.text('Library router installation'), findsNothing);
+      await tester.tap(
+        find.byKey(const Key('material-work-order-option-wo-1')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Campus rollout (PRJ-001)'), findsOneWidget);
+      expect(find.text('Fiber signal fault (TKT-001)'), findsOneWidget);
+
+      await tester.scrollUntilVisible(
+        find.text('Drop cable (DC-100)'),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.text('Drop cable (DC-100)'));
+      await tester.pump();
+      await tester.ensureVisible(find.text('Add item'));
+      await tester.tap(find.text('Add item'));
+      await tester.pump();
+
+      await tester.tap(find.text('Submit request'));
+      await tester.pumpAndSettle();
+
+      expect(posted, isNotNull);
+      expect(posted!['work_order_id'], 'wo-1');
+      expect(posted!.containsKey('project_id'), isFalse);
+      expect(posted!.containsKey('ticket_id'), isFalse);
+      expect(posted!['source_warehouse_code'], 'WH-MAIN');
+      expect(posted!['items'], [
+        {'item_id': 'item-1', 'quantity': 1},
+      ]);
+      expect(find.text('Materials list'), findsOneWidget);
+
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+    },
+  );
 
   test('MaterialRequest parses status flow and issued quantities', () {
     final request = MaterialRequest.fromJson({
@@ -383,6 +670,7 @@ void main() {
       'number': 'MR-0001',
       'status': 'issued',
       'priority': 'high',
+      'notes': 'Required for the customer installation',
       'source_location': {'id': 'warehouse-1', 'name': 'Main warehouse'},
       'destination_location': {'id': 'van-2', 'name': 'Installer van'},
       'approval_notes': 'Approved for urgent install',
@@ -414,6 +702,10 @@ void main() {
     expect(find.text('Status flow'), findsOneWidget);
     expect(find.text('Main warehouse'), findsOneWidget);
     expect(find.text('Installer van'), findsOneWidget);
+    await tester.drag(find.byType(ListView), const Offset(0, -300));
+    await tester.pumpAndSettle();
+    expect(find.text('Description'), findsOneWidget);
+    expect(find.text('Required for the customer installation'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('2/2 approved · 1/2 issued'),
       200,

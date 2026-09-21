@@ -17,10 +17,64 @@ from sqlalchemy.orm import Session
 
 from app.models.event_store import EventStatus, EventStore
 from app.services import event_store as event_store_service
+from app.services.domain_errors import DomainError
 from app.services.events.types import Event, EventType
 from app.services.session_hooks import run_after_commit
 
 logger = logging.getLogger(__name__)
+
+# Default permission an operator needs to see a permanently-failed handler's
+# review item. Dispatcher infrastructure is shared by every domain's event
+# handlers, so this stays one coarse, generically-true default rather than a
+# per-domain routing table; a handler that needs a different reviewer
+# audience can still be triaged from the structured `event_handler_failed`
+# log line, which always carries the full event/handler/error context.
+_PERMANENT_FAILURE_REVIEW_PERMISSION = "billing:write"
+
+
+def _record_permanent_handler_failure(
+    db: Session,
+    *,
+    event: Event,
+    handler_name: str,
+    exc: Exception,
+) -> None:
+    """Make a permanent handler failure a durable, queryable work item.
+
+    A transient failure is retried; a permanent one never resolves itself, so
+    logging it (the previous, sole behavior) let it go completely unnoticed
+    until a customer complained. This reuses the existing generic
+    ``staff_notifications`` review-queue mechanism — the same durable,
+    queryable, in-app-inbox primitive already used for prepaid-draft and
+    paid-invoice review items — rather than adding a parallel alerting
+    integration. Idempotent on ``(event_id, handler_name)``: replaying the
+    same failed dispatch updates the same row instead of paging twice.
+    """
+
+    try:
+        from app.services import staff_notifications
+
+        fingerprint = f"event-handler-permanent-failure:{event.event_id}:{handler_name}"
+        staff_notifications.queue_permission_review_request(
+            db,
+            permission_key=_PERMANENT_FAILURE_REVIEW_PERMISSION,
+            fingerprint=fingerprint,
+            event_type=f"event_handler_permanent_failure:{handler_name}",
+            title=f"{handler_name} failed permanently on {event.event_type.value}",
+            body=(
+                f"Event {event.event_id} ({event.event_type.value}) was not "
+                f"retried because handler {handler_name} classified its "
+                f"failure as permanent: {exc}"
+            ),
+            target_url=f"/admin/events/{event.event_id}",
+            category="operations",
+            source="events.dispatcher",
+        )
+    except Exception:
+        # Never let the visibility mechanism itself take down dispatch — the
+        # structured `event_handler_failed` log line above is still emitted
+        # regardless, so the failure is not silently lost.
+        logger.exception("event_handler_permanent_failure_alert_failed")
 
 
 @contextmanager
@@ -180,18 +234,33 @@ class EventDispatcher:
                         status="success",
                     )
             except Exception as exc:
+                # A handler exception declares itself permanent via
+                # ``.retryable = False`` on a real ``DomainError`` (see
+                # ``app.services.domain_errors.DomainError``). The isinstance
+                # check is deliberate, not a bare ``getattr``: unrelated
+                # exception families elsewhere in this codebase (e.g.
+                # ``nin_service.py``, ``nextcloud_talk_staff.py``) carry their
+                # own, differently-meaning ``.retryable`` attributes on
+                # non-``DomainError`` types, and a bare ``getattr`` would
+                # misclassify those into this review-item audience. Anything
+                # that isn't a ``DomainError`` (or is one with the default)
+                # keeps today's transient/retry-eligible behavior — a pure
+                # addition, no other handler's behavior changes.
+                retryable = not (isinstance(exc, DomainError) and not exc.retryable)
                 logger.exception(
                     "event_handler_failed",
                     extra={
                         **_event_extra(event, handler_count=len(plan)),
                         "handler": step.handler_name,
                         "error": str(exc),
+                        "retryable": retryable,
                     },
                 )
                 failed_handlers.append(
                     {
                         "handler": step.handler_name,
                         "error": str(exc),
+                        "retryable": str(retryable),
                     }
                 )
                 if event_record and event_record.id:
@@ -200,11 +269,18 @@ class EventDispatcher:
                             db,
                             event_store_id=event_record.id,
                             handler_name=step.handler_name,
-                            status="failed",
+                            status="failed" if retryable else "failed_permanent",
                             error=str(exc),
                         )
                     except Exception:
                         logger.exception("event_handler_attempt_failed")
+                if not retryable:
+                    _record_permanent_handler_failure(
+                        db,
+                        event=event,
+                        handler_name=step.handler_name,
+                        exc=exc,
+                    )
 
         # 3. Update event status.
         if event_record:
@@ -275,8 +351,20 @@ class EventDispatcher:
             service_order_id=event_record.service_order_id,
         )
 
-        # Get handlers that failed previously
+        # Get handlers that failed previously (retryable ones only — a
+        # `failed_permanent` handler is excluded here so the loop below never
+        # re-selects it).
         failed_handler_names = event_store_service.failed_handler_names(event_record)
+        # Handlers already classified permanent must stay visible in the next
+        # `failed_handlers` manifest even though this retry never re-runs
+        # them — otherwise `mark_event_completed` below would overwrite
+        # `failed_handlers` with only THIS attempt's failures and silently
+        # forget the permanent one ever failed.
+        permanent_failures = [
+            dict(failure)
+            for failure in (event_record.failed_handlers or [])
+            if str(failure.get("retryable", "True")).lower() == "false"
+        ]
         from app.services.control_relationships import event_execution_plan
 
         plan = event_execution_plan(event.event_type.value, self._handlers)
@@ -294,10 +382,19 @@ class EventDispatcher:
         )
 
         # Retry only the current failure manifest. Previously successful
-        # predecessors satisfy dependencies without being executed again.
+        # predecessors satisfy dependencies without being executed again. A
+        # permanently-failed handler is neither retried NOR treated as
+        # "succeeded" for a dependent step's sake — it stays permanently
+        # unmet, so anything depending on it is correctly blocked rather than
+        # proceeding as though it had passed.
         plan_names = {step.handler_name for step in plan}
+        permanently_failed_names = {
+            str(failure["handler"]) for failure in permanent_failures
+        }
         succeeded_handlers = (
-            plan_names - failed_handler_names if failed_handler_names else set()
+            (plan_names - failed_handler_names - permanently_failed_names)
+            if failed_handler_names
+            else (plan_names - permanently_failed_names)
         )
         new_failures: list[dict[str, str]] = []
         for step in plan:
@@ -334,6 +431,22 @@ class EventDispatcher:
                     retry_count=event_record.retry_count,
                 )
             except Exception as exc:
+                # Classify the SAME way the initial dispatch path does
+                # (2026-09, round 8 -- Michael's original finding #7, missed
+                # in the round 1-6 reorder plan because it didn't cleanly
+                # belong to any of its 6 steps): a permanent failure that
+                # occurs DURING a retry attempt must stay permanent, not
+                # silently fall back to the default retryable classification.
+                # Previously this handler recorded `status="failed"`
+                # unconditionally with no `"retryable"` key at all, so the
+                # NEXT retry's own permanent-carry-forward filter above
+                # (`str(failure.get("retryable", "True")).lower() ==
+                # "false"`) treated it as retryable by default -- a handler
+                # that fails PERMANENTLY on a retry (e.g.
+                # `PrepaidTriggerExecutionConflictError`) was silently
+                # redelivered forever, defeating the whole permanent/
+                # transient classification this dispatcher builds.
+                retryable = not (isinstance(exc, DomainError) and not exc.retryable)
                 logger.exception(
                     "event_retry_handler_failed",
                     extra={
@@ -344,25 +457,38 @@ class EventDispatcher:
                         ),
                         "handler": step.handler_name,
                         "error": str(exc),
+                        "retryable": retryable,
                     },
                 )
                 new_failures.append(
                     {
                         "handler": step.handler_name,
                         "error": str(exc),
+                        "retryable": str(retryable),
                     }
                 )
                 event_store_service.record_handler_attempt(
                     db,
                     event_store_id=event_record.id,
                     handler_name=step.handler_name,
-                    status="failed",
+                    status="failed" if retryable else "failed_permanent",
                     error=str(exc),
                     retry_count=event_record.retry_count,
                 )
+                if not retryable:
+                    _record_permanent_handler_failure(
+                        db,
+                        event=event,
+                        handler_name=step.handler_name,
+                        exc=exc,
+                    )
 
-        # Update final status
-        event_store_service.mark_event_completed(db, event_record, new_failures)
+        # Update final status. Permanent failures are carried forward
+        # unconditionally: they were never re-attempted above, so leaving
+        # them out here would silently erase them from the failure manifest.
+        event_store_service.mark_event_completed(
+            db, event_record, new_failures + permanent_failures
+        )
         db.commit()
         logger.info(
             "event_retry_complete",

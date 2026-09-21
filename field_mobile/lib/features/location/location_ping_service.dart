@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../core/location/location_ping_store.dart';
 import '../../core/location/location_source.dart';
@@ -53,9 +54,11 @@ class LocationPingService {
     this.sharingReader,
     LocationPingStore? store,
     DateTime Function()? clock,
+    String Function()? idGenerator,
     this.maxBuffer = 200,
   }) : store = store ?? MemoryLocationPingStore(),
-       _clock = clock ?? (() => DateTime.now().toUtc());
+       _clock = clock ?? (() => DateTime.now().toUtc()),
+       _idGenerator = idGenerator ?? (() => const Uuid().v4());
 
   final LocationSource location;
   final PingPoster poster;
@@ -63,12 +66,15 @@ class LocationPingService {
   final SharingReader? sharingReader;
   final LocationPingStore store;
   final DateTime Function() _clock;
+  // Injected so tests can assert on a known id; production always mints a
+  // real v4 UUID, once per fix, at capture time — never at send time.
+  final String Function() _idGenerator;
   final int maxBuffer;
 
   final List<LocationPingPayload> _buffer = [];
   bool _bufferRestored = false;
   ShiftState _shift = ShiftState.offShift;
-  StreamSubscription<GeoPoint>? _backgroundSub;
+  StreamSubscription<LocationFix>? _backgroundSub;
   String? _activeWorkOrderId;
 
   ShiftState get shift => _shift;
@@ -126,14 +132,28 @@ class LocationPingService {
     await _appendFix(point, workOrderId: workOrderId);
   }
 
-  Future<void> _appendFix(GeoPoint point, {String? workOrderId}) async {
+  Future<void> _appendFix(LocationFix point, {String? workOrderId}) async {
+    // The fix's own capture time is authoritative for freshness — a fix
+    // buffered late (offline, backgrounded) must not be reported as "now".
+    // _clock() is only a fallback for the rare source that genuinely has no
+    // capture time to offer, and that fallback is recorded on the payload
+    // rather than left indistinguishable from a real GPS timestamp.
+    final fixTimestamp = point.timestamp;
+    final capturedAt = fixTimestamp ?? _clock();
     _buffer.add(
       LocationPingPayload(
         latitude: point.latitude,
         longitude: point.longitude,
-        capturedAt: _clock(),
+        accuracyM: point.accuracy,
+        capturedAt: capturedAt,
+        capturedAtIsClockDerived: fixTimestamp == null,
         shift: _shift,
         workOrderId: workOrderId,
+        // Minted once, right here, at capture/append time — never
+        // regenerated on a later retry. A network failure after the server
+        // actually wrote the row must replay, not duplicate, on the next
+        // flush() of this same buffered ping.
+        clientObservationId: _idGenerator(),
       ),
     );
     if (_buffer.length > maxBuffer) {

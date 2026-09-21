@@ -45,7 +45,12 @@ void main() {
     queue = PhotoQueue(
       db: db,
       source: source,
-      location: FakeLocation((latitude: 6.43, longitude: 3.42)),
+      location: FakeLocation((
+        latitude: 6.43,
+        longitude: 3.42,
+        accuracy: 5.0,
+        timestamp: DateTime.utc(2026, 6, 1, 8),
+      )),
       evidence: store.evidence,
     );
   });

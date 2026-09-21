@@ -26,6 +26,22 @@ class ActiveTimer {
   final DateTime startedAt;
 }
 
+class NoteSubmissionOutcome {
+  const NoteSubmissionOutcome({
+    required this.clientRef,
+    required this.body,
+    required this.isInternal,
+    required this.deliveryState,
+    this.error,
+  });
+
+  final String clientRef;
+  final String body;
+  final bool isInternal;
+  final MutationDeliveryState deliveryState;
+  final String? error;
+}
+
 class ExecutionController extends Notifier<ActiveTimer?> {
   @override
   ActiveTimer? build() => null;
@@ -92,7 +108,7 @@ class ExecutionController extends Notifier<ActiveTimer?> {
     );
   }
 
-  Future<String> addNote(
+  Future<NoteSubmissionOutcome> addNote(
     String jobId,
     String body, {
     bool isInternal = true,
@@ -116,10 +132,17 @@ class ExecutionController extends Notifier<ActiveTimer?> {
     try {
       await _sync.flushOutbox();
     } catch (_) {
-      // The note is already queued locally. A transient immediate-sync failure
-      // should not make the save action look failed to the technician.
+      // The durable row below remains the outcome authority even when the
+      // best-effort immediate flush itself fails unexpectedly.
     }
-    return clientRef;
+    final delivery = await _sync.deliveryResult(clientRef);
+    return NoteSubmissionOutcome(
+      clientRef: clientRef,
+      body: trimmed,
+      isInternal: isInternal,
+      deliveryState: delivery.state,
+      error: delivery.error,
+    );
   }
 }
 

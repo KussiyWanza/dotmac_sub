@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
@@ -10,20 +13,91 @@ import '../../app/theme.dart';
 import '../../app/status_presentation.dart';
 import '../../app/widgets/primary_action_button.dart';
 import '../../core/offline/draft_store.dart';
-import '../execution/execution_controller.dart';
+import '../jobs/job_models.dart';
+import '../jobs/jobs_providers.dart';
+import '../manager/manager_providers.dart';
 import 'expense_models.dart';
 import 'expenses_providers.dart';
 
 const _statusOrder = ['submitted', 'approved', 'paid'];
 
 class ExpensesScreen extends ConsumerWidget {
-  const ExpensesScreen({super.key});
+  const ExpensesScreen({super.key, this.embedded = false});
+
+  final bool embedded;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final requests = ref.watch(expenseRequestsProvider);
     final drafts = ref.watch(expenseRequestDraftsProvider);
+    final requestCount = requests.asData?.value.totalCount;
 
+    final body = RefreshIndicator(
+      onRefresh: () async => ref.invalidate(expenseRequestsProvider),
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(16),
+        children: [
+          Text(
+            requestCount == null
+                ? 'My expense requests'
+                : 'My expense requests ($requestCount)',
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 8),
+          drafts.when(
+            data: (items) => Column(
+              children: [
+                for (final draft in items)
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.edit_note_outlined),
+                      title: Text(
+                        draft.payload['purpose']?.toString().isNotEmpty == true
+                            ? draft.payload['purpose'].toString()
+                            : 'Saved expense draft',
+                      ),
+                      subtitle: const Text('Tap to continue editing'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => context.push('/expenses/new'),
+                    ),
+                  ),
+              ],
+            ),
+            loading: () => const SizedBox.shrink(),
+            error: (_, _) => const SizedBox.shrink(),
+          ),
+          requests.when(
+            data: (history) {
+              final items = history.items;
+              if (items.isEmpty) {
+                return const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 48),
+                  child: Center(child: Text('No expense requests yet')),
+                );
+              }
+              return Column(
+                children: [
+                  for (final request in items)
+                    _ExpenseRequestTile(request: request),
+                ],
+              );
+            },
+            loading: () => const Padding(
+              padding: EdgeInsets.only(top: 48),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+            error: (_, _) => const Padding(
+              padding: EdgeInsets.only(top: 48),
+              child: Center(child: Text('Could not load expense requests')),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (embedded) return body;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Expenses'),
@@ -35,80 +109,7 @@ class ExpensesScreen extends ConsumerWidget {
           ),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: () async => ref.invalidate(expenseRequestsProvider),
-        child: ListView(
-          physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.all(16),
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    'Expense requests',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-                FilledButton.icon(
-                  onPressed: () => context.push('/expenses/new'),
-                  icon: const Icon(Icons.add),
-                  label: const Text('Request'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            drafts.when(
-              data: (items) => Column(
-                children: [
-                  for (final draft in items)
-                    Card(
-                      child: ListTile(
-                        leading: const Icon(Icons.edit_note_outlined),
-                        title: Text(
-                          draft.payload['purpose']?.toString().isNotEmpty ==
-                                  true
-                              ? draft.payload['purpose'].toString()
-                              : 'Saved expense draft',
-                        ),
-                        subtitle: const Text('Tap to continue editing'),
-                        trailing: const Icon(Icons.chevron_right),
-                        onTap: () => context.push('/expenses/new'),
-                      ),
-                    ),
-                ],
-              ),
-              loading: () => const SizedBox.shrink(),
-              error: (_, _) => const SizedBox.shrink(),
-            ),
-            requests.when(
-              data: (items) {
-                if (items.isEmpty) {
-                  return const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 48),
-                    child: Center(child: Text('No expense requests yet')),
-                  );
-                }
-                return Column(
-                  children: [
-                    for (final request in items)
-                      _ExpenseRequestTile(request: request),
-                  ],
-                );
-              },
-              loading: () => const Padding(
-                padding: EdgeInsets.only(top: 48),
-                child: Center(child: CircularProgressIndicator()),
-              ),
-              error: (_, _) => const Padding(
-                padding: EdgeInsets.only(top: 48),
-                child: Center(child: Text('Could not load expense requests')),
-              ),
-            ),
-          ],
-        ),
-      ),
+      body: body,
     );
   }
 }
@@ -157,8 +158,6 @@ class _ExpenseRequestTile extends StatelessWidget {
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         _ExpenseStatusChip(status: request.status),
-                        if (request.erpClaimStatus != null)
-                          Text('ERP ${request.erpClaimStatus}'),
                         Text(request.displayNumber),
                         if (date != null) Text(date),
                       ],
@@ -350,7 +349,11 @@ class _ExpenseStatusChip extends StatelessWidget {
     final color = _expenseStatusColor(context, status);
     return Chip(
       visualDensity: VisualDensity.compact,
-      label: Text(status.replaceAll('_', ' ')),
+      label: Text(
+        status.isEmpty
+            ? status
+            : '${status[0].toUpperCase()}${status.substring(1).replaceAll('_', ' ')}',
+      ),
       backgroundColor: color.withValues(alpha: 0.16),
       side: BorderSide(color: color.withValues(alpha: 0.4)),
     );
@@ -443,25 +446,39 @@ class _ExpenseErpSummary extends StatelessWidget {
       children: [
         Text('Finance', style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 8),
-        if (request.erpClaimNumber != null)
+        if (request.selectedApproverName != null)
           ListTile(
             contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.account_balance_outlined),
-            title: const Text('ERP claim'),
+            leading: const Icon(Icons.approval_outlined),
+            title: const Text('Expense approver'),
+            subtitle: Text(request.selectedApproverName!),
+          ),
+        if (request.recipientBankName != null)
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.account_balance_wallet_outlined),
+            title: const Text('Payment destination'),
             subtitle: Text(
               [
-                request.erpClaimNumber!,
-                if (request.erpClaimStatus != null)
-                  request.erpClaimStatus!.replaceAll('_', ' '),
+                if (request.verifiedBeneficiaryName != null)
+                  request.verifiedBeneficiaryName!,
+                request.recipientBankName!,
+                if (request.maskedAccountNumber != null)
+                  request.maskedAccountNumber!,
               ].join(' · '),
             ),
           ),
-        if (request.erpSyncStatus != null)
+        if (request.paymentStatus != null)
           ListTile(
             contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.sync_outlined),
-            title: const Text('ERP sync'),
-            subtitle: Text(_expenseErpSyncLabel(request.erpSyncStatus!)),
+            leading: const Icon(Icons.payments_outlined),
+            title: const Text('Payment'),
+            subtitle: Text(_expensePaymentLabel(request.paymentStatus!)),
+          ),
+        if (request.paymentError != null)
+          Text(
+            request.paymentError!,
+            style: TextStyle(color: Theme.of(context).colorScheme.error),
           ),
         if ({
               'dead',
@@ -479,14 +496,14 @@ class _ExpenseErpSummary extends StatelessWidget {
   }
 }
 
-String _expenseErpSyncLabel(String status) => switch (status) {
-  'pending' => 'Waiting to send',
-  'sent' => 'Sent; waiting for ERP confirmation',
-  'accepted' => 'Synced',
-  'rejected' => 'Rejected by ERP',
-  'dead' => 'Failed; needs attention',
-  'not_configured' => 'ERP delivery is not configured',
-  'not_queued' => 'Not queued; needs attention',
+String _expensePaymentLabel(String status) => switch (status) {
+  'queued' => 'Queued securely for ERP processing',
+  'pending' => 'Prepared; awaiting transfer initiation',
+  'processing' => 'Transfer is processing',
+  'completed' => 'Transfer completed',
+  'failed' => 'Transfer failed; a manager may retry',
+  'indeterminate' => 'Transfer outcome is unknown; do not retry',
+  'delivery_failed' => 'Payment command could not reach ERP',
   _ => status.replaceAll('_', ' '),
 };
 
@@ -565,6 +582,7 @@ class _VendorField extends StatelessWidget {
     return DropdownButtonFormField<String>(
       key: const Key('expense-vendor'),
       initialValue: selected,
+      isExpanded: true,
       decoration: const InputDecoration(labelText: 'Vendor'),
       items: [
         for (final vendor in values)
@@ -601,53 +619,61 @@ class _NewExpenseRequestScreenState
     extends ConsumerState<NewExpenseRequestScreen> {
   final _purpose = TextEditingController();
   final _notes = TextEditingController();
-  final _workOrderId = TextEditingController();
   final _projectId = TextEditingController();
   final _ticketId = TextEditingController();
-  final _categoryCode = TextEditingController();
   final _description = TextEditingController();
   final _amount = TextEditingController();
   final _vendor = TextEditingController();
   final _receiptUrl = TextEditingController();
+  final _accountNumber = TextEditingController();
+  final _beneficiaryName = TextEditingController();
+  final _approverFieldKey = GlobalKey();
+  final String _clientRef = const Uuid().v4();
+  String _workOrderId = '';
   DateTime _expenseDate = DateTime.now();
   ExpenseCategory? _selectedCategory;
+  ExpenseApprover? _selectedApprover;
+  ExpenseBank? _selectedBank;
+  ExpensePaymentMode _destinationMode = ExpensePaymentMode.erpProfile;
   final _items = <ExpenseItemDraft>[];
   bool _saving = false;
   bool _receiptUploading = false;
   String _receiptFileName = '';
+  String? _receiptAttachmentId;
   String _submitError = '';
+  String _approverError = '';
   String _lineError = '';
 
   @override
   void initState() {
     super.initState();
-    _workOrderId.text = widget.initialWorkOrderId ?? '';
+    _workOrderId = widget.initialWorkOrderId ?? '';
     _projectId.text = widget.initialProjectId ?? '';
     _ticketId.text = widget.initialTicketId ?? '';
     Future.microtask(_loadDraft);
+    Future.microtask(_syncDestinationMode);
   }
 
   @override
   void dispose() {
     _purpose.dispose();
     _notes.dispose();
-    _workOrderId.dispose();
     _projectId.dispose();
     _ticketId.dispose();
-    _categoryCode.dispose();
     _description.dispose();
     _amount.dispose();
     _vendor.dispose();
     _receiptUrl.dispose();
+    _accountNumber.dispose();
+    _beneficiaryName.dispose();
     super.dispose();
   }
 
   void _addLine() {
-    final categoryCode =
-        _selectedCategory?.categoryCode ?? _categoryCode.text.trim();
+    final category = _selectedCategory;
     final description = _description.text.trim();
     final amount = double.tryParse(_amount.text.trim()) ?? 0;
-    if (categoryCode.isEmpty) {
+    if (category == null) {
       setState(() => _lineError = 'Pick an expense category.');
       return;
     }
@@ -659,41 +685,42 @@ class _NewExpenseRequestScreenState
       setState(() => _lineError = 'Enter an amount greater than zero.');
       return;
     }
-    final maxAmount = _selectedCategory?.maxAmountPerClaim;
+    final maxAmount = category.maxAmountPerClaim;
     if (maxAmount != null && amount > maxAmount) {
       setState(
         () => _lineError =
-            'Amount is above the ${_selectedCategory!.displayName} '
+            'Amount is above the ${category.displayName} '
             'limit of ${maxAmount.toStringAsFixed(2)}.',
       );
       return;
     }
-    if (_selectedCategory?.requiresReceipt == true &&
-        _receiptUrl.text.trim().isEmpty) {
+    if (category.requiresReceipt &&
+        _receiptUrl.text.trim().isEmpty &&
+        (_receiptAttachmentId == null || _receiptAttachmentId!.isEmpty)) {
       setState(
-        () => _lineError =
-            '${_selectedCategory!.displayName} requires a receipt.',
+        () => _lineError = '${category.displayName} requires a receipt.',
       );
       return;
     }
     setState(() {
       _items.add(
         ExpenseItemDraft(
-          categoryCode: categoryCode,
-          categoryName: _selectedCategory?.categoryName,
+          categoryCode: category.categoryCode,
+          categoryName: category.categoryName,
           description: description,
           amount: amount,
           vendorName: _vendor.text,
           receiptUrl: _receiptUrl.text,
+          receiptAttachmentId: _receiptAttachmentId,
         ),
       );
       _selectedCategory = null;
-      _categoryCode.clear();
       _description.clear();
       _amount.clear();
       _vendor.clear();
       _receiptUrl.clear();
       _receiptFileName = '';
+      _receiptAttachmentId = null;
       _lineError = '';
     });
   }
@@ -720,7 +747,7 @@ class _NewExpenseRequestScreenState
     setState(() {
       _purpose.text = draft['purpose'] as String? ?? '';
       _notes.text = draft['notes'] as String? ?? '';
-      _workOrderId.text =
+      _workOrderId =
           widget.initialWorkOrderId ?? draft['work_order_id'] as String? ?? '';
       _projectId.text =
           widget.initialProjectId ?? draft['project_id'] as String? ?? '';
@@ -746,10 +773,10 @@ class _NewExpenseRequestScreenState
             'purpose': _purpose.text,
             'expense_date': DateFormat('yyyy-MM-dd').format(_expenseDate),
             'notes': _notes.text,
-            'work_order_id': _workOrderId.text,
+            'work_order_id': _workOrderId,
             'project_id': _projectId.text,
             'ticket_id': _ticketId.text,
-            'items': _items.map(_expenseDraftItemJson).toList(),
+            'items': _items.map((item) => item.toDraftJson()).toList(),
           },
         );
     ref.invalidate(expenseRequestDraftsProvider);
@@ -759,11 +786,147 @@ class _NewExpenseRequestScreenState
     ).showSnackBar(const SnackBar(content: Text('Draft saved')));
   }
 
+  Future<void> _syncDestinationMode() async {
+    try {
+      final data = await ref.read(expenseFormContextProvider.future);
+      if (!mounted) return;
+      setState(() {
+        _destinationMode = data.profileDestination.available
+            ? ExpensePaymentMode.erpProfile
+            : ExpensePaymentMode.expenseOverride;
+      });
+    } catch (_) {
+      // The visible form-context error owns retry guidance.
+    }
+  }
+
+  void _retryFormContext() {
+    setState(() {
+      _selectedApprover = null;
+      _selectedBank = null;
+      _approverError = '';
+      _submitError = '';
+    });
+    ref.invalidate(expenseFormContextProvider);
+    unawaited(_syncDestinationMode());
+  }
+
+  void _retryCategories() {
+    setState(() {
+      _selectedCategory = null;
+      _lineError = '';
+      _submitError = '';
+    });
+    ref.invalidate(expenseCategoriesProvider);
+  }
+
+  void _showApproverError(String message) {
+    setState(() {
+      _approverError = message;
+      _submitError = message;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final fieldContext = _approverFieldKey.currentContext;
+      if (fieldContext == null) return;
+      unawaited(
+        Scrollable.ensureVisible(
+          fieldContext,
+          alignment: 0.2,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOutCubic,
+        ),
+      );
+    });
+  }
+
+  Widget _workOrderSelector(AsyncValue<JobList> workOrders) {
+    return workOrders.when(
+      data: (list) {
+        final seen = <String>{};
+        final jobs = [
+          for (final job in list.jobs)
+            if (job.id.trim().isNotEmpty && seen.add(job.id)) job,
+        ];
+        JobSummary? selected;
+        for (final job in jobs) {
+          if (job.id == _workOrderId) {
+            selected = job;
+            break;
+          }
+        }
+        final savedSelectionIsUnavailable =
+            _workOrderId.isNotEmpty && selected == null;
+        if (jobs.isEmpty) {
+          return _WorkOrderAvailability(
+            message: 'No assigned work orders are available.',
+            onRetry: () => ref.invalidate(allAssignedJobsProvider),
+          );
+        }
+        return Semantics(
+          button: true,
+          child: InkWell(
+            key: const Key('expense-work-order'),
+            borderRadius: BorderRadius.circular(12),
+            onTap: _saving
+                ? null
+                : () async {
+                    final picked = await showModalBottomSheet<JobSummary>(
+                      context: context,
+                      isScrollControlled: true,
+                      useSafeArea: true,
+                      builder: (context) => _WorkOrderPickerSheet(
+                        jobs: jobs,
+                        selectedId: selected?.id,
+                      ),
+                    );
+                    if (!mounted || picked == null) return;
+                    setState(() {
+                      _workOrderId = picked.id;
+                      _submitError = '';
+                    });
+                  },
+            child: InputDecorator(
+              isEmpty: false,
+              decoration: InputDecoration(
+                labelText: 'Work order',
+                helperText: selected == null
+                    ? list.fromCache
+                          ? 'Choose from your saved assigned work orders.'
+                          : 'Choose from your assigned work orders.'
+                    : '${selected.id} · ${selected.statusPresentation.label}',
+                errorText: savedSelectionIsUnavailable
+                    ? 'This saved work order is no longer assigned. Choose another.'
+                    : null,
+                suffixIcon: const Icon(Icons.unfold_more_rounded),
+              ),
+              child: Text(
+                selected?.title ?? 'Select a work order',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: selected == null
+                    ? TextStyle(color: Theme.of(context).hintColor)
+                    : null,
+              ),
+            ),
+          ),
+        );
+      },
+      loading: () => const _WorkOrderAvailability(
+        message: 'Loading assigned work orders…',
+        loading: true,
+      ),
+      error: (_, _) => _WorkOrderAvailability(
+        message: 'Could not load assigned work orders.',
+        onRetry: () => ref.invalidate(allAssignedJobsProvider),
+      ),
+    );
+  }
+
   Future<void> _pickReceipt(ImageSource source) async {
-    final workOrderId = _workOrderId.text.trim();
+    final workOrderId = _workOrderId.trim();
     if (workOrderId.isEmpty) {
       setState(
-        () => _lineError = 'Enter a work order ID before uploading a receipt.',
+        () => _lineError = 'Select a work order before uploading a receipt.',
       );
       return;
     }
@@ -777,7 +940,7 @@ class _NewExpenseRequestScreenState
       _lineError = '';
     });
     try {
-      final url = await ref
+      final upload = await ref
           .read(expensesRepositoryProvider)
           .uploadReceipt(
             workOrderId: workOrderId,
@@ -787,7 +950,8 @@ class _NewExpenseRequestScreenState
           );
       if (!mounted) return;
       setState(() {
-        _receiptUrl.text = url;
+        _receiptUrl.clear();
+        _receiptAttachmentId = upload.attachmentId;
         _receiptFileName = picked.name;
       });
     } on DioException catch (error) {
@@ -838,32 +1002,133 @@ class _NewExpenseRequestScreenState
       setState(() => _submitError = 'Purpose is required.');
       return;
     }
-    final clientRef = const Uuid().v4();
-    final payload = buildExpenseRequestPayload(
-      purpose: _purpose.text,
-      clientRef: clientRef,
-      expenseDate: DateFormat('yyyy-MM-dd').format(_expenseDate),
-      notes: _notes.text,
-      workOrderId: _workOrderId.text,
-      projectId: _projectId.text,
-      ticketId: _ticketId.text,
-      items: _items,
-    );
+    final workOrderId = _workOrderId.trim();
+    if (workOrderId.isEmpty) {
+      setState(() => _submitError = 'Select a work order.');
+      return;
+    }
+    if (widget.initialWorkOrderId == null) {
+      final assigned = ref.read(allAssignedJobsProvider).asData?.value.jobs;
+      if (assigned == null) {
+        setState(
+          () => _submitError = 'Wait for your assigned work orders to load.',
+        );
+        return;
+      }
+      if (!assigned.any((job) => job.id == workOrderId)) {
+        setState(
+          () => _submitError = 'Select one of your assigned work orders.',
+        );
+        return;
+      }
+    }
+    final formContext = ref.read(expenseFormContextProvider).asData?.value;
+    if (formContext == null) {
+      setState(
+        () => _submitError =
+            'Expense approvers and payment details are unavailable. Retry above.',
+      );
+      return;
+    }
+    if (formContext.approvers.isEmpty) {
+      setState(
+        () => _submitError =
+            'No eligible expense approvers are available for your account.',
+      );
+      return;
+    }
+    final selectedApprover = _selectedApprover;
+    if (selectedApprover == null) {
+      _showApproverError('Select an expense approver.');
+      return;
+    }
+    if (!formContext.approvers.any(
+      (approver) =>
+          approver.erpEmployeeId == selectedApprover.erpEmployeeId &&
+          approver.systemUserId == selectedApprover.systemUserId,
+    )) {
+      _showApproverError('This expense approver is no longer available.');
+      return;
+    }
+    final categories = ref.read(expenseCategoriesProvider).asData?.value;
+    if (categories == null || categories.isEmpty) {
+      setState(
+        () => _submitError =
+            'Expense categories are unavailable. Retry the category list above.',
+      );
+      return;
+    }
+    final categoryCodes = {
+      for (final category in categories) category.categoryCode,
+    };
+    if (_items.any((item) => !categoryCodes.contains(item.categoryCode))) {
+      setState(
+        () => _submitError =
+            'A saved expense uses a category that is no longer available. Remove it and add it again.',
+      );
+      return;
+    }
+    if (_destinationMode == ExpensePaymentMode.erpProfile &&
+        !formContext.profileDestination.available) {
+      setState(
+        () => _submitError =
+            'Your ERP payment profile is unavailable. Use different payment details.',
+      );
+      return;
+    }
+    if (_destinationMode == ExpensePaymentMode.expenseOverride &&
+        formContext.banks.isEmpty) {
+      setState(
+        () => _submitError =
+            'No banks are available for different payment details. Retry above.',
+      );
+      return;
+    }
+    if (_destinationMode == ExpensePaymentMode.expenseOverride) {
+      final accountNumber = _accountNumber.text.trim();
+      final accountName = _beneficiaryName.text.trim();
+      if (_selectedBank == null) {
+        setState(() => _submitError = 'Select a bank.');
+        return;
+      }
+      if (accountNumber.length < 6) {
+        setState(
+          () =>
+              _submitError = 'Enter an account number with at least 6 digits.',
+        );
+        return;
+      }
+      if (accountName.length < 2) {
+        setState(() => _submitError = 'Enter the account name.');
+        return;
+      }
+    }
     setState(() => _saving = true);
     try {
+      final verified = await ref
+          .read(expensesRepositoryProvider)
+          .verifyDestination(
+            sourceClaimId: _clientRef,
+            mode: _destinationMode,
+            bankCode: _selectedBank?.bankCode,
+            accountNumber: _accountNumber.text.trim(),
+            beneficiaryName: _beneficiaryName.text.trim(),
+          );
       final request = await ref
           .read(expensesRepositoryProvider)
-          .createRequest(
+          .submitRequest(
             purpose: _purpose.text,
-            clientRef: clientRef,
+            clientRef: _clientRef,
             expenseDate: DateFormat('yyyy-MM-dd').format(_expenseDate),
             notes: _notes.text,
-            workOrderId: _workOrderId.text,
+            workOrderId: workOrderId,
             projectId: _projectId.text,
             ticketId: _ticketId.text,
             items: _items,
+            selectedApprover: selectedApprover,
+            paymentDestination: verified,
           );
-      ref.invalidate(expenseRequestsProvider);
+      _invalidateExpenseProjections(ref);
       try {
         await ref.read(expenseRequestsProvider.future);
       } catch (_) {
@@ -880,27 +1145,12 @@ class _NewExpenseRequestScreenState
     } on DioException catch (error) {
       if (!mounted) return;
       if (error.response == null) {
-        await ref
-            .read(syncServiceProvider)
-            .enqueue(
-              kind: 'expense_request',
-              clientRef: clientRef,
-              payload: payload,
-            );
-        ref.invalidate(expenseRequestsProvider);
-        try {
-          await ref.read(expenseRequestsProvider.future);
-        } catch (_) {
-          // The queued request remains authoritative local history even if
-          // the remote list cannot be refreshed while offline.
-        }
-        await ref.read(draftStoreProvider).delete(expenseRequestDraftId);
-        ref.invalidate(expenseRequestDraftsProvider);
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Expense request queued for sync')),
-        );
-        context.go('/expenses');
+        const message =
+            'Connect to the internet to verify payment details and submit. You can save the non-sensitive draft.';
+        setState(() => _submitError = message);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text(message)));
         return;
       }
       final message = _expenseErrorMessage(
@@ -927,7 +1177,33 @@ class _NewExpenseRequestScreenState
   Widget build(BuildContext context) {
     final categories = ref.watch(expenseCategoriesProvider);
     final vendors = ref.watch(expenseVendorsProvider);
+    final formContext = ref.watch(expenseFormContextProvider);
+    final assignedWorkOrders = widget.initialWorkOrderId == null
+        ? ref.watch(allAssignedJobsProvider)
+        : null;
     final total = _items.fold<double>(0, (sum, item) => sum + item.amount);
+    final formContextData = formContext.asData?.value;
+    final categoriesData = categories.asData?.value;
+    final categoriesReady = categoriesData != null && categoriesData.isNotEmpty;
+    final currentCategoryCodes = {
+      for (final category in categoriesData ?? const <ExpenseCategory>[])
+        category.categoryCode,
+    };
+    final itemCategoriesValid =
+        categoriesReady &&
+        _items.every(
+          (item) => currentCategoryCodes.contains(item.categoryCode),
+        );
+    final paymentContextReady =
+        formContextData != null &&
+        (_destinationMode == ExpensePaymentMode.erpProfile
+            ? formContextData.profileDestination.available
+            : formContextData.banks.isNotEmpty);
+    final requiredServerDataReady =
+        formContextData != null &&
+        formContextData.approvers.isNotEmpty &&
+        paymentContextReady &&
+        categoriesReady;
     return Scaffold(
       appBar: AppBar(title: const Text('New expense request')),
       body: ListView(
@@ -961,10 +1237,7 @@ class _NewExpenseRequestScreenState
               decoration: const InputDecoration(labelText: 'Linked work order'),
             ),
           ] else ...[
-            TextField(
-              controller: _workOrderId,
-              decoration: const InputDecoration(labelText: 'Work order ID'),
-            ),
+            _workOrderSelector(assignedWorkOrders!),
           ],
           const SizedBox(height: 12),
           if (widget.initialProjectId != null)
@@ -987,20 +1260,215 @@ class _NewExpenseRequestScreenState
             maxLines: 3,
           ),
           const SizedBox(height: 24),
+          Card(
+            key: const Key('expense-approver-payment-card'),
+            margin: EdgeInsets.zero,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.account_balance_wallet_outlined,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Approver & payment',
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  formContext.when(
+                    loading: () => const _ExpenseDataAvailability(
+                      label: 'Approval and payment',
+                      message: 'Loading expense approvers and payment details…',
+                      loading: true,
+                    ),
+                    error: (_, _) => _ExpenseDataAvailability(
+                      label: 'Approval and payment',
+                      message:
+                          'Could not load expense approvers and payment details.',
+                      onRetry: _retryFormContext,
+                      retryKey: const Key('expense-form-context-retry'),
+                    ),
+                    data: (data) => Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (data.approvers.isEmpty)
+                          _ExpenseDataAvailability(
+                            label: 'Expense approver',
+                            message:
+                                'No eligible expense approvers are available. Ask an administrator to check the ERP approver and active user accounts.',
+                            onRetry: _retryFormContext,
+                            retryKey: const Key('expense-approver-retry'),
+                          )
+                        else
+                          Container(
+                            key: _approverFieldKey,
+                            child: DropdownButtonFormField<ExpenseApprover>(
+                              key: const Key('expense-approver'),
+                              initialValue: _selectedApprover,
+                              isExpanded: true,
+                              decoration: InputDecoration(
+                                labelText: 'Approver',
+                                helperText:
+                                    'Choose who will review this request.',
+                                errorText: _approverError.isEmpty
+                                    ? null
+                                    : _approverError,
+                              ),
+                              items: [
+                                for (final approver in data.approvers)
+                                  DropdownMenuItem(
+                                    value: approver,
+                                    child: Text(
+                                      approver.displayName,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                              ],
+                              onChanged: (value) => setState(() {
+                                _selectedApprover = value;
+                                _approverError = '';
+                                _submitError = '';
+                              }),
+                            ),
+                          ),
+                        if (!data.profileDestination.available &&
+                            data.banks.isEmpty)
+                          _ExpenseDataAvailability(
+                            label: 'Payment destination',
+                            message:
+                                'No payment destination is available. Ask an administrator to check your ERP bank profile and bank list.',
+                            onRetry: _retryFormContext,
+                            retryKey: const Key('expense-payment-retry'),
+                          )
+                        else ...[
+                          RadioListTile<ExpensePaymentMode>(
+                            key: const Key('expense-payment-erp'),
+                            value: ExpensePaymentMode.erpProfile,
+                            contentPadding: EdgeInsets.zero,
+                            // ignore: deprecated_member_use
+                            groupValue: _destinationMode,
+                            // ignore: deprecated_member_use
+                            onChanged: data.profileDestination.available
+                                ? (value) => setState(() {
+                                    _destinationMode = value!;
+                                    _submitError = '';
+                                  })
+                                : null,
+                            title: const Text('Use ERP payment details'),
+                            subtitle: Text(
+                              data.profileDestination.available
+                                  ? '${data.profileDestination.beneficiaryName} · ${data.profileDestination.bankName} · ${data.profileDestination.maskedAccountNumber}'
+                                  : 'ERP bank profile is incomplete.',
+                            ),
+                          ),
+                          if (data.banks.isNotEmpty)
+                            RadioListTile<ExpensePaymentMode>(
+                              key: const Key('expense-payment-custom'),
+                              value: ExpensePaymentMode.expenseOverride,
+                              contentPadding: EdgeInsets.zero,
+                              // ignore: deprecated_member_use
+                              groupValue: _destinationMode,
+                              // ignore: deprecated_member_use
+                              onChanged: (value) => setState(() {
+                                _destinationMode = value!;
+                                _submitError = '';
+                              }),
+                              title: const Text('Input custom payment details'),
+                              subtitle: const Text(
+                                'These details apply only to this expense.',
+                              ),
+                            ),
+                        ],
+                        if (_destinationMode ==
+                                ExpensePaymentMode.expenseOverride &&
+                            data.banks.isNotEmpty) ...[
+                          DropdownButtonFormField<ExpenseBank>(
+                            key: const Key('expense-bank'),
+                            initialValue: _selectedBank,
+                            isExpanded: true,
+                            decoration: const InputDecoration(
+                              labelText: 'Bank name',
+                            ),
+                            items: [
+                              for (final bank in data.banks)
+                                DropdownMenuItem(
+                                  value: bank,
+                                  child: Text(
+                                    bank.bankName,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                            ],
+                            onChanged: (value) => setState(() {
+                              _selectedBank = value;
+                              _submitError = '';
+                            }),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            key: const Key('expense-account-number'),
+                            controller: _accountNumber,
+                            keyboardType: TextInputType.number,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                              LengthLimitingTextInputFormatter(30),
+                            ],
+                            autofillHints: const [],
+                            onChanged: (_) => setState(() => _submitError = ''),
+                            decoration: const InputDecoration(
+                              labelText: 'Account number',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            key: const Key('expense-beneficiary-name'),
+                            controller: _beneficiaryName,
+                            inputFormatters: [
+                              LengthLimitingTextInputFormatter(150),
+                            ],
+                            onChanged: (_) => setState(() => _submitError = ''),
+                            decoration: const InputDecoration(
+                              labelText: 'Account name',
+                              helperText:
+                                  'ERP will verify these details when you submit.',
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
           Text('Add expenses', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 8),
           categories.when(
             data: (items) => items.isEmpty
-                ? TextField(
-                    key: const Key('expense-category-code'),
-                    controller: _categoryCode,
-                    decoration: const InputDecoration(
-                      labelText: 'Category code',
-                    ),
+                ? _ExpenseDataAvailability(
+                    label: 'Expense category',
+                    message:
+                        'No expense categories are available. Ask an administrator to check the ERP category list.',
+                    onRetry: _retryCategories,
+                    retryKey: const Key('expense-category-retry'),
                   )
                 : DropdownButtonFormField<ExpenseCategory>(
                     key: const Key('expense-category'),
                     initialValue: _selectedCategory,
+                    isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Category'),
                     items: [
                       for (final category in items)
@@ -1013,14 +1481,21 @@ class _NewExpenseRequestScreenState
                           ),
                         ),
                     ],
-                    onChanged: (value) =>
-                        setState(() => _selectedCategory = value),
+                    onChanged: (value) => setState(() {
+                      _selectedCategory = value;
+                      _lineError = '';
+                    }),
                   ),
-            loading: () => const LinearProgressIndicator(),
-            error: (_, _) => TextField(
-              key: const Key('expense-category-code'),
-              controller: _categoryCode,
-              decoration: const InputDecoration(labelText: 'Category code'),
+            loading: () => const _ExpenseDataAvailability(
+              label: 'Expense category',
+              message: 'Loading expense categories…',
+              loading: true,
+            ),
+            error: (_, _) => _ExpenseDataAvailability(
+              label: 'Expense category',
+              message: 'Could not load expense categories.',
+              onRetry: _retryCategories,
+              retryKey: const Key('expense-category-retry'),
             ),
           ),
           const SizedBox(height: 12),
@@ -1073,6 +1548,13 @@ class _NewExpenseRequestScreenState
                 child: TextField(
                   key: const Key('expense-receipt-url'),
                   controller: _receiptUrl,
+                  onChanged: (_) {
+                    if (_receiptAttachmentId == null) return;
+                    setState(() {
+                      _receiptAttachmentId = null;
+                      _receiptFileName = '';
+                    });
+                  },
                   decoration: InputDecoration(
                     labelText: _selectedCategory?.requiresReceipt == true
                         ? 'Receipt URL required'
@@ -1108,7 +1590,7 @@ class _NewExpenseRequestScreenState
           const SizedBox(height: 8),
           OutlinedButton.icon(
             key: const Key('add-expense-line'),
-            onPressed: _addLine,
+            onPressed: categoriesReady ? _addLine : null,
             icon: const Icon(Icons.add),
             label: const Text('Add expense'),
           ),
@@ -1137,8 +1619,12 @@ class _NewExpenseRequestScreenState
                             if (item.vendorName != null &&
                                 item.vendorName!.trim().isNotEmpty)
                               item.vendorName!.trim(),
-                            if (item.receiptUrl != null &&
-                                item.receiptUrl!.trim().isNotEmpty)
+                            if ((item.receiptUrl != null &&
+                                    item.receiptUrl!.trim().isNotEmpty) ||
+                                (item.receiptAttachmentId != null &&
+                                    item.receiptAttachmentId!
+                                        .trim()
+                                        .isNotEmpty))
                               'receipt attached',
                           ].join(' · '),
                           maxLines: 2,
@@ -1176,6 +1662,13 @@ class _NewExpenseRequestScreenState
                 ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
               ),
             ),
+          if (_items.isNotEmpty && categoriesReady && !itemCategoriesValid) ...[
+            const SizedBox(height: 12),
+            Text(
+              'A saved expense uses a category that is no longer available. Remove it and add it again.',
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+          ],
           if (_submitError.isNotEmpty) ...[
             const SizedBox(height: 12),
             Text(
@@ -1194,12 +1687,20 @@ class _NewExpenseRequestScreenState
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               PrimaryActionButton(
-                onPressed: _items.isEmpty || _saving ? null : _submit,
+                key: const Key('submit-expense-request'),
+                onPressed:
+                    _items.isEmpty ||
+                        _saving ||
+                        !requiredServerDataReady ||
+                        !itemCategoriesValid
+                    ? null
+                    : _submit,
                 icon: Icons.check_rounded,
                 label: _saving ? 'Submitting…' : 'Submit request',
               ),
               const SizedBox(height: 8),
               OutlinedButton.icon(
+                key: const Key('save-expense-draft'),
                 onPressed: _saving ? null : _saveDraft,
                 icon: const Icon(Icons.save_outlined),
                 label: const Text('Save draft'),
@@ -1210,6 +1711,240 @@ class _NewExpenseRequestScreenState
       ),
     );
   }
+}
+
+class _ExpenseDataAvailability extends StatelessWidget {
+  const _ExpenseDataAvailability({
+    required this.label,
+    required this.message,
+    this.loading = false,
+    this.onRetry,
+    this.retryKey,
+  });
+
+  final String label;
+  final String message;
+  final bool loading;
+  final VoidCallback? onRetry;
+  final Key? retryKey;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      container: true,
+      liveRegion: !loading,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InputDecorator(
+            isEmpty: true,
+            decoration: InputDecoration(labelText: label),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    message,
+                    style: TextStyle(color: Theme.of(context).hintColor),
+                  ),
+                ),
+                if (loading) ...[
+                  const SizedBox(width: 12),
+                  const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          if (onRetry != null)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                key: retryKey,
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Retry'),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _WorkOrderAvailability extends StatelessWidget {
+  const _WorkOrderAvailability({
+    required this.message,
+    this.loading = false,
+    this.onRetry,
+  });
+
+  final String message;
+  final bool loading;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        InputDecorator(
+          isEmpty: false,
+          decoration: const InputDecoration(labelText: 'Work order'),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  message,
+                  style: TextStyle(color: Theme.of(context).hintColor),
+                ),
+              ),
+              if (loading) ...[
+                const SizedBox(width: 12),
+                const SizedBox.square(
+                  dimension: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ],
+            ],
+          ),
+        ),
+        if (onRetry != null)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Retry'),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _WorkOrderPickerSheet extends StatefulWidget {
+  const _WorkOrderPickerSheet({required this.jobs, this.selectedId});
+
+  final List<JobSummary> jobs;
+  final String? selectedId;
+
+  @override
+  State<_WorkOrderPickerSheet> createState() => _WorkOrderPickerSheetState();
+}
+
+class _WorkOrderPickerSheetState extends State<_WorkOrderPickerSheet> {
+  final _search = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final query = _query.trim().toLowerCase();
+    final matches = query.isEmpty
+        ? widget.jobs
+        : widget.jobs
+              .where(
+                (job) =>
+                    job.title.toLowerCase().contains(query) ||
+                    job.id.toLowerCase().contains(query) ||
+                    job.statusPresentation.label.toLowerCase().contains(query),
+              )
+              .toList();
+    final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+    return AnimatedPadding(
+      duration: const Duration(milliseconds: 180),
+      padding: EdgeInsets.only(bottom: bottomInset),
+      child: FractionallySizedBox(
+        heightFactor: 0.82,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Select work order',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Close',
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                key: const Key('expense-work-order-search'),
+                controller: _search,
+                autofocus: false,
+                textInputAction: TextInputAction.search,
+                decoration: const InputDecoration(
+                  labelText: 'Search assigned work orders',
+                  prefixIcon: Icon(Icons.search_rounded),
+                ),
+                onChanged: (value) => setState(() => _query = value),
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: matches.isEmpty
+                    ? const Center(
+                        child: Text('No matching work orders found.'),
+                      )
+                    : ListView.separated(
+                        itemCount: matches.length,
+                        separatorBuilder: (_, _) => const Divider(height: 1),
+                        itemBuilder: (context, index) {
+                          final job = matches[index];
+                          final selected = job.id == widget.selectedId;
+                          return ListTile(
+                            key: Key('expense-work-order-option-${job.id}'),
+                            selected: selected,
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            title: Text(
+                              job.title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            subtitle: Text(
+                              '${job.id} · ${job.statusPresentation.label}',
+                            ),
+                            trailing: selected
+                                ? const Icon(Icons.check_rounded)
+                                : null,
+                            onTap: () => Navigator.of(context).pop(job),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+void _invalidateExpenseProjections(WidgetRef ref) {
+  ref
+    ..invalidate(expenseRequestsProvider)
+    ..invalidate(managerExpensesProvider)
+    ..invalidate(managerSummaryProvider);
 }
 
 String _money(String? currency, double value) =>
@@ -1231,6 +1966,12 @@ String _expenseErrorMessage(DioException error, String fallback) {
   if (data is Map) {
     final detail = data['detail'];
     if (detail is String && detail.trim().isNotEmpty) return detail.trim();
+    if (detail is Map) {
+      final message = detail['message'];
+      if (message is String && message.trim().isNotEmpty) {
+        return message.trim();
+      }
+    }
     if (detail is List && detail.isNotEmpty) {
       return detail
           .map((item) {
@@ -1325,34 +2066,9 @@ class _StatusStep {
   final bool error;
 }
 
-Map<String, dynamic> _expenseDraftItemJson(ExpenseItemDraft item) => {
-  'category_code': item.categoryCode,
-  'category_name': item.categoryName,
-  'description': item.description,
-  'amount': item.amount,
-  'expense_date': item.expenseDate,
-  'vendor_name': item.vendorName,
-  'receipt_url': item.receiptUrl,
-  'notes': item.notes,
-};
-
 List<ExpenseItemDraft> _expenseDraftItems(Object? raw) {
   if (raw is! List) return const [];
   return raw.whereType<Map>().map((item) {
-    final data = item.cast<String, dynamic>();
-    return ExpenseItemDraft(
-      categoryCode: data['category_code'] as String? ?? '',
-      categoryName: data['category_name'] as String?,
-      description: data['description'] as String? ?? '',
-      amount: switch (data['amount']) {
-        num value => value.toDouble(),
-        String value => double.tryParse(value) ?? 0,
-        _ => 0,
-      },
-      expenseDate: data['expense_date'] as String?,
-      vendorName: data['vendor_name'] as String?,
-      receiptUrl: data['receipt_url'] as String?,
-      notes: data['notes'] as String?,
-    );
+    return ExpenseItemDraft.fromDraftJson(item.cast<String, dynamic>());
   }).toList();
 }

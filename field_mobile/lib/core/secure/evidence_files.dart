@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:path/path.dart' as p;
 
 import 'evidence_cipher.dart';
+import 'store_work_gate.dart';
 
 /// The authenticated-data context an envelope is bound to.
 ///
@@ -13,19 +14,6 @@ import 'evidence_cipher.dart';
 /// key, which is what stops one principal's envelope opening under another's.
 String evidenceContext(String scopeKey, String purpose, String reference) =>
     '$scopeKey/$purpose/$reference';
-
-/// Raised when a write arrives after the store it belongs to has been wiped.
-///
-/// A logout that lands while a photo is being written must not leave that photo
-/// behind, and must not recreate the directory tree the wipe just destroyed.
-class StoreDiscarded implements Exception {
-  const StoreDiscarded(this.reason);
-
-  final String reason;
-
-  @override
-  String toString() => 'StoreDiscarded: $reason';
-}
 
 /// Scope-bound, encrypted storage for evidence files: photos, signatures and
 /// the queued location payloads.
@@ -40,11 +28,13 @@ class EvidenceFiles {
     required this.directory,
     required this.cipher,
     required this.scopeKey,
+    required this.work,
   });
 
   final Directory directory;
   final EvidenceCipher cipher;
   final String scopeKey;
+  final StoreWorkGate work;
 
   bool _discarded = false;
 
@@ -63,7 +53,7 @@ class EvidenceFiles {
     List<int> plaintext, {
     required String purpose,
     required String reference,
-  }) async {
+  }) => work.run(() async {
     _refuse('write $purpose');
     await directory.create(recursive: true);
     if (_discarded) {
@@ -85,19 +75,19 @@ class EvidenceFiles {
     }
     await temporary.rename(target.path);
     return target;
-  }
+  });
 
   Future<Uint8List> read(
     File file, {
     required String purpose,
     required String reference,
-  }) async {
+  }) => work.run(() async {
     _refuse('read $purpose');
     final envelope = await file.readAsBytes();
     return cipher.open(envelope, context: contextFor(purpose, reference));
-  }
+  });
 
-  Future<void> delete(File file) async {
+  Future<void> delete(File file) => work.run(() async {
     if (await file.exists()) {
       try {
         await file.delete();
@@ -105,7 +95,7 @@ class EvidenceFiles {
         // Cleanup is best effort; the row that pointed here is already gone.
       }
     }
-  }
+  });
 
   void _refuse(String action) {
     if (_discarded) throw StoreDiscarded('$action after wipe');

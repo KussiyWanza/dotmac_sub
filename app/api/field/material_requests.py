@@ -7,7 +7,9 @@ from app.api.deps import get_db
 from app.api.field.work_order_compat import resolve_work_order_id
 from app.schemas.common import ListResponse
 from app.schemas.field import (
+    FieldMaterialRequestCancel,
     FieldMaterialRequestCreate,
+    FieldMaterialRequestItemRead,
     FieldMaterialRequestRead,
     FieldMaterialRequestSubmit,
 )
@@ -18,8 +20,16 @@ from app.services.field.material_requests import (
     MaterialRequestError,
     MaterialRequestLineInput,
     MaterialRequestPriority,
+    MaterialRequestStatus,
+    MaterialRequestView,
+    RequesterMaterialRequestDetailQuery,
+    RequesterMaterialRequestHistoryQuery,
+    ReviewMaterialRequest,
+    cancel_material_request,
     create_staff_material_request,
     field_material_requests,
+    get_requester_material_request,
+    list_requester_material_requests,
 )
 from app.services.owner_commands import CommandContext
 
@@ -38,40 +48,66 @@ def _context(auth: dict, request_id: UUID) -> CommandContext:
     )
 
 
-def _material_outcome(outcome) -> dict:
-    return {
-        "id": outcome.id,
-        "work_order_id": outcome.work_order_public_id,
-        "crm_material_request_id": None,
-        "requested_by_person_id": outcome.requested_by_person_id,
-        "requested_by_system_user_id": outcome.requested_by_system_user_id,
-        "status": outcome.status,
-        "priority": outcome.priority,
-        "notes": outcome.notes,
-        "source_warehouse_code": outcome.source_warehouse_code,
-        "support_system": outcome.support_system,
-        "support_reference": outcome.support_reference,
-        "support_status": outcome.support_status,
-        "submitted_at": outcome.submitted_at,
-        "approved_at": outcome.approved_at,
-        "rejected_at": outcome.rejected_at,
-        "fulfilled_at": outcome.fulfilled_at,
-        "created_at": outcome.created_at,
-        "updated_at": outcome.updated_at,
-        "items": [
-            {
-                "id": item.id,
-                "item_id": item.item_id,
-                "sku": item.sku,
-                "name": item.name,
-                "unit": item.unit,
-                "quantity": item.quantity,
-                "notes": item.notes,
-                "serial_numbers": list(item.serial_numbers),
-            }
+def _material_outcome(outcome: MaterialRequestView) -> FieldMaterialRequestRead:
+    return FieldMaterialRequestRead(
+        id=outcome.id,
+        work_order_id=outcome.work_order_public_id,
+        project_id=outcome.project_id,
+        project_task_id=outcome.project_task_id,
+        ticket_id=outcome.ticket_id,
+        context_label=outcome.context_label,
+        requested_by_person_id=outcome.requested_by_person_id,
+        requested_by_system_user_id=outcome.requested_by_system_user_id,
+        status=outcome.status.value,
+        priority=outcome.priority.value,
+        notes=outcome.notes,
+        source_warehouse_code=outcome.source_warehouse_code,
+        fulfillment_channel=outcome.fulfillment_channel.value,
+        support_system=outcome.support_system,
+        support_reference=outcome.support_reference,
+        support_status=outcome.support_status,
+        can_cancel=outcome.can_cancel,
+        submitted_at=outcome.submitted_at,
+        approved_at=outcome.approved_at,
+        rejected_at=outcome.rejected_at,
+        issued_at=outcome.issued_at,
+        fulfilled_at=outcome.fulfilled_at,
+        created_at=outcome.created_at,
+        updated_at=outcome.updated_at,
+        rejection_reason=outcome.rejection_reason,
+        items=[
+            FieldMaterialRequestItemRead(
+                id=item.id,
+                item_id=item.item_id,
+                sku=item.sku,
+                name=item.name,
+                unit=item.unit,
+                quantity=item.quantity,
+                notes=item.notes,
+                serial_numbers=list(item.serial_numbers),
+            )
             for item in outcome.items
         ],
-    }
+    )
+
+
+def _history_status(value: str | None) -> MaterialRequestStatus | None:
+    if value is None:
+        return None
+    try:
+        return MaterialRequestStatus(value.strip().lower())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid material status") from exc
+
+
+def _map_material_error(exc: MaterialRequestError) -> HTTPException:
+    status_code = 404 if exc.code.endswith(("not_found", "requester_required")) else 409
+    if exc.code.endswith("invalid_request"):
+        status_code = 422
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": exc.code, "message": exc.message, "details": exc.details},
+    )
 
 
 @router.get("", response_model=ListResponse[FieldMaterialRequestRead])
@@ -87,15 +123,25 @@ def list_field_material_requests(
     resolved_work_order_id = resolve_work_order_id(
         work_order_id=work_order_id, crm_work_order_id=crm_work_order_id
     )
-    items = field_material_requests.list_mine(
-        db,
-        auth,
-        crm_work_order_id=resolved_work_order_id,
-        status=status_filter,
-        limit=limit,
-        offset=offset,
+    try:
+        page = list_requester_material_requests(
+            db,
+            RequesterMaterialRequestHistoryQuery(
+                system_user_id=UUID(str(auth["principal_id"])),
+                work_order_public_id=resolved_work_order_id,
+                status=_history_status(status_filter),
+                limit=limit,
+                offset=offset,
+            ),
+        )
+    except MaterialRequestError as exc:
+        raise _map_material_error(exc) from exc
+    return ListResponse[FieldMaterialRequestRead](
+        items=[_material_outcome(item) for item in page.items],
+        count=page.total,
+        limit=page.limit,
+        offset=page.offset,
     )
-    return {"items": items, "count": len(items), "limit": limit, "offset": offset}
 
 
 @router.post(
@@ -156,23 +202,27 @@ def create_and_submit_field_material_request(
             ),
         )
     except MaterialRequestError as exc:
-        status_code = 404 if exc.code.endswith("not_found") else 409
-        if exc.code.endswith("invalid_request"):
-            status_code = 422
-        raise HTTPException(
-            status_code=status_code,
-            detail={"code": exc.code, "message": exc.message, "details": exc.details},
-        ) from exc
+        raise _map_material_error(exc) from exc
     return _material_outcome(outcome)
 
 
 @router.get("/{material_request_id}", response_model=FieldMaterialRequestRead)
 def get_field_material_request(
-    material_request_id: str,
+    material_request_id: UUID,
     auth: dict = Depends(require_user_auth),
     db: Session = Depends(get_db),
 ):
-    return field_material_requests.get(db, auth, material_request_id)
+    try:
+        outcome = get_requester_material_request(
+            db,
+            RequesterMaterialRequestDetailQuery(
+                system_user_id=UUID(str(auth["principal_id"])),
+                request_id=material_request_id,
+            ),
+        )
+    except MaterialRequestError as exc:
+        raise _map_material_error(exc) from exc
+    return _material_outcome(outcome)
 
 
 @router.post("/{material_request_id}/submit", response_model=FieldMaterialRequestRead)
@@ -182,3 +232,42 @@ def submit_field_material_request(
     db: Session = Depends(get_db),
 ):
     return field_material_requests.submit(db, auth, material_request_id)
+
+
+@router.post("/{material_request_id}/cancel", response_model=FieldMaterialRequestRead)
+def cancel_field_material_request(
+    material_request_id: UUID,
+    payload: FieldMaterialRequestCancel,
+    auth: dict = Depends(require_user_auth),
+    db: Session = Depends(get_db),
+):
+    try:
+        db_session_adapter.release_read_transaction(db)
+        outcome = cancel_material_request(
+            db,
+            ReviewMaterialRequest(
+                context=CommandContext(
+                    command_id=payload.client_ref,
+                    correlation_id=payload.client_ref,
+                    actor=f"user:{auth['principal_id']}",
+                    scope="field:material_requests:write",
+                    reason="field_material_request_cancellation",
+                    idempotency_key=str(payload.client_ref),
+                ),
+                request_id=material_request_id,
+                reason=payload.reason,
+                requester_person_id=UUID(
+                    str(auth.get("person_id") or auth["principal_id"])
+                ),
+                requester_system_user_id=UUID(str(auth["principal_id"])),
+            ),
+        )
+    except MaterialRequestError as exc:
+        status_code = 404 if exc.code.endswith("not_found") else 409
+        if exc.code.endswith("invalid_request"):
+            status_code = 422
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": exc.message, "details": exc.details},
+        ) from exc
+    return _material_outcome(outcome)

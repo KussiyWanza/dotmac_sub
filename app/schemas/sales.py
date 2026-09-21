@@ -227,10 +227,10 @@ class LeadRead(LeadBase):
 
 
 class QuoteBase(BaseModel):
-    """Lead-backed commercial offer; Subscriber is attached on acceptance."""
+    """Commercial offer backed by at least one Lead or Subscriber."""
 
     subscriber_id: UUID | None = None
-    lead_id: UUID
+    lead_id: UUID | None = None
     # Staff person UUID carried verbatim — staff map for display.
     owner_person_id: UUID | None = None
     status: QuoteStatus = QuoteStatus.draft

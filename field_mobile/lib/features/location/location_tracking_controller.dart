@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../attendance/attendance_models.dart';
+import '../attendance/attendance_repository.dart';
 import '../jobs/jobs_providers.dart';
 import 'location_cadence.dart';
 import 'location_ping_service.dart';
@@ -96,25 +98,47 @@ class _LocationTrackingHostState extends ConsumerState<LocationTrackingHost>
   @override
   Widget build(BuildContext context) {
     final shift = ref.watch(fieldShiftProvider);
-    final workOrderId = _activeWorkOrderId(ref.watch(jobsListProvider).value);
-    if (shift != _lastShift || workOrderId != _lastWorkOrderId) {
-      final shiftChanged = shift != _lastShift;
-      _lastShift = shift;
+    final attendance = ref.watch(attendanceControllerProvider).asData?.value;
+    final effectiveShift = attendance?.isCheckedIn == true
+        ? shift
+        : ShiftState.offShift;
+    if (attendance != null &&
+        !attendance.isCheckedIn &&
+        shift != ShiftState.offShift) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (!mounted) return;
+        ref.read(fieldShiftProvider.notifier).state = ShiftState.offShift;
+        final service = ref.read(locationPingServiceProvider);
+        service.setShift(ShiftState.offShift);
+        await service.updateShift(ShiftState.offShift);
+      });
+    }
+    final jobs = ref.watch(jobsListProvider);
+    final workOrderId = jobs.when(
+      data: _activeWorkOrderId,
+      loading: () => _lastWorkOrderId,
+      error: (_, _) => _lastWorkOrderId,
+    );
+    if (effectiveShift != _lastShift || workOrderId != _lastWorkOrderId) {
+      final shiftChanged = effectiveShift != _lastShift;
+      _lastShift = effectiveShift;
       _lastWorkOrderId = workOrderId;
       final service = ref.read(locationPingServiceProvider);
       _service = service;
-      service.setShift(shift);
+      service.setShift(effectiveShift);
       service.setActiveWorkOrder(workOrderId);
       // Native background stream keeps fixes flowing when backgrounded; the
       // foreground timer below still covers the stationary heartbeat in-app.
-      if (shift == ShiftState.onShift) {
+      if (effectiveShift == ShiftState.onShift) {
         service.startBackgroundTracking(workOrderId: workOrderId);
       } else {
         service.stopBackgroundTracking();
       }
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
-          _scheduleNext(immediate: shiftChanged && shift == ShiftState.onShift);
+          _scheduleNext(
+            immediate: shiftChanged && effectiveShift == ShiftState.onShift,
+          );
         }
       });
     }
@@ -134,23 +158,112 @@ class _LocationSharingControlsState
     extends ConsumerState<LocationSharingControls> {
   bool _updating = false;
 
-  Future<void> _setShift(ShiftState shift) async {
-    setState(() => _updating = true);
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _remindForLocation());
+  }
+
+  Future<void> _remindForLocation() async {
+    if (ref.read(locationReminderShownProvider)) return;
+    ref.read(locationReminderShownProvider.notifier).state = true;
+    final source = ref.read(attendanceLocationSourceProvider);
+    if (await source.isReady() || !mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Enable location'),
+        content: const Text(
+          'Location must be turned on and allowed before you can check in and share your location.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              Navigator.of(dialogContext).pop();
+              await source.requestAccess();
+            },
+            child: const Text('Enable location'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<bool> _setShift(ShiftState shift) async {
     final ok = await ref.read(locationPingServiceProvider).updateShift(shift);
-    if (!mounted) return;
-    if (ok) {
-      ref.read(fieldShiftProvider.notifier).state = shift;
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not update location sharing')),
-      );
+    if (!mounted) return false;
+    if (ok) ref.read(fieldShiftProvider.notifier).state = shift;
+    return ok;
+  }
+
+  Future<void> _select(_LocationCardAction action) async {
+    setState(() => _updating = true);
+    String? message;
+    try {
+      switch (action) {
+        case _LocationCardAction.checkIn:
+          final attendance = await ref
+              .read(attendanceControllerProvider.notifier)
+              .punch(AttendanceAction.checkIn);
+          if (attendance.state == AttendanceState.checkedIn) {
+            final started = await _setShift(ShiftState.onShift);
+            message = started
+                ? 'Checked in. You are on shift and sharing your location.'
+                : 'Checked in, but location sharing could not start. Tap On shift to retry.';
+          } else {
+            message = attendance.reason;
+          }
+          break;
+        case _LocationCardAction.onShift:
+          if (!await _setShift(ShiftState.onShift)) {
+            await ref.read(attendanceControllerProvider.notifier).refresh();
+            message =
+                'Could not start location sharing. Confirm that you are checked in.';
+          }
+          break;
+        case _LocationCardAction.checkOut:
+          final attendance = await ref
+              .read(attendanceControllerProvider.notifier)
+              .punch(AttendanceAction.checkOut);
+          if (attendance.state == AttendanceState.checkedOut) {
+            // Stop capture immediately, then reconcile the server presence.
+            ref.read(fieldShiftProvider.notifier).state = ShiftState.offShift;
+            ref.read(locationPingServiceProvider).setShift(ShiftState.offShift);
+            final stopped = await _setShift(ShiftState.offShift);
+            message = stopped
+                ? 'Checked out. Location sharing is off.'
+                : 'Checked out. Tracking stopped on this device; server sync will retry.';
+          }
+          break;
+      }
+    } on AttendanceFailure catch (error) {
+      message = error.message;
+    } catch (_) {
+      message = 'Attendance is temporarily unavailable. Please try again.';
     }
+    if (!mounted) return;
     setState(() => _updating = false);
+    if (message != null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final shift = ref.watch(fieldShiftProvider);
+    final attendanceAsync = ref.watch(attendanceControllerProvider);
+    final attendance = attendanceAsync.asData?.value;
+    final canCheckIn =
+        attendance?.allowedActions.contains(AttendanceAction.checkIn) == true;
+    final canShift = attendance?.isCheckedIn == true;
+    final canCheckOut =
+        attendance?.allowedActions.contains(AttendanceAction.checkOut) == true;
     final theme = Theme.of(context);
     return Card(
       child: Padding(
@@ -160,36 +273,38 @@ class _LocationSharingControlsState
           children: [
             Text('Location sharing', style: theme.textTheme.titleSmall),
             const SizedBox(height: 8),
-            SegmentedButton<ShiftState>(
-              segments: const [
+            SegmentedButton<_LocationCardAction>(
+              emptySelectionAllowed: true,
+              showSelectedIcon: false,
+              segments: [
                 ButtonSegment(
-                  value: ShiftState.onShift,
-                  icon: Icon(Icons.location_on_outlined),
-                  label: Text('Shift'),
+                  value: _LocationCardAction.checkIn,
+                  enabled: canCheckIn && !_updating,
+                  label: const Text('Check In'),
                 ),
                 ButtonSegment(
-                  value: ShiftState.onBreak,
-                  icon: Icon(Icons.pause_circle_outline),
-                  label: Text('Break'),
+                  value: _LocationCardAction.onShift,
+                  enabled: canShift && !_updating,
+                  label: Text('On shift'),
                 ),
                 ButtonSegment(
-                  value: ShiftState.offShift,
-                  icon: Icon(Icons.location_off_outlined),
-                  label: Text('Off'),
+                  value: _LocationCardAction.checkOut,
+                  enabled: canCheckOut && !_updating,
+                  label: Text('Check Out'),
                 ),
               ],
-              selected: {shift},
-              onSelectionChanged: _updating
+              selected: canShift && shift == ShiftState.onShift
+                  ? const {_LocationCardAction.onShift}
+                  : const {},
+              onSelectionChanged: _updating || attendance == null
                   ? null
-                  : (values) => _setShift(values.first),
+                  : (values) {
+                      if (values.isNotEmpty) _select(values.first);
+                    },
             ),
             const SizedBox(height: 8),
             Text(
-              shift == ShiftState.onShift
-                  ? 'Sharing while the app is open.'
-                  : shift == ShiftState.onBreak
-                  ? 'Paused for break.'
-                  : 'Not sharing.',
+              _statusText(attendanceAsync, shift),
               style: theme.textTheme.bodySmall,
             ),
           ],
@@ -197,4 +312,29 @@ class _LocationSharingControlsState
       ),
     );
   }
+}
+
+enum _LocationCardAction { checkIn, onShift, checkOut }
+
+String _statusText(
+  AsyncValue<AttendanceView> attendanceAsync,
+  ShiftState shift,
+) {
+  final attendance = attendanceAsync.asData?.value;
+  if (attendance == null) {
+    return attendanceAsync.hasError
+        ? 'Attendance is unavailable. Pull down to retry.'
+        : 'Checking attendance…';
+  }
+  return switch (attendance.state) {
+    AttendanceState.notCheckedIn =>
+      'Check in to go on shift and start location sharing.',
+    AttendanceState.checkedIn when shift == ShiftState.onShift =>
+      'On shift · sharing location with dispatch.',
+    AttendanceState.checkedIn =>
+      'Checked in · location sharing could not start. Tap On shift to retry.',
+    AttendanceState.checkedOut => 'Checked out · location sharing is off.',
+    AttendanceState.ineligible =>
+      attendance.reason ?? 'Attendance is not available for this account.',
+  };
 }

@@ -1,6 +1,7 @@
 {% extends "layouts/admin.html" %}
-{% from "components/ui/macros.html" import ambient_background, action_button, detail_header, icon_clipboard, icon_edit %}
+{% from "components/ui/macros.html" import ambient_background, action_button, detail_header, icon_clipboard, icon_edit, icon_plus %}
 {% from "admin/projects/_components.html" import project_card, task_status_badge, project_priority_badge, staff_name, disabled_action_button, work_order_create_button %}
+{% from "components/field_notes.html" import field_note_list %}
 {% block title %}Task {{ task.number or task.id }}{% endblock %}
 
 {% block content %}
@@ -27,13 +28,55 @@
         {% else %}
         {{ action_button('Edit Task', '/admin/projects/tasks/' ~ (task.number or task.id) ~ '/edit', icon_edit(), 'secondary', 'emerald') }}
         {% endif %}
+        {% if can(request, 'project:task:write') and not project_actions_locked %}
+        {{ action_button('Add Subtask', add_subtask_url, icon_plus(), 'secondary', 'emerald') }}
+        {% endif %}
     {% endcall %}
+
+    {% if task_is_historical %}
+    <div class="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200" role="status">
+        <p class="font-semibold">Previous template plan</p>
+        <p class="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">This retained task and its original subtasks are available as read-only operational history. Existing linked field work remains accessible.</p>
+    </div>
+    {% endif %}
 
     <div class="grid gap-6 xl:grid-cols-12">
         <div class="space-y-6 xl:col-span-8">
             {% call project_card(title='Description', subtitle='Task scope and notes.', icon='<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h6m-6 4h10M5 21h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>') %}
             <p class="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-200">{{ task.description or 'No description provided.' }}</p>
             {% endcall %}
+
+            {% if parent_task or child_tasks or can(request, 'project:task:write') %}
+            {% set subtask_actions %}
+                {% if can(request, 'project:task:write') and not project_actions_locked %}
+                <a href="{{ add_subtask_url }}" class="inline-flex items-center rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 dark:border-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300">Add subtask</a>
+                {% endif %}
+            {% endset %}
+            {% call project_card(title='Subtasks (' ~ child_tasks|length ~ ')', subtitle='All active subtasks must be done before this task can be completed.', actions=subtask_actions) %}
+            {% if parent_task %}
+            <p class="mb-3 text-xs text-slate-500 dark:text-slate-400">Part of <a href="/admin/projects/tasks/{{ parent_task.number or parent_task.id }}" class="font-semibold text-emerald-700 hover:underline dark:text-emerald-300">{{ parent_task.title }}</a></p>
+            {% endif %}
+            {% if child_tasks %}
+            <div class="mb-3 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                <span>{{ completed_child_task_count }} of {{ child_tasks|length }} complete</span>
+                {% if completed_child_task_count == child_tasks|length %}<span class="font-semibold text-emerald-700 dark:text-emerald-300">Ready</span>{% endif %}
+            </div>
+            <div class="space-y-2">
+                {% for child in child_tasks %}
+                <a href="/admin/projects/tasks/{{ child.number or child.id }}" class="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2.5 hover:border-emerald-300 dark:border-slate-600 dark:bg-slate-700/30 dark:hover:border-emerald-700">
+                    <span class="min-w-0">
+                        <span class="block truncate text-sm font-semibold text-slate-800 dark:text-slate-100">{{ child.title }}</span>
+                        <span class="block text-xs text-slate-500 dark:text-slate-400">{{ child.number or child.id }}</span>
+                    </span>
+                    {{ task_status_badge(child.status) }}
+                </a>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p class="text-sm text-slate-500 dark:text-slate-400">No subtasks yet. Add one when this task needs project-specific completion checks.</p>
+            {% endif %}
+            {% endcall %}
+            {% endif %}
 
             {% if show_field_work %}
             {% set field_work_action %}
@@ -66,6 +109,10 @@
             {% if can(request, create_work_order_action.permission) and not create_work_order_action.allowed and task_work_orders %}
             <p class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{{ create_work_order_action.reason }}</p>
             {% endif %}
+            {% endcall %}
+
+            {% call project_card(title='Field Notes (' ~ field_note_total ~ ')', subtitle='Delivered technician notes from work orders linked directly to this task.') %}
+            {{ field_note_list(field_notes, total=field_note_total, show_work_order=true, empty_message='No delivered field notes have been recorded for this task.') }}
             {% endcall %}
             {% endif %}
 

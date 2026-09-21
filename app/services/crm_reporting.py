@@ -54,6 +54,7 @@ from app.models.work_order import WorkOrder
 from app.services import (
     crm_api,
     ip_pool_utilization_snapshot,
+    projects,
     team_inbox_metrics,
     ticket_sla_reports,
 )
@@ -1750,7 +1751,9 @@ def _operations_sla(db: Session, query: CrmReportQuery) -> CrmReportPage:
             "Project task",
             db.scalars(
                 select(ProjectTask).where(
-                    ProjectTask.due_at.is_not(None), ProjectTask.is_active.is_(True)
+                    ProjectTask.due_at.is_not(None),
+                    ProjectTask.is_active.is_(True),
+                    projects.current_project_task_plan_clause(),
                 )
             ).all(),
         ),
@@ -2039,7 +2042,10 @@ def _project_task_performance(db: Session, query: CrmReportQuery) -> CrmReportPa
     tasks = [
         task
         for task in db.scalars(
-            select(ProjectTask).where(ProjectTask.is_active.is_(True))
+            select(ProjectTask).where(
+                ProjectTask.is_active.is_(True),
+                projects.current_project_task_plan_clause(),
+            )
         ).all()
         if _within(task.created_at, query)
     ]

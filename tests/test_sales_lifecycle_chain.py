@@ -10,7 +10,6 @@ consequence stays a visible failed delivery instead of a warning log.
 from __future__ import annotations
 
 import uuid
-from copy import deepcopy
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -53,9 +52,6 @@ from app.schemas.sales_order import (
 from app.services import crm_api, customer_experience_handoffs
 from app.services import sales as sales_service
 from app.services import sales_orders as sales_order_service
-from app.services.events.handlers.billing_lifecycle_projection import (
-    BillingLifecycleProjectionHandler,
-)
 from app.services.events.handlers.sales_lifecycle_projection import (
     SalesLifecycleProjectionHandler,
 )
@@ -151,7 +147,7 @@ def _funding_events(db, sales_order_id):
     )
 
 
-def test_full_funding_chains_subscription_and_service_order(
+def test_full_funding_records_finance_without_starting_service(
     db_session, catalog_offer, chain_billing
 ):
     subscriber = _make_subscriber(db_session)
@@ -189,23 +185,14 @@ def test_full_funding_chains_subscription_and_service_order(
     assert event.payload["sales_order_id"] == str(order.id)
     assert event.payload["record_order_payment"] is True
 
-    # The consumer applied the funded consequences: one pending Subscription
-    # and one draft ServiceOrder bound to the line, metadata tagged.
-    subscription = db_session.query(Subscription).one()
-    assert subscription.status == SubscriptionStatus.pending
-    service_order = (
-        db_session.query(ServiceOrder)
-        .filter(ServiceOrder.sales_order_line_id == line.id)
-        .one()
-    )
-    assert service_order.status == ServiceOrderStatus.draft
-    assert service_order.subscription_id == subscription.id
+    # Funding is financial evidence only. Staff creates the subscription later,
+    # after confirming service and IP/provisioning details.
+    assert db_session.query(Subscription).count() == 0
+    assert db_session.query(ServiceOrder).count() == 0
     db_session.refresh(line)
-    assert (line.metadata_ or {}).get("selfcare_subscription_id") == str(
-        subscription.id
-    )
+    assert not (line.metadata_ or {}).get("selfcare_subscription_id")
     names = [name for name, _ in chain_billing]
-    assert names.index("create_subscription") < names.index("record_external_payment")
+    assert names == ["record_external_payment"]
     receipt = (
         db_session.query(OwnerOutputReceipt)
         .filter(
@@ -215,67 +202,22 @@ def test_full_funding_chains_subscription_and_service_order(
         .one()
     )
     assert receipt.outcome.value == "succeeded"
-    assert db_session.query(BillingContract).count() == 1
-    assert db_session.query(BillingObligation).count() == 1
-    assert db_session.query(BillingShadowDeliveryEvidence).count() == 1
     output_events = (
         db_session.query(EventStore)
         .filter(EventStore.event_type == EventType.custom.value)
         .all()
     )
-    for consumer, output in (
-        ("billing.contracts", "sales.fulfillment.funding_applied"),
-        ("billing.obligations", "billing.contracts.shadow_recorded"),
-        (
-            "billing.shadow_verification",
-            "billing.obligations.shadow_scheduled",
-        ),
-    ):
-        matching = [
-            item for item in output_events if item.payload.get("output") == output
-        ]
-        assert len(matching) == 1
-        assert (
-            db_session.query(OwnerOutputReceipt)
-            .filter(
-                OwnerOutputReceipt.consumer == consumer,
-                OwnerOutputReceipt.event_id == matching[0].event_id,
-            )
-            .count()
-            == 1
-        )
-
-    # Contract output v2 carries identity only. During the shadow rollout the
-    # consumer still accepts a v1 envelope, but ignores its legacy money fields
-    # and asks billing.rating for the amount again.
-    contract_output = next(
+    funding_output = next(
         item
         for item in output_events
-        if item.payload.get("output") == "billing.contracts.shadow_recorded"
+        if item.payload.get("output") == "sales.fulfillment.funding_applied"
     )
-    assert contract_output.payload["envelope"]["schema_version"] == 2
-    identity_record = contract_output.payload["obligations"][0]
-    assert "net_amount" not in identity_record
-    assert "tax_amount" not in identity_record
-
-    legacy_payload = deepcopy(contract_output.payload)
-    legacy_payload["envelope"]["schema_version"] = 1
-    legacy_payload["obligations"][0]["net_amount"] = "999999.00"
-    legacy_payload["obligations"][0]["tax_amount"] = "999999.00"
-    db_session.commit()
-    BillingLifecycleProjectionHandler().handle(
-        db_session,
-        Event(
-            EventType.custom,
-            legacy_payload,
-            event_id=uuid.uuid4(),
-            actor="pytest",
-        ),
-    )
-    db_session.expire_all()
-    obligation = db_session.query(BillingObligation).one()
-    assert obligation.net_amount == Decimal("25000.00")
-    assert obligation.tax_amount == Decimal("0.00")
+    assert funding_output.payload["contracts"] == []
+    assert db_session.query(BillingContract).count() == 0
+    assert db_session.query(BillingObligation).count() == 0
+    # The verifier records that the empty contract batch was delivered; it
+    # does not manufacture a contract or obligation.
+    assert db_session.query(BillingShadowDeliveryEvidence).count() == 1
 
     # Redelivering the same owner output is an exact no-op because the
     # consumer effect and its receipt committed atomically.
@@ -289,12 +231,12 @@ def test_full_funding_chains_subscription_and_service_order(
             actor="pytest",
         ),
     )
-    assert db_session.query(Subscription).count() == 1
-    assert db_session.query(ServiceOrder).count() == 1
+    assert db_session.query(Subscription).count() == 0
+    assert db_session.query(ServiceOrder).count() == 0
     assert "create_subscription" not in [name for name, _ in chain_billing]
 
 
-def test_unresolved_offer_keeps_delivery_failed_and_visible(db_session):
+def test_funding_does_not_require_offer_resolution(db_session):
     subscriber = _make_subscriber(db_session)
     order = sales_order_service.sales_orders.create(
         db_session, SalesOrderCreate(subscriber_id=subscriber.id)
@@ -320,16 +262,12 @@ def test_unresolved_offer_keeps_delivery_failed_and_visible(db_session):
         funding_authority=FundingAuthority.settlement,
     )
 
-    # The sale itself is committed; the unresolved consequence is a durable
-    # failed delivery, not a swallowed warning and not a silent skip.
+    # Finance may settle the sale even if a catalog reference later needs
+    # correction; no service object is created from it automatically.
     assert order.payment_status == SalesOrderPaymentStatus.paid.value
     events = _funding_events(db_session, order.id)
     assert len(events) == 1
-    assert events[0].status == EventStatus.failed
-    failed_handlers = [
-        item.get("handler") for item in (events[0].failed_handlers or [])
-    ]
-    assert "SalesLifecycleProjectionHandler" in failed_handlers
+    assert events[0].status == EventStatus.completed
     assert db_session.query(Subscription).count() == 0
     assert db_session.query(ServiceOrder).count() == 0
 
@@ -384,9 +322,9 @@ def test_selfserve_full_deposit_stages_funding_without_order_payment(
     assert events[0].status == EventStatus.completed
     assert events[0].payload["record_order_payment"] is False
     # The deposit's only ledger event stays the verified deposit-invoice
-    # payment; the consumer still creates the funded service artifacts.
-    assert db_session.query(Subscription).count() == 1
-    assert db_session.query(ServiceOrder).count() == 1
+    # payment; staff creates service artifacts after technical readiness.
+    assert db_session.query(Subscription).count() == 0
+    assert db_session.query(ServiceOrder).count() == 0
     assert "record_external_payment" not in [name for name, _ in chain_billing]
 
 

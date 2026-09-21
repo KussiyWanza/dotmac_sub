@@ -14,7 +14,7 @@ def _command(**overrides):
         "cc_addresses": "copy@example.test",
         "bcc_addresses": "archive@example.test",
         "sender_key": "regulatory",
-        "subject": "Weekly NCC workbook",
+        "subject": "Weekly NCC CSV",
         "body_template": ncc_report_email.DEFAULT_BODY_TEMPLATE,
         "local_time": "08:00",
         "timezone": "Africa/Lagos",
@@ -73,7 +73,7 @@ def _configuration(*, body_template: str | None = None):
             to="compliance@example.test", cc=(), bcc=()
         ),
         sender_key="regulatory",
-        subject="Weekly NCC workbook",
+        subject="Weekly NCC CSV",
         body_template=body_template or ncc_report_email.DEFAULT_BODY_TEMPLATE,
         local_time=time(8, 0),
         timezone="Africa/Lagos",
@@ -119,7 +119,7 @@ def test_render_body_strips_legacy_not_filable_line(monkeypatch):
 
     assert "Rows included: 170." in body_text
     assert "not yet fil" not in body_text.lower()
-    assert "148" not in body_text
+    assert "Rows not yet filable: 148." not in body_text
     assert "not yet fil" not in body_html.lower()
 
 

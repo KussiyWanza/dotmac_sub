@@ -30,6 +30,7 @@ from app.models.audit import AuditActorType, AuditEvent
 from app.models.support import Ticket
 from app.models.team_inbox import InboxConversation, InboxConversationStatus
 from app.schemas.support import TicketCreate
+from app.services import ai_conversation_ownership
 from app.services import support as support_service
 from app.services.audit_adapter import stage_audit_event
 from app.services.common import coerce_uuid
@@ -169,6 +170,11 @@ def _validate_issue_eligibility(
         )
 
     conversation = _active_conversation(db, command.conversation_id)
+    ai_conversation_ownership.require_human_control(
+        db,
+        conversation_id=conversation.id,
+        mutation=ai_conversation_ownership.HumanConversationMutation.ticket,
+    )
     if conversation.status == InboxConversationStatus.resolved.value:
         raise ConversationTicketHandoffError(
             "conversation_resolved",

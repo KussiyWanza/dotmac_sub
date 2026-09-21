@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 from datetime import UTC, datetime
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -28,6 +29,7 @@ from app.services.owner_commands import CommandContext
 
 router = APIRouter(prefix="/webhooks/erp-material", tags=["erp-material-webhook"])
 MAX_BODY_BYTES = 128 * 1024
+logger = logging.getLogger(__name__)
 
 
 @router.post("/{capability_binding_id}", response_model=ErpMaterialStatusReceipt)
@@ -64,7 +66,28 @@ async def receive_erp_material_status(
         raise HTTPException(status_code=401, detail="Invalid ERP webhook signature")
     try:
         payload = ErpMaterialStatusWebhook.model_validate_json(raw)
-    except (ValueError, ValidationError):
+    except (ValueError, ValidationError) as exc:
+        validation_errors = (
+            [
+                {
+                    "location": ".".join(str(part) for part in error.get("loc", ())),
+                    "type": str(error.get("type") or "validation_error"),
+                }
+                for error in exc.errors()
+            ]
+            if isinstance(exc, ValidationError)
+            else [{"location": "", "type": type(exc).__name__}]
+        )
+        logger.warning(
+            "Rejected invalid ERP material status payload",
+            extra={
+                "capability_binding_id": str(capability_binding_id),
+                "delivery_id": delivery_id,
+                "payload_size_bytes": len(raw),
+                "validation_error_count": len(validation_errors),
+                "validation_errors": validation_errors,
+            },
+        )
         raise HTTPException(
             status_code=422, detail="Invalid ERP material status payload"
         ) from None

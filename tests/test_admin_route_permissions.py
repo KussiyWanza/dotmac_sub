@@ -123,8 +123,8 @@ def test_dashboard_routes_require_any_domain_read_permission():
 
 
 def test_dispatch_work_order_routes_require_operations_dispatch_permission():
-    # Granular dispatch RBAC (#1329): read to view, write to mutate, assign to
-    # queue — replacing the coarse operations:dispatch guard.
+    # Granular dispatch RBAC (#1329): read to view, write to edit, assign to
+    # queue. Expense submission deliberately follows exact work-order read access.
     for path, method, permission in [
         ("/dispatch/work-orders", "GET", "operations:dispatch:read"),
         (
@@ -135,7 +135,7 @@ def test_dispatch_work_order_routes_require_operations_dispatch_permission():
         (
             "/dispatch/work-orders/{work_order_id}/expenses",
             "POST",
-            "operations:dispatch:write",
+            "operations:dispatch:read",
         ),
         ("/dispatch/work-orders", "POST", "operations:dispatch:write"),
         ("/dispatch/work-orders/{work_order_id}", "POST", "operations:dispatch:write"),
@@ -151,6 +151,12 @@ def test_dispatch_work_order_routes_require_operations_dispatch_permission():
             method,
             permission,
         )
+    assert not _route_has_permission(
+        admin_dispatch_work_orders.router,
+        "/dispatch/work-orders/{work_order_id}/expenses",
+        "POST",
+        "operations:dispatch:write",
+    )
 
 
 def test_ticket_work_order_handoff_requires_support_and_dispatch_permissions():

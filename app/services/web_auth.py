@@ -627,14 +627,18 @@ def reset_password_submit(
 
 def refresh(request: Request, db: Session, next_url: str | None = None):
     redirect_url = _safe_next(next_url)
-    refresh_token = AuthFlow.resolve_refresh_token(request, None, db)
+    refresh_token = AuthFlow.resolve_refresh_token(request, None, None)
     if not refresh_token:
         login_url = "/auth/login"
         if next_url and next_url.startswith("/"):
             login_url = f"/auth/login?next={quote(next_url)}"
         return RedirectResponse(url=login_url, status_code=303)
     try:
-        result = auth_flow_service.auth_flow.refresh(db, refresh_token, request)
+        result = auth_flow_service.auth_flow.refresh(
+            db=db,
+            refresh_token=refresh_token,
+            request=request,
+        )
     except Exception:
         login_url = "/auth/login"
         if next_url and next_url.startswith("/"):
@@ -646,7 +650,7 @@ def refresh(request: Request, db: Session, next_url: str | None = None):
     secure_cookie = cookie_cfg["secure"] and _is_https_request(request)
     session_token = auth_flow_service.issue_web_session_token(
         db,
-        str(result.get("access_token", "")),
+        result.access_token,
     )
     response.set_cookie(
         key="session_token",
@@ -655,12 +659,63 @@ def refresh(request: Request, db: Session, next_url: str | None = None):
         secure=secure_cookie,
         samesite=cookie_cfg["samesite"],
     )
-    refresh_token = result.get("refresh_token")
+    refresh_token = result.refresh_token
     if refresh_token:
         _set_refresh_cookie(
             response,
             db,
             refresh_token,
+            request,
+            persistent=_wants_persistent_session(request),
+        )
+    return response
+
+
+def refresh_session(request: Request, db: Session) -> Response:
+    """Renew an admin browser session without a navigation redirect."""
+
+    refresh_token = AuthFlow.resolve_refresh_token(request, None, None)
+    if not refresh_token:
+        return Response(status_code=401, headers={"Cache-Control": "no-store"})
+    try:
+        result = auth_flow_service.auth_flow.refresh(
+            db=db,
+            refresh_token=refresh_token,
+            request=request,
+        )
+    except HTTPException as exc:
+        status_code = 401 if exc.status_code == 401 else exc.status_code
+        return Response(
+            status_code=status_code,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    session_token = auth_flow_service.issue_web_session_token(db, result.access_token)
+    payload = auth_flow_service.decode_access_token(db, result.access_token)
+    expires_at = payload.get("exp")
+    response = Response(
+        status_code=204,
+        headers={
+            "Cache-Control": "no-store",
+            "X-Session-Expires-At": str(
+                expires_at if isinstance(expires_at, int) else ""
+            ),
+        },
+    )
+    cookie_cfg = _session_cookie_settings(db)
+    secure_cookie = cookie_cfg["secure"] and _is_https_request(request)
+    response.set_cookie(
+        key="session_token",
+        value=session_token,
+        httponly=True,
+        secure=secure_cookie,
+        samesite=cookie_cfg["samesite"],
+    )
+    if result.refresh_token:
+        _set_refresh_cookie(
+            response,
+            db,
+            result.refresh_token,
             request,
             persistent=_wants_persistent_session(request),
         )

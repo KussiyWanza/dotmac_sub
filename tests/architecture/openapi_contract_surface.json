@@ -4164,6 +4164,17 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/field/attendance": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": null,
+   "responses": {
+    "200": "0cce00485958",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/field/config": {
    "params": [],
    "request": null,
@@ -4220,6 +4231,17 @@
    "request": null,
    "responses": {
     "200": "c460c1049fc4",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/field/expense-requests/form-context": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": null,
+   "responses": {
+    "200": "c657f5409177",
     "422": "a11c9d9b2af8"
    }
   },
@@ -4550,6 +4572,30 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/field/manager/expenses/deliveries/{event_id}/recovery-preview": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:event_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "e4fd08410238",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/field/manager/expenses/payment-deliveries/{event_id}/recovery-preview": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:event_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "d31d46d100e6",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/field/manager/jobs": {
    "params": [
     "header:authorization",
@@ -4600,6 +4646,32 @@
    "request": null,
    "responses": {
     "200": "2e9ed0c3b0ec",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/field/manager/team-map": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:limit",
+    "query:stale_after_seconds"
+   ],
+   "request": null,
+   "responses": {
+    "200": "20f698e43702",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/field/manager/team-map/{technician_id}/location-detail": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:technician_id!",
+    "query:stale_after_seconds"
+   ],
+   "request": null,
+   "responses": {
+    "200": "d3beb2e54301",
     "422": "a11c9d9b2af8"
    }
   },
@@ -10313,7 +10385,8 @@
     "query:search",
     "query:service_team_id",
     "query:snoozed",
-    "query:status"
+    "query:status",
+    "query:view"
    ],
    "request": null,
    "responses": {
@@ -10375,6 +10448,7 @@
     "query:priority",
     "query:project_manager_person_id",
     "query:search",
+    "query:service_team_id",
     "query:site_coordinator_person_id",
     "query:status",
     "query:subscriber_id",
@@ -14526,6 +14600,30 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/field/attendance/check-in": {
+   "params": [
+    "header:Idempotency-Key!",
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "85c9d1f96f0d",
+   "responses": {
+    "200": "0cce00485958",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/field/attendance/check-out": {
+   "params": [
+    "header:Idempotency-Key!",
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "85c9d1f96f0d",
+   "responses": {
+    "200": "0cce00485958",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/field/devices": {
    "params": [
     "header:authorization",
@@ -14545,6 +14643,17 @@
    "request": "972a2c885ee7",
    "responses": {
     "201": "6cc1ebd3f658",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/field/expense-requests/payment-destination/verify": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "abd33f3f3d26",
+   "responses": {
+    "200": "600fe80be6d6",
     "422": "a11c9d9b2af8"
    }
   },
@@ -14572,6 +14681,7 @@
   },
   "POST /api/v1/field/expense-requests/{expense_request_id}/cancel": {
    "params": [
+    "header:X-Request-ID",
     "header:authorization",
     "header:x-api-key",
     "path:expense_request_id!"
@@ -14779,6 +14889,32 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/field/manager/expenses/deliveries/{event_id}/recover": {
+   "params": [
+    "header:X-Request-ID",
+    "header:authorization",
+    "header:x-api-key",
+    "path:event_id!"
+   ],
+   "request": "bbdf8f1c80ce",
+   "responses": {
+    "200": "66744477f332",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/field/manager/expenses/payment-deliveries/{event_id}/recover": {
+   "params": [
+    "header:X-Request-ID",
+    "header:authorization",
+    "header:x-api-key",
+    "path:event_id!"
+   ],
+   "request": "3be457dd9378",
+   "responses": {
+    "200": "258ed99a961f",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/field/manager/expenses/{expense_request_id}/approve": {
    "params": [
     "header:X-Request-ID",
@@ -14792,15 +14928,29 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/field/manager/expenses/{expense_request_id}/pay": {
+   "params": [
+    "header:X-Request-ID",
+    "header:authorization",
+    "header:x-api-key",
+    "path:expense_request_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "323f0738efc1",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/field/manager/expenses/{expense_request_id}/reject": {
    "params": [
+    "header:X-Request-ID",
     "header:authorization",
     "header:x-api-key",
     "path:expense_request_id!"
    ],
    "request": "f86a8a67f869",
    "responses": {
-    "200": "6cc1ebd3f658",
+    "200": "b8941b7d1868",
     "422": "a11c9d9b2af8"
    }
   },
@@ -14945,6 +15095,18 @@
    "request": "595c666aaaf7",
    "responses": {
     "201": "2ce612d842fb",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/field/material-requests/{material_request_id}/cancel": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:material_request_id!"
+   ],
+   "request": "ae81e61e5427",
+   "responses": {
+    "200": "2ce612d842fb",
     "422": "a11c9d9b2af8"
    }
   },
@@ -17897,6 +18059,19 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/staff-accounts/{user_id}/nextcloud-talk/disable": {
+   "params": [
+    "header:Idempotency-Key",
+    "header:authorization",
+    "header:x-api-key",
+    "path:user_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "2096ff3b53e7",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/subscriber-custom-fields": {
    "params": [
     "header:authorization",
@@ -19058,6 +19233,19 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "PUT /api/v1/staff-accounts/{user_id}/nextcloud-talk": {
+   "params": [
+    "header:Idempotency-Key",
+    "header:authorization",
+    "header:x-api-key",
+    "path:user_id!"
+   ],
+   "request": "605c4b2465e6",
+   "responses": {
+    "200": "0e21bc5b4b9f",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "PUT /api/v1/staff-accounts/{user_id}/roles": {
    "params": [
     "header:Idempotency-Key",
@@ -19107,7 +19295,7 @@
   "AddressRead": "807d40aea82e",
   "AddressType": "5e189902233b",
   "AddressUpdate": "f9f6114113e3",
-  "AiIntakeConfigMetadata": "cfac9698536d",
+  "AiIntakeConfigMetadata": "cb61954c9b6e",
   "AiIntakeConfigRead": "3e871d475e00",
   "AiIntakeConfigUpsert": "526098afff43",
   "AiIntakeDepartmentMapping": "16e83ce18e10",
@@ -19325,7 +19513,7 @@
   "CustomerDefaultsResponse": "c0892eba5f8c",
   "CustomerDeviceCommandKind": "cb81f2ec8d71",
   "CustomerDeviceCommandOutcomeRead": "010e7587a7ae",
-  "CustomerDeviceCommandStatus": "e7911f4fdc39",
+  "CustomerDeviceCommandStatus": "57eb3ad93c5a",
   "CustomerExperienceAcceptRequest": "0e8608e2743a",
   "CustomerExperienceAttentionRequest": "870e7a93b7e7",
   "CustomerExperienceHandoffRead": "53183f1817a1",
@@ -19384,6 +19572,8 @@
   "EtaUpdateCreate": "3b90f58a7082",
   "EtaUpdateRead": "daaf62739ccf",
   "ExecutionMethod": "44ddf7e0d39d",
+  "ExistingStaffAccountPolicy": "0c283b6aefa0",
+  "ExpenseRequestStatus": "afa9c66cd8ca",
   "ExternalEntityType": "a15467b5560e",
   "ExternalReferenceCreate": "e15ea6e3a712",
   "ExternalReferenceRead": "8b43fcf317fd",
@@ -19431,6 +19621,8 @@
   "FiberTerminationPointRead": "eef2a7ac34e4",
   "FiberTerminationPointUpdate": "ebdbeb8a047e",
   "FieldAttachmentRead": "12a11823b799",
+  "FieldAttendanceLocation": "26ecb4d149ff",
+  "FieldAttendanceRead": "69b61adafd8e",
   "FieldCableRegistrationCreate": "2fe2e6d32087",
   "FieldCableRegistrationResponse": "7e0dd2969fbb",
   "FieldCompletionRequirements": "3a2d8a58716d",
@@ -19443,12 +19635,26 @@
   "FieldEquipmentRecord": "7c7bcf16d5ae",
   "FieldEquipmentReturnRequest": "80e3640552d3",
   "FieldExpenseApprovalRead": "64ecf6941a17",
+  "FieldExpenseApproverRead": "b302644dd976",
+  "FieldExpenseBankRead": "580ea29aafbe",
   "FieldExpenseCategoryRead": "c8edfa89ab4d",
+  "FieldExpenseDestinationRead": "29f660b85843",
+  "FieldExpenseDestinationVerify": "8d5426dc5450",
+  "FieldExpenseFormContextRead": "0071f146bfb9",
+  "FieldExpensePaymentRead": "0b8340a83012",
+  "FieldExpensePaymentRecoveryPreviewRead": "9a017d2973eb",
+  "FieldExpensePaymentRecoveryRead": "29d373ba518f",
+  "FieldExpensePaymentRecoveryRequest": "2754d308c379",
+  "FieldExpenseProfileDestinationRead": "6dcef13f513e",
+  "FieldExpenseRecoveryPreviewRead": "85ed7567c69d",
+  "FieldExpenseRecoveryRead": "84483e229efc",
+  "FieldExpenseRecoveryRequest": "aab4d7570997",
+  "FieldExpenseRejectionRead": "41e6ae96c94b",
   "FieldExpenseRequestCreate": "4a21a0cb3712",
   "FieldExpenseRequestItemCreate": "3b23aa8d5a6d",
   "FieldExpenseRequestItemRead": "515094e4452b",
-  "FieldExpenseRequestRead": "838acdc17f32",
-  "FieldExpenseRequestSubmit": "e8a7e3d6ec5a",
+  "FieldExpenseRequestRead": "f6681091e1da",
+  "FieldExpenseRequestSubmit": "60c02371fc62",
   "FieldExpenseVendorRead": "fd8c5d96e664",
   "FieldFiberCustomerTraceRead": "77b4750e8e06",
   "FieldFiberOntLiveRead": "b56481e9b334",
@@ -19476,6 +19682,9 @@
   "FieldJobSummary": "4e501c02cf74",
   "FieldLinkBudgetComponentRead": "8f2c11d8a0f2",
   "FieldLinkBudgetRead": "0fe4def40cc4",
+  "FieldLiveMapFeed": "048a87551489",
+  "FieldLiveMapPosition": "ae257e574bcc",
+  "FieldLiveMapTechnicianDetail": "bf1e0e8c76ef",
   "FieldManagerActiveWorkOrder": "f637e2628bf8",
   "FieldManagerExpenseRejectRequest": "5892aecb2cb3",
   "FieldManagerJob": "ec32bb6e783f",
@@ -19484,7 +19693,7 @@
   "FieldManagerMaterialRejectRequest": "c88a1edfa686",
   "FieldManagerMeResponse": "2f2d847e8029",
   "FieldManagerSummary": "5b25b71d2a7f",
-  "FieldManagerTechnician": "48d4741f6ce0",
+  "FieldManagerTechnician": "b3a0402ad751",
   "FieldManagerTechniciansResponse": "afee067c1d2e",
   "FieldMapAsset": "ab8c6d0cb70f",
   "FieldMapAssetLocationUpdate": "c28e382f6d84",
@@ -19494,15 +19703,16 @@
   "FieldMaterialConsumeItem": "911c9370f480",
   "FieldMaterialConsumeRequest": "83119748b137",
   "FieldMaterialRead": "b3ca3b51848b",
+  "FieldMaterialRequestCancel": "00daeee69caa",
   "FieldMaterialRequestCreate": "beb591240e6a",
   "FieldMaterialRequestItemCreate": "04759e76cb22",
   "FieldMaterialRequestItemRead": "1e218709f934",
-  "FieldMaterialRequestRead": "e962f5239169",
+  "FieldMaterialRequestRead": "881af457f920",
   "FieldMaterialRequestSubmit": "0bac3c573aa7",
   "FieldMeResponse": "92ccd05b3f23",
   "FieldMovementRead": "e6afbc3e60fc",
-  "FieldNoteCreate": "38437360dd97",
-  "FieldNoteRead": "8ea021422bdc",
+  "FieldNoteCreate": "87391275d418",
+  "FieldNoteRead": "da3905aff053",
   "FieldOntAttachmentCreate": "08943292b127",
   "FieldOntAttachmentResponse": "0ee79354d07e",
   "FieldOpenTicketItem": "62da6daad4b4",
@@ -19573,11 +19783,11 @@
   "IPv6AddressRead": "d14ab909bf1f",
   "IPv6AddressUpdate": "c13ce5267072",
   "InboxAgentPerformanceRead": "6a8463944e15",
-  "InboxConversationContactLinkRead": "bb228be5e29a",
+  "InboxConversationContactLinkRead": "aedc114d3f1b",
   "InboxConversationContactLinkRequest": "f407043f0c43",
   "InboxConversationEscalateRequest": "616991a12b83",
   "InboxConversationEscalationRead": "504bf3a61754",
-  "InboxConversationListItemRead": "176802fc04c4",
+  "InboxConversationListItemRead": "b78d5b049ff0",
   "InboxConversationReplyRead": "344672986f33",
   "InboxConversationReplyRequest": "9297fb6a5133",
   "InboxConversationTimelineRead": "8a7a71519592",
@@ -19900,9 +20110,9 @@
   "ListResponse_WorkOrderAssignmentQueueRead_": "09219459d168",
   "ListResponse_WorkOrderHeaderRead_": "31c7a849dee1",
   "ListResponse_WorkqueueItemRead_": "69d754624d9b",
-  "LocationIngestResponse": "8671fb4c8950",
+  "LocationIngestResponse": "7a40e5e95bcc",
   "LocationPingBatch": "37a9a0a02de5",
-  "LocationPingInput": "cbc5ccd3d7b4",
+  "LocationPingInput": "5484be538ca7",
   "LocationSharingUpdate": "c6465626ff15",
   "LoginRequest": "6c0d177cb17d",
   "LoginResponse": "66d2d92d7c0a",
@@ -20169,7 +20379,7 @@
   "ProjectItem": "df3035be834b",
   "ProjectKanbanMove": "7578fb10fb86",
   "ProjectPriority": "81159a031246",
-  "ProjectRead": "8b9f6a8ed70b",
+  "ProjectRead": "810c5f428667",
   "ProjectStage": "0f50e77c4ccb",
   "ProjectStageState": "acffacb745a6",
   "ProjectStatus": "39abcda05ebd",
@@ -20178,9 +20388,10 @@
   "ProjectTaskDependencyInput": "3514e0577001",
   "ProjectTaskDependencyType": "a6d396625734",
   "ProjectTaskPriority": "d00b9c84024a",
-  "ProjectTaskRead": "444ab8fc494d",
+  "ProjectTaskRead": "413dd18b54b1",
   "ProjectTaskStatus": "07b9f5d6fe08",
   "ProjectTaskStatusTransition": "62828b3ad076",
+  "ProjectTaskTemplatePlanState": "70ae24942255",
   "ProjectTaskUpdate": "be5ae31b8297",
   "ProjectType": "a29853f91876",
   "ProjectUpdate": "53c319e44d41",
@@ -20218,19 +20429,19 @@
   "QuotaBucketCreate": "6fb66e0ff1f2",
   "QuotaBucketRead": "8f8ae6360d0d",
   "QuotaBucketUpdate": "4f890c55f818",
-  "QuoteCreate": "70ff85da3a68",
-  "QuoteDepositInitiateRequest": "7cd28325a734",
+  "QuoteCreate": "5c102cc6cb47",
+  "QuoteDepositInitiateRequest": "a4218e7a8569",
   "QuoteDepositInitiateResponse": "cbc971929ac9",
   "QuoteDepositVerifyRequest": "b9a599c857d0",
   "QuoteDepositVerifyResponse": "5300be93edda",
   "QuoteDiscountType": "33882226f0db",
   "QuoteFeasibility": "76535422c34b",
-  "QuoteItem": "8c38fba90ef2",
+  "QuoteItem": "d8b460559e46",
   "QuoteLineItem": "b665cdd08dac",
   "QuoteLineItemCreate": "ef183023a2dc",
   "QuoteLineItemRead": "4b18876d8e37",
   "QuoteLineItemUpdate": "0100c6777de1",
-  "QuoteRead": "d5e693a501b9",
+  "QuoteRead": "7ab8c1255ca6",
   "QuoteRequestCreate": "162e1e5d1fd3",
   "QuoteStatus": "62c779ee038e",
   "QuoteUpdate": "d59ce59d151b",
@@ -20357,9 +20568,12 @@
   "SplitterPortUpdate": "199be4a28b22",
   "SplitterRead": "462df98254d1",
   "SplitterUpdate": "fc09a009fc39",
-  "StaffAccountCreate": "b6432e3a2f81",
+  "StaffAccountCreate": "b04ecddd0616",
   "StaffAccountErpDepartmentRead": "8428a34c2b00",
   "StaffAccountErpDepartmentUpdate": "d0e389a1811d",
+  "StaffAccountNextcloudTalkDisableRead": "f89c96b313ed",
+  "StaffAccountNextcloudTalkRead": "b524fd4ee44a",
+  "StaffAccountNextcloudTalkUpdate": "d5a64a378c94",
   "StaffAccountRead": "cebf0aa826aa",
   "StaffAccountRolesUpdate": "cea929707cae",
   "StateKind": "c193abe43198",

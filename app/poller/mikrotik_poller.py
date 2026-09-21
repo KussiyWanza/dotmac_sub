@@ -82,6 +82,10 @@ DEVICE_IO_TIMEOUT_SEC = int(os.getenv("BANDWIDTH_DEVICE_IO_TIMEOUT_SEC", "12"))
 # do not need a fresh connection attempt every minute.  A bounded exponential
 # backoff protects the poller and logs while still probing recovery.
 FAILURE_BACKOFF_MAX_SECONDS = 15 * 60
+# A fleet-wide outage must not submit every blocking RouterOS API call to the
+# default executor at once. Per-device backoff limits repeated failures; this
+# cap limits the first failing cohort as well.
+MAX_CONCURRENT_DEVICE_POLLS = 8
 # Bound Redis I/O so a slow/unreachable Redis drops one poll cycle's samples
 # instead of stalling the whole poller (the publish is best-effort telemetry).
 REDIS_IO_TIMEOUT_SEC = int(os.getenv("BANDWIDTH_REDIS_IO_TIMEOUT_SEC", "5"))
@@ -717,11 +721,16 @@ class DevicePool:
         if self._should_refresh():
             await self.refresh_devices()
 
-        # Poll all devices concurrently
+        # Poll independently, but bound fleet-wide blocking RouterOS work. The
+        # RouterOS client runs in executor threads; unbounded fan-out lets a
+        # site-wide timeout exhaust that executor and delays healthy devices.
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_DEVICE_POLLS)
+
         async def poll_device(device_id: UUID, conn: MikroTikConnection):
             if not conn.should_retry:
                 return device_id, []
-            stats = await conn.get_queue_stats()
+            async with semaphore:
+                stats = await conn.get_queue_stats()
             return device_id, stats
 
         tasks = [

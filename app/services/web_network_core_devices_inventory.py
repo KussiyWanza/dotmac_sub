@@ -332,11 +332,9 @@ def collect_devices(db: Session) -> list[dict]:
     )
     for olt in olts:
         linked = _linked_monitoring(olt)
-        linked_live_status = getattr(linked, "live_status", None)
-        linked_live_status = getattr(linked_live_status, "value", linked_live_status)
         operational = derive_olt_operational_status(
             olt,
-            linked_live_status=linked_live_status,
+            linked_device=linked,
             warm_stale=warm_stale,
         )
         devices.append(
@@ -996,11 +994,9 @@ def olts_list_page_data(
             enabled=bool(linked and linked.snmp_enabled),
             last_ok=(linked.last_snmp_ok if linked else None),
         )
-        linked_live_status = getattr(linked, "live_status", None)
-        linked_live_status = getattr(linked_live_status, "value", linked_live_status)
         operational = derive_olt_operational_status(
             olt,
-            linked_live_status=linked_live_status,
+            linked_device=linked,
             warm_stale=warm_stale,
         )
         if operational.alarming or operational.impaired:

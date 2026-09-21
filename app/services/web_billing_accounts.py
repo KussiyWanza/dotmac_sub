@@ -50,6 +50,23 @@ _OPEN_BALANCE_INVOICE_STATUSES = (
 
 
 @dataclass(frozen=True, slots=True)
+class AccountBalanceRow:
+    """A subscriber paired with its computed open-invoice balance.
+
+    ``Subscriber`` has no persistent ``balance`` column (see
+    ``tests/test_subscriber_has_no_balance_column.py``); the accounts
+    list page needs one anyway to render, so this pairs the account with the
+    value derived for THIS listing instead of stamping it onto the live ORM
+    instance — see ``tests/architecture/test_display_layer_status_mutation.py``
+    for why mutating a persistent object for presentation is an autoflush
+    hazard.
+    """
+
+    account: Subscriber
+    balance: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class BillingAccountOverview:
     """First-viewport billing facts without collapsing unlike financial states."""
 
@@ -154,10 +171,10 @@ def build_accounts_list_data(
         .limit(per_page)
         .all()
     )
-    accounts = []
-    for account, open_balance in account_rows:
-        account.balance = Decimal(str(open_balance or 0))
-        accounts.append(account)
+    accounts = [
+        AccountBalanceRow(account=account, balance=Decimal(str(open_balance or 0)))
+        for account, open_balance in account_rows
+    ]
     total_pages = (total + per_page - 1) // per_page
     default_currency = _default_currency(db)
     total_balance = sum(

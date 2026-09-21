@@ -37,6 +37,11 @@ never overwrites an existing operator decision. The broker and result-backend
 URLs are deployment transport configuration and remain explicit environment
 inputs; they are not mutable domain settings.
 
+A multi-day interval that cannot be represented by the supported wall-clock
+schedule remains restart-relative and emits one warning per task and interval
+for the lifetime of the Beat process. Schedule refreshes do not repeat the same
+warning every five minutes.
+
 Permanent lifecycle and repair tasks have no enablement control. They are
 registered with `enabled=True`, listed in `PERMANENT_LIFECYCLE_TASKS`, and
 cannot be disabled, renamed, or deleted through scheduler operations.

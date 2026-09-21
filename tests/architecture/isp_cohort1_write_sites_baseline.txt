@@ -20,6 +20,11 @@
 # `customer_location_requests` fell 6 sites to 1 in the same change and the
 # total fell 101 -> 99, so the surface shrank while ownership concentrated.
 # The census is authority-blind by design; it counts files, not owners.
+#
+# 2026-09-11 — the typed `customer.canonical_profile_patch` participant adds
+# 20 explicit Customer/profile write sites and `party.registry` adds two
+# explicit canonical Party synchronization sites. These are the registered
+# owners used by Inbox completion, not parallel adapter writers.
 
 2 cli_script|scripts/migration/backfill_crm_subscriber_links.py
 2 cli_script|scripts/migration/backfill_party_status.py
@@ -40,6 +45,7 @@
 1 service|app/services/crm_customer_name_repair.py
 1 service|app/services/crm_portal.py
 1 service|app/services/crm_ticket_pull.py
+20 service|app/services/customer_canonical_profile_patch.py
 1 service|app/services/customer_location_requests.py
 1 service|app/services/customer_portal_contacts.py
 1 service|app/services/customer_portal_notifications.py
@@ -47,7 +53,7 @@
 1 service|app/services/mrr_snapshot.py
 1 service|app/services/network_subscriber_bridge.py
 1 service|app/services/nin_verifications.py
-19 service|app/services/party.py
+21 service|app/services/party.py
 14 service|app/services/subscriber.py
 2 service|app/services/subscriber_profile_cleanup.py
 3 service|app/services/team_inbox_commands.py
@@ -56,4 +62,4 @@
 1 web_presenter|app/services/web_customer_details.py
 1 web_presenter|app/services/web_system_import_wizard.py
 3 web_presenter|app/services/web_system_restore_tool.py
-TOTAL 99
+TOTAL 121

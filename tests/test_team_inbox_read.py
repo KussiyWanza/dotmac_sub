@@ -13,10 +13,12 @@ from app.models.service_team import (
     ServiceTeam,
     ServiceTeamCapability,
     ServiceTeamCapabilityDefinition,
+    ServiceTeamMember,
     ServiceTeamType,
 )
 from app.models.system_user import SystemUser
 from app.models.team_inbox import (
+    InboxAgentPresence,
     InboxConversation,
     InboxConversationAssignment,
     InboxConversationStatus,
@@ -28,6 +30,7 @@ from app.models.team_inbox import (
 )
 from app.services import service_team_composition, team_inbox_read
 from app.web.admin import inbox as admin_inbox
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 
 def _team(db_session, name: str, team_type: str = ServiceTeamType.support.value):
@@ -93,6 +96,23 @@ def _conversation(
     )
     db_session.flush()
     return conversation
+
+
+def _online_reply_agent(db_session, team: ServiceTeam):
+    user, person = add_bound_staff_user(db_session)
+    db_session.add_all(
+        [
+            ServiceTeamMember(team_id=team.id, person_id=person.id, is_active=True),
+            InboxAgentPresence(
+                person_id=user.id,
+                status="online",
+                manual_override_status="online",
+                last_seen_at=datetime.now(UTC),
+            ),
+        ]
+    )
+    db_session.flush()
+    return user
 
 
 def _message(
@@ -395,12 +415,13 @@ def test_admin_inbox_detail_non_htmx_redirects_to_workspace(db_session):
 
 def test_admin_inbox_detail_reply_queues_message(db_session):
     support = _team(db_session, "Support")
+    agent = _online_reply_agent(db_session, support)
     conversation = _conversation(db_session, support, subject="Router offline")
     db_session.commit()
 
     response = admin_inbox.team_inbox_reply(
         conversation.id,
-        request=SimpleNamespace(state=SimpleNamespace()),
+        request=SimpleNamespace(state=SimpleNamespace(user=agent)),
         background_tasks=BackgroundTasks(),
         body_text="We are checking this now.",
         db=db_session,

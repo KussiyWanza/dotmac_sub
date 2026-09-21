@@ -1476,6 +1476,20 @@ def project_credentials_to_radius(db: Session, usernames: AbstractSet[str]) -> N
 
 
 def apply_subscription_address_list_block(db: Session, subscription_id: str) -> int:
+    """Apply the address-list block backup to every NAS the subscription's
+    live or last-known session names.
+
+    This is the ONLY enforcement path a non-RADIUS subscription (``login IS
+    NULL``) can reach: RADIUS reject/CoA (``radius_access_state.py``,
+    ``disconnect_subscription_sessions``) requires a login and therefore never
+    touches it. A subscription with neither an open ``RadiusAccountingSession``
+    nor a ``provisioning_nas_device_id`` has NO enforceable NAS identity at
+    all, so this returns 0 with no NAS command issued — that is a real,
+    unenforced block, not a benign no-op, and is logged loudly rather than
+    silently so it surfaces instead of hiding a revenue-leak/compliance gap.
+    See docs/FINANCIAL_ACCESS_ENFORCEMENT.md and the "non-RADIUS connectivity
+    enforcement" note there for the known population and its owner.
+    """
     if not _address_list_block_enabled(db):
         return 0
     subscription = db.get(Subscription, coerce_uuid(subscription_id))
@@ -1483,6 +1497,14 @@ def apply_subscription_address_list_block(db: Session, subscription_id: str) -> 
         return 0
     list_name = suspended_address_list(db)
     if not subscription.ipv4_address:
+        logger.warning(
+            "address_list_block_unenforceable",
+            extra={
+                "event": "address_list_block_unenforceable",
+                "subscription_id": str(subscription.id),
+                "reason": "no_ipv4_address",
+            },
+        )
         return 0
     sessions = (
         db.query(RadiusAccountingSession)
@@ -1501,6 +1523,18 @@ def apply_subscription_address_list_block(db: Session, subscription_id: str) -> 
         nas_device = db.get(NasDevice, subscription.provisioning_nas_device_id)
         if nas_device:
             targets[nas_device.id] = nas_device
+    if not targets:
+        logger.warning(
+            "address_list_block_unenforceable",
+            extra={
+                "event": "address_list_block_unenforceable",
+                "subscription_id": str(subscription.id),
+                "reason": "no_open_session_and_no_provisioning_nas_device",
+                "login": subscription.login,
+                "ipv4_address": subscription.ipv4_address,
+            },
+        )
+        return 0
     for nas_device in targets.values():
         if _enforce_address_list_on_nas(
             db, nas_device, list_name, subscription.ipv4_address, add=True
@@ -1535,6 +1569,21 @@ def remove_subscription_address_list_block(db: Session, subscription_id: str) ->
         nas_device = db.get(NasDevice, subscription.provisioning_nas_device_id)
         if nas_device:
             targets[nas_device.id] = nas_device
+    if not targets:
+        # Symmetric with apply_subscription_address_list_block's warning: a
+        # subscription with no enforceable NAS identity was never blocked by
+        # this mechanism either, so there is nothing to remove — but say so
+        # loudly rather than returning 0 unremarked, since a caller expecting
+        # a lifted block otherwise has no signal that none was ever applied.
+        logger.warning(
+            "address_list_unblock_unenforceable",
+            extra={
+                "event": "address_list_unblock_unenforceable",
+                "subscription_id": str(subscription.id),
+                "reason": "no_open_session_and_no_provisioning_nas_device",
+            },
+        )
+        return 0
     for nas_device in targets.values():
         if _enforce_address_list_on_nas(
             db, nas_device, list_name, subscription.ipv4_address, add=False
@@ -1790,6 +1839,21 @@ def cleanup_subscription_on_suspend(
     db: Session, subscription_id: str
 ) -> dict[str, int]:
     """Cleanup when a subscription is suspended.
+
+    NOT called by the live suspend path. `subscription_suspended` is instead
+    handled by `events.handlers.enforcement._enforce_subscription_block`
+    (RADIUS reject-state + `reconcile_subscription_connectivity`) followed by
+    the async `enforcement_scheduled.cleanup_subscription_block_sessions` task
+    (session disconnect + `apply_subscription_address_list_block`). This
+    function is exercised directly by tests
+    (`tests/test_access_enforcement_strays.py`) for its sibling-credential
+    scoping logic (S2: suspending one subscription must not remove RADIUS rows
+    for the customer's OTHER paid subscriptions) but is not wired into either
+    path above. Whether it should replace, feed, or be retired in favor of the
+    live path is an open architectural question — deliberately left alone
+    here rather than merged speculatively, since doing so would change live
+    suspend/restore behavior for the whole subscriber base, not just the
+    non-RADIUS cohort this change targets.
 
     Unlike cancellation, suspension is reversible so we:
     1. Disconnect all active RADIUS sessions

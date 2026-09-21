@@ -10,4 +10,3 @@
 1 app/services/sales/selfserve.py
 1 app/services/sales_orders.py
 1 app/services/service_status.py
-1 app/services/web_billing_accounts.py

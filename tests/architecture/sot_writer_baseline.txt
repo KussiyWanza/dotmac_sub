@@ -52,10 +52,8 @@ app.services.field.equipment
 app.services.field.equipment_custody
 app.services.field.fiber
 app.services.field.jobs
-app.services.field.location_tracking
 app.services.field.map_assets
 app.services.field.movements
-app.services.field.notes
 app.services.field.vendor_devices
 app.services.field.worklogs
 app.services.file_storage

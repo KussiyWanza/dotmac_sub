@@ -6,12 +6,14 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 from fastapi.routing import APIRoute
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
+from starlette.responses import HTMLResponse
 
 from app.models.party import Party
 from app.models.rbac import Role, SystemUserRole
@@ -66,6 +68,59 @@ def _route_has_permission(router, path: str, method: str, expected: str) -> bool
             if _contains_value(cell.cell_contents, expected):
                 return True
     return False
+
+
+def test_quote_update_renders_acceptance_conflict_in_the_edit_form(monkeypatch):
+    class FakeSession:
+        rolled_back = False
+
+        def rollback(self) -> None:
+            self.rolled_back = True
+
+    db = FakeSession()
+    request = SimpleNamespace(state=SimpleNamespace(actor_id="sales-agent"))
+    rendered: dict[str, object] = {}
+
+    def reject_unsaved_acceptance(*_args, **_kwargs) -> None:
+        raise HTTPException(
+            status_code=409,
+            detail="Save the quote changes first, then accept it.",
+        )
+
+    def render_form(name, context, *, status_code):
+        rendered.update(name=name, context=context, status_code=status_code)
+        return HTMLResponse(str(context["error"]), status_code=status_code)
+
+    monkeypatch.setattr(web_sales, "update_quote_from_form", reject_unsaved_acceptance)
+    monkeypatch.setattr(admin_sales, "_ctx", lambda *_args: {})
+    monkeypatch.setattr(
+        web_sales,
+        "build_quote_form_error_context",
+        lambda *_args, **_kwargs: {"error": None},
+    )
+    monkeypatch.setattr(admin_sales.templates, "TemplateResponse", render_form)
+
+    response = admin_sales.quote_update(
+        request=request,
+        quote_id=str(uuid.uuid4()),
+        lead_id=str(uuid.uuid4()),
+        status="accepted",
+        currency="NGN",
+        tax_rate="0",
+        expires_at=None,
+        notes="Updated terms",
+        latitude=None,
+        longitude=None,
+        address=None,
+        region=None,
+        db=db,
+    )
+
+    assert db.rolled_back is True
+    assert response.status_code == 409
+    assert rendered["name"] == "admin/sales/quotes/form.html"
+    assert rendered["status_code"] == 409
+    assert response.body.decode() == "Save the quote changes first, then accept it."
 
 
 def _make_subscriber(db, **overrides) -> Subscriber:
@@ -913,6 +968,22 @@ def test_sales_order_detail_context(db_session):
     assert context["lines"] == []
     assert context["quote"] is None
     assert context["project"] is None
+
+
+def test_sales_order_form_exposes_only_operator_owned_statuses(db_session):
+    context = web_sales.build_sales_order_form_context(db_session)
+
+    assert context["statuses"] == ["draft", "confirmed", "cancelled"]
+
+
+def test_sales_order_detail_links_to_account_payment_with_balance():
+    template = Path("templates/admin/sales/sales_orders/detail.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "billing:payment:create" in template
+    assert "/admin/billing/payments/new?account_id=" in template
+    assert "order.balance_due" in template
 
 
 def test_sales_orders_resolve_historical_agent_name_and_email(db_session):

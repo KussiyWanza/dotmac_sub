@@ -331,13 +331,18 @@ class DotMacERPClient:
         self,
         *,
         entity: Literal["leave_restriction", "account_status"],
+        updated_after: str | None = None,
         limit: int = 500,
     ) -> dict:
-        """Read one complete bounded ERP staff-access projection entity."""
+        """Read one bounded page of an ERP staff-access projection entity."""
+
+        params: dict[str, object] = {"entity": entity, "limit": limit}
+        if updated_after is not None:
+            params["updated_after"] = updated_after
 
         return self.get(
             "/api/v1/sync/sub/staff-access/projection",
-            params={"entity": entity, "limit": limit},
+            params=params,
             expected_status_codes={200},
         )
 
@@ -423,6 +428,41 @@ class DotMacERPClient:
         result = self.get("/api/v1/sync/sub/expense-categories")
         items = result.get("items")
         return items if isinstance(items, list) else []
+
+    def get_expense_approvers(self, requested_by_email: str) -> list[dict]:
+        result = self.get(
+            "/api/v1/sync/sub/expense-approvers",
+            params={"requested_by_email": requested_by_email},
+            expected_status_codes={200},
+        )
+        items = result.get("items")
+        return items if isinstance(items, list) else []
+
+    def get_expense_banks(self) -> list[dict]:
+        result = self.get("/api/v1/sync/sub/expense-banks", expected_status_codes={200})
+        items = result.get("items")
+        return items if isinstance(items, list) else []
+
+    def get_expense_profile_destination(self, requested_by_email: str) -> dict:
+        return self.get(
+            "/api/v1/sync/sub/expense-payment-destinations/profile",
+            params={"requested_by_email": requested_by_email},
+            expected_status_codes={200},
+        )
+
+    def verify_expense_destination(self, payload: dict) -> dict:
+        return self.post(
+            "/api/v1/sync/sub/expense-payment-destinations/verify",
+            payload,
+            expected_status_codes={200},
+        )
+
+    def inspect_expense_destination(self, payload: dict) -> dict:
+        return self.post(
+            "/api/v1/sync/sub/expense-payment-destinations/inspect",
+            payload,
+            expected_status_codes={200},
+        )
 
     # ============ Material request surface ============
     #

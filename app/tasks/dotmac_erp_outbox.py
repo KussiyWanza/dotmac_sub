@@ -15,9 +15,16 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Literal
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from app.celery_app import celery_app
+from app.services.operational_logging import (
+    OperationalEventName,
+    OperationalLogEvent,
+    OperationalOutcome,
+    log_operational_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +56,17 @@ def deliver_erp_sync_events() -> dict:
     finally:
         observe_job("deliver_erp_sync_events", status, time.monotonic() - start)
 
-    logger.info("DELIVER_ERP_SYNC_EVENTS_COMPLETE %s", results)
+    log_operational_event(
+        logger,
+        OperationalLogEvent(
+            name=OperationalEventName.ERP_SYNC_EVENTS_COMPLETED,
+            outcome=OperationalOutcome.COMPLETED,
+            component="dotmac_erp",
+            counters={
+                key: value for key, value in results.items() if isinstance(value, int)
+            },
+        ),
+    )
     return results
 
 
@@ -80,7 +97,17 @@ def refresh_expense_claim_statuses() -> dict:
     finally:
         observe_job("refresh_expense_claim_statuses", status, time.monotonic() - start)
 
-    logger.info("REFRESH_EXPENSE_CLAIM_STATUSES_COMPLETE %s", results)
+    log_operational_event(
+        logger,
+        OperationalLogEvent(
+            name=OperationalEventName.ERP_EXPENSE_STATUS_REFRESH_COMPLETED,
+            outcome=OperationalOutcome.COMPLETED,
+            component="dotmac_erp",
+            counters={
+                key: value for key, value in results.items() if isinstance(value, int)
+            },
+        ),
+    )
     return results
 
 
@@ -88,11 +115,12 @@ def refresh_expense_claim_statuses() -> dict:
 def refresh_material_request_statuses() -> dict:
     """Poll ERP for in-flight material-request statuses and refresh mirror fields.
 
-    Read-only reconcile: for each synced FieldMaterialRequest still awaiting ERP
-    fulfillment, GET the request status and write it back (flipping the sub row to
-    fulfilled when ERP reports it). Gated at the scheduler by
-    ``dotmac_erp_sync_enabled`` (default off), so it is inert until cutover; a
-    no-op when nothing is in flight. Idempotent — safe to re-run.
+    Read-only against ERP: for each synced FieldMaterialRequest still awaiting
+    fulfillment, GET the request status and pass the typed observation to the
+    material owner. The validated ERP capability schedule and explicit
+    ``material_request`` flow ownership gate execution. Successful unchanged
+    observations advance freshness so bounded pages rotate. Idempotent and safe
+    to re-run.
     """
     from app.metrics import observe_job
 
@@ -114,7 +142,17 @@ def refresh_material_request_statuses() -> dict:
             "refresh_material_request_statuses", status, time.monotonic() - start
         )
 
-    logger.info("REFRESH_MATERIAL_REQUEST_STATUSES_COMPLETE %s", results)
+    log_operational_event(
+        logger,
+        OperationalLogEvent(
+            name=OperationalEventName.ERP_MATERIAL_STATUS_REFRESH_COMPLETED,
+            outcome=OperationalOutcome.COMPLETED,
+            component="dotmac_erp",
+            counters={
+                key: value for key, value in results.items() if isinstance(value, int)
+            },
+        ),
+    )
     return results
 
 
@@ -126,6 +164,16 @@ def repair_purchase_invoice_sync() -> dict:
     )
 
     return run_repair_purchase_invoice_sync()
+
+
+@celery_app.task(name="app.tasks.dotmac_erp_outbox.repair_purchase_order_writebacks")
+def repair_purchase_order_writebacks() -> dict:
+    """Re-apply a delivered PO's ERP id onto its install when the write-back was lost."""
+    from app.services.dotmac_erp.purchase_order_sync import (
+        run_repair_purchase_order_writebacks,
+    )
+
+    return run_repair_purchase_order_writebacks()
 
 
 @celery_app.task(name="app.tasks.dotmac_erp_outbox.refresh_purchase_invoice_statuses")
@@ -151,7 +199,17 @@ def refresh_purchase_invoice_statuses() -> dict:
             "refresh_purchase_invoice_statuses", status, time.monotonic() - start
         )
 
-    logger.info("REFRESH_PURCHASE_INVOICE_STATUSES_COMPLETE %s", results)
+    log_operational_event(
+        logger,
+        OperationalLogEvent(
+            name=OperationalEventName.ERP_PURCHASE_INVOICE_STATUS_REFRESH_COMPLETED,
+            outcome=OperationalOutcome.COMPLETED,
+            component="dotmac_erp",
+            counters={
+                key: value for key, value in results.items() if isinstance(value, int)
+            },
+        ),
+    )
     return results
 
 
@@ -183,6 +241,7 @@ def reconcile_erp_staff_access(self) -> dict[str, object]:
     """Repair Selfcare staff-access projections from ERP's authoritative feed."""
 
     from app.schemas.erp_staff_access_webhook import (
+        ErpStaffAccessProjectionRecord,
         ErpStaffAccountStatusProjection,
         ErpStaffLeaveRestrictionProjection,
     )
@@ -196,40 +255,63 @@ def reconcile_erp_staff_access(self) -> dict[str, object]:
     from app.services.owner_commands import CommandContext
 
     page_limit = 500
+    max_pages_per_entity = 100
+
+    def _fetch_projection_items(
+        client: ErpCapabilityClient,
+        *,
+        entity: Literal["leave_restriction", "account_status"],
+    ) -> tuple[ErpStaffAccessProjectionRecord, ...]:
+        items: list[ErpStaffAccessProjectionRecord] = []
+        updated_after = None
+        for _page_number in range(max_pages_per_entity):
+            page = client.get_staff_access_projection(
+                entity=entity,
+                updated_after=updated_after,
+                limit=page_limit,
+            )
+            items.extend(page.items)
+            if len(page.items) < page_limit:
+                return tuple(items)
+
+            next_updated_after = max(item.updated_at for item in page.items)
+            if updated_after is not None and next_updated_after <= updated_after:
+                raise RuntimeError(
+                    "ERP staff access projection pagination cursor did not advance"
+                )
+            updated_after = next_updated_after
+
+        raise RuntimeError(
+            "ERP staff access projection exceeded the bounded pagination limit"
+        )
+
     try:
         with db_session_adapter.session() as db:
             client = ErpCapabilityClient(db)
-            leave_page = client.get_staff_access_projection(
+            leave_items = _fetch_projection_items(
+                client,
                 entity="leave_restriction",
-                limit=page_limit,
             )
-            account_page = client.get_staff_access_projection(
+            account_items = _fetch_projection_items(
+                client,
                 entity="account_status",
-                limit=page_limit,
             )
-            if (
-                len(leave_page.items) >= page_limit
-                or len(account_page.items) >= page_limit
-            ):
-                raise RuntimeError(
-                    "ERP staff access projection reached the bounded page limit"
-                )
 
             leave_events = tuple(
                 leave_event
-                for item in leave_page.items
+                for item in leave_items
                 if isinstance(item, ErpStaffLeaveRestrictionProjection)
                 if (leave_event := item.to_owner_event()) is not None
             )
             account_events = tuple(
                 account_event
-                for item in account_page.items
+                for item in account_items
                 if isinstance(item, ErpStaffAccountStatusProjection)
                 if (account_event := item.to_owner_event()) is not None
             )
             unmapped = (
-                len(leave_page.items)
-                + len(account_page.items)
+                len(leave_items)
+                + len(account_items)
                 - len(leave_events)
                 - len(account_events)
             )

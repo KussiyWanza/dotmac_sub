@@ -15,7 +15,11 @@ from app.models.team_inbox import (
     InboxAutomationTrigger,
     InboxConversation,
 )
-from app.services import team_inbox_assignment, team_inbox_operations
+from app.services import (
+    ai_conversation_ownership,
+    team_inbox_assignment,
+    team_inbox_operations,
+)
 
 OWNER = "communications.team_inbox_automation"
 
@@ -32,6 +36,7 @@ class InboxAutomationProposal:
 class InboxAutomationExecutionResult:
     matched_rule_ids: tuple[UUID, ...]
     executed_rule_ids: tuple[UUID, ...]
+    blocked_by_ai_ownership: bool = False
 
 
 def conditions_match(
@@ -92,6 +97,16 @@ def execute_matching_rules(
     actor_person_id: UUID | None = None,
 ) -> InboxAutomationExecutionResult:
     proposals = evaluate_rules(db, conversation=conversation, trigger=trigger)
+    ownership = ai_conversation_ownership.resolve_ai_conversation_ownership(
+        db,
+        conversation_id=conversation.id,
+    )
+    if ownership.ai_owned and proposals:
+        return InboxAutomationExecutionResult(
+            matched_rule_ids=tuple(item.rule_id for item in proposals),
+            executed_rule_ids=(),
+            blocked_by_ai_ownership=True,
+        )
     executed: list[UUID] = []
     for proposal in proposals:
         value = proposal.action_value

@@ -71,8 +71,10 @@ timestamp while each successful native poll renews its verification evidence.
 Per-device verification sources differ:
 
 - core devices: native infrastructure polling and warmed live observations;
-- OLTs: direct ping/poll observations, with linked monitored-device evidence as
-  a fallback;
+- OLTs: a fresh successful native OLT poll independently confirms operation,
+  even when the legacy direct-ping observation is stale. Linked monitored-device
+  evidence is a fallback only after its inventory row is active and its poll
+  clock passes the shared freshness gate;
 - ONTs: current OLT status, ACS informs, and last-seen observations;
 - linked NAS devices: their canonical `NetworkDevice` observation;
 - unlinked NAS devices: explicit health evidence; administrative `active`

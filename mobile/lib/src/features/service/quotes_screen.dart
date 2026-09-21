@@ -227,6 +227,36 @@ class _QuoteCard extends StatelessWidget {
                   (quote.estimateProvisional ? ' (provisional)' : ''),
             ),
             _row(context, 'Deposit', naira(quote.depositAmount)),
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: scheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    quote.paymentReviewStatus == 'approved'
+                        ? Icons.verified_outlined
+                        : quote.paymentReviewStatus == 'rejected'
+                            ? Icons.cancel_outlined
+                            : Icons.schedule_outlined,
+                    size: 18,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      quote.paymentReviewMessage,
+                      style: text.bodySmall,
+                    ),
+                  ),
+                ],
+              ),
+            ),
             if (actionsAvailable && quote.canPayDeposit) ...[
               const SizedBox(height: 12),
               SizedBox(
@@ -282,9 +312,11 @@ class _StatusChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final accepted = quote.isAccepted;
-    final color = accepted
+    final color = accepted || quote.paymentReviewStatus == 'approved'
         ? Colors.green
-        : (quote.depositPaid ? scheme.primary : scheme.tertiary);
+        : quote.paymentReviewStatus == 'rejected'
+            ? scheme.error
+            : (quote.depositPaid ? scheme.primary : scheme.tertiary);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(

@@ -25,6 +25,17 @@ class _FakeAdapter implements HttpClientAdapter {
         'actions_unavailable_message': 'Please contact support.',
       });
     }
+    if (options.path.endsWith('/deposit/initiate')) {
+      return _json({
+        'invoice_id': 'invoice-1',
+        'quote_id': 'quote-1',
+        'amount': '25000.00',
+        'currency': 'NGN',
+        'provider_type': 'paystack',
+        'payment_reference': 'DMAC-QUOTE-1',
+        'charged': false,
+      });
+    }
     return _json({
       'id': 'quote-1',
       'status': 'draft',
@@ -76,4 +87,16 @@ void main() {
     expect(body['address'], '12 Mississippi Street, Maitama');
     expect(body['note'], 'Blue gate, second floor');
   });
+
+  test(
+    'deposit initiation carries retry evidence and mobile return URL',
+    () async {
+      await repository.initiateDeposit('quote-1');
+
+      final body = adapter.calls.single.data as Map<String, dynamic>;
+      expect(body['idempotency_key'], startsWith('quote-quote-1-'));
+      expect((body['idempotency_key'] as String).length, greaterThan(16));
+      expect(body['redirect_url'], endsWith('://success'));
+    },
+  );
 }

@@ -101,7 +101,7 @@ def test_bearer_auth_resolves_reseller_user_token(db_session, flag_on):
 def test_refresh_keeps_reseller_user_principal(db_session, flag_on):
     r, ru, tokens = _reseller_login(db_session)
     rotated = AuthFlow.refresh(db_session, tokens["refresh_token"], _request())
-    payload = auth_flow_service.decode_access_token(db_session, rotated["access_token"])
+    payload = auth_flow_service.decode_access_token(db_session, rotated.access_token)
     assert payload["principal_type"] == "reseller_user"
     assert payload["sub"] == str(ru.id)
 

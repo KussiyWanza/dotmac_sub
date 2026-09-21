@@ -308,6 +308,9 @@ def test_request_quote_payload_serializes_pin_and_money_strings(db_session):
     assert payload["deposit_amount"] == "37500.00"
     assert payload["deposit_percent"] == 50
     assert payload["deposit_paid"] is False
+    assert payload["payment_review_status"] == "pending"
+    assert payload["can_pay_deposit"] is False
+    assert "under staff review" in payload["payment_review_message"]
     for line in payload["line_items"]:
         assert isinstance(line["quantity"], str)
         assert isinstance(line["unit_price"], str)

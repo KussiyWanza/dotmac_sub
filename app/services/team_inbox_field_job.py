@@ -52,7 +52,11 @@ from app.models.team_inbox import (
     InboxTeamSource,
 )
 from app.models.work_order import WorkOrder
-from app.services import service_team_lifecycle, team_inbox_status
+from app.services import (
+    service_team_lifecycle,
+    team_inbox_customer_completion_policy,
+    team_inbox_status,
+)
 from app.services.team_inbox_assignment import (
     assign_conversation_to_agent,
     queue_conversation_for_team,
@@ -195,6 +199,9 @@ def open_for_departure(
     conversation = conversation_for(db, work_order)
     if conversation is None:
         conversation = InboxConversation(
+            customer_completion_policy_version_id=team_inbox_customer_completion_policy.snapshot_active_policy_id(
+                db
+            ),
             channel_type=FIELD_JOB_CHANNEL,
             external_thread_id=_thread_id(work_order),
             subscriber_id=work_order.subscriber_id,

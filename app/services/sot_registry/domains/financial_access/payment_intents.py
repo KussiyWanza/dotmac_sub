@@ -563,11 +563,18 @@ SERVICES: tuple[SOTService, ...] = (
             "customer payment-intent history projection",
             "unsubmitted direct-transfer intent cancellation",
         ),
-        depends_on=("customer.accounts", "financial.topup_intents"),
+        depends_on=(
+            "customer.accounts",
+            "financial.payment_proofs",
+            "financial.topup_intents",
+        ),
         notes=(
-            "This coordinator exposes account-scoped intent history and admits "
+            "This coordinator exposes account-scoped intent history, including "
+            "owner-derived cancellation actions for unsubmitted transfers and expired "
+            "submitted transfers whose exact proof remains unreviewed. It admits "
             "customer or staff abandonment only while a direct-transfer intent is "
-            "pending and has no submitted payment evidence. Customer and admin "
+            "pending and has no submitted payment evidence; stale submitted proof "
+            "rejection remains owned by financial.payment_proofs. Customer and admin "
             "history consume the lifecycle owner's same safe normalized projection; "
             "raw gateway payloads and private metadata are never projected."
         ),
@@ -576,7 +583,10 @@ SERVICES: tuple[SOTService, ...] = (
                 ConcernContract(
                     name="customer payment-intent history projection",
                     role=OwnerRole.RESOLVER,
-                    input_names=("canonical account payment intents",),
+                    input_names=(
+                        "canonical account payment intents",
+                        "canonical linked payment-proof review evidence",
+                    ),
                 ),
                 ConcernContract(
                     name="unsubmitted direct-transfer intent cancellation",
@@ -596,6 +606,15 @@ SERVICES: tuple[SOTService, ...] = (
                     source=(
                         "account-scoped TopupIntent identity, provider, status, "
                         "amount, proof link, payment link, expiry, and provenance"
+                    ),
+                ),
+                AuthorityInput(
+                    name="canonical linked payment-proof review evidence",
+                    owner="financial.payment_proofs",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "exact linked proof identity, account, reference, review "
+                        "status, and canonical payment link"
                     ),
                 ),
                 AuthorityInput(

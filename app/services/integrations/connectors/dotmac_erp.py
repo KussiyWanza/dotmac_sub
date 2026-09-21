@@ -15,6 +15,7 @@ from app.services.dotmac_erp.client import (
 )
 from app.services.dotmac_erp.operational_contracts import ErpOperationalSyncCommand
 from app.services.integrations.backoffice_contracts import (
+    ERP_EXPENSE_FORM_CAPABILITY,
     ERP_INVENTORY_CAPABILITY,
     ERP_OPERATIONAL_SYNC_CAPABILITY,
     ERP_OUTBOX_CAPABILITY,
@@ -189,6 +190,12 @@ class DotmacErpRunner:
                 "sync_operational_domains",
                 "deliver_outbox",
                 "upload_purchase_invoice_attachment",
+                "create_expense_claim_draft",
+                "upload_expense_receipt",
+                "submit_expense_claim",
+                "approve_expense_claim",
+                "reject_expense_claim",
+                "initiate_expense_payment",
                 "expense_claim_status",
                 "material_request_status",
                 "purchase_invoice_status",
@@ -204,16 +211,22 @@ class DotmacErpRunner:
                 "attendance_today",
                 "attendance_check_in",
                 "attendance_check_out",
+                "list_expense_approvers",
+                "list_expense_banks",
+                "get_expense_profile_destination",
+                "verify_expense_destination",
+                "inspect_expense_destination",
             }
             else "unsupported_operation"
         )
         client = None
         try:
-            is_attendance = envelope.capability_id in {
+            is_interactive = envelope.capability_id in {
                 WORKFORCE_ATTENDANCE_READ_CAPABILITY,
                 WORKFORCE_ATTENDANCE_PUNCH_CAPABILITY,
+                ERP_EXPENSE_FORM_CAPABILITY,
             }
-            client = self._client(config, secret_material, interactive=is_attendance)
+            client = self._client(config, secret_material, interactive=is_interactive)
             if envelope.capability_id == ERP_OPERATIONAL_SYNC_CAPABILITY:
                 # This feed holds its admission lock until the remote result.
                 # Keep the whole transport budget bounded under the normal
@@ -319,6 +332,65 @@ class DotmacErpRunner:
                         params.get("idempotency_key") or idempotency_key
                     ),
                 )
+            if action == "create_expense_claim_draft":
+                return client.post(
+                    "/api/v1/sync/sub/expense-claims/drafts",
+                    dict(params["payload"]),
+                    idempotency_key=str(
+                        params.get("idempotency_key") or idempotency_key
+                    ),
+                    expected_status_codes={200, 201},
+                )
+            if action == "upload_expense_receipt":
+                return client.post(
+                    "/api/v1/sync/sub/expense-claims/"
+                    f"{params['source_claim_id']}/items/{params['item_id']}/receipts",
+                    dict(params["payload"]),
+                    idempotency_key=str(
+                        params.get("idempotency_key") or idempotency_key
+                    ),
+                    expected_status_codes={200, 201},
+                )
+            if action == "submit_expense_claim":
+                return client.post(
+                    "/api/v1/sync/sub/expense-claims/"
+                    f"{params['source_claim_id']}/submit",
+                    dict(params["payload"]),
+                    idempotency_key=str(
+                        params.get("idempotency_key") or idempotency_key
+                    ),
+                    expected_status_codes={200},
+                )
+            if action == "approve_expense_claim":
+                return client.post(
+                    "/api/v1/sync/sub/expense-claims/"
+                    f"{params['source_claim_id']}/approve",
+                    dict(params["payload"]),
+                    idempotency_key=str(
+                        params.get("idempotency_key") or idempotency_key
+                    ),
+                    expected_status_codes={200},
+                )
+            if action == "reject_expense_claim":
+                return client.post(
+                    "/api/v1/sync/sub/expense-claims/"
+                    f"{params['source_claim_id']}/reject",
+                    dict(params["payload"]),
+                    idempotency_key=str(
+                        params.get("idempotency_key") or idempotency_key
+                    ),
+                    expected_status_codes={200},
+                )
+            if action == "initiate_expense_payment":
+                return client.post(
+                    "/api/v1/sync/sub/expense-claims/"
+                    f"{params['source_claim_id']}/payments",
+                    dict(params["payload"]),
+                    idempotency_key=str(
+                        params.get("idempotency_key") or idempotency_key
+                    ),
+                    expected_status_codes={200},
+                )
         elif capability_id == ERP_STATUS_CAPABILITY:
             if action == "expense_claim_status":
                 return {
@@ -338,6 +410,23 @@ class DotmacErpRunner:
                         str(params["source_invoice_id"])
                     )
                 }
+        elif capability_id == ERP_EXPENSE_FORM_CAPABILITY:
+            if action == "list_expense_approvers":
+                return {
+                    "items": client.get_expense_approvers(
+                        str(params["requested_by_email"])
+                    )
+                }
+            if action == "list_expense_banks":
+                return {"items": client.get_expense_banks()}
+            if action == "get_expense_profile_destination":
+                return client.get_expense_profile_destination(
+                    str(params["requested_by_email"])
+                )
+            if action == "verify_expense_destination":
+                return client.verify_expense_destination(dict(params["payload"]))
+            if action == "inspect_expense_destination":
+                return client.inspect_expense_destination(dict(params["payload"]))
         elif capability_id == ERP_INVENTORY_CAPABILITY:
             if action == "list_inventory":
                 return client.list_inventory(**params)
@@ -367,6 +456,11 @@ class DotmacErpRunner:
                     raise ValueError("unsupported staff access projection entity")
                 return client.get_staff_access_projection(
                     entity=cast(Literal["leave_restriction", "account_status"], entity),
+                    updated_after=(
+                        str(params["updated_after"])
+                        if params.get("updated_after") is not None
+                        else None
+                    ),
                     limit=int(params.get("limit") or 500),
                 )
         elif capability_id == WORKFORCE_ATTENDANCE_READ_CAPABILITY:

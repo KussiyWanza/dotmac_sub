@@ -6,6 +6,7 @@ from uuid import uuid4
 import app.poller.mikrotik_poller as mikrotik_poller
 from app.poller.mikrotik_poller import (
     BandwidthPoller,
+    DevicePool,
     MikroTikConnection,
     QueueStats,
     _sanitize_exc,
@@ -247,3 +248,30 @@ def test_persistently_unreachable_router_uses_bounded_long_backoff():
         seconds=mikrotik_poller.FAILURE_BACKOFF_MAX_SECONDS + 1
     )
     assert conn.should_retry is True
+
+
+def test_device_pool_bounds_concurrent_routeros_calls():
+    class _Connection:
+        should_retry = True
+
+        async def get_queue_stats(self):
+            nonlocal running, peak
+            running += 1
+            peak = max(peak, running)
+            await asyncio.sleep(0.01)
+            running -= 1
+            return []
+
+    async def _poll():
+        pool = DevicePool()
+        pool._last_refresh = datetime.now(UTC)
+        pool._connections = {
+            uuid4(): _Connection()
+            for _ in range(mikrotik_poller.MAX_CONCURRENT_DEVICE_POLLS + 3)
+        }
+        return [item async for item in pool.poll_all()]
+
+    running = 0
+    peak = 0
+    assert _run_async(_poll()) == []
+    assert peak == mikrotik_poller.MAX_CONCURRENT_DEVICE_POLLS

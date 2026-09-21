@@ -7,6 +7,7 @@ results, and errors for UI visibility, retry support, and audit.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -871,6 +872,62 @@ def start_ont_service_configuration_operation(
     operation.max_retries = command.max_retries
     db.flush()
     return operation
+
+
+@dataclass(frozen=True, slots=True)
+class StartOntServiceConfigurationVerificationOperation:
+    """Exact operation-ledger input for one readback-only verification attempt.
+
+    Unlike ``StartOntServiceConfigurationOperation`` (a fresh delivery
+    attempt), this always creates a ``redrive_of_id``-linked operation: the
+    terminally failed operation being verified stays recorded, untouched,
+    and the verification gets its own immutable attempt row.
+    """
+
+    ont_unit_id: UUID
+    assignment_id: UUID
+    configuration_head_id: UUID
+    configuration_revision: int
+    source_operation: NetworkOperation
+    correlation_key: str
+    initiated_by: str
+    reason: str
+    idempotency_key: str
+
+
+def start_ont_service_configuration_verification_operation(
+    db: Session, command: StartOntServiceConfigurationVerificationOperation
+) -> tuple[NetworkOperation, bool]:
+    """Create or replay one immutable readback-verification attempt.
+
+    The caller must lock and validate ``command.source_operation`` (and the
+    owning head/revision) before invoking this. Returns
+    ``(operation, replayed)`` — mirrors ``NetworkOperations.start_redrive``.
+    """
+
+    reviewed_head = hashlib.sha256(
+        f"{command.configuration_head_id}:{command.configuration_revision}:"
+        f"{command.source_operation.id}".encode()
+    ).hexdigest()
+    input_payload: dict[str, object] = {
+        "ont_id": str(command.ont_unit_id),
+        "assignment_id": str(command.assignment_id),
+        "configuration_head_id": str(command.configuration_head_id),
+        "configuration_revision": command.configuration_revision,
+        "verifies_operation_id": str(command.source_operation.id),
+    }
+    operation, replayed = network_operations.start_redrive(
+        db,
+        command.source_operation,
+        correlation_key=command.correlation_key,
+        input_payload=input_payload,
+        reason=command.reason,
+        reviewed_head=reviewed_head,
+        idempotency_key=command.idempotency_key,
+        initiated_by=command.initiated_by,
+    )
+    db.flush()
+    return operation, replayed
 
 
 @contextmanager

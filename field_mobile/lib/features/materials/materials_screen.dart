@@ -7,11 +7,12 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/offline/draft_store.dart';
 import '../execution/execution_controller.dart';
+import '../jobs/job_models.dart';
+import '../jobs/jobs_providers.dart';
 import 'material_models.dart';
 import 'materials_providers.dart';
 
 const _priorities = ['low', 'medium', 'high', 'urgent'];
-const _statusOrder = ['draft', 'submitted', 'approved', 'issued', 'fulfilled'];
 
 class MaterialsScreen extends ConsumerWidget {
   const MaterialsScreen({super.key});
@@ -21,6 +22,7 @@ class MaterialsScreen extends ConsumerWidget {
     final requests = ref.watch(materialRequestsProvider);
     final drafts = ref.watch(materialRequestDraftsProvider);
     final inventory = ref.watch(inventorySearchProvider);
+    final requestCount = requests.asData?.value.totalCount;
 
     return Scaffold(
       appBar: AppBar(
@@ -42,22 +44,13 @@ class MaterialsScreen extends ConsumerWidget {
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(16),
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    'Requests',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-                FilledButton.icon(
-                  onPressed: () => context.push('/materials/new'),
-                  icon: const Icon(Icons.add),
-                  label: const Text('Request'),
-                ),
-              ],
+            Text(
+              requestCount == null
+                  ? 'My requests'
+                  : 'My requests ($requestCount)',
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 8),
             drafts.when(
@@ -86,7 +79,8 @@ class MaterialsScreen extends ConsumerWidget {
               error: (_, _) => const SizedBox.shrink(),
             ),
             requests.when(
-              data: (items) {
+              data: (history) {
+                final items = history.items;
                 if (items.isEmpty) {
                   return const Padding(
                     padding: EdgeInsets.symmetric(vertical: 48),
@@ -213,61 +207,161 @@ class _MaterialRequestTile extends StatelessWidget {
   }
 }
 
-class MaterialRequestDetailScreen extends ConsumerWidget {
+class MaterialRequestDetailScreen extends ConsumerStatefulWidget {
   const MaterialRequestDetailScreen({super.key, required this.id});
 
   final String id;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final request = ref.watch(materialRequestProvider(id));
+  ConsumerState<MaterialRequestDetailScreen> createState() =>
+      _MaterialRequestDetailScreenState();
+}
+
+class _MaterialRequestDetailScreenState
+    extends ConsumerState<MaterialRequestDetailScreen> {
+  bool _canceling = false;
+
+  Future<void> _cancelRequest() async {
+    final controller = TextEditingController();
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Cancel material request?'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 500,
+          decoration: const InputDecoration(labelText: 'Cancellation reason'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Keep request'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final value = controller.text.trim();
+              if (value.isNotEmpty) Navigator.pop(context, value);
+            },
+            child: const Text('Cancel request'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (reason == null || !mounted) return;
+    setState(() => _canceling = true);
+    try {
+      final updated = await ref
+          .read(materialsRepositoryProvider)
+          .cancelRequest(
+            id: widget.id,
+            clientRef: const Uuid().v4(),
+            reason: reason,
+          );
+      ref.invalidate(materialRequestProvider(widget.id));
+      ref.invalidate(materialRequestsProvider);
+      if (!mounted) return;
+      final message = updated.status == 'cancellation_pending'
+          ? 'Cancellation sent to ERP'
+          : 'Material request canceled';
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    } on DioException catch (error) {
+      if (!mounted) return;
+      final detail = error.response?.data;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not cancel request: ${detail ?? error.message}'),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _canceling = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final request = ref.watch(materialRequestProvider(widget.id));
     return Scaffold(
       appBar: AppBar(title: const Text('Material request')),
       body: request.when(
-        data: (data) => ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            Text(
-              data.displayNumber,
-              style: Theme.of(
-                context,
-              ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                _MaterialStatusChip(status: data.status),
-                if (data.priority != null) Chip(label: Text(data.priority!)),
+        data: (data) => RefreshIndicator(
+          onRefresh: () async {
+            ref.invalidate(materialRequestProvider(widget.id));
+            await ref.read(materialRequestProvider(widget.id).future);
+          },
+          child: ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.all(16),
+            children: [
+              Text(
+                data.displayNumber,
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _MaterialStatusChip(status: data.status),
+                  if (data.priority != null) Chip(label: Text(data.priority!)),
+                ],
+              ),
+              const SizedBox(height: 16),
+              _MaterialStatusTimeline(request: data),
+              if (data.sourceLocationLabel != null ||
+                  data.destinationLocationLabel != null) ...[
+                const SizedBox(height: 16),
+                _MaterialLocationSummary(request: data),
               ],
-            ),
-            const SizedBox(height: 16),
-            _MaterialStatusTimeline(request: data),
-            if (data.sourceLocationLabel != null ||
-                data.destinationLocationLabel != null) ...[
-              const SizedBox(height: 16),
-              _MaterialLocationSummary(request: data),
+              if (data.notes != null && data.notes!.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                Text(
+                  'Description',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
+                Text(data.notes!),
+              ],
+              if (data.approvalNotes != null ||
+                  data.rejectionReason != null ||
+                  data.issueNotes != null) ...[
+                const SizedBox(height: 16),
+                _MaterialStatusNotes(request: data),
+              ],
+              const SizedBox(height: 24),
+              Text('Items', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 8),
+              if (data.items.isEmpty)
+                const Text('No items on this request')
+              else
+                for (final item in data.items)
+                  _MaterialRequestItemTile(item: item),
+              if (data.canCancel) ...[
+                const SizedBox(height: 24),
+                OutlinedButton.icon(
+                  onPressed: _canceling ? null : _cancelRequest,
+                  icon: _canceling
+                      ? const SizedBox.square(
+                          dimension: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.cancel_outlined),
+                  label: const Text('Cancel request'),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'ERP-backed cancellations are confirmed by ERP before they are final.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                  textAlign: TextAlign.center,
+                ),
+              ],
             ],
-            if (data.notes != null && data.notes!.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Text(data.notes!),
-            ],
-            if (data.approvalNotes != null ||
-                data.rejectionReason != null ||
-                data.issueNotes != null) ...[
-              const SizedBox(height: 16),
-              _MaterialStatusNotes(request: data),
-            ],
-            const SizedBox(height: 24),
-            Text('Items', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            if (data.items.isEmpty)
-              const Text('No items on this request')
-            else
-              for (final item in data.items)
-                _MaterialRequestItemTile(item: item),
-          ],
+          ),
         ),
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (_, _) =>
@@ -478,12 +572,10 @@ class NewMaterialRequestScreen extends ConsumerStatefulWidget {
 class _NewMaterialRequestScreenState
     extends ConsumerState<NewMaterialRequestScreen> {
   final _notes = TextEditingController();
-  final _workOrderId = TextEditingController();
-  final _projectId = TextEditingController();
-  final _ticketId = TextEditingController();
   final _itemSearch = TextEditingController();
   final _quantity = TextEditingController(text: '1');
   final _itemNotes = TextEditingController();
+  String _workOrderId = '';
   String _priority = 'medium';
   String? _sourceLocationId;
   String? _destinationLocationId;
@@ -495,18 +587,13 @@ class _NewMaterialRequestScreenState
   @override
   void initState() {
     super.initState();
-    _workOrderId.text = widget.initialWorkOrderId ?? '';
-    _projectId.text = widget.initialProjectId ?? '';
-    _ticketId.text = widget.initialTicketId ?? '';
+    _workOrderId = widget.initialWorkOrderId ?? '';
     Future.microtask(_loadDraft);
   }
 
   @override
   void dispose() {
     _notes.dispose();
-    _workOrderId.dispose();
-    _projectId.dispose();
-    _ticketId.dispose();
     _itemSearch.dispose();
     _quantity.dispose();
     _itemNotes.dispose();
@@ -543,12 +630,8 @@ class _NewMaterialRequestScreenState
       _priority = draft['priority'] as String? ?? _priority;
       _sourceLocationId = draft['source_location_id'] as String?;
       _destinationLocationId = draft['destination_location_id'] as String?;
-      _workOrderId.text =
+      _workOrderId =
           widget.initialWorkOrderId ?? draft['work_order_id'] as String? ?? '';
-      _projectId.text =
-          widget.initialProjectId ?? draft['project_id'] as String? ?? '';
-      _ticketId.text =
-          widget.initialTicketId ?? draft['ticket_id'] as String? ?? '';
       _notes.text = draft['notes'] as String? ?? '';
       _items
         ..clear()
@@ -568,9 +651,7 @@ class _NewMaterialRequestScreenState
             'priority': _priority,
             'source_location_id': _sourceLocationId,
             'destination_location_id': _destinationLocationId,
-            'work_order_id': _workOrderId.text,
-            'project_id': _projectId.text,
-            'ticket_id': _ticketId.text,
+            'work_order_id': _workOrderId,
             'notes': _notes.text,
             'items': _items.map(_materialDraftItemJson).toList(),
           },
@@ -582,15 +663,154 @@ class _NewMaterialRequestScreenState
     ).showSnackBar(const SnackBar(content: Text('Draft saved')));
   }
 
+  Widget _workOrderSelector(AsyncValue<JobList> workOrders) {
+    return workOrders.when(
+      data: (list) {
+        final seen = <String>{};
+        final jobs = [
+          for (final job in list.jobs)
+            if (job.id.trim().isNotEmpty && seen.add(job.id)) job,
+        ];
+        JobSummary? selected;
+        for (final job in jobs) {
+          if (job.id == _workOrderId) {
+            selected = job;
+            break;
+          }
+        }
+        final savedSelectionIsUnavailable =
+            _workOrderId.isNotEmpty && selected == null;
+        if (jobs.isEmpty) {
+          return _MaterialWorkOrderAvailability(
+            message: 'No assigned work orders are available.',
+            onRetry: () => ref.invalidate(allAssignedJobsProvider),
+          );
+        }
+        return Semantics(
+          button: true,
+          child: InkWell(
+            key: const Key('material-work-order'),
+            borderRadius: BorderRadius.circular(12),
+            onTap: _saving
+                ? null
+                : () async {
+                    final picked = await showModalBottomSheet<JobSummary>(
+                      context: context,
+                      isScrollControlled: true,
+                      useSafeArea: true,
+                      builder: (context) => _MaterialWorkOrderPickerSheet(
+                        jobs: jobs,
+                        selectedId: selected?.id,
+                      ),
+                    );
+                    if (!mounted || picked == null) return;
+                    setState(() {
+                      _workOrderId = picked.id;
+                      _submitError = '';
+                    });
+                  },
+            child: InputDecorator(
+              isEmpty: false,
+              decoration: InputDecoration(
+                labelText: 'Work order',
+                helperText: selected == null
+                    ? list.fromCache
+                          ? 'Choose from your saved assigned work orders.'
+                          : 'Choose from your assigned work orders.'
+                    : '${selected.id} · ${selected.statusPresentation.label}',
+                errorText: savedSelectionIsUnavailable
+                    ? 'This saved work order is no longer assigned. Choose another.'
+                    : null,
+                suffixIcon: const Icon(Icons.unfold_more_rounded),
+              ),
+              child: Text(
+                selected?.title ?? 'Select a work order',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: selected == null
+                    ? TextStyle(color: Theme.of(context).hintColor)
+                    : null,
+              ),
+            ),
+          ),
+        );
+      },
+      loading: () => const _MaterialWorkOrderAvailability(
+        message: 'Loading assigned work orders…',
+        loading: true,
+      ),
+      error: (_, _) => _MaterialWorkOrderAvailability(
+        message: 'Could not load assigned work orders.',
+        onRetry: () => ref.invalidate(allAssignedJobsProvider),
+      ),
+    );
+  }
+
+  Widget _linkedJobContext(AsyncValue<JobDetail> detail) {
+    return detail.when(
+      loading: () => const _MaterialContextAvailability(
+        message: 'Loading linked project and ticket…',
+        loading: true,
+      ),
+      error: (_, _) => _MaterialContextAvailability(
+        message: 'Could not load the linked project and ticket.',
+        onRetry: () => ref.invalidate(jobDetailProvider(_workOrderId)),
+      ),
+      data: (job) {
+        final project = job.customerExperience.project;
+        final ticket =
+            job.customerExperience.originTicket ??
+            job.customerExperience.projectTaskTicket;
+        if (project == null && ticket == null) {
+          return const Text(
+            'No project or ticket is linked to this work order.',
+          );
+        }
+        return Column(
+          children: [
+            if (project != null)
+              _MaterialContextField(
+                label: 'Linked project',
+                value: _jobContextLabel(project),
+                helperText: project.id,
+              ),
+            if (project != null && ticket != null) const SizedBox(height: 12),
+            if (ticket != null)
+              _MaterialContextField(
+                label: 'Linked ticket',
+                value: _jobContextLabel(ticket),
+                helperText: ticket.id,
+              ),
+          ],
+        );
+      },
+    );
+  }
+
   Future<void> _submit(List<InventoryLocation> locations) async {
     if (_items.isEmpty || _saving) return;
-    if (_workOrderId.text.trim().isEmpty &&
-        _projectId.text.trim().isEmpty &&
-        _ticketId.text.trim().isEmpty) {
-      setState(() {
-        _submitError =
-            'Open this from a job, or enter a ticket/project/work order ID.';
-      });
+    final workOrderId = _workOrderId.trim();
+    if (workOrderId.isEmpty) {
+      setState(() => _submitError = 'Select a work order.');
+      return;
+    }
+    if (widget.initialWorkOrderId == null) {
+      final assigned = ref.read(allAssignedJobsProvider).asData?.value.jobs;
+      if (assigned == null) {
+        setState(
+          () => _submitError = 'Wait for your assigned work orders to load.',
+        );
+        return;
+      }
+      if (!assigned.any((job) => job.id == workOrderId)) {
+        setState(
+          () => _submitError = 'Select one of your assigned work orders.',
+        );
+        return;
+      }
+    }
+    if (_sourceLocationId == null) {
+      setState(() => _submitError = 'Select a source warehouse.');
       return;
     }
     final sourceLocation = locations
@@ -606,9 +826,7 @@ class _NewMaterialRequestScreenState
       priority: _priority,
       clientRef: clientRef,
       notes: _notes.text,
-      workOrderId: _workOrderId.text,
-      projectId: _projectId.text,
-      ticketId: _ticketId.text,
+      workOrderId: workOrderId,
       sourceLocationId: _sourceLocationId,
       sourceWarehouseCode: sourceWarehouseCode,
       destinationLocationId: _destinationLocationId,
@@ -622,9 +840,7 @@ class _NewMaterialRequestScreenState
             priority: _priority,
             clientRef: clientRef,
             notes: _notes.text,
-            workOrderId: _workOrderId.text,
-            projectId: _projectId.text,
-            ticketId: _ticketId.text,
+            workOrderId: workOrderId,
             sourceLocationId: _sourceLocationId,
             sourceWarehouseCode: sourceWarehouseCode,
             destinationLocationId: _destinationLocationId,
@@ -691,6 +907,13 @@ class _NewMaterialRequestScreenState
   Widget build(BuildContext context) {
     final inventory = ref.watch(inventorySearchProvider);
     final locations = ref.watch(inventoryLocationsProvider);
+    final assignedWorkOrders = widget.initialWorkOrderId == null
+        ? ref.watch(allAssignedJobsProvider)
+        : null;
+    final selectedJob =
+        widget.initialWorkOrderId == null && _workOrderId.trim().isNotEmpty
+        ? ref.watch(jobDetailProvider(_workOrderId.trim()))
+        : null;
     final selectedAvailable = _selectedItem?.availableQuantity;
     final requestedQuantity = int.tryParse(_quantity.text.trim()) ?? 0;
     final quantityExceedsStock =
@@ -733,30 +956,34 @@ class _NewMaterialRequestScreenState
                 const Text('Inventory locations are not available'),
           ),
           const SizedBox(height: 12),
-          if (widget.initialWorkOrderId != null &&
-              widget.initialWorkOrderLabel != null) ...[
-            TextFormField(
-              initialValue: widget.initialWorkOrderLabel,
-              readOnly: true,
-              decoration: const InputDecoration(labelText: 'Linked work order'),
+          if (widget.initialWorkOrderId != null) ...[
+            _MaterialContextField(
+              label: 'Linked work order',
+              value: widget.initialWorkOrderLabel ?? widget.initialWorkOrderId!,
+              helperText: widget.initialWorkOrderId,
             ),
           ] else ...[
-            TextField(
-              controller: _workOrderId,
-              decoration: const InputDecoration(labelText: 'Work order ID'),
-            ),
+            _workOrderSelector(assignedWorkOrders!),
           ],
           const SizedBox(height: 12),
-          TextField(
-            controller: _projectId,
-            decoration: const InputDecoration(labelText: 'Project ID'),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _ticketId,
-            decoration: const InputDecoration(labelText: 'Ticket ID'),
-          ),
-          const SizedBox(height: 12),
+          if (widget.initialProjectId != null) ...[
+            _MaterialContextField(
+              label: 'Linked project',
+              value: widget.initialProjectId!,
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (widget.initialTicketId != null) ...[
+            _MaterialContextField(
+              label: 'Linked ticket',
+              value: widget.initialTicketId!,
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (selectedJob != null) ...[
+            _linkedJobContext(selectedJob),
+            const SizedBox(height: 12),
+          ],
           TextField(
             controller: _notes,
             decoration: const InputDecoration(labelText: 'Notes'),
@@ -866,6 +1093,242 @@ class _NewMaterialRequestScreenState
   }
 }
 
+class _MaterialContextField extends StatelessWidget {
+  const _MaterialContextField({
+    required this.label,
+    required this.value,
+    this.helperText,
+  });
+
+  final String label;
+  final String value;
+  final String? helperText;
+
+  @override
+  Widget build(BuildContext context) {
+    return InputDecorator(
+      decoration: InputDecoration(labelText: label, helperText: helperText),
+      child: Text(value, maxLines: 2, overflow: TextOverflow.ellipsis),
+    );
+  }
+}
+
+class _MaterialContextAvailability extends StatelessWidget {
+  const _MaterialContextAvailability({
+    required this.message,
+    this.loading = false,
+    this.onRetry,
+  });
+
+  final String message;
+  final bool loading;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(message, style: Theme.of(context).textTheme.bodySmall),
+        ),
+        if (loading) ...[
+          const SizedBox(width: 12),
+          const SizedBox.square(
+            dimension: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ],
+        if (onRetry != null)
+          TextButton.icon(
+            onPressed: onRetry,
+            icon: const Icon(Icons.refresh_rounded),
+            label: const Text('Retry'),
+          ),
+      ],
+    );
+  }
+}
+
+class _MaterialWorkOrderAvailability extends StatelessWidget {
+  const _MaterialWorkOrderAvailability({
+    required this.message,
+    this.loading = false,
+    this.onRetry,
+  });
+
+  final String message;
+  final bool loading;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        InputDecorator(
+          isEmpty: false,
+          decoration: const InputDecoration(labelText: 'Work order'),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  message,
+                  style: TextStyle(color: Theme.of(context).hintColor),
+                ),
+              ),
+              if (loading) ...[
+                const SizedBox(width: 12),
+                const SizedBox.square(
+                  dimension: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ],
+            ],
+          ),
+        ),
+        if (onRetry != null)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Retry'),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _MaterialWorkOrderPickerSheet extends StatefulWidget {
+  const _MaterialWorkOrderPickerSheet({required this.jobs, this.selectedId});
+
+  final List<JobSummary> jobs;
+  final String? selectedId;
+
+  @override
+  State<_MaterialWorkOrderPickerSheet> createState() =>
+      _MaterialWorkOrderPickerSheetState();
+}
+
+class _MaterialWorkOrderPickerSheetState
+    extends State<_MaterialWorkOrderPickerSheet> {
+  final _search = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final query = _query.trim().toLowerCase();
+    final matches = query.isEmpty
+        ? widget.jobs
+        : widget.jobs
+              .where(
+                (job) =>
+                    job.title.toLowerCase().contains(query) ||
+                    job.id.toLowerCase().contains(query) ||
+                    job.statusPresentation.label.toLowerCase().contains(query),
+              )
+              .toList();
+    final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+    return AnimatedPadding(
+      duration: const Duration(milliseconds: 180),
+      padding: EdgeInsets.only(bottom: bottomInset),
+      child: FractionallySizedBox(
+        heightFactor: 0.82,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Select work order',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Close',
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                key: const Key('material-work-order-search'),
+                controller: _search,
+                autofocus: false,
+                textInputAction: TextInputAction.search,
+                decoration: const InputDecoration(
+                  labelText: 'Search assigned work orders',
+                  prefixIcon: Icon(Icons.search_rounded),
+                ),
+                onChanged: (value) => setState(() => _query = value),
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: matches.isEmpty
+                    ? const Center(
+                        child: Text('No matching work orders found.'),
+                      )
+                    : ListView.separated(
+                        itemCount: matches.length,
+                        separatorBuilder: (_, _) => const Divider(height: 1),
+                        itemBuilder: (context, index) {
+                          final job = matches[index];
+                          final selected = job.id == widget.selectedId;
+                          return ListTile(
+                            key: Key('material-work-order-option-${job.id}'),
+                            selected: selected,
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            title: Text(
+                              job.title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            subtitle: Text(
+                              '${job.id} · ${job.statusPresentation.label}',
+                            ),
+                            trailing: selected
+                                ? const Icon(Icons.check_rounded)
+                                : null,
+                            onTap: () => Navigator.of(context).pop(job),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+String _jobContextLabel(JobLifecycleReference reference) {
+  final title = reference.title.trim();
+  final number = reference.number?.trim();
+  if (title.isNotEmpty && number != null && number.isNotEmpty) {
+    return '$title ($number)';
+  }
+  if (title.isNotEmpty) return title;
+  if (number != null && number.isNotEmpty) return number;
+  return reference.id;
+}
+
 String _materialSubmitError(DioException error) {
   final data = error.response?.data;
   if (data is Map) {
@@ -924,13 +1387,18 @@ class _LocationSelectors extends StatelessWidget {
         DropdownButtonFormField<String?>(
           key: const Key('source-location'),
           initialValue: sourceValue,
+          isExpanded: true,
           decoration: const InputDecoration(labelText: 'Source location'),
           items: [
             const DropdownMenuItem(value: null, child: Text('Any location')),
             for (final location in locations)
               DropdownMenuItem(
                 value: location.id,
-                child: Text(_locationLabel(location)),
+                child: Text(
+                  _locationLabel(location),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
           ],
           onChanged: onSourceChanged,
@@ -939,13 +1407,18 @@ class _LocationSelectors extends StatelessWidget {
         DropdownButtonFormField<String?>(
           key: const Key('destination-location'),
           initialValue: destinationValue,
+          isExpanded: true,
           decoration: const InputDecoration(labelText: 'Destination location'),
           items: [
             const DropdownMenuItem(value: null, child: Text('Not selected')),
             for (final location in locations)
               DropdownMenuItem(
                 value: location.id,
-                child: Text(_locationLabel(location)),
+                child: Text(
+                  _locationLabel(location),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
           ],
           onChanged: onDestinationChanged,
@@ -1041,16 +1514,18 @@ Color _materialStatusColor(BuildContext context, String status) {
   final scheme = Theme.of(context).colorScheme;
   return switch (status) {
     'approved' => Colors.green.shade700,
+    'accepted_by_erp' => Colors.indigo.shade700,
+    'pending_stock' => Colors.amber.shade900,
     'issued' => Colors.blue.shade700,
     'fulfilled' || 'completed' => Colors.teal.shade700,
-    'rejected' || 'cancelled' => scheme.error,
+    'rejected' || 'cancelled' || 'canceled' || 'sync_failed' => scheme.error,
     'submitted' || 'pending_approval' => Colors.orange.shade800,
     _ => scheme.outline,
   };
 }
 
 List<_StatusStep> _timelineSteps(MaterialRequest request) {
-  if (request.status == 'rejected') {
+  if (request.status == 'rejected' || request.status == 'canceled') {
     return [
       _StatusStep(
         label: 'Submitted',
@@ -1059,7 +1534,7 @@ List<_StatusStep> _timelineSteps(MaterialRequest request) {
         active: false,
       ),
       _StatusStep(
-        label: 'Rejected',
+        label: request.status == 'rejected' ? 'Rejected' : 'Canceled',
         date: request.rejectedAt,
         complete: true,
         active: true,
@@ -1067,39 +1542,33 @@ List<_StatusStep> _timelineSteps(MaterialRequest request) {
     ];
   }
 
-  final currentIndex = _statusOrder.indexOf(request.status);
-  final activeIndex = currentIndex < 0 ? 0 : currentIndex;
+  final labels = switch (request.status) {
+    'queued' => ['Queued'],
+    'draft' => ['Draft'],
+    'submitted' => ['Submitted'],
+    'accepted_by_erp' => ['Submitted', 'Accepted by ERP'],
+    'pending_stock' => ['Submitted', 'Accepted by ERP', 'Awaiting stock'],
+    'sync_failed' => ['Submitted', 'Sync failed'],
+    'approved' => ['Submitted', 'Approved'],
+    'issued' => ['Submitted', 'Approved', 'Issued'],
+    'fulfilled' => ['Submitted', 'Approved', 'Issued', 'Fulfilled'],
+    _ => [_statusLabel(request.status)],
+  };
   return [
-    _StatusStep(
-      label: 'Draft',
-      date: request.createdAt,
-      complete: activeIndex >= 0,
-      active: activeIndex == 0,
-    ),
-    _StatusStep(
-      label: 'Submitted',
-      date: request.submittedAt,
-      complete: activeIndex >= 1,
-      active: activeIndex == 1,
-    ),
-    _StatusStep(
-      label: 'Approved',
-      date: request.approvedAt,
-      complete: activeIndex >= 2,
-      active: activeIndex == 2,
-    ),
-    _StatusStep(
-      label: 'Issued',
-      date: request.issuedAt,
-      complete: activeIndex >= 3,
-      active: activeIndex == 3,
-    ),
-    _StatusStep(
-      label: 'Fulfilled',
-      date: request.fulfilledAt,
-      complete: activeIndex >= 4,
-      active: activeIndex == 4,
-    ),
+    for (var index = 0; index < labels.length; index++)
+      _StatusStep(
+        label: labels[index],
+        date: switch (labels[index]) {
+          'Queued' || 'Draft' => request.createdAt,
+          'Submitted' => request.submittedAt ?? request.createdAt,
+          'Approved' => request.approvedAt,
+          'Issued' => request.issuedAt,
+          'Fulfilled' => request.fulfilledAt,
+          _ => null,
+        },
+        complete: true,
+        active: index == labels.length - 1,
+      ),
   ];
 }
 

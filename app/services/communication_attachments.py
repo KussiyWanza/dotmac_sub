@@ -130,34 +130,38 @@ def _resolve_quote_pdf(
     )
 
 
-def _resolve_ncc_weekly_xlsx(
+def _resolve_ncc_weekly_artifact(
     db: Session, notification: Notification, descriptor: dict[str, object]
 ) -> ResolvedEmailAttachment:
     try:
         run_id = UUID(str(descriptor.get("entity_id") or ""))
     except ValueError as exc:
-        raise CommunicationAttachmentError("ncc_xlsx_invalid_reference") from exc
+        raise CommunicationAttachmentError("ncc_artifact_invalid_reference") from exc
     run = db.get(NccWeeklyReportRun, run_id)
     expected_run_id = str(
         (notification.metadata_ or {}).get("ncc_weekly_report_run_id") or ""
     )
     if run is None or run.status is not NccWeeklyReportRunStatus.queued:
-        raise CommunicationAttachmentError("ncc_xlsx_not_found")
+        raise CommunicationAttachmentError("ncc_artifact_not_found")
     if expected_run_id != str(run.id) or run.notification_id != notification.id:
-        raise CommunicationAttachmentError("ncc_xlsx_scope_mismatch")
+        raise CommunicationAttachmentError("ncc_artifact_scope_mismatch")
     content = run.artifact_content or b""
-    if not content.startswith(b"PK\x03\x04"):
-        raise CommunicationAttachmentError("ncc_xlsx_invalid_content")
+    content_type = run.artifact_content_type or ""
+    if content_type.startswith("text/csv"):
+        if not content:
+            raise CommunicationAttachmentError("ncc_artifact_invalid_content")
+    elif content_type.endswith("spreadsheetml.sheet"):
+        if not content.startswith(b"PK\x03\x04"):
+            raise CommunicationAttachmentError("ncc_artifact_invalid_content")
+    else:
+        raise CommunicationAttachmentError("ncc_artifact_invalid_content_type")
     if hashlib.sha256(content).hexdigest() != run.artifact_sha256:
-        raise CommunicationAttachmentError("ncc_xlsx_integrity_failed")
+        raise CommunicationAttachmentError("ncc_artifact_integrity_failed")
     if len(content) > MAX_EMAIL_ATTACHMENT_BYTES:
-        raise CommunicationAttachmentError("ncc_xlsx_too_large")
+        raise CommunicationAttachmentError("ncc_artifact_too_large")
     return ResolvedEmailAttachment(
         filename=_safe_filename(descriptor.get("filename") or run.artifact_filename),
-        content_type=(
-            run.artifact_content_type
-            or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        ),
+        content_type=content_type,
         content=content,
     )
 
@@ -180,6 +184,9 @@ def resolve_email_attachments(
             resolved.append(_resolve_invoice_pdf(db, notification, item))
         elif kind == CommunicationAttachmentKind.quote_pdf:
             resolved.append(_resolve_quote_pdf(db, notification, item))
-        elif kind == CommunicationAttachmentKind.ncc_weekly_xlsx:
-            resolved.append(_resolve_ncc_weekly_xlsx(db, notification, item))
+        elif kind in (
+            CommunicationAttachmentKind.ncc_weekly_csv,
+            CommunicationAttachmentKind.ncc_weekly_xlsx,
+        ):
+            resolved.append(_resolve_ncc_weekly_artifact(db, notification, item))
     return tuple(resolved)

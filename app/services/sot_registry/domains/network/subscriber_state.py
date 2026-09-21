@@ -132,7 +132,9 @@ SERVICES: tuple[SOTService, ...] = (
             "never own RouterOS polling cadence. The direct RouterOS read remains "
             "an explicit operator diagnostic, is admitted once per NAS device "
             "through a shared Redis claim, and starts only after its clean database "
-            "read transaction has returned its pooled connection."
+            "read transaction has returned its pooled connection. The centralized "
+            "poller bounds fleet-wide RouterOS concurrency and backs off each "
+            "failing device so a reachability incident cannot exhaust workers."
         ),
         contract=ServiceContract(
             concerns=(
@@ -526,7 +528,10 @@ SERVICES: tuple[SOTService, ...] = (
             "an internal verification-due input; reason distinguishes "
             "confirmed failure, administrative lifecycle, impairment, "
             "and inability to verify without adding a public freshness "
-            "state. Required verification collectors are permanent."
+            "state. For OLTs, a fresh successful native poll independently "
+            "confirms operation; linked monitoring evidence is accepted only "
+            "through its active/fresh trust gate. Required verification "
+            "collectors are permanent."
         ),
         contract=ServiceContract(
             concerns=(
@@ -580,8 +585,9 @@ SERVICES: tuple[SOTService, ...] = (
                     owner="runtime.infrastructure_polling",
                     kind=AuthorityKind.OBSERVATION,
                     source=(
-                        "timestamped ping, poll, and health observations; "
-                        "live_status_at is derived transition/dwell evidence, "
+                        "timestamped NetworkDevice ping/SNMP observations and "
+                        "OLT native ping/poll observations; live_status_at is "
+                        "derived transition/dwell evidence, "
                         "not an observation timestamp"
                     ),
                 ),

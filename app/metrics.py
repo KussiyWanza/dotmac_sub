@@ -23,6 +23,27 @@ REQUEST_ERRORS = Counter(
     "Total HTTP 5xx responses",
     ["method", "path", "status"],
 )
+WORKER_STARTUP_DURATION = Histogram(
+    "worker_startup_duration_seconds", "Time until complete route registration"
+)
+APPLICATION_READINESS = Gauge(
+    "application_readiness", "Whether essential startup and routes are ready"
+)
+INTEGRATION_ROUTE_404 = Counter(
+    "integration_route_404_total",
+    "404 responses for registered integration routes",
+    ["path"],
+)
+APPLICATION_EXCEPTIONS = Counter(
+    "application_exceptions_total",
+    "Unhandled application exceptions by bounded route and exception fingerprint",
+    ["surface", "exception_type"],
+)
+PAYMENT_VERIFICATION_OUTCOMES = Counter(
+    "payment_verification_outcomes_total",
+    "Customer payment verification outcomes by channel and safe category",
+    ["channel", "outcome"],
+)
 API_SYNC_PRESSURE_LIMITED = Counter(
     "api_sync_pressure_limited_total",
     "API sync requests rejected before they could acquire DB resources",
@@ -1251,3 +1272,17 @@ def observe_webhook_event(
 
 def record_inbound_dedup_suppressed(channel: str | None) -> None:
     SUB_INBOUND_DEDUP_SUPPRESSED_TOTAL.labels(channel=str(channel or "unknown")).inc()
+
+
+CUSTOMER_DEVICE_COMMAND_REFUSALS_TOTAL = Counter(
+    "customer_device_command_refusals_total",
+    "Customer self-service device command refusals by command kind and "
+    "stable adapter-facing code",
+    ["command", "code"],
+)
+
+
+def record_customer_device_command_refusal(*, command: str, code: str) -> None:
+    CUSTOMER_DEVICE_COMMAND_REFUSALS_TOTAL.labels(
+        command=str(command), code=str(code)
+    ).inc()

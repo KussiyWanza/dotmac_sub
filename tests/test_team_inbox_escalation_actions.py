@@ -121,14 +121,18 @@ def test_escalate_inbox_conversation_can_target_active_team_member(db_session):
 def test_escalate_inbox_conversation_rejects_non_team_member(db_session):
     team = _team(db_session)
     conversation = _conversation(db_session)
+    non_member, _person = add_bound_staff_user(db_session)
+    team_id = team.id
+    conversation_id = conversation.id
+    non_member_id = non_member.id
     db_session.commit()
 
     with pytest.raises(HTTPException) as exc:
         support_api.escalate_inbox_conversation(
-            conversation.id,
+            conversation_id,
             InboxConversationEscalateRequest(
-                service_team_id=team.id,
-                assigned_person_id=uuid4(),
+                service_team_id=team_id,
+                assigned_person_id=non_member_id,
             ),
             auth={"principal_id": str(uuid4())},
             db=db_session,

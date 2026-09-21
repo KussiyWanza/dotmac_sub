@@ -17,6 +17,7 @@ from app.models.project import (
 from app.models.subscriber import Subscriber, SubscriberCategory
 from app.schemas.project import ProjectCreate, ProjectTaskCreate
 from app.services import web_dispatch_work_orders, web_projects
+from app.services.domain_errors import DomainError
 from app.services.project_filters import (
     serialize_project_filter_schema,
     serialize_project_task_filter_schema,
@@ -761,6 +762,7 @@ class TestTasksContext:
         web_projects.save_template_tasks_from_editor(
             db_session,
             template_id=str(template.id),
+            expected_revision=template.revision,
             tasks_json=(
                 '[{"client_id": "a", "title": "Survey", "description": "",'
                 ' "effort_hours": 2, "dependencies": []},'
@@ -869,9 +871,12 @@ class TestTemplateEditor:
         web_projects.save_template_tasks_from_editor(
             db_session,
             template_id=str(template.id),
+            expected_revision=template.revision,
             tasks_json=(
                 '[{"client_id": "one", "title": "First", "description": "",'
-                ' "effort_hours": "", "dependencies": []},'
+                ' "effort_hours": "", "auto_create_work_order": true,'
+                ' "work_order_requires_as_built_evidence": false,'
+                ' "dependencies": []},'
                 ' {"client_id": "two", "title": "Second", "description": "",'
                 ' "effort_hours": 4, "dependencies": ["one"]}]'
             ),
@@ -895,17 +900,22 @@ class TestTemplateEditor:
         )
         assert len(links) == 1
         assert links[0].depends_on_template_task_id == tasks[0].id
+        assert tasks[0].auto_create_work_order is True
+        assert tasks[0].work_order_requires_as_built_evidence is False
 
         payload = web_projects.build_template_tasks_editor_payload(
             db_session, str(template.id)
         )
         assert payload[1]["dependencies"] == [str(tasks[0].id)]
+        assert payload[0]["auto_create_work_order"] is True
+        assert payload[0]["work_order_requires_as_built_evidence"] is False
 
         # Resave keeping only the first task (by its real id) — the second is
         # soft-deleted and the dependency rebuilt away.
         web_projects.save_template_tasks_from_editor(
             db_session,
             template_id=str(template.id),
+            expected_revision=template.revision,
             tasks_json=(
                 f'[{{"client_id": "{tasks[0].id}", "title": "First renamed",'
                 ' "description": "", "effort_hours": 1, "dependencies": []}]'
@@ -925,12 +935,14 @@ class TestTemplateEditor:
             web_projects.save_template_tasks_from_editor(
                 db_session,
                 template_id=str(template.id),
+                expected_revision=template.revision,
                 tasks_json='[{"client_id": "x", "title": ""}]',
             )
         with pytest.raises(ValueError):
             web_projects.save_template_tasks_from_editor(
                 db_session,
                 template_id=str(template.id),
+                expected_revision=template.revision,
                 tasks_json="not-json",
             )
 
@@ -939,10 +951,11 @@ class TestTemplateEditor:
             db_session, name="Ordered dependencies"
         )
 
-        with pytest.raises(ValueError, match="only on an earlier task"):
+        with pytest.raises(DomainError, match="only on an earlier task"):
             web_projects.save_template_tasks_from_editor(
                 db_session,
                 template_id=str(template.id),
+                expected_revision=template.revision,
                 tasks_json=(
                     '[{"client_id": "first", "title": "First",'
                     ' "dependencies": ["second"]},'
@@ -950,6 +963,51 @@ class TestTemplateEditor:
                     ' "dependencies": []}]'
                 ),
             )
+
+    def test_editor_saves_subtask_hierarchy_and_rejects_stale_revision(
+        self, db_session
+    ):
+        template = web_projects.create_template_from_form(
+            db_session, name="Activation plan"
+        )
+        initial_revision = template.revision
+        web_projects.save_template_tasks_from_editor(
+            db_session,
+            template_id=str(template.id),
+            expected_revision=initial_revision,
+            tasks_json=(
+                '[{"client_id": "activation", "parent_client_id": null,'
+                ' "title": "Activation", "dependencies": []},'
+                ' {"client_id": "configuration",'
+                ' "parent_client_id": "activation",'
+                ' "title": "Configuration", "dependencies": []}]'
+            ),
+        )
+        db_session.refresh(template)
+        tasks = (
+            db_session.query(ProjectTemplateTask)
+            .filter(
+                ProjectTemplateTask.template_id == template.id,
+                ProjectTemplateTask.is_active.is_(True),
+            )
+            .order_by(ProjectTemplateTask.sort_order)
+            .all()
+        )
+        assert template.revision == initial_revision + 1
+        assert tasks[1].parent_template_task_id == tasks[0].id
+        payload = web_projects.build_template_tasks_editor_payload(
+            db_session, str(template.id)
+        )
+        assert payload[1]["parent_client_id"] == str(tasks[0].id)
+
+        with pytest.raises(DomainError) as exc:
+            web_projects.save_template_tasks_from_editor(
+                db_session,
+                template_id=str(template.id),
+                expected_revision=initial_revision,
+                tasks_json="[]",
+            )
+        assert exc.value.code == "operations.project_lifecycle.stale_state"
 
     def test_template_task_cross_template_guard(self, db_session):
         template_a = web_projects.create_template_from_form(db_session, name="A")
@@ -1014,6 +1072,7 @@ class TestTemplatesListContext:
         web_projects.save_template_tasks_from_editor(
             db_session,
             template_id=str(template.id),
+            expected_revision=template.revision,
             tasks_json=(
                 '[{"client_id": "a", "title": "Alpha", "description": "",'
                 ' "effort_hours": null, "dependencies": []},'

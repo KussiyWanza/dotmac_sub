@@ -19,6 +19,7 @@ The canonical record is the **service `Address`** (`app/models/subscriber.py`,
 | Coordinate projection to the map | `gis.spatial_sync` (`app/services/gis_sync.py`) | Writes `latitude`/`longitude`/`geom` and projects `Address` → `geo_locations`. Owns *where*, not *what*. |
 | New location capture | `customer.location_capture` (`app/services/location_capture.py`) | Field-arrival GPS, portal pin, agent. Feature-gated. |
 | Capture adjudication | `customer.location_verification` (`app/services/geocode_reconciler.py`) | Adjudicates a pin against the claimed location; writes the verification ledger. |
+| Customer portal mutation coordination | `customer.portal_location_commands` (`app/services/customer_portal_location_commands.py`) | Owns the transaction for direct updates, confirmation, and snooze commands while delegating each fact to its canonical owner. |
 
 Coordinates and spatial projection stay with `gis.spatial_sync`; the customer
 domain owns what the address is. A captured pin flows capture → verification
@@ -114,3 +115,42 @@ are removed, the canonical `Address` becomes the primary NCC location source.
 - `docs/designs/FIBER_TOPOLOGY_SOT.md` (coordinates owned by `gis.spatial_sync`).
 - Knowledge: `sub-subscriber-location-inline-no-coords`,
   `splynx-seabone-restore-geo-source`, `crm-parallel-osp-fiber-authority`.
+
+## Customer portal direct-edit contract
+
+`/portal/location` is a direct self-service editor. It displays the canonical
+service Address, including the `Region` field, and lets the authenticated
+customer edit the address and place an exact draggable map pin. Search, GPS,
+map clicks, and marker dragging all update one form; Save applies the address
+and coordinates atomically through `customer.accounts` and `gis.spatial_sync`.
+There is no customer review or pending state for this editor. Clear restores
+the stored values before submission.
+
+The portal route is an adapter: after authentication and scope resolution it
+releases its read transaction and calls the typed
+`customer.portal_location_commands` coordinator. The coordinator locks the
+Subscriber and completes one owner-managed transaction for the canonical
+address, spatial projection, audit evidence, and durable event. Confirmation
+and prompt snooze use the same boundary; no portal location route commits or
+rolls back business state.
+## Mandatory customer location rollout
+
+The subscriber setting `service_location_required` is the operator-controlled,
+default-off switch for mandatory portal completion. When enabled, the portal
+policy checks the canonical service Address for valid latitude and longitude.
+Incomplete customers first receive a blocking portal dialog with an explicit
+button to open `/portal/location`; the direct address-and-pin save succeeds
+there before the dialog is shown again. Authentication, location
+editing/geocoding routes, and operator impersonation remain reachable so the
+customer can complete the action and support staff can recover accounts.
+
+## Individual customer biodata completion
+
+After the canonical service location is saved, residential customers are checked
+for date of birth, gender, and NIN. If any value is missing or invalid, the
+portal returns to the location page with a blocking biodata dialog and a button
+to `/portal/profile`.
+The profile owner validates the values server-side: DOB must be a valid
+non-future date, gender cannot be unknown, and NIN must contain exactly 11
+ASCII digits. Business, government, and NGO subscriber categories are not
+subject to this individual biodata gate.

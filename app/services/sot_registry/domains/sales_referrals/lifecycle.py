@@ -207,6 +207,18 @@ SERVICES: tuple[SOTService, ...] = (
         name="sales.selfserve",
         module="app.services.sales.selfserve",
         owns=("self-serve quote and signup flow",),
+        depends_on=(
+            "communications.intents",
+            "communications.staff_notifications",
+            "events.dispatcher",
+            "sales.quote_payment_review",
+            "sales.service",
+        ),
+        notes=(
+            "A completed map-pinned estimate is created as payment-review pending, "
+            "then queues the authorized staff review alert and customer under-review "
+            "notification. It never exposes payment eligibility itself."
+        ),
     ),
     SOTService(
         name="sales.lead_lifecycle",

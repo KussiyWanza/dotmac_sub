@@ -1,25 +1,30 @@
 {% extends "layouts/admin.html" %}
-{% from "components/ui/macros.html" import ambient_background, page_header, action_button, status_badge, card, icon_cpu, icon_edit %}
+{% from "components/ui/macros.html" import ambient_background, page_header, action_button, status_badge, status_presentation_badge, card, icon_cpu, icon_edit %}
 
 {% block title %}{{ olt.name }} - OLT - Admin{% endblock %}
 
 {% block content %}
 
-{# Health dot macro #}
-{% macro health_dot(state, label) %}
+{# Freshness-classified verifier evidence; device state remains binary. #}
+{% macro health_evidence(label, evidence) %}
+{% set state = evidence.state.value %}
 {% if state == 'ok' %}
-<span class="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">
-    <span class="h-2 w-2 rounded-full bg-emerald-500"></span>{{ label }} OK
-</span>
+    {% set classes = 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' %}
+    {% set dot_classes = 'bg-emerald-500' %}
 {% elif state == 'fail' %}
-<span class="inline-flex items-center gap-1.5 rounded-full bg-rose-100 px-2.5 py-1 text-xs font-semibold text-rose-700 dark:bg-rose-900/30 dark:text-rose-300">
-    <span class="h-2 w-2 rounded-full bg-rose-500"></span>{{ label }} Fail
-</span>
+    {% set classes = 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300' %}
+    {% set dot_classes = 'bg-rose-500' %}
+{% elif state == 'expired' %}
+    {% set classes = 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300' %}
+    {% set dot_classes = 'bg-amber-500' %}
 {% else %}
-<span class="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600 dark:bg-slate-700 dark:text-slate-300">
-    <span class="h-2 w-2 rounded-full bg-slate-400"></span>{{ label }}
-</span>
+    {% set classes = 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300' %}
+    {% set dot_classes = 'bg-slate-400' %}
 {% endif %}
+<span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold {{ classes }}"
+      title="{{ evidence.detail }}{% if evidence.observed_at %} Observed {{ evidence.observed_at | app_datetime('%d %b %Y %H:%M', 'time unavailable') }}.{% endif %}">
+    <span class="h-2 w-2 rounded-full {{ dot_classes }}"></span>{{ label }} &middot; {{ evidence.summary }}
+</span>
 {% endmacro %}
 
 <div class="space-y-6">
@@ -71,19 +76,13 @@
             <div class="min-w-0 flex-1">
                 <span class="text-sm font-medium text-slate-700 dark:text-slate-300">Health:</span>
                 <div class="mt-2 flex flex-wrap items-center gap-3">
-                    {% set info = resolved_device_info %}
-                    {% if info.ping_enabled %}
-                        {% set ping_state = 'ok' if info.last_ping_ok is sameas true else ('fail' if info.last_ping_ok is sameas false else 'unknown') %}
-                    {% else %}
-                        {% set ping_state = 'disabled' %}
+                    {{ status_presentation_badge(olt_status_evidence.operational.presentation, size="sm") }}
+                    {% if olt_status_evidence.poll %}
+                        {{ health_evidence("OLT poll", olt_status_evidence.poll) }}
                     {% endif %}
-                    {% if info.snmp_enabled %}
-                        {% set snmp_state = 'ok' if info.last_snmp_ok is sameas true else ('fail' if info.last_snmp_ok is sameas false else 'unknown') %}
-                    {% else %}
-                        {% set snmp_state = 'disabled' %}
-                    {% endif %}
-                    {{ health_dot(ping_state, "Ping") }}
-                    {{ health_dot(snmp_state, "SNMP") }}
+                    {{ health_evidence("Ping", olt_status_evidence.ping) }}
+                    {{ health_evidence("SNMP", olt_status_evidence.snmp) }}
+                    <span class="text-xs text-slate-500 dark:text-slate-400">{{ olt_status_evidence.operational.reason_label }}</span>
                     <form method="POST" action="/admin/network/olts/{{ olt.id }}/test-ssh" class="inline">
                         {% include "components/forms/csrf_input.html" %}
                         <button type="submit" class="text-xs font-medium text-blue-600 hover:text-blue-800 dark:text-blue-400">Test SSH</button>

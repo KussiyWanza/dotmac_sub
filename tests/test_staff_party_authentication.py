@@ -249,7 +249,7 @@ def test_refresh_resolves_a_populated_session_from_party(
     result = AuthFlow.refresh(db_session, refresh_token, _request())
 
     db_session.refresh(session)
-    assert result["refresh_token"] != refresh_token
+    assert result.refresh_token != refresh_token
     assert session.party_id == person.id
     assert session.system_user_id == user.id
 

@@ -105,6 +105,9 @@
     {% endcall %}
     </div>
 
+    {# Versioned connector installations use the integration control plane, not
+       the legacy connector_configs table above. Keep both visible without
+       inventing duplicate legacy configuration rows. #}
     <div class="animate-fade-in-up" style="animation-delay: 125ms;">
     {% call card("Managed connector installations", color="violet") %}
         {% if managed_connectors %}
@@ -116,15 +119,25 @@
                 {% set definition = row.definition %}
                 {% call table_row(installation.id) %}
                     <td class="px-6 py-4 whitespace-nowrap">
-                        <a href="{{ row.manage_url }}" class="text-sm font-medium text-violet-600 hover:text-violet-700 dark:text-violet-400">{{ definition.name }}</a>
-                        <p class="text-xs text-slate-500 dark:text-slate-400">{{ installation.name }}</p>
+                        <div>
+                            <a href="{{ row.manage_url }}" class="text-sm font-medium text-violet-600 hover:text-violet-700 dark:text-violet-400">{{ definition.name }}</a>
+                            <p class="text-xs text-slate-500 dark:text-slate-400">{{ installation.name }}</p>
+                        </div>
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap">{{ status_badge(definition.connector_type|title, "neutral", size="sm") }}</td>
-                    <td class="px-6 py-4 whitespace-nowrap font-mono text-xs">{{ installation.connector_version }}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm">{{ installation.environment|title }}</td>
-                    <td class="px-6 py-4 whitespace-nowrap">{{ status_badge(installation.state|replace('_', ' ')|title, "active" if installation.state == 'enabled' else "neutral", size="sm") }}</td>
+                    <td class="px-6 py-4 whitespace-nowrap font-mono text-xs text-slate-600 dark:text-slate-300">{{ installation.connector_version }}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-700 dark:text-slate-300">{{ installation.environment|title }}</td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        {% if installation.state == 'enabled' %}
+                        {{ status_badge("Enabled", "active", size="sm") }}
+                        {% else %}
+                        {{ status_badge(installation.state|replace('_', ' ')|title, "neutral", size="sm") }}
+                        {% endif %}
+                    </td>
                     <td class="px-6 py-4 whitespace-nowrap text-right">
-                        {% call row_actions() %}{{ row_action(row.manage_url, icon_view(), "Manage") }}{% endcall %}
+                        {% call row_actions() %}
+                            {{ row_action(row.manage_url, icon_view(), "Manage") }}
+                        {% endcall %}
                     </td>
                 {% endcall %}
                 {% endfor %}

@@ -81,8 +81,44 @@ def test_quote_detail_actions_are_csrf_and_permission_gated():
     assert 'can(request, "crm:quote:send")' in template
     assert template.count('action="/admin/sales/quotes/{{ quote.id }}/pdf"') == 1
     assert template.count("components/forms/csrf_input.html") >= 4
+    assert 'can(request, "sales:quote:review")' in template
+    assert 'can(request, "crm:quote:review")' not in template
     assert "Recent Activity" in template
     assert "timeline_item(" in template
+
+
+def test_quote_detail_keeps_only_delivery_export_delete_in_header():
+    template = _source("templates/admin/sales/quotes/detail.html")
+    header_actions = template.split("data-quote-primary-actions", maxsplit=1)[1].split(
+        '<div class="mt-4 grid',
+        maxsplit=1,
+    )[0]
+
+    assert "Send Email" in header_actions
+    assert "Export" in header_actions
+    assert "Delete" in header_actions
+    assert "Update Status" not in header_actions
+    assert 'href="/admin/sales/quotes/{{ quote.id }}/edit"' not in header_actions
+    assert "data-delete-dialog" in template
+    assert "data-send-email-dialog" in template
+    assert "confirm(" not in template
+    assert 'aria-labelledby="lifecycle-heading"' in template
+    assert 'aria-labelledby="quote-details-heading"' in template
+
+
+def test_quote_delete_rerenders_detail_on_domain_failure():
+    route = _source("app/web/admin/sales.py")
+    delete_route = route[route.index('"/quotes/{quote_id}/delete"') :]
+    end_marker = (
+        "# ---------------------------------------------------------------------------"
+    )
+    delete_route = delete_route[: delete_route.index(end_marker)]
+
+    assert "web_sales_service.deactivate_quote(" in delete_route
+    assert "except (DomainError, ValidationError, ValueError) as exc:" in delete_route
+    assert "db_session_adapter.discard_failed_transaction(db)" in delete_route
+    assert 'context["error"] = _error_detail(exc)' in delete_route
+    assert '"admin/sales/quotes/detail.html", context, status_code=400' in delete_route
 
 
 def test_quote_activity_does_not_overstate_mailbox_delivery():

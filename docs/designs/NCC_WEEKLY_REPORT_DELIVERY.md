@@ -1,4 +1,4 @@
-# NCC weekly complaints workbook delivery
+# NCC weekly complaints CSV delivery
 
 Status: implemented; disabled until controlled cutover
 
@@ -7,15 +7,15 @@ Status: implemented; disabled until controlled cutover
 Selfcare recreates the CRM weekly NCC complaints-report delivery as a native,
 typed capability. The authoritative production cadence is **Tuesday**, not
 Monday. The registered default is Tuesday at 08:00 in `Africa/Lagos`, with a
-seven-day lookback. Celery polls every five minutes; it does not decide whether
-a report is due.
+completed Monday-Sunday reporting-week window. Celery polls every five minutes;
+it does not decide whether a report is due.
 
 ## Ownership and flow
 
 - `compliance.ncc_complaints_reporting` owns the typed complaint-report query
   over native Tickets, TicketComments and Subscribers.
 - `communications.ncc_weekly_delivery` owns configuration, schedule
-  interpretation, one-occurrence arbitration, the exact XLSX artifact, durable
+  interpretation, one-occurrence arbitration, the exact CSV artifact, durable
   communication intent, audit evidence and retry outcome.
 - `scheduler.registry` only triggers a five-minute admission poll while the
   feature is enabled.
@@ -23,8 +23,9 @@ a report is due.
 
 The owner converts the scheduler observation to the configured timezone. On
 the configured weekday, once local time reaches the configured delivery time,
-it locks an existing occurrence row, creates the workbook, stores its bytes and
-SHA-256 digest, and queues a required XLSX attachment in one owner transaction.
+it locks an existing occurrence row, creates the completed Monday-Sunday
+reporting-week CSV, stores its bytes and SHA-256 digest, and queues a required
+CSV attachment in one owner transaction.
 For a first occurrence, the unique `(schedule_key, scheduled_local_date)`
 constraint arbitrates concurrent attempts and prevents duplicate Tuesday runs.
 The report window is anchored to the configured Tuesday time, not the poll's
@@ -33,25 +34,24 @@ arrival time, so a delayed poll or retry rebuilds the same bounded window.
 ## Configuration and provenance
 
 The admin page at `/admin/reports/ncc-complaints` requires `reports:ncc:read`.
-On-demand workbook exports and preserved scheduled artifact downloads require
+On-demand CSV exports and preserved scheduled artifact downloads require
 `reports:ncc:export`. The same page displays and, with `notification:write`,
 updates the complete effective configuration: enabled,
 To/CC/BCC, SMTP sender key, subject, body template, weekday, local time,
-timezone and lookback. Every field is backed by the registered notification
+and timezone. Every field is backed by the registered notification
 setting specification. Defaults remain disabled and Tuesday-based.
 
 The on-screen complaints table uses the canonical typed list contract and shows
 20 rows by default, with 50- and 100-row options. Pagination applies only to the
-screen: workbook exports and weekly delivery continue to use the complete
+screen: CSV exports and weekly delivery continue to use the complete
 bounded report snapshot.
 
-The XLSX artifact follows the NCC validated Excel workbook template: hidden
-`Lookups` sheet, visible `Data Entry` sheet, official required-field headers,
-named lookup ranges, formula-backed template auto columns, Excel serial
-date-time cells, and row-2-to-16001 validation ranges from the latest NCC
-template received in September 2026. The screen keeps the internal readable
-column labels, then projects rows to the template headers for on-demand export
-and weekly email attachment generation.
+The filing artifact is the single provider CSV required for Box upload, named
+`<ISO_WEEK>_<ISO_YEAR>_COMPLAINTS_DOTMAC.csv` such as
+`36_2026_COMPLAINTS_DOTMAC.csv`. It uses the NCC validated template's Data
+Entry headers and contains no extra workbook sheets. The screen keeps the
+internal readable column labels, then projects rows to the template headers for
+on-demand export and weekly email attachment generation.
 
 The complaints resolver excludes tickets carrying a source approved by the
 support owner as internal operational work. It does not use missing customer or
@@ -71,9 +71,13 @@ dependency.
 A failed artifact or intent is recorded on the occurrence with a bounded
 failure code. The savepoint removes any partial artifact/notification work,
 while the owner transaction preserves durable failure evidence. The next
-five-minute poll retries the same Tuesday occurrence. If the resolved workbook has any non-filing-ready rows, the occurrence records a failed decision and no artifact or notification is queued. Once a fully filable workbook is queued, subsequent polls return `already_queued` and cannot replace the preserved artifact.
+five-minute poll retries the same Tuesday occurrence. If the resolved report has
+any non-filing-ready rows, the occurrence records a failed decision and no
+artifact or notification is queued. Once a fully filable CSV is queued,
+subsequent polls return `already_queued` and cannot replace the preserved
+artifact.
 
-The exact queued workbook can be downloaded from the run history. Both email
+The exact queued CSV can be downloaded from the run history. Both email
 attachment resolution and operator download verify the stored SHA-256 digest;
 invalid, missing, over-size or out-of-scope artifacts fail closed.
 

@@ -163,8 +163,7 @@ def test_verify_commits_inventory_only_after_matching_acs_version(
     monkeypatch.setattr(
         "app.services.network.reconcile.readers.read_acs_state",
         lambda client, desired: ReadResult(
-            success=True,
-            unreachable=False,
+            status="present",
             observed=SimpleNamespace(acs_observed_software_version="V1R2"),
             error=None,
         ),

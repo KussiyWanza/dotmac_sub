@@ -45,6 +45,15 @@ def test_projects_owners_have_complete_typed_contracts() -> None:
         "project transition protocol",
         "authorized project command",
     )
+    template_plan = next(
+        concern
+        for concern in lifecycle.contract.concerns
+        if concern.name == "ProjectTemplate task-plan definition and application"
+    )
+    assert template_plan.input_names == (
+        "canonical project aggregate",
+        "authorized project command",
+    )
     status_change = next(
         concern
         for concern in lifecycle.contract.concerns
@@ -147,6 +156,29 @@ def test_project_task_relationship_integrity_stays_in_lifecycle_owner() -> None:
     assert '"/project-tasks/{task_id}/transition"' in api
     assert '"/project-tasks/{task_id}/dependencies"' in api
     assert "ProjectTaskDependency(" not in api
+
+
+def test_template_plan_revisioning_stays_in_project_lifecycle_owner() -> None:
+    service = (ROOT / "app/services/projects.py").read_text()
+    schemas = (ROOT / "app/schemas/project.py").read_text()
+    adapter = (ROOT / "app/services/web_projects.py").read_text()
+
+    assert "class ProjectTemplatePlanTaskInput" in schemas
+    assert "class ProjectTemplatePlanReplace" in schemas
+    assert "def replace_plan(" in service
+    assert "def apply_template_plan(" in service
+    assert "_PROJECT_TEMPLATE_PLAN_MUTATION" in service
+    assert "ProjectTaskTemplatePlanState.superseded" in service
+    assert "project_template_tasks.replace_plan(" in adapter
+    assert "ProjectTemplateTaskDependency(" not in adapter
+
+    for relative in (
+        "app/services/crm_reporting.py",
+        "app/services/sales/quote_acceptance.py",
+        "app/services/team_inbox_contact_context.py",
+    ):
+        consumer = (ROOT / relative).read_text()
+        assert "current_project_task_plan_clause()" in consumer
 
 
 def test_task_reassignment_email_is_owned_by_project_lifecycle() -> None:

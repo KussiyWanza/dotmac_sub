@@ -31,6 +31,11 @@ class AttendanceState(StrEnum):
     INELIGIBLE = "ineligible"
 
 
+class AttendancePunchResolution(StrEnum):
+    DIRECT = "direct"
+    RECONCILED = "reconciled"
+
+
 class WorkforceAttendanceError(Exception):
     def __init__(self, code: str, message: str, *, unavailable: bool = False) -> None:
         self.code = code
@@ -76,6 +81,12 @@ class AttendanceView:
     status: str | None
     allowed_actions: tuple[AttendanceAction, ...]
     reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AttendancePunchOutcome:
+    attendance: AttendanceView
+    resolution: AttendancePunchResolution
 
 
 def _parse_datetime(value: object) -> datetime | None:
@@ -146,6 +157,24 @@ class WorkforceAttendanceService:
             raise self._map_provider_error(exc) from exc
         return _normalize(response)
 
+    def require_checked_in_for_shift(
+        self, subject: UUID, *, request_id: str
+    ) -> AttendanceView:
+        """Return ERP's fresh checked-in state or reject location sharing.
+
+        This is the policy boundary used by field location adapters. The mobile
+        UI may disable Shift for clarity, but ERP's current attendance state is
+        always re-read here so a stale or modified client cannot enable it.
+        """
+
+        attendance = self.today(subject, request_id=request_id)
+        if attendance.state != AttendanceState.CHECKED_IN:
+            raise WorkforceAttendanceError(
+                "check_in_required",
+                "Check in before enabling location sharing.",
+            )
+        return attendance
+
     def punch(
         self,
         action: AttendanceAction,
@@ -174,6 +203,58 @@ class WorkforceAttendanceService:
         except DotMacERPError as exc:
             raise self._map_provider_error(exc) from exc
         return _normalize(response)
+
+    def punch_confirmed(
+        self,
+        action: AttendanceAction,
+        subject: UUID,
+        location: BrowserLocation,
+        *,
+        idempotency_key: str,
+        request_id: str,
+    ) -> AttendancePunchOutcome:
+        """Punch once and resolve duplicate or ambiguous transport by ERP read."""
+
+        try:
+            return AttendancePunchOutcome(
+                attendance=self.punch(
+                    action,
+                    subject,
+                    location,
+                    idempotency_key=idempotency_key,
+                    request_id=request_id,
+                ),
+                resolution=AttendancePunchResolution.DIRECT,
+            )
+        except WorkforceAttendanceError as exc:
+            duplicate_code = (
+                "already_checked_in"
+                if action == AttendanceAction.CHECK_IN
+                else "already_checked_out"
+            )
+            if exc.code not in {duplicate_code, "attendance_unavailable"}:
+                raise
+            try:
+                observed = self.today(subject, request_id=request_id)
+            except WorkforceAttendanceError:
+                raise exc
+            intended = (
+                AttendanceState.CHECKED_IN
+                if action == AttendanceAction.CHECK_IN
+                else AttendanceState.CHECKED_OUT
+            )
+            if observed.state == intended:
+                return AttendancePunchOutcome(
+                    attendance=observed,
+                    resolution=AttendancePunchResolution.RECONCILED,
+                )
+            if exc.code == "attendance_unavailable":
+                raise WorkforceAttendanceError(
+                    "attendance_unconfirmed",
+                    "Attendance outcome was not confirmed. Please try again.",
+                    unavailable=True,
+                ) from exc
+            raise
 
     @staticmethod
     def _map_provider_error(exc: DotMacERPError) -> WorkforceAttendanceError:

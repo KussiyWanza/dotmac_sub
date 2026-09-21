@@ -6,7 +6,7 @@
 <div class="space-y-8">
     <div>
         <h1 class="text-3xl font-display font-bold text-stone-900 dark:text-white">Installation Quotes</h1>
-        <p class="mt-1 text-base text-stone-500 dark:text-stone-400">Feasibility, estimate, and deposit for your requested installations. {% if quote_read_state != "retired" %}Request a new quote and pay the deposit in the mobile app.{% endif %}</p>
+        <p class="mt-1 text-base text-stone-500 dark:text-stone-400">Feasibility, estimate, and deposit for your requested installations. {% if quote_read_state != "retired" %}Request a new quote in the mobile app; we will notify you after staff review when payment is available.{% endif %}</p>
     </div>
 
     {% if quote_read_state == 'retired' %}
@@ -47,7 +47,7 @@
                     <p class="text-xs font-semibold uppercase tracking-wide text-stone-400 dark:text-stone-500">{{ coverage_labels.get(q.feasibility.coverage, 'Checking coverage') }}</p>
                     <h2 class="text-lg font-display font-semibold text-stone-900 dark:text-white">{{ q.address or 'Installation quote' }}</h2>
                 </div>
-                <span class="rounded-lg px-2.5 py-1 text-xs font-semibold {{ status_styles.get(q.status, 'bg-stone-100 text-stone-700 dark:bg-stone-700 dark:text-stone-300') }}">{% if q.deposit_paid and q.status != 'accepted' %}Deposit paid{% else %}{{ q.status | replace('_', ' ') | title }}{% endif %}</span>
+                <span class="rounded-lg px-2.5 py-1 text-xs font-semibold {{ status_styles.get(q.status, 'bg-stone-100 text-stone-700 dark:bg-stone-700 dark:text-stone-300') }}">{% if q.deposit_paid and q.status != 'accepted' %}Deposit paid{% elif q.payment_review_status == 'approved' and q.status in ('draft', 'sent') %}Approved — Payment required{% elif q.status in ('draft', 'sent') %}Awaiting staff review{% else %}{{ q.status | replace('_', ' ') | title }}{% endif %}</span>
             </div>
 
             <dl class="mt-4 grid gap-4 sm:grid-cols-2">
@@ -55,6 +55,11 @@
                     <dt class="text-xs font-semibold uppercase tracking-wide text-stone-400 dark:text-stone-500">Estimate</dt>
                     <dd class="mt-0.5 text-sm font-semibold text-stone-900 dark:text-white">{{ q.currency }} {{ q.total }}{% if q.estimate_provisional %} <span class="font-normal text-stone-400">(provisional — survey confirms)</span>{% endif %}</dd>
                 </div>
+                {% if q.status in ('draft', 'sent', 'rejected') %}
+                <div class="sm:col-span-2 rounded-xl bg-stone-50 px-4 py-3 text-sm text-stone-700 dark:bg-stone-900/40 dark:text-stone-300">
+                    {{ q.payment_review_message }}
+                </div>
+                {% endif %}
                 <div>
                     <dt class="text-xs font-semibold uppercase tracking-wide text-stone-400 dark:text-stone-500">Deposit</dt>
                     <dd class="mt-0.5 text-sm text-stone-900 dark:text-white">{{ q.currency }} {{ q.deposit_amount }}{% if q.deposit_paid %} · <span class="font-semibold text-emerald-600 dark:text-emerald-400">paid</span>{% endif %}</dd>

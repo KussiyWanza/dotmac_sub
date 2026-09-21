@@ -32,7 +32,7 @@ from scripts.release_artifact_contract import (
     evaluate_production_eligibility,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _CANDIDATE_KIND = "dotmac.release_candidate"
 _STAGING_KIND = "dotmac.staging_acceptance"
 _PRODUCTION_KIND = "dotmac.production_authorization"
@@ -119,6 +119,7 @@ def write_candidate_evidence(
             "image_digest": evidence.image_digest.value,
             "product_manifest_digest": evidence.product_manifest_digest.value,
             "build_run_id": evidence.build_run_id.value,
+            "evidence_run_id": evidence.evidence_run_id.value,
             "source_ci_conclusion": evidence.source_ci_conclusion.value,
         },
     )
@@ -136,6 +137,7 @@ def read_candidate_evidence(path: Path) -> ReleaseArtifactEvidence:
             "image_digest",
             "product_manifest_digest",
             "build_run_id",
+            "evidence_run_id",
             "source_ci_conclusion",
         },
     )
@@ -157,6 +159,9 @@ def read_candidate_evidence(path: Path) -> ReleaseArtifactEvidence:
             ),
             build_run_id=WorkflowRunId(
                 _required_positive_int(document, "build_run_id")
+            ),
+            evidence_run_id=WorkflowRunId(
+                _required_positive_int(document, "evidence_run_id")
             ),
             source_ci_conclusion=source_ci,
         )
@@ -221,16 +226,24 @@ def verify_candidate_evidence(
     *,
     expected_source_revision: GitCommitSha,
     expected_source_tree: GitTreeSha,
-    expected_build_run_id: WorkflowRunId,
+    expected_evidence_run_id: WorkflowRunId,
 ) -> None:
-    """Fail unless candidate evidence exactly matches its triggering run."""
+    """Fail unless candidate evidence exactly matches its triggering run.
+
+    The triggering run -- the one whose completion is what invoked this
+    downstream workflow, and whose artifact was just downloaded -- is checked
+    against ``evidence_run_id``, never ``build_run_id``. On a resumed
+    candidate build the two differ: the evidence was re-derived and
+    re-uploaded under the resume run, but the image itself (and therefore
+    ``build_run_id``) still names the original build.
+    """
 
     if evidence.source_revision != expected_source_revision:
         raise EvidenceDocumentError("candidate source revision does not match")
     if evidence.source_tree != expected_source_tree:
         raise EvidenceDocumentError("candidate source tree does not match")
-    if evidence.build_run_id != expected_build_run_id:
-        raise EvidenceDocumentError("candidate build workflow run does not match")
+    if evidence.evidence_run_id != expected_evidence_run_id:
+        raise EvidenceDocumentError("candidate evidence workflow run does not match")
     if evidence.source_ci_conclusion is not EvidenceConclusion.SUCCESS:
         raise EvidenceDocumentError("candidate source CI is not successful")
 
@@ -260,6 +273,7 @@ def write_production_authorization(
             "image_digest": artifact.image_digest.value,
             "product_manifest_digest": artifact.product_manifest_digest.value,
             "build_run_id": artifact.build_run_id.value,
+            "evidence_run_id": artifact.evidence_run_id.value,
             "staging_deployment_id": staging.deployment_id.value,
             "authorization_main_revision": main.authorization_main_revision.value,
             "release_revision": main.release_revision.value,
@@ -281,6 +295,7 @@ def read_production_authorization(path: Path) -> ReleaseCandidateRecord:
             "image_digest",
             "product_manifest_digest",
             "build_run_id",
+            "evidence_run_id",
             "staging_deployment_id",
             "authorization_main_revision",
             "release_revision",
@@ -302,6 +317,9 @@ def read_production_authorization(path: Path) -> ReleaseCandidateRecord:
                 ),
                 build_run_id=WorkflowRunId(
                     _required_positive_int(document, "build_run_id")
+                ),
+                evidence_run_id=WorkflowRunId(
+                    _required_positive_int(document, "evidence_run_id")
                 ),
                 source_ci_conclusion=EvidenceConclusion.SUCCESS,
             ),
@@ -514,13 +532,14 @@ def _parser() -> argparse.ArgumentParser:
     candidate.add_argument("--image-digest", required=True)
     candidate.add_argument("--product-manifest-digest", required=True)
     candidate.add_argument("--build-run-id", required=True, type=int)
+    candidate.add_argument("--evidence-run-id", required=True, type=int)
     candidate.add_argument("--output", required=True, type=_document_path)
 
     verify = commands.add_parser("verify-candidate")
     verify.add_argument("--path", required=True, type=Path)
     verify.add_argument("--expected-source-revision", required=True)
     verify.add_argument("--expected-source-tree", required=True)
-    verify.add_argument("--expected-build-run-id", required=True, type=int)
+    verify.add_argument("--expected-evidence-run-id", required=True, type=int)
     verify.add_argument("--github-output", required=True, type=Path)
 
     inspect_candidate = commands.add_parser("read-candidate")
@@ -537,7 +556,7 @@ def _parser() -> argparse.ArgumentParser:
     authorize = commands.add_parser("authorize-production")
     authorize.add_argument("--candidate", required=True, type=Path)
     authorize.add_argument("--staging", required=True, type=Path)
-    authorize.add_argument("--expected-build-run-id", required=True, type=int)
+    authorize.add_argument("--expected-evidence-run-id", required=True, type=int)
     authorize.add_argument(
         "--expected-staging-deployment-id",
         required=True,
@@ -599,6 +618,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.product_manifest_digest
                 ),
                 build_run_id=WorkflowRunId(args.build_run_id),
+                evidence_run_id=WorkflowRunId(args.evidence_run_id),
                 source_ci_conclusion=EvidenceConclusion.SUCCESS,
             ),
         )
@@ -609,7 +629,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             evidence,
             expected_source_revision=GitCommitSha(args.expected_source_revision),
             expected_source_tree=GitTreeSha(args.expected_source_tree),
-            expected_build_run_id=WorkflowRunId(args.expected_build_run_id),
+            expected_evidence_run_id=WorkflowRunId(args.expected_evidence_run_id),
         )
         _append_github_outputs(
             args.github_output,
@@ -619,6 +639,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "image_digest": evidence.image_digest.value,
                 "product_manifest_digest": evidence.product_manifest_digest.value,
                 "build_run_id": evidence.build_run_id.value,
+                "evidence_run_id": evidence.evidence_run_id.value,
             },
         )
         return 0
@@ -633,6 +654,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "image_digest": evidence.image_digest.value,
                 "product_manifest_digest": evidence.product_manifest_digest.value,
                 "build_run_id": evidence.build_run_id.value,
+                "evidence_run_id": evidence.evidence_run_id.value,
             },
         )
         return 0
@@ -640,8 +662,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "authorize-production":
         artifact = read_candidate_evidence(args.candidate)
         staging_evidence = read_staging_acceptance(args.staging)
-        if artifact.build_run_id != WorkflowRunId(args.expected_build_run_id):
-            raise EvidenceDocumentError("candidate build workflow run does not match")
+        if artifact.evidence_run_id != WorkflowRunId(args.expected_evidence_run_id):
+            raise EvidenceDocumentError(
+                "candidate evidence workflow run does not match"
+            )
         if staging_evidence.deployment_id != StagingDeploymentId(
             args.expected_staging_deployment_id
         ):

@@ -45,6 +45,23 @@ into every device id. The fleet runs several ONT models, so that placeholder
 made every non-HG8546M ONT an unrecoverable NBI 404 — a push that could never
 succeed, retried forever.
 
+Service-port index is a symmetric OLT-side precondition
+=========================================================
+
+There is no allocator anywhere in this package: a service-port index either
+arrives from operator input (``desired.mgmt_service_port_index`` /
+``wan_service_port_index``) or stays ``None``. When both are ``None`` and
+every currently observed service port would otherwise be planned for
+deletion — none of them protected by a VLAN+GEM match against an unindexed
+desired slot — the plan fails closed there too: it withholds every
+``OltDeleteServicePort`` action and sets ``Plan.olt_wait_reason`` to
+``SERVICE_PORT_INDEX_UNALLOCATED`` instead of deleting the ONT's entire
+service-port set with nothing to recreate it at. The same class of refusal
+applies narrower: when only ONE of the two indices is unallocated, a
+specific observed port correlated (by VLAN) to that one slot is withheld
+from deletion the same way, even though the other slot's real index means
+the rest of the set is still repaired normally.
+
 What the planner doesn't do
 ===========================
 
@@ -122,6 +139,17 @@ class Plan:
     actions: tuple[Action, ...]
     drifts: tuple[Drift, ...]
     required_surfaces: frozenset[WriteSurface]
+    # Every planned service-port CREATE (never observable as "drift" at plan
+    # time — the port doesn't exist yet, so there's no divergent value to
+    # diff, just an absence) records ONE entry here as well as in ``drifts``.
+    # ``reconcile_ont`` re-checks this set (not just ``drifts``) on the
+    # post-apply verify pass, so a create the OLT silently no-op'd cannot
+    # re-plan as "another driftless create" and slip past the no-drift
+    # convergence gate. Deliberately NOT ``verify_plan.actions`` — bootstrap
+    # mode always re-plans the WiFi/PSK push regardless of whether anything
+    # is actually wrong, which would turn every bootstrap pass into a false
+    # mismatch.
+    verification_debt: tuple[Drift, ...] = ()
     # Set when the ACS half of this plan could not be built because the device
     # has no ACS document or no unambiguous GenieACS ``_id``. The plan then
     # carries OLT actions ONLY. ``reconcile_ont`` still applies those, then
@@ -129,6 +157,18 @@ class Plan:
     # for the CPE's next Inform. It never means "push anyway to a guessed id".
     acs_wait_reason: str | None = None
     acs_wait_detail: str = ""
+    # Set when the OLT half of this plan withheld one or more
+    # ``OltDeleteServicePort`` actions for this ONT because the mgmt and/or
+    # WAN service-port index is unallocated (``None``) and a correlated
+    # observed service port would otherwise have been planned for deletion,
+    # with nothing to recreate it at — either every observed port (both
+    # indices unallocated, nothing preserved) or just the port(s) correlated
+    # to the one unallocated slot (the other slot carries a real index).
+    # Unindexed ports still matched by ``_matches_unindexed_desired_slot``
+    # remain preserved and do not trigger this —
+    # see ``ReconcileFailureReason.SERVICE_PORT_INDEX_UNALLOCATED``.
+    olt_wait_reason: str | None = None
+    olt_wait_detail: str = ""
 
     @property
     def is_empty(self) -> bool:
@@ -137,6 +177,10 @@ class Plan:
     @property
     def waiting_for_acs(self) -> bool:
         return self.acs_wait_reason is not None
+
+    @property
+    def waiting_for_olt(self) -> bool:
+        return self.olt_wait_reason is not None
 
 
 @dataclass(frozen=True)
@@ -272,23 +316,38 @@ def compute_plan(
     """
     actions: list[Action] = []
     drifts: list[Drift] = []
+    verification_debt: list[Drift] = []
     proposed_fields = proposed_fields or frozenset()
     wifi_only_change = _is_wifi_only_change(mode, proposed_fields)
     remote_only_change = _is_remote_access_only_change(mode, proposed_fields)
     wan_only_change = _is_wan_only_change(mode, proposed_fields)
     tr069_profile_only_change = _is_tr069_profile_only_change(mode, proposed_fields)
+    olt_wait_reason: str | None = None
 
-    if tr069_profile_only_change:
+    # Physical identity is a hard precondition for every OLT action (Astra
+    # Bug 1): an unresolved or mismatched fsp/olt_ont_id target means no
+    # coordinate pair is safe to authorize or modify against. This gate runs
+    # BEFORE the mode branches below and, when it fires, skips all of them —
+    # ``wifi_only_change``/``remote_only_change`` never touch the OLT side
+    # regardless, so they are the only ones exempt.
+    olt_identity_gate = _olt_identity_gate(desired, observed)
+    if olt_identity_gate is not None and not (wifi_only_change or remote_only_change):
+        drifts.append(_olt_identity_drift(desired, observed))
+        olt_wait_reason = olt_identity_gate
+        omci_wan_planned = False
+    elif tr069_profile_only_change:
         _plan_tr069_profile_only(desired, observed, actions, drifts)
         omci_wan_planned = False
     elif wifi_only_change or remote_only_change:
         omci_wan_planned = False
     elif wan_only_change:
-        _plan_wan_service_port(desired, observed, actions)
+        _plan_wan_service_port(desired, observed, actions, drifts, verification_debt)
         omci_wan_planned = _plan_olt_omci_wan(desired, observed, mode, actions, drifts)
         _append_reset_if_needed(desired, actions)
     else:
-        _plan_olt_side(desired, observed, mode, actions, drifts)
+        olt_wait_reason = _plan_olt_side(
+            desired, observed, mode, actions, drifts, verification_debt
+        )
         omci_wan_planned = _plan_olt_omci_wan(desired, observed, mode, actions, drifts)
         _append_reset_if_needed(desired, actions)
     acs_identity = AcsIdentity(device_id=None, wait_reason=None, detail="")
@@ -304,17 +363,93 @@ def compute_plan(
             force_proposed_writes,
         )
 
+    olt_wait_detail = ""
+    if olt_wait_reason == ReconcileFailureReason.OLT_IDENTITY_UNRESOLVED:
+        olt_wait_detail = (
+            f"ONT {desired.serial_number}: desired state has no fsp/"
+            "olt_ont_id target (or the OLT registration found by serial "
+            "could not be checked against one); refusing every OLT action "
+            "until an owner assigns a real physical target."
+        )
+    elif olt_wait_reason == ReconcileFailureReason.OLT_IDENTITY_MISMATCH:
+        olt_wait_detail = (
+            f"ONT {desired.serial_number}: the OLT reports this serial "
+            f"registered somewhere other than the desired fsp={desired.fsp!r} "
+            f"olt_ont_id={desired.olt_ont_id!r} target; refusing every OLT "
+            "action rather than writing to either coordinate pair."
+        )
+    elif olt_wait_reason is not None:
+        olt_wait_detail = (
+            f"ONT {desired.serial_number}: one or more OLT service-port "
+            "indices (mgmt and/or WAN) are unallocated while "
+            f"{len(observed.olt.olt_service_ports or ())} service port(s) are "
+            "observed; refusing to delete the correlated port(s) with no "
+            "target to recreate them."
+        )
+
     required_surfaces = frozenset(a.surface for a in actions)
     return Plan(
         actions=tuple(actions),
         drifts=tuple(drifts),
         required_surfaces=required_surfaces,
+        verification_debt=tuple(verification_debt),
         acs_wait_reason=acs_identity.wait_reason,
         acs_wait_detail=acs_identity.detail,
+        olt_wait_reason=olt_wait_reason,
+        olt_wait_detail=olt_wait_detail,
     )
 
 
 # ── OLT-side planning ───────────────────────────────────────────────────────
+
+
+def _olt_identity_gate(
+    desired: OntDesiredState, observed: OntObservedState
+) -> str | None:
+    """Whether this pass's OLT read confirmed the STORED target's identity.
+
+    Returns ``None`` when bound (safe to plan OLT actions against
+    ``desired.fsp``/``desired.olt_ont_id``), else the
+    ``ReconcileFailureReason`` naming why every OLT action is withheld this
+    pass.
+
+    Two independent signals, checked in order:
+
+    1. ``is_deliverable("olt_ont_id", ...)``/``is_deliverable("fsp", ...)`` —
+       the STORED target itself is a registered inadmissible sentinel
+       (``olt_ont_id is None`` / ``fsp == ""``). Checked directly against
+       ``desired`` rather than trusting ``observed.olt.olt_identity_status``
+       alone, so a caller that builds ``OntObservedState`` without correctly
+       threading identity_status (e.g. a cached fallback that defaults to
+       ``"bound"``) cannot accidentally let an unresolved target through.
+    2. ``observed.olt.olt_identity_status`` — set by ``readers.olt_reader``
+       after checking a found registration's fsp+onu_id against the desired
+       target (or noting there was no target to check).
+    """
+    if not is_deliverable("olt_ont_id", desired.olt_ont_id) or not is_deliverable(
+        "fsp", desired.fsp
+    ):
+        return ReconcileFailureReason.OLT_IDENTITY_UNRESOLVED
+    status = observed.olt.olt_identity_status
+    if status == "bound":
+        return None
+    if status == "mismatch":
+        return ReconcileFailureReason.OLT_IDENTITY_MISMATCH
+    return ReconcileFailureReason.OLT_IDENTITY_UNRESOLVED
+
+
+def _olt_identity_drift(desired: OntDesiredState, observed: OntObservedState) -> Drift:
+    """Unrepairable drift recorded when the identity gate withholds every
+    OLT action. Keeps ``plan.drifts`` honest about the withheld state instead
+    of reporting a clean plan for a device whose physical target could not
+    be confirmed."""
+    return Drift(
+        field="olt_identity",
+        surface="olt",
+        desired=(desired.fsp, desired.olt_ont_id),
+        observed=observed.olt.olt_identity_status,
+        repairable=False,
+    )
 
 
 def _plan_tr069_profile_only(
@@ -324,6 +459,11 @@ def _plan_tr069_profile_only(
     drifts: list[Drift],
 ) -> None:
     """Plan only the requested OLT TR-069 profile binding."""
+    if desired.olt_ont_id is None:
+        # ``compute_plan`` never reaches this function while the identity
+        # gate is open; this guard exists only to narrow the type for mypy
+        # and as a second line of defense.
+        return
     if not is_deliverable("tr069_profile_id", desired.tr069_profile_id):
         return
     if observed.olt.olt_tr069_profile_id == desired.tr069_profile_id:
@@ -352,7 +492,21 @@ def _plan_olt_side(
     mode: ReconcileMode,
     actions: list[Action],
     drifts: list[Drift],
-) -> None:
+    verification_debt: list[Drift],
+) -> str | None:
+    """Plan the OLT half; returns a wait reason when it was withheld.
+
+    The only current wait reason is
+    ``ReconcileFailureReason.SERVICE_PORT_INDEX_UNALLOCATED``, produced by
+    ``_plan_service_ports`` and passed through unchanged — every other
+    OLT-side action in this function still plans normally even when it
+    fires.
+    """
+    if desired.olt_ont_id is None:
+        # ``compute_plan`` never reaches this function while the identity
+        # gate is open; this guard exists only to narrow the type for mypy
+        # and as a second line of defense.
+        return None
     olt_obs = observed.olt
 
     # 1. Authorize if absent.
@@ -476,7 +630,9 @@ def _plan_olt_side(
 
     # 2. Service-port repair — strict, system-managed. Stale ports removed,
     # missing ports created.
-    _plan_service_ports(desired, observed, actions, drifts)
+    service_port_wait_reason = _plan_service_ports(
+        desired, observed, actions, drifts, verification_debt
+    )
 
     # 3. IPHOST — only meaningful when mgmt VLAN is set.
     if desired.mgmt_vlan is not None and desired.mgmt_ip is not None:
@@ -528,23 +684,129 @@ def _plan_olt_side(
             )
         )
 
+    return service_port_wait_reason
+
+
+def _sp_int(sp: object, *names: str) -> int | None:
+    """Coerce a named field of an observed service-port dict to ``int``."""
+    if not isinstance(sp, dict):
+        return None
+    for name in names:
+        value = sp.get(name)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _service_port_matches(
+    sp: object,
+    *,
+    index: int,
+    vlan: int,
+    gem_index: int,
+    ont_id: int,
+    fsp: str,
+) -> bool:
+    """Whether an observed service-port entry IS the desired slot.
+
+    Full identity — index, VLAN, GEM, ONT-ID, and fsp — not just the global
+    index. Astra Bug 2: comparing on index alone means a create whose write
+    silently no-ops (or a port some other process repointed to a different
+    VLAN/GEM) still reads back "index present" and is reported converged.
+    ``ont_id``/``fsp`` are compared only when the observed entry actually
+    carries them (older/partial readers may not populate every field);
+    their absence is not itself a mismatch.
+    """
+    if not isinstance(sp, dict):
+        return False
+    if _sp_int(sp, "index") != index:
+        return False
+    if _sp_int(sp, "vlan_id", "vlan") != vlan:
+        return False
+    if _sp_int(sp, "gem_index", "gem") != gem_index:
+        return False
+    observed_ont_id = _sp_int(sp, "ont_id")
+    if observed_ont_id is not None and observed_ont_id != ont_id:
+        return False
+    observed_fsp = sp.get("fsp")
+    if observed_fsp not in (None, "", fsp):
+        return False
+    return True
+
 
 def _plan_service_ports(
     desired: OntDesiredState,
     observed: OntObservedState,
     actions: list[Action],
     drifts: list[Drift],
-) -> None:
-    def _sp_int(sp: dict, *names: str) -> int | None:
-        for name in names:
-            value = sp.get(name)
-            if value is None:
-                continue
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                return None
+    verification_debt: list[Drift],
+) -> str | None:
+    """Repair OLT service ports; returns a wait reason when deletes are withheld.
+
+    Returns ``ReconcileFailureReason.SERVICE_PORT_INDEX_UNALLOCATED`` in two
+    cases, both withholding only the affected delete(s) rather than the
+    whole OLT plan:
+
+    1. **Both slots unallocated.** ``mgmt_service_port_index`` and
+       ``wan_service_port_index`` are both ``None`` AND every observed
+       service port would be planned for deletion — i.e. none of them is
+       protected by ``_matches_unindexed_desired_slot`` (a VLAN+GEM match
+       against a still-unallocated desired slot). The desired set is empty
+       and nothing preserves any observed port, so the delete loop would
+       remove the ONT's entire service-port set with no way to recreate
+       them (the create branch below requires a real index).
+    2. **One slot unallocated.** Only ``mgmt_service_port_index`` (or only
+       ``wan_service_port_index``) is ``None``. This is narrower and does
+       not require the whole set to be at risk: a specific observed port
+       whose VLAN correlates to that one still-unallocated slot (the same
+       correlation ``_matches_unindexed_desired_slot`` uses, just not
+       protected by it — e.g. a non-PPPoE WAN slot, which that helper never
+       protects regardless of index) would otherwise be deleted with
+       nothing to recreate it. Only that specific port's delete is
+       withheld; an unrelated stale port in the same batch is still
+       deleted normally.
+
+    A port that *does* match an unindexed desired slot via
+    ``_matches_unindexed_desired_slot`` is preserved exactly as before this
+    guard existed. Every withheld port also gets an unrepairable ``Drift``
+    entry, so ``plan.drifts`` reflects the withheld state instead of
+    looking clean.
+
+    A port that occupies the desired index but with the WRONG VLAN/GEM/ONT-ID
+    (Astra Bug 2) is never auto delete+recreated — that is a live customer
+    port and repairing it is a separate, human-owned decision. It is recorded
+    as unrepairable drift instead, and no create is planned for that slot
+    (the index is occupied, just not correctly).
+    """
+    if desired.olt_ont_id is None:
+        # ``compute_plan`` never reaches this function while the identity
+        # gate is open; this guard exists only to narrow the type for mypy
+        # and as a second line of defense.
         return None
+    if observed.olt.olt_service_ports is None:
+        # Astra Bug 2 follow-on: the enumeration itself failed (SSH
+        # error/exception), so the OLT's real service-port set is UNKNOWN —
+        # never "confirmed empty". Treating it as empty would plan a CREATE
+        # for an index that may already hold a live port, and protect every
+        # genuinely stale port from deletion by accident. Record the gap as
+        # drift (blocks the no-drift-tolerance convergence check) and plan
+        # no service-port action at all this pass.
+        drifts.append(
+            Drift(
+                field="olt_service_ports",
+                surface="olt",
+                desired="known",
+                observed=None,
+                repairable=False,
+            )
+        )
+        return None
+    fsp = desired.fsp
+    ont_id = desired.olt_ont_id
 
     def _matches_unindexed_desired_slot(sp: dict) -> bool:
         if desired.mgmt_service_port_index is None and desired.mgmt_vlan is not None:
@@ -570,10 +832,44 @@ def _plan_service_ports(
     }
     desired_indices.discard(None)
 
-    # Delete stale service-ports that aren't in the desired set.
+    # Ports occupying a desired index but not matching it exactly — recorded
+    # as unrepairable drift below, never deleted or recreated.
+    mismatched_at_index: dict[str, dict] = {}
+
+    # Build the candidate delete list first without mutating ``actions``/
+    # ``drifts`` yet, so the "every observed port would be deleted with
+    # nothing protecting any of them" hazard can be detected before
+    # committing to it.
+    indexed_observed_count = 0
+    delete_candidates: list[tuple[int, str, dict]] = []
     for sp in observed.olt.olt_service_ports:
-        idx = sp.get("index") if isinstance(sp, dict) else None
-        if idx is None or idx in desired_indices:
+        idx = _sp_int(sp, "index")
+        if idx is None or not isinstance(sp, dict):
+            continue
+        indexed_observed_count += 1
+        if idx == desired.mgmt_service_port_index:
+            if desired.mgmt_vlan is not None and _service_port_matches(
+                sp,
+                index=idx,
+                vlan=desired.mgmt_vlan,
+                gem_index=2,
+                ont_id=ont_id,
+                fsp=fsp,
+            ):
+                continue
+            mismatched_at_index["mgmt"] = sp
+            continue
+        if idx == desired.wan_service_port_index:
+            if desired.wan_vlan is not None and _service_port_matches(
+                sp,
+                index=idx,
+                vlan=desired.wan_vlan,
+                gem_index=desired.wan_gem_index or 1,
+                ont_id=ont_id,
+                fsp=fsp,
+            ):
+                continue
+            mismatched_at_index["wan"] = sp
             continue
         if _matches_unindexed_desired_slot(sp):
             continue
@@ -581,7 +877,7 @@ def _plan_service_ports(
         # desired index, so the desired state cannot name it; the VLAN is the
         # only evidence of what it was for. Unrecoverable stays "unknown",
         # which PPP delivery authorization treats as fail-closed.
-        observed_vlan = _sp_int(sp, "vlan_id", "vlan") if isinstance(sp, dict) else None
+        observed_vlan = _sp_int(sp, "vlan_id", "vlan")
         slot = "unknown"
         if observed_vlan is not None:
             if desired.mgmt_vlan is not None and int(observed_vlan) == int(
@@ -592,7 +888,71 @@ def _plan_service_ports(
                 desired.wan_vlan
             ):
                 slot = "wan"
-        actions.append(OltDeleteServicePort(service_port_index=int(idx), slot=slot))
+        delete_candidates.append((int(idx), slot, sp))
+
+    for slot, sp in mismatched_at_index.items():
+        expected_vlan = desired.mgmt_vlan if slot == "mgmt" else desired.wan_vlan
+        expected_gem = 2 if slot == "mgmt" else (desired.wan_gem_index or 1)
+        drifts.append(
+            Drift(
+                field=f"olt_service_ports[{slot}]",
+                surface="olt",
+                desired={"vlan": expected_vlan, "gem": expected_gem},
+                observed=sp,
+                repairable=False,
+            )
+        )
+
+    if (
+        not desired_indices
+        and indexed_observed_count > 0
+        and len(delete_candidates) == indexed_observed_count
+    ):
+        # Neither slot has an allocated index, and nothing observed matches an
+        # unindexed desired slot either — every observed port would be
+        # planned for deletion with nothing left standing and nothing to
+        # recreate them at. Refuse instead of deleting the ONT's entire
+        # service-port set. See
+        # ``ReconcileFailureReason.SERVICE_PORT_INDEX_UNALLOCATED``.
+        for idx, slot, sp in delete_candidates:
+            drifts.append(
+                Drift(
+                    field=f"olt_service_ports[{idx}]",
+                    surface="olt",
+                    desired=None,
+                    observed=sp,
+                    repairable=False,
+                )
+            )
+        return ReconcileFailureReason.SERVICE_PORT_INDEX_UNALLOCATED
+
+    # Narrower per-slot case: one slot carries a real, operator-supplied
+    # index (so the desired state is meaningfully populated) but a specific
+    # observed port's VLAN positively correlates to the OTHER, still-
+    # unallocated slot, and nothing protects it (`_matches_unindexed_desired_
+    # slot` only protects the WAN slot in PPPoE mode and the mgmt slot when
+    # a VLAN is set — a non-PPPoE WAN slot is never protected regardless of
+    # index). Deleting it would strand that slot: nothing recreates it (the
+    # create branch below requires a real index) and nothing protected it.
+    # Withhold just that candidate; a port unrelated to either slot (`slot ==
+    # "unknown"`) is unaffected and still deleted below.
+    slot_index_unallocated = False
+    for idx, slot, sp in delete_candidates:
+        if (slot == "mgmt" and desired.mgmt_service_port_index is None) or (
+            slot == "wan" and desired.wan_service_port_index is None
+        ):
+            slot_index_unallocated = True
+            drifts.append(
+                Drift(
+                    field=f"olt_service_ports[{idx}]",
+                    surface="olt",
+                    desired=None,
+                    observed=sp,
+                    repairable=False,
+                )
+            )
+            continue
+        actions.append(OltDeleteServicePort(service_port_index=idx, slot=slot))
         drifts.append(
             Drift(
                 field=f"olt_service_ports[{idx}]",
@@ -603,57 +963,135 @@ def _plan_service_ports(
             )
         )
 
-    # Create missing service-ports — but only when the allocator has assigned
-    # an index. If indices are still None, the allocator hasn't run yet and
-    # this is the planner's job to flag (handled by reconcile_ont with a
-    # specific failure reason; not a plannable action here).
-    observed_indices = {
-        sp.get("index") for sp in observed.olt.olt_service_ports if isinstance(sp, dict)
-    }
+    # Create missing service-ports — but only when a real index is set AND
+    # nothing (matched or mismatched) already occupies it. There is no
+    # allocator: an index either arrives from operator input
+    # (``desired.mgmt_service_port_index``/``wan_service_port_index``, see
+    # ``adapters.py``) or stays ``None``. A ``None`` index here plans no
+    # create action; the both-slots-unallocated case already returned above,
+    # and the per-slot case leaves ``slot_index_unallocated`` set so the
+    # caller still learns nothing was recreated for the withheld slot.
+    observed_indices = {_sp_int(sp, "index") for sp in observed.olt.olt_service_ports}
+    observed_indices.discard(None)
     if (
         desired.mgmt_service_port_index is not None
         and desired.mgmt_service_port_index not in observed_indices
         and desired.mgmt_vlan is not None
     ):
-        actions.append(
-            OltCreateServicePort(
-                fsp=desired.fsp,
-                ont_id=desired.olt_ont_id,
-                service_port_index=desired.mgmt_service_port_index,
-                vlan=desired.mgmt_vlan,
-                gem_index=2,  # GEM 2 is the mgmt slot in line profile 40
-                slot="mgmt",
-            )
+        _plan_service_port_create(
+            desired,
+            actions,
+            drifts,
+            verification_debt,
+            slot="mgmt",
+            index=desired.mgmt_service_port_index,
+            vlan=desired.mgmt_vlan,
+            gem_index=2,
         )
-    _plan_wan_service_port(desired, observed, actions)
+    _plan_wan_service_port(desired, observed, actions, drifts, verification_debt)
+    return (
+        ReconcileFailureReason.SERVICE_PORT_INDEX_UNALLOCATED
+        if slot_index_unallocated
+        else None
+    )
+
+
+def _plan_service_port_create(
+    desired: OntDesiredState,
+    actions: list[Action],
+    drifts: list[Drift],
+    verification_debt: list[Drift],
+    *,
+    slot: str,
+    index: int,
+    vlan: int,
+    gem_index: int,
+) -> None:
+    """Emit an ``OltCreateServicePort`` plus its verification-debt ``Drift``.
+
+    A create is not observable as drift the way a value mismatch is — the
+    port simply doesn't exist yet, so there's nothing to diff. The debt entry
+    is what lets ``reconcile_ont``'s post-apply verify pass detect a silent
+    no-op: if the create didn't really take, the SAME comparison
+    (``_service_port_matches``) fails again on the fresh read and this
+    function runs again, reproducing the debt entry instead of a clean plan.
+    """
+    assert desired.olt_ont_id is not None  # guaranteed by every caller
+    actions.append(
+        OltCreateServicePort(
+            fsp=desired.fsp,
+            ont_id=desired.olt_ont_id,
+            service_port_index=index,
+            vlan=vlan,
+            gem_index=gem_index,
+            slot=slot,
+        )
+    )
+    debt = Drift(
+        field=f"olt_service_ports[{slot}]",
+        surface="olt",
+        desired={"index": index, "vlan": vlan, "gem": gem_index},
+        observed=None,
+        repairable=True,
+    )
+    drifts.append(debt)
+    verification_debt.append(debt)
 
 
 def _plan_wan_service_port(
     desired: OntDesiredState,
     observed: OntObservedState,
     actions: list[Action],
+    drifts: list[Drift],
+    verification_debt: list[Drift],
 ) -> None:
     """Create a missing WAN port without treating other ports as disposable."""
-    observed_indices = {
-        sp.get("index") for sp in observed.olt.olt_service_ports if isinstance(sp, dict)
-    }
+    if desired.olt_ont_id is None:
+        # ``compute_plan`` never reaches this function while the identity
+        # gate is open; this guard exists only to narrow the type for mypy
+        # and as a second line of defense.
+        return
+    if observed.olt.olt_service_ports is None:
+        # Reachable directly from ``compute_plan``'s ``wan_only_change``
+        # branch, which never goes through ``_plan_service_ports``'s own
+        # guard — see that function's identical check for why ``None`` must
+        # never be treated as "no ports".
+        drifts.append(
+            Drift(
+                field="olt_service_ports",
+                surface="olt",
+                desired="known",
+                observed=None,
+                repairable=False,
+            )
+        )
+        return
     if (
         desired.wan_service_port_index is not None
-        and desired.wan_service_port_index not in observed_indices
         and desired.wan_vlan is not None
         and is_deliverable("wan_vlan", desired.wan_vlan)
         and desired.wan_mode == "pppoe"
     ):
-        actions.append(
-            OltCreateServicePort(
-                fsp=desired.fsp,
-                ont_id=desired.olt_ont_id,
-                service_port_index=desired.wan_service_port_index,
-                vlan=desired.wan_vlan,
-                gem_index=desired.wan_gem_index or 1,
-                slot="wan",
-            )
+        gem_index = desired.wan_gem_index or 1
+        # A create is planned only when NOTHING occupies the index —
+        # matched or mismatched. A mismatched occupant is a live customer
+        # port and is flagged as unrepairable drift by the main per-port
+        # loop in ``_plan_service_ports``, never auto delete+recreated here.
+        occupied = any(
+            _sp_int(sp, "index") == desired.wan_service_port_index
+            for sp in observed.olt.olt_service_ports
         )
+        if not occupied:
+            _plan_service_port_create(
+                desired,
+                actions,
+                drifts,
+                verification_debt,
+                slot="wan",
+                index=desired.wan_service_port_index,
+                vlan=desired.wan_vlan,
+                gem_index=gem_index,
+            )
 
 
 def _plan_olt_omci_wan(
@@ -666,6 +1104,11 @@ def _plan_olt_omci_wan(
     """Emit the three-command OMCI WAN sequence when ``wan_config_profile_id``
     is set. Returns ``True`` if OMCI owns WAN PPP — used downstream to decide
     whether TR-069 WAN actions should also fire."""
+    if desired.olt_ont_id is None:
+        # ``compute_plan`` never reaches this function while the identity
+        # gate is open; this guard exists only to narrow the type for mypy
+        # and as a second line of defense.
+        return False
     if (
         desired.wan_mode != "pppoe"
         or desired.wan_pppoe_provisioning_method == "tr069"
@@ -707,6 +1150,12 @@ def _plan_olt_omci_wan(
 
 
 def _append_reset_if_needed(desired: OntDesiredState, actions: list[Action]) -> None:
+    if desired.olt_ont_id is None:
+        # No OLT action could have been planned without a resolved identity
+        # (every action-emitting function guards the same way), so there is
+        # nothing here that could ``requires_reset``. Guard exists only to
+        # narrow the type for mypy.
+        return
     if any(getattr(a, "requires_reset", False) for a in actions):
         actions.append(OltReset(fsp=desired.fsp, ont_id=desired.olt_ont_id))
 

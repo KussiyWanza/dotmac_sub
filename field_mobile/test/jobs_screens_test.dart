@@ -354,7 +354,7 @@ void main() {
     });
 
     expect(detail.notes, hasLength(1));
-    expect(detail.notes.single['text'], 'Stored note returned as text');
+    expect(detail.notes.single.body, 'Stored note returned as text');
     expect(detail.history, hasLength(1));
     expect(detail.history.single['title'], 'History note');
   });
@@ -571,17 +571,20 @@ void main() {
     expect(thread.messages.single.body, 'I am at home');
   });
 
-  testWidgets('job detail renders notes returned with alternate body key', (
+  testWidgets('job detail renders typed notes with author metadata', (
     tester,
   ) async {
     final detail = JobDetail(
       job: _job(),
       location: const JobLocation(source: 'none'),
-      notes: const [
-        {
-          'text': 'Stored note returned as text',
-          'author_name': 'Adaeze Okafor',
-        },
+      notes: [
+        JobNote(
+          id: 'note-1',
+          body: 'Stored note returned as text',
+          isInternal: true,
+          authorName: 'Adaeze Okafor',
+          createdAt: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+        ),
       ],
     );
     await tester.pumpWidget(
@@ -595,7 +598,40 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Stored note returned as text'), findsOneWidget);
-    expect(find.text('Adaeze Okafor'), findsOneWidget);
+    expect(
+      find.text('Adaeze Okafor · 1970-01-01T00:00:00.000Z'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('job detail keeps queued note state visible', (tester) async {
+    final detail = JobDetail(
+      job: _job(),
+      location: const JobLocation(source: 'none'),
+      notes: [
+        JobNote(
+          id: 'queued-note-1',
+          clientRef: 'queued-note-1',
+          body: 'Waiting to reach the server',
+          isInternal: true,
+          authorName: 'You',
+          createdAt: DateTime.utc(2026, 9, 9, 12),
+          deliveryState: JobNoteDeliveryState.queued,
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      _wrap(
+        const JobDetailScreen(jobId: 'wo-1'),
+        overrides: [
+          jobDetailProvider('wo-1').overrideWith((ref) async => detail),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Waiting to reach the server'), findsOneWidget);
+    expect(find.text('Queued for sync'), findsOneWidget);
   });
 
   testWidgets('call button dials the customer', (tester) async {

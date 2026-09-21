@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -17,24 +17,29 @@ from app.models.team_inbox import (
     InboxConversation,
     InboxConversationAssignment,
     InboxConversationLabel,
+    InboxConversationQueueEntry,
     InboxConversationStatus,
     InboxConversationTeam,
     InboxLabel,
     InboxMessage,
     InboxMessageDirection,
     InboxMessageTemplate,
+    InboxQueueEntryStatus,
     InboxReplyMacro,
     InboxSavedFilter,
     InboxTeamRole,
     InboxTeamSource,
 )
 from app.services import (
+    ai_conversation_ownership,
+    inbox_sla,
     team_inbox_assignment,
     team_inbox_filters,
     team_inbox_outbound,
     team_inbox_status,
 )
 from app.services.common import coerce_uuid
+from app.services.domain_errors import DomainError
 
 _ALLOWED_LABEL_COLORS = {
     "slate",
@@ -87,6 +92,31 @@ def route_to_service_team(
     team = db.get(ServiceTeam, service_team_id)
     if team is None or not team.is_active:
         raise InboxOperationError("The target service team is not active.")
+    active_queue_entry = (
+        db.query(InboxConversationQueueEntry)
+        .filter(InboxConversationQueueEntry.conversation_id == conversation.id)
+        .filter(
+            InboxConversationQueueEntry.status == InboxQueueEntryStatus.queued.value
+        )
+        .one_or_none()
+    )
+    if (
+        active_queue_entry is not None
+        and active_queue_entry.service_team_id != service_team_id
+    ):
+        outcome = team_inbox_assignment.queue_conversation_for_team(
+            db,
+            conversation=conversation,
+            service_team_id=service_team_id,
+            reason=f"queue team transfer: {source}",
+            source=InboxTeamSource.routing_rule.value,
+            reason_code="queue_team_transfer",
+        )
+        if outcome.kind != "queued":
+            raise InboxOperationError(
+                outcome.reason or "Could not transfer the queued conversation."
+            )
+        return conversation
     links = db.scalars(
         select(InboxConversationTeam)
         .where(InboxConversationTeam.conversation_id == conversation.id)
@@ -469,12 +499,23 @@ def execute_macro_actions(
     conversation: InboxConversation,
     macro_id: str | UUID,
     actor_person_id: str | UUID | None = None,
+    override_grant_id: str | UUID | None = None,
 ) -> dict[str, object]:
+    """Run one macro's actions against one conversation.
+
+    ``override_grant_id`` is supplied by the operator invoking the macro for
+    THIS execution only. It is never read from the stored macro's ``actions``
+    ``params`` -- a stored macro carrying a grant id would make a single-use
+    override reusable and durable, which destroys the single-use guarantee.
+    See ``tests/architecture/test_inbox_completion_override_boundary.py``.
+    """
+
     macro = record_macro_use(db, macro_id)
     if macro is None:
         raise InboxOperationError("Macro not found.")
 
     actor_uuid = coerce_uuid(actor_person_id)
+    override_grant_uuid = coerce_uuid(override_grant_id)
     executed = 0
     failed = 0
     results: list[dict[str, object]] = []
@@ -499,6 +540,7 @@ def execute_macro_actions(
                     reason=team_inbox_status.InboxStatusReason.macro,
                     source_id=f"macro:{macro.id}:{conversation.id}:{uuid4()}",
                     macro_id=macro.id,
+                    completion_override_grant_id=override_grant_uuid,
                 )
             elif action_type == "add_tag":
                 label_name = str(params.get("tag") or params.get("label") or "").strip()
@@ -646,19 +688,49 @@ def get_template(db: Session, template_id: str | UUID) -> InboxMessageTemplate:
     return template
 
 
+_RESOLUTION_BLOCKED_CODE = (
+    "communications.team_inbox_customer_completion.resolution_blocked"
+)
+# The bulk skip is the one graceful-degradation mechanism for a blocked
+# resolution. A per-conversation override that turns out absent, already
+# consumed, mismatched, superseded, expired, or stale is the SAME kind of
+# "this one conversation could not resolve" outcome -- it reuses the exact
+# skip-and-report shape rather than a second mechanism.
+_OVERRIDE_SKIPPABLE_CODES = frozenset(
+    f"communications.team_inbox_completion_override.{suffix}"
+    for suffix in (
+        "override_absent",
+        "override_already_consumed",
+        "override_conversation_mismatch",
+        "override_superseded",
+        "override_expired",
+        "override_stale_evidence",
+        "override_not_required",
+        "override_requires_customer_identity",
+    )
+)
+
+
 def bulk_update_status(
     db: Session,
     *,
     conversation_ids: Sequence[str | UUID],
     status_value: str,
     actor_person_id: str | UUID | None = None,
+    override_grant_ids: Mapping[str | UUID, str | UUID] | None = None,
 ) -> dict[str, object]:
     clean_status = str(status_value or "").strip().lower()
     if clean_status not in {"open", "pending", "snoozed", "resolved"}:
         raise InboxOperationError("Unsupported conversation status.")
     actor_uuid = coerce_uuid(actor_person_id)
+    # One grant id per conversation -- never a batch-wide override flag.
+    grant_ids_by_conversation = {
+        coerce_uuid(key): coerce_uuid(value)
+        for key, value in (override_grant_ids or {}).items()
+    }
     updated: list[str] = []
     skipped: list[str] = []
+    blocked: list[dict[str, object]] = []
     for raw_id in conversation_ids:
         conversation = db.get(InboxConversation, coerce_uuid(raw_id))
         if conversation is None or not conversation.is_active:
@@ -667,17 +739,44 @@ def bulk_update_status(
         if conversation.status == clean_status:
             skipped.append(str(conversation.id))
             continue
-        team_inbox_status.apply_status_transition(
-            db,
-            conversation=conversation,
-            status=InboxConversationStatus(clean_status),
-            actor_person_id=actor_uuid,
-            reason=team_inbox_status.InboxStatusReason.bulk_change,
-            source_id=f"bulk-status:{conversation.id}:{uuid4()}",
-        )
+        try:
+            team_inbox_status.apply_status_transition(
+                db,
+                conversation=conversation,
+                status=InboxConversationStatus(clean_status),
+                actor_person_id=actor_uuid,
+                reason=team_inbox_status.InboxStatusReason.bulk_change,
+                source_id=f"bulk-status:{conversation.id}:{uuid4()}",
+                completion_override_grant_id=grant_ids_by_conversation.get(
+                    conversation.id
+                ),
+            )
+        except DomainError as exc:
+            if exc.code != _RESOLUTION_BLOCKED_CODE and (
+                exc.code not in _OVERRIDE_SKIPPABLE_CODES
+            ):
+                raise
+            skipped.append(str(conversation.id))
+            blocked.append(
+                {
+                    "conversation_id": str(conversation.id),
+                    "message": exc.message,
+                    "details": dict(exc.details),
+                }
+            )
+            continue
         updated.append(str(conversation.id))
     db.flush()
-    return {"updated": updated, "skipped": skipped, "status": clean_status}
+    for conversation_id in updated:
+        conversation = db.get(InboxConversation, coerce_uuid(conversation_id))
+        if conversation is not None:
+            inbox_sla.update_status(db, conversation, clean_status)
+    return {
+        "updated": updated,
+        "skipped": skipped,
+        "blocked": blocked,
+        "status": clean_status,
+    }
 
 
 def bulk_update_priority(
@@ -973,7 +1072,6 @@ def bulk_escalate(
     auto_assign: bool = True,
     actor_person_id: str | UUID | None = None,
     reason: str | None = None,
-    require_team_membership: bool = True,
 ) -> dict[str, object]:
     updated: list[str] = []
     skipped: list[dict[str, str]] = []
@@ -995,7 +1093,6 @@ def bulk_escalate(
                 person_id=assigned_person_id,
                 assigned_by_person_id=actor_person_id,
                 reason=reason,
-                require_team_membership=require_team_membership,
             )
         elif auto_assign:
             result = team_inbox_assignment.assign_conversation_to_available_agent(
@@ -1094,6 +1191,7 @@ def queue_metrics(db: Session) -> InboxQueueMetrics:
         )
         .filter(InboxConversation.is_active.is_(True))
         .filter(InboxConversation.status != "resolved")
+        .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
         .one()
     )
     return InboxQueueMetrics(
@@ -1227,7 +1325,7 @@ def snooze_until_reply(
     conversation: InboxConversation,
     actor_person_id: str | UUID | None = None,
 ) -> InboxConversation:
-    """Snooze a conversation with no wake time — the customer's reply wakes it.
+    """Snooze a conversation with no wake time â€” the customer's reply wakes it.
 
     Stored as a metadata flag rather than a far-future ``snoozed_until``, so the
     queue's snoozed filter still means "asleep" while nothing invents a wake
@@ -1272,7 +1370,7 @@ def wake_due_snoozed_conversations(
     """Settle conversations whose chosen wake time has passed.
 
     Snoozing wrote a durable ``status='snoozed'`` and a ``snoozed_until``, and
-    nothing ever cleared them — so a conversation snoozed until Tuesday was
+    nothing ever cleared them â€” so a conversation snoozed until Tuesday was
     still filed as snoozed the following month, and absent from the Open
     cohort. The workqueue provider already read the wake time as expiry
     (``snoozed_until <= now`` means awake), so the two disagreed about the same
@@ -1459,7 +1557,7 @@ def render_conversation_transcript(
     for message in messages:
         metadata = message.metadata_ or {}
         if metadata.get("delivery_status") == SCHEDULED_DELIVERY_STATUS_FOR_TRANSCRIPT:
-            # Not sent yet — it is not part of what was exchanged.
+            # Not sent yet â€” it is not part of what was exchanged.
             continue
         who = "Us" if message.direction == "outbound" else "Customer"
         when = (message.sent_at or message.created_at).strftime("%Y-%m-%d %H:%M UTC")

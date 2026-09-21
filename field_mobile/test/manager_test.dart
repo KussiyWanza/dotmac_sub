@@ -2,6 +2,8 @@ import 'package:dio/dio.dart';
 import 'package:dotmac_field/core/api/api_client.dart';
 import 'package:dotmac_field/core/api/token_store.dart';
 import 'package:dotmac_field/features/auth/auth_state.dart';
+import 'package:dotmac_field/features/expenses/expense_models.dart';
+import 'package:dotmac_field/features/manager/manager_providers.dart';
 import 'package:dotmac_field/features/manager/manager_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,6 +12,29 @@ import 'package:flutter_test/flutter_test.dart';
 import 'helpers/fake_http.dart';
 
 void main() {
+  test('manager history includes all resolved expense statuses', () {
+    ExpenseRequest request(String status) =>
+        ExpenseRequest(id: 'expense-$status', status: status);
+
+    expect(
+      [
+        'approved',
+        'rejected',
+        'paid',
+        'canceled',
+      ].map(request).every(ManagerExpenseReviewFilter.history.includes),
+      isTrue,
+    );
+    expect(
+      ManagerExpenseReviewFilter.history.includes(request('submitted')),
+      isFalse,
+    );
+    expect(
+      ManagerExpenseReviewFilter.history.includes(request('draft')),
+      isFalse,
+    );
+  });
+
   testWidgets('successful approval survives a failed list refresh', (
     tester,
   ) async {
@@ -41,6 +66,7 @@ void main() {
               'number': 'EXP-0001',
               'status': 'submitted',
               'purpose': 'Site transport',
+              'requested_by_name': 'Ada Technician',
               'total_amount': '2500.00',
             },
           ],
@@ -55,11 +81,16 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [apiClientProvider.overrideWithValue(client)],
-        child: const MaterialApp(home: ManagerExpenseReviewScreen()),
+        child: const MaterialApp(
+          home: ManagerExpenseReviewScreen(
+            filter: ManagerExpenseReviewFilter.pendingApprovals,
+          ),
+        ),
       ),
     );
     await tester.pumpAndSettle();
 
+    expect(find.text('Raised by Ada Technician'), findsOneWidget);
     await tester.tap(find.widgetWithText(FilledButton, 'Approve'));
     await tester.pumpAndSettle();
 
@@ -68,7 +99,7 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Site transport'), findsNothing);
-    expect(find.text('No expense approvals pending'), findsOneWidget);
+    expect(find.text('No pending approvals'), findsOneWidget);
     expect(
       find.text(
         'Could not refresh approvals. Showing the last loaded results.',
@@ -125,11 +156,16 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [apiClientProvider.overrideWithValue(client)],
-        child: const MaterialApp(home: ManagerExpenseReviewScreen()),
+        child: const MaterialApp(
+          home: ManagerExpenseReviewScreen(
+            filter: ManagerExpenseReviewFilter.pendingApprovals,
+          ),
+        ),
       ),
     );
     await tester.pumpAndSettle();
 
+    expect(find.text('Raised by unavailable'), findsOneWidget);
     await tester.tap(find.widgetWithText(OutlinedButton, 'Reject'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), 'Missing receipt');
@@ -142,5 +178,97 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
     expect(find.text('Expense rejected'), findsOneWidget);
+  });
+
+  testWidgets('authorized manager can queue payment for an approved expense', (
+    tester,
+  ) async {
+    final adapter = FakeHttpAdapter();
+    final store = InMemoryTokenStore();
+    await store.save(
+      accessToken: fakeJwt(
+        expiry: DateTime.now().toUtc().add(const Duration(minutes: 15)),
+      ),
+      refreshToken: 'refresh',
+    );
+    final dio = Dio(BaseOptions(baseUrl: 'https://test.local'))
+      ..httpClientAdapter = adapter;
+    final client = ApiClient(
+      baseUrl: 'https://test.local',
+      tokenStore: store,
+      dio: dio,
+    );
+    var paymentQueued = false;
+
+    adapter.on('GET', '/api/v1/field/manager/expenses', (_) {
+      return (
+        200,
+        {
+          'items': [
+            {
+              'id': 'exp-approved',
+              'number': 'EXP-0002',
+              'status': 'approved',
+              'purpose': 'Replacement router transport',
+              'currency': 'NGN',
+              'total_amount': '7500.00',
+              if (paymentQueued) 'payment_status': 'queued',
+            },
+          ],
+        },
+      );
+    });
+    adapter.on('POST', '/api/v1/field/manager/expenses/exp-approved/pay', (
+      options,
+    ) {
+      expect(options.headers['X-Request-ID'], isNotEmpty);
+      paymentQueued = true;
+      return (
+        200,
+        {
+          'id': 'exp-approved',
+          'status': 'approved',
+          'payment_status': 'queued',
+          'payment_command_id': 'command-1',
+          'erp_sync_event_id': 'event-1',
+        },
+      );
+    });
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          apiClientProvider.overrideWithValue(client),
+          managerProfileProvider.overrideWith(
+            (ref) async => const ManagerProfile(
+              name: 'Manager',
+              roles: [],
+              permissions: ['operations:expense_request:pay'],
+              isManager: true,
+            ),
+          ),
+        ],
+        child: const MaterialApp(
+          home: ManagerExpenseReviewScreen(
+            filter: ManagerExpenseReviewFilter.history,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Pay expense'));
+    await tester.pumpAndSettle();
+    expect(find.text('Pay expense?'), findsOneWidget);
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.widgetWithText(FilledButton, 'Pay expense'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Payment queued; waiting for ERP'), findsOneWidget);
+    expect(find.text('Payment in progress'), findsOneWidget);
   });
 }

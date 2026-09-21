@@ -13,19 +13,24 @@ from sqlalchemy.orm import Session
 
 from app.models.ai_intake import AiIntakePolicyVersion, AiIntakeSession
 from app.models.integration_platform import IntegrationInbox
+from app.models.service_team import ServiceTeam
 from app.models.team_inbox import (
     InboxConversation,
     InboxConversationStatus,
     InboxMediaAsset,
     InboxMessage,
     InboxMessageDirection,
+    InboxTeamSource,
 )
 from app.services import (
     ai_conversation_intake,
+    ai_intake_conversation_engine,
+    team_inbox_assignment,
     team_inbox_media,
     team_inbox_observations,
     team_inbox_operations,
     team_inbox_outbound,
+    team_inbox_routing,
     team_inbox_status,
 )
 from app.services.domain_errors import DomainError
@@ -588,12 +593,22 @@ def _recover_one_stale_ai_intake_session(
         )
         return MaintenanceOutcome(changed=0, skipped=1)
     session_metadata = dict(session.metadata_ or {})
-    wait_started = (
-        _as_utc(session.customer_wait_started_at)
-        or _parse_instant(session_metadata.get("customer_wait_started_at"))
-        or _as_utc(session.updated_at)
-        or now
+    version = (
+        db.get(AiIntakePolicyVersion, session.policy_version_id)
+        if session.policy_version_id
+        else None
     )
+    wait_started = _as_utc(session.customer_wait_started_at) or _parse_instant(
+        session_metadata.get("customer_wait_started_at")
+    )
+    if wait_started is None:
+        ai_conversation_intake.record_customer_wait(
+            session,
+            version=version,
+            reason="missing_wait_start_repaired",
+            now=now,
+        )
+        return MaintenanceOutcome(changed=1, skipped=0)
     if _wait_inbound_reply_exists(
         db,
         conversation_id=conversation.id,
@@ -607,70 +622,201 @@ def _recover_one_stale_ai_intake_session(
             conversation, session=session, active=True
         )
         return MaintenanceOutcome(changed=0, skipped=1)
-    if "customer_wait_expiry_hours" not in session_metadata:
-        version = (
-            db.get(AiIntakePolicyVersion, session.policy_version_id)
-            if session.policy_version_id
-            else None
-        )
-        ai_conversation_intake.record_customer_wait(
-            session,
-            version=version,
-            reason="legacy_short_wait_migrated",
-            now=now,
-        )
-        return MaintenanceOutcome(changed=1, skipped=0)
     deadline = _as_utc(session.expires_at)
-    if deadline is None:
-        version = (
-            db.get(AiIntakePolicyVersion, session.policy_version_id)
-            if session.policy_version_id
-            else None
-        )
+    normalized_deadline = False
+    if "customer_wait_handoff_minutes" not in session_metadata or deadline is None:
         ai_conversation_intake.record_customer_wait(
             session,
             version=version,
-            reason="legacy_wait_expiry_backfill",
-            now=now,
+            reason="legacy_wait_handoff_policy_migrated",
+            now=wait_started,
         )
-        return MaintenanceOutcome(changed=1, skipped=0)
+        session_metadata = dict(session.metadata_ or {})
+        deadline = _as_utc(session.expires_at)
+        normalized_deadline = True
+    if deadline is None:
+        raise TeamInboxMaintenanceError(
+            code="communications.team_inbox_maintenance.invalid_ai_wait_deadline",
+            message="AI intake wait deadline could not be normalized",
+        )
     if deadline > now:
-        return MaintenanceOutcome(changed=0, skipped=0)
+        return MaintenanceOutcome(changed=int(normalized_deadline), skipped=0)
+    timeout_key = f"ai-intake-timeout:{session.id}:{deadline.isoformat()}"
+    state = ai_intake_conversation_engine.ConversationalState.load(
+        conversation=conversation,
+        session=session,
+    )
+    state.escalation_reason = "customer_response_timeout"
+    state.handoff_status = "requested"
+    routing_metadata = {
+        "ai_intake_status": (
+            "classified"
+            if (session.final_intent or state.current_intent)
+            else "escalated"
+        ),
+        "ai_intent": session.final_intent or state.current_intent,
+        "ai_category": session.final_category or state.category,
+        "ai_confidence": (
+            session.final_confidence
+            if session.final_confidence is not None
+            else state.confidence
+        ),
+        "ai_department_team_id": (
+            state.destination_team_id or session_metadata.get("destination_team_id")
+        ),
+        "ai_intake_fallback_team_id": (
+            str(session.fallback_team_id) if session.fallback_team_id else None
+        ),
+    }
+    decision = team_inbox_routing.resolve_channel_routing_decision(
+        db,
+        channel_type=conversation.channel_type,
+        provider=session.provider,
+        account_scope=session.account_scope,
+        fallback_service_team_id=(
+            session.fallback_team_id or team_inbox_routing.default_service_team_id(db)
+        ),
+        metadata=routing_metadata,
+    )
+    if not decision.primary_service_team_id:
+        raise TeamInboxMaintenanceError(
+            code=(
+                "communications.team_inbox_maintenance.ai_intake_timeout_handoff_failed"
+            ),
+            message="AI intake timeout has no active human-routing destination.",
+            details={
+                "conversation_id": str(conversation.id),
+                "session_id": str(session.id),
+                "routing_reason": decision.reason,
+            },
+        )
+
+    state.destination_team_id = decision.primary_service_team_id
+    ai_intake_conversation_engine.persist_state(session, state)
+    destination_team = db.get(ServiceTeam, UUID(str(decision.primary_service_team_id)))
+    note = team_inbox_operations.create_internal_note(
+        db,
+        conversation=conversation,
+        body=ai_intake_conversation_engine.render_handoff_summary(
+            state,
+            version=version,
+            channel=conversation.channel_type,
+            destination_team_name=(
+                destination_team.name if destination_team is not None else None
+            ),
+        ),
+        actor_person_id=None,
+        metadata={
+            "source": "ai_intake_timeout_handoff",
+            "ai_intake_session_id": str(session.id),
+            "ai_intake_policy_version_id": (
+                str(version.id) if version is not None else None
+            ),
+            "customer_wait_expires_at": deadline.isoformat(),
+            "timeout_handoff_key": timeout_key,
+            "destination_team_id": decision.primary_service_team_id,
+            "routing_reason": decision.reason,
+        },
+    )
+    participants = [
+        item
+        for item in (
+            decision.primary_service_team_id,
+            decision.channel_service_team_id,
+        )
+        if item
+    ]
+    team_inbox_routing.apply_email_routing_plan(
+        db,
+        conversation=conversation,
+        plan=team_inbox_routing.EmailTeamRoutingPlan(
+            primary_service_team_id=decision.primary_service_team_id,
+            participant_service_team_ids=list(dict.fromkeys(participants)),
+            matches=[],
+            unmatched_recipients=[],
+        ),
+    )
     conversation_metadata = dict(conversation.metadata_ or {})
     intake_metadata = dict(conversation_metadata.get("ai_intake") or {})
     intake_metadata.update(
         {
-            "status": "expired",
-            "reason": "customer_inactive_expired",
+            "status": "escalated",
+            "reason": "customer_response_timeout",
+            "destination_team_id": decision.primary_service_team_id,
+            "routing_reason": decision.reason,
             "session_expires_at": deadline.isoformat(),
             "updated_at": now.isoformat(),
         }
     )
     conversation_metadata["ai_intake"] = intake_metadata
     conversation.metadata_ = conversation_metadata
+    ai_conversation_intake.mark_handoff_requested(
+        session, destination_team_id=decision.primary_service_team_id
+    )
     ai_conversation_intake.transition_conversation_status(
         db,
         conversation=conversation,
-        status=InboxConversationStatus.resolved,
-        reason=team_inbox_status.InboxStatusReason.ai_intake_expired,
-        source_id=f"ai-intake-expired:{session.id}:{deadline.isoformat()}",
+        status=InboxConversationStatus.open,
+        reason=team_inbox_status.InboxStatusReason.ai_handoff_accepted,
+        source_id=f"ai-intake-timeout-handoff:{session.id}:{deadline.isoformat()}",
         occurred_at=now,
     )
-    session_metadata["expiry_reason"] = "customer_inactive_expired"
-    session_metadata["expired_at"] = now.isoformat()
+    assignment = team_inbox_assignment.assign_conversation_to_available_agent(
+        db,
+        conversation=conversation,
+        service_team_id=decision.primary_service_team_id,
+        reason="AI intake customer response timeout",
+        source=InboxTeamSource.escalation.value,
+        now=now,
+        provenance=team_inbox_assignment.InboxAssignmentProvenance.ai_intake_handoff,
+    )
+    if assignment.kind not in {"assigned", "queued"}:
+        raise TeamInboxMaintenanceError(
+            code=(
+                "communications.team_inbox_maintenance.ai_intake_timeout_handoff_failed"
+            ),
+            message="AI intake timeout handoff could not be assigned or queued.",
+            details={
+                "conversation_id": str(conversation.id),
+                "session_id": str(session.id),
+                "assignment_kind": assignment.kind,
+                "assignment_reason": assignment.reason,
+            },
+        )
+    session_metadata = dict(session.metadata_ or {})
+    session_metadata.update(
+        {
+            "customer_timeout_handoff_key": timeout_key,
+            "customer_timeout_handoff_at": now.isoformat(),
+            "customer_timeout_assignment_kind": assignment.kind,
+            "customer_timeout_handoff_note_id": str(note.id),
+            "destination_team_id": decision.primary_service_team_id,
+        }
+    )
+    if assignment.queue_entry_id:
+        session_metadata["customer_timeout_queue_entry_id"] = assignment.queue_entry_id
+    if assignment.assigned_person_id:
+        session_metadata["customer_timeout_assigned_person_id"] = (
+            assignment.assigned_person_id
+        )
     session.metadata_ = session_metadata
-    ai_conversation_intake.complete_session(session, state="expired")
+    ai_conversation_intake.complete_session(session)
     ai_conversation_intake.mark_conversation_ai_metadata(
         conversation, session=session, active=False
     )
     logger.info(
-        "AI intake customer wait expired without handoff",
+        "AI intake timeout handoff assigned or queued",
         extra={
-            "event": "ai_intake_customer_wait_expired",
+            "event": "ai_intake_timeout_handoff_accepted",
             "conversation_id": str(conversation.id),
             "session_id": str(session.id),
             "session_expires_at": deadline.isoformat(),
-            "resolution_reason": "customer_inactive_expired",
+            "idempotency_key": timeout_key,
+            "destination_team_id": decision.primary_service_team_id,
+            "routing_reason": decision.reason,
+            "assignment_kind": assignment.kind,
+            "queue_entry_id": assignment.queue_entry_id,
+            "assigned_person_id": assignment.assigned_person_id,
         },
     )
     return MaintenanceOutcome(changed=1, skipped=0)
@@ -679,7 +825,7 @@ def _recover_one_stale_ai_intake_session(
 def recover_stale_ai_intake(
     db: Session, command: RecoverStaleAiIntakeCommand
 ) -> MaintenanceOutcome:
-    """Expire long-idle AI waits without assigning or queueing a human."""
+    """Hand off inactive AI waits through normal assignment and FIFO queueing."""
 
     def operation() -> MaintenanceOutcome:
         now = (command.now or datetime.now(UTC)).astimezone(UTC)
@@ -691,6 +837,17 @@ def recover_stale_ai_intake(
                 or_(
                     AiIntakeSession.expires_at.is_(None),
                     AiIntakeSession.expires_at <= now,
+                    AiIntakeSession.metadata_["customer_wait_handoff_minutes"]
+                    .as_integer()
+                    .is_(None),
+                    AiIntakeSession.metadata_[
+                        "customer_wait_handoff_minutes"
+                    ].as_integer()
+                    < ai_conversation_intake.MIN_CUSTOMER_WAIT_HANDOFF_MINUTES,
+                    AiIntakeSession.metadata_[
+                        "customer_wait_handoff_minutes"
+                    ].as_integer()
+                    > ai_conversation_intake.MAX_CUSTOMER_WAIT_HANDOFF_MINUTES,
                 )
             )
             .order_by(
@@ -718,10 +875,18 @@ def recover_stale_ai_intake(
             try:
                 outcome = execute_owner_savepoint(db, recover_candidate)
             except Exception as exc:
+                failure_metadata = dict(session.metadata_ or {})
+                failure_metadata["customer_timeout_handoff_failure"] = {
+                    "attempted_at": now.isoformat(),
+                    "error_type": type(exc).__name__,
+                    "retryable": True,
+                }
+                session.metadata_ = failure_metadata
+                db.flush()
                 logger.warning(
-                    "AI intake long-term expiry candidate failed and remains retryable",
+                    "AI intake timeout handoff candidate failed and remains retryable",
                     extra={
-                        "event": "ai_intake_expiry_candidate_failed",
+                        "event": "ai_intake_timeout_handoff_candidate_failed",
                         "session_id": str(session.id),
                         "conversation_id": str(session.conversation_id),
                         "error_type": type(exc).__name__,

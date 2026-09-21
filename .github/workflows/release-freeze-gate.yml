@@ -1,8 +1,27 @@
 name: Release Freeze Gate
 
 # Required PR check for `main`: while a release candidate, staging deployment,
-# production authorization, or production deployment is queued or running, do not
-# merge new work into main. Branch pushes and PR updates remain allowed.
+# production authorization, or production deployment is queued, running, or
+# awaiting manual approval, do not merge new work into main. Branch pushes and
+# PR updates remain allowed.
+#
+# KNOWN LIMITATION (confirmed live in production 2026-09-09, see
+# release-promotion.yml's authorizing-checkout comment for the incident this
+# gate did not prevent): a passing result from this check is cached at the PR's
+# head SHA and is NOT re-evaluated at actual merge time. GitHub branch
+# protection's `strict` setting only re-evaluates a required context when the
+# BASE branch moves, not when external state -- an in-flight release -- changes
+# after the check already reported green. A PR that showed green here can still
+# merge while a promotion run sits in its production approval wait. True
+# merge-time enforcement of this gate would require a real merge queue, which
+# this repository cannot currently safely enable: `version-impact.yml`
+# (`Check version impact label`) and `e2e-gate.yml` (`E2E Gate`) are
+# `pull_request:`-only required contexts today and would deadlock `main` if a
+# queue were turned on while they still gate merges that way. (`ci.yml` and
+# `engineering-standards.yml` already carry `merge_group:` support and are
+# NOT the blocker.) See docs/runbooks/STAGING_PROMOTION.md's Release Freeze
+# section for the operator-facing consequence and the fix that actually
+# protects production when this gap is hit.
 on:
   pull_request:
     branches: [main]
@@ -34,22 +53,33 @@ jobs:
               "Promote staged digest for production",
               "Deploy authorized digest to production",
             ]);
-            const activeStatuses = new Set(["queued", "in_progress", "waiting", "requested", "pending"]);
-            const response = await github.rest.actions.listWorkflowRunsForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              status: "in_progress",
-              per_page: 100,
-            });
-            const queued = await github.rest.actions.listWorkflowRunsForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              status: "queued",
-              per_page: 100,
-            });
-            const active = [...response.data.workflow_runs, ...queued.data.workflow_runs]
-              .filter((run) => guarded.has(run.name) && activeStatuses.has(run.status))
+            // Every status queried is DERIVED from this one list, so a status
+            // that is declared but never fetched -- the exact bug that left
+            // `waiting` (the status a production-gated run holds for its
+            // entire time parked on a manual environment approval) invisible
+            // to this gate -- is structurally impossible: add a status here
+            // and it is queried; remove the query and the status is gone too.
+            const activeStatuses = ["queued", "in_progress", "waiting", "requested", "pending"];
+            const activeStatusSet = new Set(activeStatuses);
+            const pages = await Promise.all(
+              activeStatuses.map((status) =>
+                github.rest.actions.listWorkflowRunsForRepo({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  status,
+                  per_page: 100,
+                })
+              )
+            );
+            // A run can transition between these concurrent queries and
+            // appear on more than one page; dedupe by run id rather than
+            // trusting the queries to be mutually exclusive.
+            const seen = new Set();
+            const active = pages
+              .flatMap((page) => page.data.workflow_runs)
+              .filter((run) => guarded.has(run.name) && activeStatusSet.has(run.status))
               .filter((run) => run.id !== context.runId)
+              .filter((run) => (seen.has(run.id) ? false : (seen.add(run.id), true)))
               .sort((left, right) => right.id - left.id);
             if (active.length === 0) {
               core.info("No active release deployment workflow is running.");
@@ -60,5 +90,6 @@ jobs:
               .map((run) => `${run.name}#${run.run_number} ${run.status} ${run.html_url}`)
               .join("\n");
             core.setFailed(
-              `Release freeze is active; do not merge into main while deployment is in flight.\n${summary}`
+              `Release freeze is active; do not merge into main while deployment is in flight.\n` +
+              `For a waiting/requested run, approve, reject, or cancel the parked run to clear the freeze.\n${summary}`
             );

@@ -321,7 +321,12 @@
         </section>
 
         <section aria-labelledby="manager-agents-title">
-            <h3 id="manager-agents-title" class="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">Agents</h3>
+            <div class="mb-2 flex items-center justify-between gap-3">
+                <h3 id="manager-agents-title" class="text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">Agents</h3>
+                {% if can_manage_inbox_capacity %}
+                <a href="/admin/system/settings?domain=comms#inbox-agent-capacity" class="text-[11px] font-semibold text-amber-700 hover:underline dark:text-amber-300">Change default capacity</a>
+                {% endif %}
+            </div>
             <div class="space-y-2">
                 {% for agent in manager_dashboard.agents %}
                 <details class="group rounded-xl border border-slate-200 bg-white open:border-amber-300 open:bg-amber-50/60 dark:border-slate-700 dark:bg-slate-800 dark:open:border-amber-500/40 dark:open:bg-amber-500/10">

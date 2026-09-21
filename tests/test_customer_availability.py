@@ -33,8 +33,10 @@ class _Ticket:
 class _Query:
     def __init__(self, rows):
         self._rows = rows
+        self.filters = []
 
-    def filter(self, *a, **k):
+    def filter(self, *criteria, **_kwargs):
+        self.filters.extend(criteria)
         return self
 
     def order_by(self, *a):
@@ -51,10 +53,13 @@ class _Session:
     def __init__(self, snaps=(), tickets=()):
         self._snaps = list(snaps)
         self._tickets = list(tickets)
+        self.queries = []
 
     def query(self, model):
         name = getattr(model, "__name__", str(model))
-        return _Query(self._tickets if name == "Ticket" else self._snaps)
+        query = _Query(self._tickets if name == "Ticket" else self._snaps)
+        self.queries.append((name, query))
+        return query
 
 
 class _Sub:
@@ -103,6 +108,43 @@ def test_overlapping_elements_count_once_per_day(monkeypatch):
     report = ca.customer_availability(session, _Sub(), days=30, now=NOW)
 
     # worst-per-day, not 3600+1800
+    assert report.infrastructure_downtime_seconds == 3600
+
+
+def test_snapshot_query_is_bounded_to_serving_elements(monkeypatch):
+    pop = _pop()
+    dev = ca.ServingElement("device", uuid.uuid4(), "OLT-1", "Access olt")
+    unrelated_id = uuid.uuid4()
+    _elements(monkeypatch, [pop, dev])
+    day = NOW - timedelta(days=1)
+    session = _Session(
+        snaps=[
+            _Snap("pop_site", pop.element_id, day, 3600),
+            _Snap("device", dev.element_id, day, 1800),
+            _Snap("device", unrelated_id, day, 86400),
+        ]
+    )
+
+    report = ca.customer_availability(session, _Sub(), days=30, now=NOW)
+
+    snapshot_query = next(
+        query for name, query in session.queries if name == "AvailabilitySnapshot"
+    )
+    compiled_filters = " ".join(
+        str(criterion.compile(compile_kwargs={"literal_binds": True}))
+        for criterion in snapshot_query.filters
+    )
+    element_filter_params = snapshot_query.filters[-1].compile().params
+    bound_keys = next(
+        value for value in element_filter_params.values() if isinstance(value, list)
+    )
+    assert "availability_snapshots.element_type" in compiled_filters
+    assert "availability_snapshots.element_id" in compiled_filters
+    assert set(bound_keys) == {
+        ("pop_site", pop.element_id),
+        ("device", dev.element_id),
+    }
+    assert all(element_id != unrelated_id for _, element_id in bound_keys)
     assert report.infrastructure_downtime_seconds == 3600
 
 

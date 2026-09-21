@@ -486,10 +486,14 @@ def test_portal_region_validation_returns_current_canonical_value(db_session):
 
     assert support_ticket_settings_service.list_canonical_region_options(
         db_session
-    ) == ["abuja", "lagos", "zaria"]
+    ) == ["abuja", "lagos"]
     assert (
         support_ticket_settings_service.canonical_region_option(db_session, " LAGOS ")
         == "lagos"
+    )
+    assert (
+        support_ticket_settings_service.canonical_region_option(db_session, "Zaria")
+        is None
     )
 
 

@@ -17,6 +17,7 @@ from app.models.team_inbox import (
     InboxMessage,
     InboxMessageDirection,
 )
+from app.services import ai_conversation_ownership
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import (
     CommandContext,
@@ -306,6 +307,7 @@ def unread_conversation_count(db: Session, *, person_id: UUID) -> int:
         db.scalar(
             select(func.count(InboxConversation.id))
             .where(InboxConversation.is_active.is_(True))
+            .where(~ai_conversation_ownership.ai_owned_conversation_clause())
             .where(InboxConversation.id.in_(unread_conversation_ids_select(person_id)))
         )
         or 0

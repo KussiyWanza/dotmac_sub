@@ -118,7 +118,7 @@ skipped and the existing channel route remains authoritative. A matching row
 controls channel/scope, confidence, optional clarification turns, fallback
 deadline and team, department overrides, custom instructions, and campaign
 attribution exclusion. The admin contract refuses email and limits
-clarification to one turn.
+clarification to at most five turns.
 
 `app.services.ai_intake` owns typed message understanding and customer-response
 composition. Eligibility remains provider-free. The session processor sends the
@@ -127,7 +127,11 @@ fact extraction, then may send a separate safe bounded projection to the same
 gateway to phrase the backend-selected next action. That projection contains the
 latest customer statement, at most six role-aware customer-visible messages,
 known and missing fact keys, question state, approved identity/monitoring
-projections, playbook step, business tone, and approved ISP information.
+projections, the selected fact key and semantic question purpose, bounded affect
+state, separate issue/frustration acknowledgement state, playbook tone, and
+approved ISP information. The primary composition path never supplies a
+customer-facing question sentence as the instruction; deterministic question
+copy is retained only for a composition or validation fallback.
 Internal notes are excluded. Customer content and obvious credentials are
 redacted before gateway calls; raw prompts and unredacted content are not stored
 in intake metadata.
@@ -136,25 +140,77 @@ At or above the configured threshold, validated intent/category/department
 metadata is available to the conversational engine. Below threshold, the same
 engine first honors an explicit human request and otherwise chooses one useful
 policy-constrained missing fact; low confidence is not a handoff action. The
-response model may phrase only that approved action. A backend validator rejects
-action/purpose mismatch, repeated or unapproved questions, repeated apology,
-internal terms, unsupported promises, invented monitoring/outage/payment facts,
-and unsupported diagnosis. Safe deterministic playbook/template wording is the
-fallback. The Team Inbox coordinator submits accepted text to
+response model may phrase only that approved action. For moderate or high
+supported frustration/agitation, the backend creates an
+`acknowledgement_required` obligation. The validator requires a proportionate
+acknowledgement before the selected question/action and rejects a bare diagnostic
+question, excessive or repeated apology, patronizing or invented emotion,
+unsupported device ownership, action/purpose mismatch, repeated or unapproved
+questions, internal terms, unsupported promises, invented
+monitoring/outage/payment facts, and unsupported diagnosis. It enforces the
+obligation rather than exact empathy copy. Safe deterministic
+playbook/template wording is the fallback. The Team Inbox coordinator submits accepted text to
 `communications.team_inbox_outbound_intents`, which uses the normal durable
 WhatsApp, Facebook Messenger, Instagram Direct, or native chat-widget delivery
 path. The
 provider call remains asynchronous to webhook acknowledgement. A dedupe key
 derived from the inbound message prevents a repeated delivery from creating a
 second response. Customer silence records `waiting_reason=awaiting_customer` and
-does not route, assign, queue, or increment AI inability. `expires_at` is a
-separate `customer_wait_expiry_hours` policy (72 hours by default, bounded to
-24?720 hours). The scheduled Team Inbox maintenance owner locks only sessions
-past that long-term expiry, rechecks newer inbound and human takeover, then
-transitions the AI session to `expired` and the Inbox conversation to resolved.
-It creates no handoff note or assignment. A newer customer reply resumes the
-same graph in `collecting_intent`; legacy short-wait rows are extended onto the new
-long-term lifecycle before any expiry consequence.
+does not route, assign, queue, or increment AI inability during the hold.
+`expires_at` is a separate `customer_wait_handoff_minutes` policy (10 minutes by
+default, bounded to 1–1440 minutes). The scheduled Team Inbox maintenance owner
+selects due sessions and sessions carrying a retired hours/expiry policy marker,
+locks each candidate, normalizes legacy deadlines from the recorded wait start,
+and rechecks newer inbound and human takeover. At the deadline it records a
+handoff summary, ends AI ownership, and invokes the authoritative normal routing
+owner: an eligible agent is assigned only when FIFO ordering and capacity allow;
+otherwise the conversation receives a durable entry in that team's regular FIFO
+queue. A newer customer reply before the deadline resumes the same graph in
+`collecting_intent`. A legacy wait with no trustworthy start is given one fresh
+10-minute window before any handoff consequence.
+
+Classifier transport success is not classifier acceptance. Invalid JSON,
+schema-validation failure, provider unavailability, and a response with no
+accepted intent produce the typed `classification_unavailable` status, a typed
+classifier-attempt status (`invalid_output`, `unavailable`, or
+`no_accepted_intent`), and the more precise safe failure kind
+(`invalid_model_output`, `schema_validation_failure`, `classifier_unavailable`,
+or `no_accepted_intent`). Deterministic and accepted model facts are merged
+before this branch. DeepSeek structured output is normalized only for the known
+`null`-for-default variation: non-null enum facts become `unknown`, non-null
+affect enums become `none`, and non-null booleans become `false`. Extra keys,
+arbitrary strings, numeric strings and other contract violations remain invalid.
+An explicit deterministic `human_requested` fact takes precedence and requests
+immediate handoff. Strong bounded connectivity facts may select the matching
+technical inquiry plan without granting the provider routing, tool, queue or
+handoff authority. Otherwise both `custom_v1` and `langgraph_v1` select one
+natural clarification through the existing customer-response composer and enter
+`awaiting_customer`. The category-enumeration prompt is not a default and is
+available only when policy explicitly enables it. Composer failure uses natural
+bounded fallback copy and still satisfies any issue or frustration
+acknowledgement obligation.
+
+A later customer message is classified with the existing session state. Each
+classifier-failure turn consumes the existing configured clarification-turn
+budget; no second retry-limit system and no synchronous retry loop exists. A
+successful classification resets the consecutive failure count. Only failure
+after the configured limit requests handoff, with
+`classifier_unavailable_after_retries`. The reasons
+`classifier_invalid_output` and `classifier_unavailable` describe classifier
+evidence; `unsupported_or_troubleshooting_exhausted` is reserved for an accepted
+classification whose applicable playbook, tool, follow-up, and support options
+are genuinely unavailable or exhausted.
+
+The generation-attempt record, session state, selected inbound metadata, and
+structured worker logs retain only safe classifier evidence: provider/model,
+attempt status, sanitized validation location/type/expected type/actual
+structural type, retry count and limit, exhaustion, selected engine/action,
+graph node trace, response source, validator result/reason, selected question,
+acknowledgement obligations, and recovery or final handoff reason.
+Raw customer content and full model output are not added to logs. Celery workers
+install the application JSON formatter so these structured fields are emitted
+to the configured log aggregation backend rather than discarded by a plain
+worker formatter.
 
 Inbound processing serializes one channel/thread with a PostgreSQL transaction
 advisory lock, then locks an existing conversation row before reading or
@@ -171,6 +227,14 @@ processor sees work; processor retries use the welcome and per-inbound AI
 message dedupe keys and mark `processed_inbound:<message_id>` only after the
 classification/engine path reaches a durable outcome.
 
+A greeting-only first inbound is still marked processed after the welcome is
+queued, but it does not consume classifier-failure budget or emit a second menu.
+The session enters `awaiting_customer` naturally. Bounded deterministic
+normalization recognizes common connectivity-down phrases and compact durations
+such as `7dys`, `2hrs`, `1wk`, and `since yesterday`; normalized facts remain in
+the authoritative session state even when classification is unavailable, and
+the planner skips questions for facts already known.
+
 The conversational intake extension stores durable lifecycle in
 `ai_intake_sessions`. `ai_intake_configs` remains the compatibility row used by existing routes, but customer-visible AI messages attach to immutable
 `ai_intake_policy_versions` so the display name, welcome message, editable
@@ -184,9 +248,13 @@ with metadata owned by `ai.intake`. The engine persists structured operational
 state in the active session metadata: current and previous intent, category,
 confidence, subscriber/contact identity, permitted identifiers supplied by the
 customer, corrected collected facts, missing facts, typed question/answer state,
-issue acknowledgement, bounded customer statements, troubleshooting steps,
+separate issue and frustration acknowledgement, bounded frustration/agitation
+levels (`none`, `mild`, `moderate`, `high`), repeated-complaint/failed-step/prior-
+interaction evidence and provenance, candidate question keys, effective
+priorities and their source, bounded customer statements, troubleshooting steps,
 typed monitoring observations, tool results/latency, tool errors, escalation,
-waiting/resolution reasons and counters. It does not store chain-of-thought.
+validator result/reason, response source, waiting/resolution reasons and counters.
+It does not store chain-of-thought or unnecessary raw PII.
 
 `continue_classifier` is not an engine routing action. The graph must select a
 policy-constrained question, guidance, approved read-only tool, wait, resolution,
@@ -229,13 +297,34 @@ create arbitrary tools or executable conditions. If a customer explicitly asks
 for a human, AI intake records `human_requested=true`, stops troubleshooting and
 requests handoff while preserving already collected facts.
 
-Policy versions may define bounded first-line playbooks. A playbook matches an
-intent and optional category, then runs configured steps in order: request one
-missing field, provide configured guidance, invoke an approved read-only tool,
-mark resolved, or request handoff. Playbook wording, including empathy or
-acknowledgement text, is policy data curated from approved support patterns; the
-engine supplies only generic fallback field prompts and does not hardcode a
-category-specific conversation path.
+Policy versions may define bounded first-line/action playbooks and
+`conversation_policy.inquiry_plans`. An inquiry plan matches an intent and
+optional category and is authoritative for useful facts, numeric priority,
+required versus optional status, allowed tools, fact-level `when`/`skip_when`
+conditions, plan escalation conditions and tone requirements. Known facts and
+declined or twice-exhausted questions are removed before the highest-priority
+unknown fact is selected. An unresolved prior question may be clarified once;
+the next turn then recomputes candidates instead of advancing a rigid tier.
+Once `inquiry_plans` is present, an uncovered intent/category has no implicit
+legacy or Python-plan fallback. Activation validates scopes, fact semantics,
+priority bounds, condition shapes and tool references.
+
+Policy versions that predate `inquiry_plans` retain their declared
+`intent_definitions.required_fields` order as an explicit compatibility layer.
+If neither exists, the engine uses the named `DEFAULT_INQUIRY_PLANS` policy layer,
+not hidden question branching. That default covers technical no-browsing, slow
+and intermittent paths plus billing, payment confirmation, renewal, plan change,
+coverage, new connection, account access, complaint, general enquiry and unknown.
+Non-technical intents therefore collect one useful policy fact and enter
+`awaiting_customer` rather than handing off merely because no technical rule
+matched.
+
+Action playbooks still run configured steps in order: request one missing field,
+provide approved guidance, invoke an approved read-only tool, mark resolved, or
+request handoff. Customer-facing playbook text is treated as fallback copy; the
+composer receives the step's semantic purpose. Hard-coded authorization, tool
+permissions, queueing, assignment, takeover, safety limits, database access and
+ownership remain backend invariants.
 
 Policy versions may opt into immediate handoff after classification through
 `conversation_policy.handoff_after_classification`. The default is false for
@@ -264,6 +353,18 @@ terminal branches are `resolved`, `expired`, `completed`,
 Explicit escalation uses `handoff_requested -> completed`. `queued` and
 `assigned` are not AI states; they are Team Inbox routing outcomes and may
 appear only as derived audit metadata.
+
+An active session (`AiIntakeSession.completed_at IS NULL`) is also the
+authoritative conversation-control fact. `app.services.ai_conversation_ownership`
+exposes the typed resolver consumed by Team Inbox; `ai_handling` metadata is
+only a repairable projection. Humans may observe AI-owned threads but normal
+mutations fail closed. The sole deliberate human transition is the typed Team
+Inbox `TakeOverConversationCommand`, which rechecks the expected AI session,
+sets `stopped_human_takeover`, and atomically acquires human ownership through
+the existing routing owner. AI-authorized handoff uses a distinct typed
+provenance and remains able to route or queue; there is no generic bypass flag.
+Queued AI outbound is admitted again at delivery time and suppressed when its
+referenced session is no longer active, ensuring AI cannot reply after takeover.
 
 The contact-data cleaning flow is independent and disabled by default for
 production collection. AI may collect candidate values only when the
@@ -308,8 +409,8 @@ default-off controls and never send automatically.
   reported evidence sample. It cannot assign,
   reply, close, refund, profile-update, or otherwise mutate a domain row.
 - **Conversational AI intake.** WhatsApp, Facebook Messenger, Instagram DM,
-  and explicitly scoped native Fiber, customer-portal, and reseller-portal
-  chat widgets may enter `pending` UI state with an active
+  and explicitly scoped native Fiber, customer-portal, reseller-portal, and
+  mobile chat widgets may enter `pending` UI state with an active
   `ai_intake_sessions` row. For a widget, policy
   matching occurs on the first persisted visitor message; without an active
   matching policy it remains on the normal human Team Inbox path. The AI

@@ -1090,6 +1090,17 @@ def olt_detail_page_data(db: Session, olt_id: str) -> dict[str, object] | None:
     monitoring_resolution = resolve_linked_network_device(db, olt)
     monitoring_device = monitoring_resolution.device
 
+    from app.services.device_operational_status import (
+        derive_olt_health_evidence,
+        warmer_is_stale,
+    )
+
+    olt_status_evidence = derive_olt_health_evidence(
+        olt,
+        linked_device=monitoring_device,
+        warm_stale=warmer_is_stale(),
+    )
+
     monitoring_data: dict[str, object] | None = None
     live_board_inventory: list[dict[str, object]] = []
     resolved_device_info = {
@@ -1450,6 +1461,7 @@ def olt_detail_page_data(db: Session, olt_id: str) -> dict[str, object] | None:
         },
         "monitoring_data": monitoring_data,
         "resolved_device_info": resolved_device_info,
+        "olt_status_evidence": olt_status_evidence,
         "resolved_pon_ports_count": resolved_pon_ports_count,
         "live_board_inventory": live_board_inventory,
         "live_board_cards": live_board_cards,
@@ -3665,7 +3677,7 @@ def consolidated_page_data(
             )
             olt.operational = derive_olt_operational_status(
                 olt,
-                linked_live_status=getattr(linked, "live_status", None),
+                linked_device=linked,
                 warm_stale=warm_stale,
             )
             db_count = pon_counts.get(str(olt.id), 0)

@@ -54,7 +54,7 @@ from app.services.customer_context import CustomerContext
 from app.services.domain_errors import DomainError
 from app.services.payment_gateway_adapter import payment_gateway_adapter
 from app.services.payment_routing import gateway_options, select_checkout_provider
-from app.services.sales import selfserve
+from app.services.sales import quote_payment_review, selfserve
 
 logger = logging.getLogger(__name__)
 
@@ -280,6 +280,13 @@ def quote_payment_page(db: Session, query: QuotePaymentQuery) -> QuotePaymentPag
             "status_ineligible",
             "This Quote is not eligible for payment",
             status=status.value,
+        )
+    payment_review = quote_payment_review.resolve_payment_review(quote)
+    if not payment_review.approval_current:
+        raise _error(
+            "approval_required",
+            payment_review.message,
+            payment_review_status=payment_review.status.value,
         )
     if quote.expires_at is not None and _as_utc(quote.expires_at) <= _as_utc(
         query.observed_at
@@ -595,6 +602,10 @@ def _initiate_deposit_native(
     the ledger — the mirror's ``deposit_paid`` flag plays no part (risk #2:
     a stale mirror must never allow a second charge)."""
     quote = selfserve.selfserve_quotes.get_for_subscriber(db, subscriber_id, quote_id)
+    db.scalar(select(Quote.id).where(Quote.id == quote.id).with_for_update())
+    payment_review = quote_payment_review.resolve_payment_review(quote)
+    if not payment_review.approval_current:
+        raise HTTPException(status_code=409, detail=payment_review.message)
     if _native_deposit_invoice_paid(db, quote.id):
         raise HTTPException(status_code=409, detail="Deposit already paid")
     payload = selfserve.build_portal_quote_payload(db, quote)
@@ -977,6 +988,9 @@ def _verify_deposit_native(
     """Native tail (§2.2 step 4): verify the payment, then accept the quote
     in sub's own sales vertical — no CRM hop."""
     quote = selfserve.selfserve_quotes.get_for_subscriber(db, subscriber_id, quote_id)
+    payment_review = quote_payment_review.resolve_payment_review(quote)
+    if not payment_review.approval_current:
+        raise HTTPException(status_code=409, detail=payment_review.message)
     try:
         result = payments.verify_and_record_payment(
             db, customer, reference, provider=provider
@@ -1039,7 +1053,9 @@ def verify_quote_deposit(
     if not reference:
         raise _error("reference_required", "Payment reference is required")
     authorized_ids = _authorized_subscriber_ids(customer)
-    quote = db.get(Quote, command.quote_id)
+    quote = db.scalars(
+        select(Quote).where(Quote.id == command.quote_id).with_for_update()
+    ).one_or_none()
     if (
         quote is None
         or not quote.is_active
@@ -1047,6 +1063,13 @@ def verify_quote_deposit(
         or quote.subscriber_id not in set(authorized_ids)
     ):
         raise _error("quote_not_found", "Quote not found")
+    payment_review = quote_payment_review.resolve_payment_review(quote)
+    if not payment_review.approval_current:
+        raise _error(
+            "approval_required",
+            payment_review.message,
+            payment_review_status=payment_review.status.value,
+        )
     intent = db.scalars(
         select(TopupIntent).where(TopupIntent.reference == reference)
     ).one_or_none()

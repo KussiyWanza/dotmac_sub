@@ -34,10 +34,13 @@ from app.db import finish_read_transaction, get_db
 from app.models.audit import AuditActorType
 from app.models.domain_settings import SettingDomain
 from app.models.team_inbox import InboxChannelType
+from app.schemas.common import ListResponse
 from app.schemas.plan_family_catalogue import ResolveShareablePlanFamilyCatalogueQuery
 from app.schemas.settings import DomainSettingUpdate
+from app.schemas.team_inbox import InboxCustomerLinkOptionRead
 from app.services import (
     ai_conversation_intake,
+    ai_conversation_ownership,
     ai_intake_canary_library,
     ai_intake_canary_runner,
     ai_intake_rollout_readiness,
@@ -48,8 +51,11 @@ from app.services import (
     settings_api,
     settings_spec,
     team_inbox_agent_introduction,
+    team_inbox_assignment,
     team_inbox_commands,
     team_inbox_contact_links,
+    team_inbox_customer_completion,
+    team_inbox_customer_completion_policy,
     team_inbox_filters,
     team_inbox_manager_ai_chat,
     team_inbox_media,
@@ -68,7 +74,7 @@ from app.services import (
     team_inbox_contact_context as contact_context_service,
 )
 from app.services.ai.client import AIClientError
-from app.services.auth_dependencies import can, require_permission
+from app.services.auth_dependencies import can, load_permission_keys, require_permission
 from app.services.catalog import plan_family_catalogues
 from app.services.common import coerce_uuid
 from app.services.domain_errors import DomainError
@@ -78,6 +84,7 @@ from app.services.file_storage import (
 )
 from app.services.owner_commands import CommandContext
 from app.services.sales import lead_intake
+from app.services.sales import service as sales_service
 from app.services.workqueue import principal_from_auth
 from app.services.workqueue.scope import WorkqueuePermissionError, get_workqueue_scope
 from app.web.templates import templates
@@ -115,6 +122,17 @@ class InboxReadPresentation(BaseModel):
     status: Literal["success", "error"]
     changed: bool
     message: str
+
+
+def _request_permission_keys(request: Request, db: Session) -> frozenset[str]:
+    """Return projection permissions, denying when an adapter supplied no actor."""
+
+    auth = getattr(request.state, "auth", None)
+    if not isinstance(auth, dict):
+        return frozenset()
+    if "admin" not in set(auth.get("roles") or ()) and not auth.get("principal_id"):
+        return frozenset()
+    return load_permission_keys(auth, db)
 
 
 def _json_object_list(value: str | None) -> tuple[dict[str, object], ...]:
@@ -243,6 +261,17 @@ def _ctx(request: Request, db: Session) -> dict:
     }
 
 
+def _resolution_readiness(
+    db: Session, conversation_id: UUID | str
+) -> team_inbox_customer_completion.InboxCustomerResolutionReadiness | None:
+    resolved_id = coerce_uuid(conversation_id)
+    if resolved_id is None:
+        return None
+    return team_inbox_customer_completion.resolution_readiness_for_conversation(
+        db, resolved_id
+    )
+
+
 def _manager_ai_scope(request: Request, db: Session):
     """Resolve the existing Inbox/workqueue visibility boundary for AI reads."""
 
@@ -307,6 +336,7 @@ def team_inbox_queue(
         actor_person_id = UUID(actor_id) if actor_id else None
     except ValueError:
         actor_person_id = None
+    actor_permission_keys = _request_permission_keys(request, db)
     try:
         projection = team_inbox_projection.build_queue_projection(
             db,
@@ -347,6 +377,7 @@ def team_inbox_queue(
                     _query_text(conversation_id) or _query_text(c)
                 ),
                 actor_person_id=actor_person_id,
+                actor_permission_keys=actor_permission_keys,
                 composition=(
                     team_inbox_projection.InboxQueueComposition.queue_only
                     if is_queue_request
@@ -417,6 +448,7 @@ def team_inbox_queue(
                 else ()
             ),
             "can_manage_inbox": can_manage_inbox,
+            "can_manage_inbox_capacity": can(request, "system:settings:write"),
             "can_manage_leads": can(request, "crm:lead:write"),
             "manager_dashboard": manager_dashboard,
             "selected": (
@@ -449,6 +481,9 @@ def team_inbox_queue(
                 "activity_events": projection.selected.activity_events,
                 "timeline_entries": projection.selected.timeline_entries,
                 "reply_window": projection.selected.reply_window,
+                "resolution_readiness": (
+                    _resolution_readiness(db, projection.selected.timeline.id)
+                ),
             }
         )
     if is_list_fragment_request:
@@ -556,6 +591,7 @@ def team_inbox_manager_dashboard(
     context.update(
         {
             "can_manage_inbox": True,
+            "can_manage_inbox_capacity": can(request, "system:settings:write"),
             "manager_dashboard": manager_dashboard,
         }
     )
@@ -747,6 +783,17 @@ def _read_presentation_response(
     return JSONResponse(
         content=payload.model_dump(mode="json"),
         status_code=status_code,
+    )
+
+
+def _domain_conflict_response(exc: DomainError) -> JSONResponse:
+    return JSONResponse(
+        content={
+            "code": exc.code,
+            "message": exc.message,
+            "details": exc.details,
+        },
+        status_code=409,
     )
 
 
@@ -1024,6 +1071,7 @@ def team_inbox_detail(
         db,
         conversation_id=conversation_id,
         actor_person_id=actor_person_id,
+        actor_permission_keys=_request_permission_keys(request, db),
         include_contact_candidates=False,
         include_label_usage_counts=False,
     )
@@ -1050,8 +1098,11 @@ def team_inbox_detail(
             "timeline_entries": projection.timeline_entries,
             "reply_window": projection.reply_window,
             "agent_options": team_inbox_projection.list_agent_options(db),
-            "service_team_options": team_inbox_projection.list_service_team_options(db),
+            "service_team_options": (
+                projection.action_eligibility.takeover_team_options
+            ),
             "can_manage_leads": can(request, "crm:lead:write"),
+            "resolution_readiness": _resolution_readiness(db, projection.timeline.id),
         }
         if projection is not None
         else None
@@ -1095,6 +1146,7 @@ def team_inbox_contact_context(
         db,
         conversation_id=conversation_id,
         actor_person_id=_actor_uuid_from_request(request),
+        include_contact_candidates=False,
     )
     if projection is None:
         return HTMLResponse(
@@ -1119,7 +1171,6 @@ def team_inbox_contact_context(
         {
             "timeline": projection.timeline,
             "subscriber_summary": projection.subscriber_summary,
-            "contact_link_candidates": projection.contact_link_candidates,
             "conversation_labels": projection.conversation_labels,
             "label_options": projection.label_options,
             "agent_options": team_inbox_projection.list_agent_options(db),
@@ -1131,6 +1182,7 @@ def team_inbox_contact_context(
             "can_view_financials": can(request, "billing:account:read"),
             "can_view_network_detail": can(request, "network:ip:read"),
             "can_manage_leads": can(request, "crm:lead:write"),
+            "can_link_customer": can(request, "support:ticket:update"),
             "contact_context": contact_context,
             "lead_intake_invitations": lead_intake.invitation_for_conversation(
                 db, conversation_id
@@ -1138,6 +1190,158 @@ def team_inbox_contact_context(
         }
     )
     return templates.TemplateResponse("admin/inbox/_contact_drawer.html", context)
+
+
+@router.get(
+    "/{conversation_id}/customer-link-options",
+    response_model=ListResponse[InboxCustomerLinkOptionRead],
+    dependencies=[Depends(require_permission("support:ticket:read"))],
+)
+def team_inbox_customer_link_options(
+    conversation_id: UUID,
+    response: Response,
+    q: str | None = Query(default=None, min_length=2, max_length=120),
+    limit: int = Query(default=8, ge=1, le=8),
+    db: Session = Depends(get_db),
+) -> ListResponse[InboxCustomerLinkOptionRead]:
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        page = team_inbox_contact_links.customer_link_options(
+            db,
+            query=team_inbox_contact_links.CustomerLinkOptionsQuery(
+                conversation_id=conversation_id,
+                search_text=q,
+                limit=limit,
+            ),
+        )
+    except team_inbox_contact_links.ConversationContactLinkError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except team_inbox_contact_links.ContactLinkError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return ListResponse[InboxCustomerLinkOptionRead](
+        items=[
+            InboxCustomerLinkOptionRead(
+                id=item.customer_id,
+                label=item.label,
+                source=item.source.value,
+            )
+            for item in page.items
+        ],
+        count=page.count,
+        limit=page.limit,
+        offset=0,
+    )
+
+
+@router.post(
+    "/{conversation_id}/customer-profile",
+    dependencies=[
+        Depends(require_permission("support:ticket:update")),
+        Depends(require_permission("customer:write")),
+    ],
+)
+def team_inbox_customer_profile_update(
+    conversation_id: UUID,
+    request: Request,
+    customer_id: UUID = Form(...),
+    name: str | None = Form(default=None),
+    phone: str | None = Form(default=None),
+    address: str | None = Form(default=None),
+    email: str | None = Form(default=None),
+    whatsapp: str | None = Form(default=None),
+    organization: str | None = Form(default=None),
+    city_region: str | None = Form(default=None),
+    country: str | None = Form(default=None),
+    date_of_birth: str | None = Form(default=None),
+    gender: str | None = Form(default=None),
+    nin: str | None = Form(default=None),
+    submitted_fields: list[str] = Form(...),
+    confirmed_replacements: list[str] = Form(default=[]),
+    db: Session = Depends(get_db),
+):
+    actor_person_id = _actor_uuid_from_request(request)
+    try:
+        submitted = frozenset(
+            team_inbox_customer_completion.CustomerProfileField(value)
+            for value in submitted_fields
+        )
+        confirmed = frozenset(
+            team_inbox_customer_completion.CustomerProfileField(value)
+            for value in confirmed_replacements
+        )
+    except ValueError:
+        return RedirectResponse(
+            url=(
+                f"/admin/inbox?c={conversation_id}&status=error&"
+                "message=Unsupported%20Customer%20profile%20field"
+            ),
+            status_code=303,
+        )
+    _prepare_mutation(db)
+    try:
+        team_inbox_customer_completion.complete_customer_profile(
+            db,
+            team_inbox_customer_completion.CompleteInboxCustomerProfileCommand(
+                context=CommandContext.system(
+                    actor=(
+                        f"person:{actor_person_id}"
+                        if actor_person_id
+                        else "service:team_inbox"
+                    ),
+                    scope="team-inbox:customer-profile-completion",
+                    reason="complete linked Customer profile from Inbox",
+                ),
+                conversation_id=conversation_id,
+                customer_id=customer_id,
+                values=team_inbox_customer_completion.CustomerProfileValues(
+                    name=name,
+                    phone=phone,
+                    address=address,
+                    email=email,
+                    whatsapp=whatsapp,
+                    organization=organization,
+                    city_region=city_region,
+                    country=country,
+                    date_of_birth=date_of_birth,
+                    gender=gender,
+                    nin=nin,
+                ),
+                submitted_fields=submitted,
+                confirmed_replacements=confirmed,
+                actor_person_id=actor_person_id,
+                actor_type=(
+                    AuditActorType.user if actor_person_id else AuditActorType.service
+                ),
+                decision_source="inbox_customer_drawer",
+            ),
+        )
+    except DomainError as exc:
+        if _is_htmx_request(request):
+            return Response(
+                status_code=409,
+                headers={
+                    "HX-Redirect": (
+                        f"/admin/inbox?c={conversation_id}&status=error&"
+                        f"message={quote_plus(exc.message)}"
+                    )
+                },
+            )
+        return RedirectResponse(
+            url=(
+                f"/admin/inbox?c={conversation_id}&status=error&"
+                f"message={quote_plus(exc.message)}"
+            ),
+            status_code=303,
+        )
+    if _is_htmx_request(request):
+        return team_inbox_contact_context(conversation_id, request, db)
+    return RedirectResponse(
+        url=(
+            f"/admin/inbox?c={conversation_id}&status=success&"
+            "message=Customer%20information%20saved"
+        ),
+        status_code=303,
+    )
 
 
 @router.get(
@@ -1604,6 +1808,22 @@ def team_inbox_reply(
         )
         response.headers["Retry-After"] = "1"
         return response
+    except team_inbox_commands.ConversationAssignedToAnotherAgentError as exc:
+        if _is_htmx_request(request):
+            return _reply_presentation_response(
+                conversation_id,
+                status="error",
+                outcome="error",
+                message=exc.message,
+                error_code=exc.code,
+                http_status=409,
+            )
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message=exc.message,
+            next_url=next_url,
+        )
     except team_inbox_commands.ConversationNotFoundError:
         if _is_htmx_request(request):
             return _reply_presentation_response(
@@ -1618,6 +1838,17 @@ def team_inbox_reply(
             url="/admin/inbox?status=error&message=Conversation%20not%20found",
             status_code=303,
         )
+    except ai_conversation_ownership.AiConversationOwnedError as exc:
+        if _is_htmx_request(request):
+            return _reply_presentation_response(
+                conversation_id,
+                status="error",
+                outcome="error",
+                message=exc.message,
+                error_code=exc.code,
+                http_status=409,
+            )
+        return _domain_conflict_response(exc)
     except (
         team_inbox_commands.InboxCommandError,
         team_inbox_operations.InboxOperationError,
@@ -2112,6 +2343,8 @@ def team_inbox_workflow_action(
             url="/admin/inbox?status=error&message=Conversation%20not%20found",
             status_code=303,
         )
+    except ai_conversation_ownership.AiConversationOwnedError as exc:
+        return _domain_conflict_response(exc)
     return _detail_redirect(
         conversation_id,
         status="success",
@@ -2276,6 +2509,8 @@ def team_inbox_bulk_action(
             auto_assign=auto_assign,
             actor_person_id=_actor_id_from_request(request),
         )
+    except ai_conversation_ownership.AiConversationOwnedError as exc:
+        return _domain_conflict_response(exc)
     except (
         team_inbox_commands.InboxCommandError,
         team_inbox_operations.InboxOperationError,
@@ -2309,6 +2544,8 @@ def team_inbox_assign_to_me(
             service_team_id=_query_text(service_team_id),
             actor_person_id=actor_person_id,
         )
+    except ai_conversation_ownership.AiConversationOwnedError as exc:
+        return _domain_conflict_response(exc)
     except (
         team_inbox_commands.InboxCommandError,
         team_inbox_operations.InboxOperationError,
@@ -2320,6 +2557,62 @@ def team_inbox_assign_to_me(
     return RedirectResponse(
         url=f"/admin/inbox?c={conversation_id}&status=success&message={quote_plus(outcome.message)}",
         status_code=303,
+    )
+
+
+@router.post(
+    "/{conversation_id}/take-over",
+    dependencies=[
+        Depends(require_permission("support:ticket:update")),
+        Depends(require_permission("support:inbox:self_assign")),
+    ],
+)
+def team_inbox_take_over(
+    conversation_id: UUID,
+    request: Request,
+    expected_ai_session_id: UUID = Form(...),
+    expected_ai_session_state: str = Form(...),
+    idempotency_key: str = Form(...),
+    service_team_id: UUID | None = Form(default=None),
+    reason: str = Form(default="Agent explicitly took over the conversation"),
+    db: Session = Depends(get_db),
+):
+    auth = getattr(request.state, "auth", None) or {}
+    permission_keys = load_permission_keys(auth, db)
+    actor_person_id = _actor_uuid_from_request(request)
+    if actor_person_id is None:
+        raise HTTPException(status_code=403, detail="Staff identity is required.")
+    _prepare_mutation(db)
+    try:
+        outcome = team_inbox_commands.take_over_conversation(
+            db,
+            team_inbox_commands.TakeOverConversationCommand(
+                context=CommandContext.system(
+                    actor=f"system-user:{actor_person_id}",
+                    scope="team-inbox:ai-takeover",
+                    reason=reason,
+                    idempotency_key=idempotency_key,
+                ),
+                conversation_id=conversation_id,
+                expected_ai_session_id=expected_ai_session_id,
+                expected_ai_session_state=expected_ai_session_state,
+                actor_person_id=actor_person_id,
+                permission_keys=permission_keys,
+                service_team_id=service_team_id,
+                reason=reason,
+            ),
+        )
+    except DomainError as exc:
+        return _domain_conflict_response(exc)
+    message = (
+        "Conversation takeover already completed."
+        if outcome.replayed
+        else "AI Intake stopped and conversation assigned to you."
+    )
+    return _detail_redirect(
+        conversation_id,
+        status="success",
+        message=message,
     )
 
 
@@ -2356,6 +2649,39 @@ def team_inbox_presence_action(
 
 
 @router.post(
+    "/presence/heartbeat",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_presence_heartbeat(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    actor_id = _actor_uuid_from_request(request)
+    if actor_id is None:
+        raise HTTPException(status_code=403, detail="Staff identity is required.")
+    observed_at = datetime.now(UTC)
+    _prepare_mutation(db)
+    outcome = team_inbox_commands.refresh_agent_presence(
+        db,
+        command=team_inbox_assignment.AgentPresenceHeartbeatCommand(
+            context=CommandContext.system(
+                actor=f"system-user:{actor_id}",
+                scope="team-inbox:presence-heartbeat",
+                reason="record authenticated visible Inbox activity",
+            ),
+            system_user_id=actor_id,
+            observed_at=observed_at,
+        ),
+    )
+    return JSONResponse(
+        {
+            "status": outcome.status.value,
+            "disposition": outcome.disposition.value,
+        }
+    )
+
+
+@router.post(
     "/{conversation_id}/contact-link",
     dependencies=[Depends(require_permission("support:ticket:update"))],
 )
@@ -2372,16 +2698,52 @@ def team_inbox_contact_link(
 ):
     _prepare_mutation(db)
     try:
+        actor_person_id = _actor_uuid_from_request(request)
+        if target_type == "subscriber":
+            try:
+                target_id = _uuid_form_value(subscriber_id_manual or subscriber_id)
+            except ValueError as exc:
+                raise team_inbox_contact_links.ContactLinkError(
+                    "Choose a valid Customer."
+                ) from exc
+            target_kind = team_inbox_contact_links.ContactLinkTargetType.subscriber
+        elif target_type == "reseller":
+            try:
+                target_id = _uuid_form_value(reseller_id_manual or reseller_id)
+            except ValueError as exc:
+                raise team_inbox_contact_links.ContactLinkError(
+                    "Choose a valid reseller."
+                ) from exc
+            target_kind = team_inbox_contact_links.ContactLinkTargetType.reseller
+        else:
+            raise team_inbox_contact_links.ContactLinkError(
+                "Choose whether this contact belongs to a Customer or reseller."
+            )
+        if target_id is None:
+            raise team_inbox_contact_links.ContactLinkError(
+                "Choose the Customer or reseller to link."
+            )
+        context = CommandContext.system(
+            actor=(
+                f"person:{actor_person_id}"
+                if actor_person_id is not None
+                else "system:team-inbox-admin"
+            ),
+            scope="team-inbox:contact-link",
+            reason="apply reviewed Team Inbox contact association",
+        )
         outcome = team_inbox_commands.link_contact(
             db,
-            conversation_id=conversation_id,
-            target_type=target_type,
-            subscriber_id=subscriber_id,
-            reseller_id=reseller_id,
-            subscriber_id_manual=subscriber_id_manual,
-            reseller_id_manual=reseller_id_manual,
-            actor_person_id=_actor_id_from_request(request),
-            note=note,
+            team_inbox_commands.LinkContactCommand(
+                context=context,
+                conversation_id=conversation_id,
+                target=team_inbox_contact_links.ContactLinkTarget(
+                    target_type=target_kind,
+                    target_id=target_id,
+                ),
+                actor_person_id=actor_person_id,
+                note=note,
+            ),
         )
     except team_inbox_commands.ConversationNotFoundError:
         return RedirectResponse(
@@ -2398,7 +2760,179 @@ def team_inbox_contact_link(
         status="success",
         message=(
             f"Linked {outcome.channel_type.replace('_', ' ')} contact to "
-            f"{outcome.target}."
+            f"{outcome.target.target_type.value}."
+        ),
+    )
+
+
+@router.post(
+    "/{conversation_id}/represented-customer",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_represented_customer(
+    conversation_id: UUID,
+    request: Request,
+    participant_id: str = Form(...),
+    subscriber_id: str = Form(...),
+    reason: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    try:
+        participant_uuid = _uuid_form_value(participant_id)
+        subscriber_uuid = _uuid_form_value(subscriber_id)
+    except ValueError:
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message="Select a valid participant and Customer.",
+        )
+    if participant_uuid is None or subscriber_uuid is None:
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message="Select who is speaking and the Customer they represent.",
+        )
+    actor_person_id = _actor_uuid_from_request(request)
+    actor_label = (
+        f"person:{actor_person_id}"
+        if actor_person_id is not None
+        else f"system-user:{_system_user_uuid_from_request(request)}"
+    )
+    _prepare_mutation(db)
+    try:
+        outcome = team_inbox_commands.link_represented_customer(
+            db,
+            team_inbox_commands.LinkRepresentedCustomerCommand(
+                context=CommandContext.system(
+                    actor=actor_label,
+                    scope="team-inbox:represented-customer",
+                    reason="record reviewed representative and represented Customer",
+                ),
+                conversation_id=conversation_id,
+                participant_id=participant_uuid,
+                subscriber_id=subscriber_uuid,
+                actor_person_id=actor_person_id,
+                reason=reason,
+            ),
+        )
+    except team_inbox_commands.ConversationNotFoundError:
+        return RedirectResponse(
+            url="/admin/inbox?status=error&message=Conversation%20not%20found",
+            status_code=303,
+        )
+    except ai_conversation_ownership.AiConversationOwnedError as exc:
+        return _domain_conflict_response(exc)
+    except team_inbox_commands.InboxCommandError as exc:
+        return _detail_redirect(conversation_id, status="error", message=str(exc))
+    return _detail_redirect(
+        conversation_id,
+        status="success",
+        message=(
+            "Representative recorded and conversation linked to the Customer."
+            if not outcome.already_linked
+            else "This representative and Customer were already linked."
+        ),
+    )
+
+
+@router.get(
+    "/search/leads",
+    dependencies=[
+        Depends(require_permission("support:ticket:read")),
+        Depends(require_permission("crm:lead:read")),
+    ],
+)
+def team_inbox_lead_search(
+    q: str = Query(min_length=2, max_length=120),
+    limit: int = Query(default=8, ge=1, le=20),
+    db: Session = Depends(get_db),
+):
+    """Return active Party-backed Leads for the representative picker."""
+
+    page = sales_service.leads.search_for_quote(
+        db,
+        sales_service.QuoteLeadSearchQuery(term=q, limit=limit),
+    )
+    return {
+        "items": [
+            {"id": str(item.id), "label": item.label, "type": "lead"}
+            for item in page.items
+        ],
+        "count": page.count,
+        "limit": page.limit,
+        "offset": 0,
+    }
+
+
+@router.post(
+    "/{conversation_id}/represented-lead",
+    dependencies=[
+        Depends(require_permission("support:ticket:update")),
+        Depends(require_permission("crm:lead:write")),
+    ],
+)
+def team_inbox_represented_lead(
+    conversation_id: UUID,
+    request: Request,
+    participant_id: str = Form(...),
+    lead_id: str = Form(...),
+    reason: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    try:
+        participant_uuid = _uuid_form_value(participant_id)
+        lead_uuid = _uuid_form_value(lead_id)
+    except ValueError:
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message="Select a valid participant and Lead.",
+        )
+    if participant_uuid is None or lead_uuid is None:
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message="Select who is speaking and the Lead they represent.",
+        )
+    actor_person_id = _actor_uuid_from_request(request)
+    actor_label = (
+        f"person:{actor_person_id}"
+        if actor_person_id is not None
+        else f"system-user:{_system_user_uuid_from_request(request)}"
+    )
+    _prepare_mutation(db)
+    try:
+        outcome = team_inbox_commands.link_represented_lead(
+            db,
+            team_inbox_commands.LinkRepresentedLeadCommand(
+                context=CommandContext.system(
+                    actor=actor_label,
+                    scope="team-inbox:represented-lead",
+                    reason="record reviewed representative and represented Lead",
+                ),
+                conversation_id=conversation_id,
+                participant_id=participant_uuid,
+                lead_id=lead_uuid,
+                actor_person_id=actor_person_id,
+                reason=reason,
+            ),
+        )
+    except team_inbox_commands.ConversationNotFoundError:
+        return RedirectResponse(
+            url="/admin/inbox?status=error&message=Conversation%20not%20found",
+            status_code=303,
+        )
+    except ai_conversation_ownership.AiConversationOwnedError as exc:
+        return _domain_conflict_response(exc)
+    except team_inbox_commands.InboxCommandError as exc:
+        return _detail_redirect(conversation_id, status="error", message=str(exc))
+    return _detail_redirect(
+        conversation_id,
+        status="success",
+        message=(
+            "Representative recorded and conversation linked to the Lead."
+            if not outcome.already_linked
+            else "This representative and Lead were already linked."
         ),
     )
 
@@ -2501,6 +3035,8 @@ def team_inbox_internal_note(
             url="/admin/inbox?status=error&message=Conversation%20not%20found",
             status_code=303,
         )
+    except ai_conversation_ownership.AiConversationOwnedError as exc:
+        return _domain_conflict_response(exc)
     except (
         team_inbox_commands.InboxCommandError,
         team_inbox_operations.InboxOperationError,
@@ -2604,11 +3140,19 @@ def team_inbox_status_action(
             url="/admin/inbox?status=error&message=Conversation%20not%20found",
             status_code=303,
         )
+    except ai_conversation_ownership.AiConversationOwnedError as exc:
+        return _domain_conflict_response(exc)
     except team_inbox_commands.InboxCommandError as exc:
         return _detail_redirect(
             conversation_id,
             status="error",
             message=str(exc),
+        )
+    except DomainError as exc:
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message=exc.message,
         )
     if outcome.already_set:
         return _detail_redirect(
@@ -2667,6 +3211,8 @@ def team_inbox_issue_ticket(
             status="error",
             message=exc.message,
         )
+    except ai_conversation_ownership.AiConversationOwnedError as exc:
+        return _domain_conflict_response(exc)
     except ValueError as exc:
         return _detail_redirect(conversation_id, status="error", message=str(exc))
     verb = "already open" if result.replayed else "opened"
@@ -2721,6 +3267,8 @@ def team_inbox_assign(
             url="/admin/inbox?status=error&message=Conversation%20not%20found",
             status_code=303,
         )
+    except ai_conversation_ownership.AiConversationOwnedError as exc:
+        return _domain_conflict_response(exc)
     except (
         team_inbox_commands.InboxCommandError,
         team_inbox_operations.InboxOperationError,
@@ -2768,12 +3316,34 @@ def team_inbox_run_macro(
             url="/admin/inbox?status=error&message=Conversation%20not%20found",
             status_code=303,
         )
+    except ai_conversation_ownership.AiConversationOwnedError as exc:
+        return _domain_conflict_response(exc)
     except (
         team_inbox_commands.InboxCommandError,
         team_inbox_operations.InboxOperationError,
     ) as exc:
         return _detail_redirect(conversation_id, status="error", message=str(exc))
-    executed = result.get("executed") if isinstance(result, dict) else None
+    failed = result.get("actions_failed") if isinstance(result, dict) else None
+    if isinstance(failed, int) and failed:
+        results = result.get("results")
+        first_error = (
+            next(
+                (
+                    item.get("error")
+                    for item in results
+                    if isinstance(item, dict) and not item.get("ok")
+                ),
+                None,
+            )
+            if isinstance(results, list)
+            else None
+        )
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message=str(first_error or f"Macro had {failed} blocked action(s)."),
+        )
+    executed = result.get("actions_executed") if isinstance(result, dict) else None
     return _detail_redirect(
         conversation_id,
         status="success",
@@ -2837,6 +3407,7 @@ def _settings_context(
         else None
     )
     ai_policy_context = ai_conversation_intake.admin_policy_context(db)
+    customer_completion_policy = team_inbox_customer_completion_policy.active_policy(db)
     context.update(
         {
             "email_routes": team_inbox_routing.list_email_routes(db),
@@ -2867,11 +3438,70 @@ def _settings_context(
             "notice_message": _query_text(message),
             "ai_intake_preview_result": ai_intake_preview_result,
             "introduction_preference": introduction_preference,
+            "customer_completion_policy": customer_completion_policy,
+            "customer_completion_fields": tuple(
+                {
+                    "value": field.value,
+                    "label": team_inbox_customer_completion.FIELD_LABELS[
+                        team_inbox_customer_completion.CustomerProfileField(field.value)
+                    ],
+                }
+                for field in team_inbox_customer_completion_policy.CustomerCompletionField
+            ),
         }
     )
     context.update(ai_policy_context)
     context.update(_polish_settings_context(db))
     return context
+
+
+@settings_router.post(
+    "/customer-completion-policy",
+    dependencies=[Depends(require_permission("system:settings:write"))],
+)
+def team_inbox_customer_completion_policy_update(
+    request: Request,
+    required_fields: list[str] = Form(default=[]),
+    db: Session = Depends(get_db),
+):
+    actor_person_id = _actor_uuid_from_request(request)
+    try:
+        fields = tuple(
+            team_inbox_customer_completion_policy.CustomerCompletionField(value)
+            for value in required_fields
+        )
+    except ValueError:
+        return _routes_redirect(
+            status="error", message="Select only supported Customer fields."
+        )
+    _prepare_mutation(db)
+    try:
+        outcome = team_inbox_customer_completion_policy.create_policy_version(
+            db,
+            team_inbox_customer_completion_policy.CreateCustomerCompletionPolicyCommand(
+                context=CommandContext.system(
+                    actor=(
+                        f"person:{actor_person_id}"
+                        if actor_person_id
+                        else "service:inbox_settings"
+                    ),
+                    scope="team-inbox:customer-completion-policy",
+                    reason="update Customer resolution requirements",
+                ),
+                required_fields=fields,
+                actor_person_id=actor_person_id,
+                actor_type=(
+                    AuditActorType.user if actor_person_id else AuditActorType.service
+                ),
+                decision_source="inbox_settings",
+            ),
+        )
+    except DomainError as exc:
+        return _routes_redirect(status="error", message=exc.message)
+    return _routes_redirect(
+        status="success",
+        message=f"Customer completion policy v{outcome.version} is active.",
+    )
 
 
 @settings_router.post(
@@ -2950,7 +3580,7 @@ def team_inbox_ai_intake_policy_draft_update(
     max_clarification_turns: int = Form(default=1),
     escalate_after_minutes: int = Form(default=5),
     customer_response_timeout_minutes: int | None = Form(default=None),
-    customer_wait_expiry_hours: int = Form(default=72),
+    customer_wait_handoff_minutes: int = Form(default=10),
     exclude_campaign_attribution: bool = Form(default=True),
     conversational_engine_enabled: bool = Form(default=False),
     conversation_engine_mode: str = Form(default="custom_v1"),
@@ -3004,6 +3634,7 @@ def team_inbox_ai_intake_policy_draft_update(
     queue_handoff_template: str | None = Form(default=None),
     queue_position_update_minutes: int = Form(default=10),
     queue_heartbeat_minutes: int = Form(default=30),
+    queue_heartbeat_enabled: bool = Form(default=False),
     data_cleanup_prompt: str | None = Form(default=None),
     data_cleanup_gender_choices_json: str | None = Form(default=None),
     data_cleanup_dob_formats: str | None = Form(default=None),
@@ -3119,6 +3750,7 @@ def team_inbox_ai_intake_policy_draft_update(
                 1, min(int(queue_position_update_minutes), 120)
             ),
             "heartbeat_minutes": max(5, min(int(queue_heartbeat_minutes), 240)),
+            "heartbeat_enabled": bool(queue_heartbeat_enabled),
         }
         clean_escalate_after_minutes = max(1, min(int(escalate_after_minutes), 1440))
         if customer_response_timeout_minutes is None:
@@ -3140,9 +3772,6 @@ def team_inbox_ai_intake_policy_draft_update(
             "max_clarification_turns": max(0, min(int(max_clarification_turns), 5)),
             "escalate_after_minutes": clean_escalate_after_minutes,
             "customer_response_timeout_minutes": clean_customer_response_timeout_minutes,
-            "customer_wait_expiry_hours": max(
-                24, min(int(customer_wait_expiry_hours), 720)
-            ),
             "exclude_campaign_attribution": bool(exclude_campaign_attribution),
         }
         data_cleanup_policy = {
@@ -3307,6 +3936,13 @@ def team_inbox_ai_intake_policy_draft_update(
                 intent_team_mappings=intent_mappings,
                 queue_templates=queue_templates,
                 escalation_rules=escalation_rules,
+                customer_wait_handoff_policy=(
+                    ai_conversation_intake.CustomerWaitHandoffPolicy(
+                        handoff_minutes=max(
+                            1, min(int(customer_wait_handoff_minutes), 1440)
+                        )
+                    )
+                ),
                 data_cleanup_policy=data_cleanup_policy,
                 conversational_engine_enabled=conversational_engine_enabled,
                 conversation_engine_mode=conversation_engine_mode,

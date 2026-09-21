@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 from uuid import UUID, uuid4, uuid5
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -17,6 +17,7 @@ from starlette.datastructures import FormData, UploadFile
 
 from app.csrf import CSRF_COOKIE_NAME, CSRFValidationError
 from app.db import get_db
+from app.models.stored_file import StoredFile
 from app.services import web_dispatch_work_orders as work_orders_service
 from app.services import web_work_order_expenses as expense_web
 from app.services.auth_dependencies import (
@@ -31,17 +32,31 @@ from app.services.field.expense_requests import (
     ExpenseReceiptUploadInput,
     ExpenseRequestAccessMode,
     ExpenseRequestLineInput,
+    ExpenseWorkOrderIdentity,
+    ExpenseWorkOrderScopeGrant,
+    SelectedExpenseApprover,
+    StaffWorkOrderAccess,
     SubmitFieldExpenseRequest,
+    VerifyFieldExpenseDestination,
     submit_field_expense_request_command,
+    verify_field_expense_destination,
 )
+from app.services.field.note_commands import (
+    FieldNoteQueryError,
+    GetStaffFieldNoteAttachment,
+    StaffFieldNoteAccess,
+    get_staff_field_note_attachment,
+)
+from app.services.file_storage import build_content_disposition, file_uploads
+from app.services.object_storage import ObjectNotFoundError
 from app.services.owner_commands import CommandContext
 from app.services.work_order_views import get_work_order_row
+from app.web.admin.field_note_access import resolve_staff_field_note_access
 from app.web.request_parsing import parse_form_data_sync
 
 templates = Jinja2Templates(directory="templates")
 router = APIRouter(prefix="/dispatch", tags=["web-admin-dispatch"])
 _WORK_ORDER_READ_PERMISSION = "operations:dispatch:read"
-_WORK_ORDER_EXPENSE_PERMISSION = "operations:dispatch:write"
 
 
 def _ctx(request: Request, db: Session) -> dict:
@@ -89,10 +104,6 @@ def _work_order_scope_for(
 _require_work_order_read_access = require_scoped_permission(
     _WORK_ORDER_READ_PERMISSION, _work_order_scope_for(_WORK_ORDER_READ_PERMISSION)
 )
-_require_work_order_expense_access = require_scoped_permission(
-    _WORK_ORDER_EXPENSE_PERMISSION,
-    _work_order_scope_for(_WORK_ORDER_EXPENSE_PERMISSION),
-)
 
 
 def _actor_id(auth: dict) -> UUID:
@@ -104,6 +115,21 @@ def _actor_id(auth: dict) -> UUID:
         raise HTTPException(
             status_code=403, detail="Authorized actor is missing"
         ) from exc
+
+
+def _expense_staff_access(db: Session, auth: dict) -> StaffWorkOrderAccess:
+    grants = grant_scopes_for_permission(auth, db, _WORK_ORDER_READ_PERMISSION)
+    if grants == "global":
+        return StaffWorkOrderAccess(global_access=True)
+    if not isinstance(grants, set):
+        return StaffWorkOrderAccess(global_access=False)
+    return StaffWorkOrderAccess(
+        global_access=False,
+        scopes=tuple(
+            ExpenseWorkOrderScopeGrant(scope_type=scope_type, scope_id=scope_id)
+            for scope_type, scope_id in sorted(grants)
+        ),
+    )
 
 
 def _require_expense_csrf(request: Request) -> None:
@@ -169,6 +195,11 @@ def _expense_form(form: FormData) -> expense_web.WorkOrderExpenseFormInput:
         expense_date=_form_text(form, "expense_date"),
         currency=_form_text(form, "currency"),
         notes=_form_text(form, "notes"),
+        selected_approver_id=_form_text(form, "selected_approver_id"),
+        payment_destination_mode=_form_text(form, "payment_destination_mode"),
+        bank_code=_form_text(form, "bank_code"),
+        account_number=_form_text(form, "account_number"),
+        beneficiary_name=_form_text(form, "beneficiary_name"),
         lines=tuple(lines),
     )
 
@@ -179,13 +210,18 @@ def _expense_detail_response(
     *,
     work_order_id: str,
     actor_id: UUID,
+    field_note_access: StaffFieldNoteAccess,
     notice: str | None = None,
     error: str | None = None,
     expense_form: expense_web.WorkOrderExpenseFormInput | None = None,
     expense_errors: tuple[expense_web.ExpenseFieldError, ...] = (),
     status_code: int = 200,
 ):
-    state = work_orders_service.detail_page(db, work_order_id)
+    state = work_orders_service.detail_page(
+        db,
+        work_order_id,
+        field_note_access=field_note_access,
+    )
     state["expense_panel"] = expense_web.build_work_order_expense_panel(
         db,
         work_order_public_id=work_order_id,
@@ -251,8 +287,51 @@ def dispatch_work_order_detail(
         db,
         work_order_id=work_order_id,
         actor_id=_actor_id(auth),
+        field_note_access=resolve_staff_field_note_access(db, auth),
         notice=notice,
         error=error,
+    )
+
+
+@router.get("/work-orders/{work_order_id}/notes/attachments/{attachment_id}")
+def download_work_order_note_attachment(
+    work_order_id: str,
+    attachment_id: UUID,
+    db: Session = Depends(get_db),
+    _auth: dict = Depends(_require_work_order_read_access),
+):
+    try:
+        attachment = get_staff_field_note_attachment(
+            db,
+            GetStaffFieldNoteAttachment(
+                work_order_public_id=work_order_id,
+                attachment_id=attachment_id,
+            ),
+        )
+    except FieldNoteQueryError as exc:
+        raise HTTPException(status_code=404, detail=exc.message) from exc
+    stored_file = db.get(StoredFile, attachment.stored_file_id)
+    if stored_file is None or stored_file.is_deleted:
+        raise HTTPException(status_code=404, detail="Attachment content not found")
+    try:
+        stream = file_uploads.stream_file(stored_file)
+    except ObjectNotFoundError as exc:
+        raise HTTPException(
+            status_code=404, detail="Attachment content not found"
+        ) from exc
+    disposition = build_content_disposition(attachment.file_name)
+    if (
+        attachment.mime_type.startswith("image/")
+        or attachment.mime_type == "application/pdf"
+    ):
+        disposition = disposition.replace("attachment;", "inline;", 1)
+    headers = {"Content-Disposition": disposition}
+    if stream.content_length is not None:
+        headers["Content-Length"] = str(stream.content_length)
+    return StreamingResponse(
+        stream.chunks,
+        media_type=stream.content_type or attachment.mime_type,
+        headers=headers,
     )
 
 
@@ -265,7 +344,7 @@ def create_work_order_expense(
     request: Request,
     work_order_id: str,
     db: Session = Depends(get_db),
-    auth: dict = Depends(_require_work_order_expense_access),
+    auth: dict = Depends(_require_work_order_read_access),
 ):
     actor_id = _actor_id(auth)
     raw_form = parse_form_data_sync(request)
@@ -280,7 +359,20 @@ def create_work_order_expense(
         prepared = expense_web.validate_work_order_expense_form(
             form,
             category_rules=panel.categories,
+            approvers=panel.approvers,
         )
+        verified_destination = verify_field_expense_destination(
+            db,
+            VerifyFieldExpenseDestination(
+                requester_system_user_id=actor_id,
+                source_claim_id=prepared.request_id,
+                mode=prepared.payment_destination_mode,
+                bank_code=prepared.bank_code,
+                account_number=prepared.account_number,
+                beneficiary_name=prepared.beneficiary_name,
+            ),
+        )
+        staff_access = _expense_staff_access(db, auth)
         db_session_adapter.release_read_transaction(db)
         outcome = submit_field_expense_request_command(
             db,
@@ -289,12 +381,12 @@ def create_work_order_expense(
                     command_id=prepared.request_id,
                     correlation_id=prepared.request_id,
                     actor=f"user:{actor_id}",
-                    scope=_WORK_ORDER_EXPENSE_PERMISSION,
+                    scope=_WORK_ORDER_READ_PERMISSION,
                     reason=f"Create expense for work order {work_order_id}",
                     idempotency_key=str(prepared.request_id),
                 ),
                 requester_person_id=None,
-                work_order_public_id=work_order_id,
+                work_order=ExpenseWorkOrderIdentity(public_id=work_order_id),
                 request_id=prepared.request_id,
                 purpose=prepared.purpose,
                 expense_date=prepared.expense_date,
@@ -316,8 +408,14 @@ def create_work_order_expense(
                     for line in prepared.lines
                 ),
                 access_mode=ExpenseRequestAccessMode.STAFF_WORK_ORDER,
-                authorized_work_order_id=panel.work_order_id,
-                category_rules=prepared.category_rules,
+                staff_access=staff_access,
+                selected_approver=SelectedExpenseApprover(
+                    erp_employee_id=prepared.selected_approver.erp_employee_id,
+                    system_user_id=prepared.selected_approver.system_user_id,
+                    display_name=prepared.selected_approver.display_name,
+                    email=prepared.selected_approver.email,
+                ),
+                payment_destination=verified_destination,
             ),
         )
     except expense_web.WorkOrderExpenseFormError as exc:
@@ -329,6 +427,7 @@ def create_work_order_expense(
             db,
             work_order_id=work_order_id,
             actor_id=actor_id,
+            field_note_access=resolve_staff_field_note_access(db, auth),
             expense_form=redisplay_form,
             expense_errors=redisplay_errors,
             status_code=422,
@@ -344,6 +443,7 @@ def create_work_order_expense(
             db,
             work_order_id=work_order_id,
             actor_id=actor_id,
+            field_note_access=resolve_staff_field_note_access(db, auth),
             expense_form=redisplay_form,
             expense_errors=redisplay_errors,
             status_code=409,

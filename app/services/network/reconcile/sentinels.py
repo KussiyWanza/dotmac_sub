@@ -236,6 +236,47 @@ RULES: tuple[SentinelRule, ...] = (
         ),
         impact="Same silent no-op and same broken authorization as the line profile.",
     ),
+    SentinelRule(
+        field="olt_ont_id",
+        layer="adapter",
+        source_key=None,
+        sentinel=None,
+        trigger="absent",
+        authority=_INADMISSIBLE,
+        adjudication=_REFUSED,
+        writes=(
+            "OltAuthorize.ont_id, OltModifyLineProfile.ont_id, "
+            "OltCreateServicePort.ont_id, and every other Olt*.ont_id"
+        ),
+        impact=(
+            "0 is a legitimate real Huawei ONT-ID, so it cannot be the "
+            "sentinel — the historical bug was exactly ``parse_ont_id_on_olt"
+            "(external_id) or 0``, collapsing a genuinely unparseable "
+            "``external_id`` into a live registration's ONT-ID. Sourced from "
+            "``ont.external_id`` rather than ``values``, so the detector "
+            "cannot count it per-ONT — reported as unmeasured. Delivered via "
+            "the reader's identity-binding check (OLT_IDENTITY_UNRESOLVED) "
+            "rather than a planner-side is_deliverable gate: the planner "
+            "never even sees a valid fsp/ont_id pair to check without a "
+            "prior confirmed OLT registration match."
+        ),
+    ),
+    SentinelRule(
+        field="fsp",
+        layer="adapter",
+        source_key=None,
+        sentinel="",
+        trigger="falsy",
+        authority=_INADMISSIBLE,
+        adjudication=_REFUSED,
+        writes="Every Olt* action's fsp argument",
+        impact=(
+            "Built from ``OntUnit.board``/``.port``; empty when either is "
+            "missing. Sourced from typed columns rather than ``values``, so "
+            "the detector cannot count it per-ONT — reported as unmeasured. "
+            "Same OLT_IDENTITY_UNRESOLVED delivery path as olt_ont_id above."
+        ),
+    ),
     # ── delegated: a different named owner already fails closed ─────────────
     SentinelRule(
         field="wan_pppoe_username",

@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -416,6 +417,11 @@ class IntegrationInbox(Base):
             "attempt_count >= 0", name="ck_integration_inbox_attempt_count"
         ),
         Index("ix_integration_inbox_state_received", "state", "received_at"),
+        Index(
+            "ix_integration_inbox_processing_lease",
+            "lease_expires_at",
+            postgresql_where=text("state = 'processing'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -441,6 +447,11 @@ class IntegrationInbox(Base):
     consequence_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     error_code: Mapped[str | None] = mapped_column(String(120))
     error_detail: Mapped[str | None] = mapped_column(Text)
+    # Set whenever `state` becomes 'processing' (fresh claim or reclaim);
+    # cleared on every terminal transition. A NULL value while `state` is
+    # 'processing' means the row predates this column and is treated as
+    # already expired (mirrors IntegrationDelivery.leased_until).
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )

@@ -1,12 +1,15 @@
-import 'dart:math' as math;
+import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../../app/theme.dart';
 import '../../app/widgets/status_pill.dart';
+import '../../core/location/map_coordinates.dart';
 import '../expenses/expense_models.dart';
 import 'manager_providers.dart';
 
@@ -118,7 +121,9 @@ class ManagerDashboardScreen extends ConsumerWidget {
                   const _InlineError(message: 'Could not load manager summary'),
             ),
             const SizedBox(height: 18),
-            const _QuickActions(),
+            _QuickActions(
+              canViewTeamMap: profile.valueOrNull?.canViewTeamMap == true,
+            ),
           ],
         ),
       ),
@@ -126,45 +131,346 @@ class ManagerDashboardScreen extends ConsumerWidget {
   }
 }
 
-class ManagerTeamMapScreen extends ConsumerWidget {
-  const ManagerTeamMapScreen({super.key});
+class ManagerTeamMapScreen extends ConsumerStatefulWidget {
+  const ManagerTeamMapScreen({super.key, this.showTiles = true});
+
+  /// Disabled in widget tests so no tile HTTP requests are made.
+  final bool showTiles;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ManagerTeamMapScreen> createState() =>
+      _ManagerTeamMapScreenState();
+}
+
+enum _TeamFilter { all, live, stale, notSharing }
+
+class _ManagerTeamMapScreenState extends ConsumerState<ManagerTeamMapScreen>
+    with WidgetsBindingObserver {
+  static const _refreshInterval = Duration(seconds: 30);
+  static const _selectedTechnicianZoom = 17.0;
+
+  final _mapController = MapController();
+  final _scrollController = ScrollController();
+  Timer? _refreshTimer;
+  bool _isForeground = true;
+  bool _isVisible = true;
+  String _searchQuery = '';
+  _TeamFilter _filter = _TeamFilter.all;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _refreshTimer = Timer.periodic(_refreshInterval, (_) {
+      if (mounted && _isForeground && _isVisible) {
+        ref.invalidate(managerTeamMapProvider);
+      }
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _isForeground = state == AppLifecycleState.resumed;
+    if (_isForeground && mounted && _isVisible) {
+      ref.invalidate(managerTeamMapProvider);
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _refreshTimer?.cancel();
+    _mapController.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
+    try {
+      await Future.wait([
+        ref.refresh(managerTeamMapProvider.future),
+        ref.refresh(managerTechniciansProvider.future),
+      ]);
+    } catch (_) {
+      // Each failed provider renders its own retryable inline state.
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    _isVisible = TickerMode.valuesOf(context).enabled;
+    final mapFeed = ref.watch(managerTeamMapProvider);
     final technicians = ref.watch(managerTechniciansProvider);
-    return Scaffold(
-      appBar: AppBar(title: const Text('Team location')),
-      body: RefreshIndicator(
-        onRefresh: () async => ref.invalidate(managerTechniciansProvider),
-        child: technicians.when(
-          data: (items) => ListView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.all(16),
-            children: [
-              _TeamMapPanel(technicians: items),
-              const SizedBox(height: 16),
-              Text(
-                'Technicians',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
-              ),
-              const SizedBox(height: 8),
-              if (items.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 48),
-                  child: Center(child: Text('No active technician profiles')),
-                )
-              else
-                for (final tech in items) _TechnicianTile(technician: tech),
-            ],
+    final positions =
+        mapFeed.valueOrNull?.positions
+            .where(
+              (position) =>
+                  isValidMapCoordinate(position.latitude, position.longitude),
+            )
+            .toList() ??
+        const <ManagerTeamMapPosition>[];
+    final positionByPersonId = {
+      for (final position in positions) position.personId: position,
+    };
+    final visibleTechnicians =
+        [
+          ...?technicians.valueOrNull?.where(
+            (technician) => _matchesTechnician(
+              technician,
+              positionByPersonId[technician.personId],
+            ),
           ),
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (_, _) =>
-              const Center(child: Text('Could not load technicians')),
+        ]..sort(
+          (left, right) => _compareTechnicians(left, right, positionByPersonId),
+        );
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Team location'),
+        actions: [
+          IconButton(
+            tooltip: 'Refresh team locations',
+            onPressed: _refresh,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: RefreshIndicator(
+        onRefresh: _refresh,
+        child: CustomScrollView(
+          controller: _scrollController,
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              sliver: SliverToBoxAdapter(
+                child: _buildMapSurface(mapFeed, positions),
+              ),
+            ),
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              sliver: SliverToBoxAdapter(
+                child: _TeamMapControls(
+                  filter: _filter,
+                  total: technicians.valueOrNull?.length,
+                  onQueryChanged: (value) =>
+                      setState(() => _searchQuery = value),
+                  onFilterChanged: (value) => setState(() => _filter = value),
+                ),
+              ),
+            ),
+            ..._technicianSlivers(
+              technicians,
+              visibleTechnicians,
+              positionByPersonId,
+            ),
+            const SliverToBoxAdapter(child: SizedBox(height: 24)),
+          ],
         ),
       ),
     );
+  }
+
+  Widget _buildMapSurface(
+    AsyncValue<ManagerTeamMapFeed> state,
+    List<ManagerTeamMapPosition> positions,
+  ) {
+    final feed = state.valueOrNull;
+    if (feed == null && state.isLoading) {
+      return const _TeamMapMessage(child: CircularProgressIndicator());
+    }
+    if (feed == null) {
+      return _TeamMapMessage(
+        child: _RetryMessage(
+          message: 'Could not load team locations',
+          onRetry: () => ref.invalidate(managerTeamMapProvider),
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _TeamMapPanel(
+          positions: positions,
+          mapController: _mapController,
+          showTiles: widget.showTiles,
+          onPositionTap: _showPosition,
+        ),
+        if (state.hasError)
+          _InlineRefreshWarning(
+            message: 'Location refresh failed. Showing the last update.',
+            onRetry: () => ref.invalidate(managerTeamMapProvider),
+          ),
+        const SizedBox(height: 8),
+        Text(
+          '${positions.where((item) => item.isLive).length} live'
+          ' · ${positions.where((item) => !item.isLive).length} stale'
+          ' · updated ${_relativeTime(feed.receivedAt)}'
+          ' · live window ${feed.staleAfterSeconds}s',
+          style: Theme.of(
+            context,
+          ).textTheme.bodySmall?.copyWith(color: AppColors.subdued(context)),
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _technicianSlivers(
+    AsyncValue<List<ManagerTechnician>> state,
+    List<ManagerTechnician> visible,
+    Map<String, ManagerTeamMapPosition> positionByPersonId,
+  ) {
+    if (state.valueOrNull == null && state.isLoading) {
+      return const [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: EdgeInsets.all(32),
+            child: Center(child: CircularProgressIndicator()),
+          ),
+        ),
+      ];
+    }
+    if (state.valueOrNull == null) {
+      return [
+        SliverToBoxAdapter(
+          child: _RetryMessage(
+            message: 'Could not load the technician roster',
+            onRetry: () => ref.invalidate(managerTechniciansProvider),
+          ),
+        ),
+      ];
+    }
+    if (visible.isEmpty) {
+      return [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 40),
+            child: Center(
+              child: Text(
+                _searchQuery.trim().isEmpty && _filter == _TeamFilter.all
+                    ? 'No active technician profiles'
+                    : 'No technicians match these filters',
+              ),
+            ),
+          ),
+        ),
+      ];
+    }
+    return [
+      SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        sliver: SliverList.builder(
+          itemCount: visible.length,
+          itemBuilder: (context, index) {
+            final technician = visible[index];
+            final position = positionByPersonId[technician.personId];
+            return _TechnicianTile(
+              technician: technician,
+              position: position,
+              onTap: () => unawaited(
+                _showTechnician(technician, position, bringMapIntoView: true),
+              ),
+            );
+          },
+        ),
+      ),
+    ];
+  }
+
+  bool _matchesTechnician(
+    ManagerTechnician technician,
+    ManagerTeamMapPosition? position,
+  ) {
+    final matchesFilter = switch (_filter) {
+      _TeamFilter.all => true,
+      _TeamFilter.live => position?.isLive == true,
+      _TeamFilter.stale => position != null && !position.isLive,
+      _TeamFilter.notSharing => !technician.locationSharingEnabled,
+    };
+    if (!matchesFilter) return false;
+    final query = _searchQuery.trim().toLowerCase();
+    if (query.isEmpty) return true;
+    return [
+      technician.name,
+      technician.title,
+      technician.region,
+      technician.activeWorkOrderTitle,
+    ].whereType<String>().any((value) => value.toLowerCase().contains(query));
+  }
+
+  void _showPosition(ManagerTeamMapPosition position) {
+    ManagerTechnician? technician;
+    for (final item
+        in ref.read(managerTechniciansProvider).valueOrNull ??
+            const <ManagerTechnician>[]) {
+      if (item.personId == position.personId) {
+        technician = item;
+        break;
+      }
+    }
+    unawaited(_showTechnician(technician, position));
+  }
+
+  Future<void> _showTechnician(
+    ManagerTechnician? technician,
+    ManagerTeamMapPosition? position, {
+    bool bringMapIntoView = false,
+  }) async {
+    if (position != null && bringMapIntoView) {
+      await _bringMapIntoView();
+    }
+    if (!mounted) return;
+    if (position != null) _focusPosition(position);
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => _TechnicianLocationSheet(
+        technician: technician,
+        position: position,
+        onOpenDispatch: technician?.activeWorkOrderTitle == null
+            ? null
+            : () {
+                Navigator.of(sheetContext).pop();
+                context.go('/schedule');
+              },
+      ),
+    );
+  }
+
+  Future<void> _bringMapIntoView() async {
+    if (!_scrollController.hasClients) return;
+    await _scrollController.animateTo(
+      _scrollController.position.minScrollExtent,
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOutCubic,
+    );
+    await WidgetsBinding.instance.endOfFrame;
+  }
+
+  void _focusPosition(ManagerTeamMapPosition position) {
+    _mapController.move(
+      LatLng(position.latitude, position.longitude),
+      _selectedTechnicianZoom,
+    );
+  }
+
+  int _compareTechnicians(
+    ManagerTechnician left,
+    ManagerTechnician right,
+    Map<String, ManagerTeamMapPosition> positions,
+  ) {
+    int rank(ManagerTechnician technician) {
+      final position = positions[technician.personId];
+      if (position?.isLive == true) return 0;
+      if (position != null) return 1;
+      if (technician.locationSharingEnabled) return 2;
+      return 3;
+    }
+
+    final rankComparison = rank(left).compareTo(rank(right));
+    return rankComparison != 0
+        ? rankComparison
+        : left.name.toLowerCase().compareTo(right.name.toLowerCase());
   }
 }
 
@@ -216,8 +522,40 @@ class ManagerDispatchScreen extends ConsumerWidget {
   }
 }
 
+enum ManagerExpenseReviewFilter {
+  pendingApprovals(
+    statuses: {'submitted'},
+    sectionTitle: 'Pending approvals',
+    emptyMessage: 'No pending approvals',
+  ),
+  history(
+    statuses: {'approved', 'rejected', 'paid', 'canceled'},
+    sectionTitle: 'History',
+    emptyMessage: 'No expense history',
+  );
+
+  const ManagerExpenseReviewFilter({
+    required this.statuses,
+    required this.sectionTitle,
+    required this.emptyMessage,
+  });
+
+  final Set<String> statuses;
+  final String sectionTitle;
+  final String emptyMessage;
+
+  bool includes(ExpenseRequest request) => statuses.contains(request.status);
+}
+
 class ManagerExpenseReviewScreen extends ConsumerStatefulWidget {
-  const ManagerExpenseReviewScreen({super.key});
+  const ManagerExpenseReviewScreen({
+    super.key,
+    required this.filter,
+    this.embedded = false,
+  });
+
+  final ManagerExpenseReviewFilter filter;
+  final bool embedded;
 
   @override
   ConsumerState<ManagerExpenseReviewScreen> createState() =>
@@ -240,7 +578,14 @@ class _ManagerExpenseReviewScreenState
     ) {
       final items = next.valueOrNull;
       if (items == null || !mounted) return;
-      setState(() => _lastLoadedExpenses = items);
+      setState(() {
+        _lastLoadedExpenses = items;
+        _resolvedExpenseIds.removeWhere(
+          (id) => items.any(
+            (item) => item.id == id && !widget.filter.includes(item),
+          ),
+        );
+      });
     });
   }
 
@@ -260,61 +605,298 @@ class _ManagerExpenseReviewScreenState
     final expenses = ref.watch(managerExpensesProvider);
     final latestItems = expenses.valueOrNull ?? _lastLoadedExpenses;
     final visibleItems = latestItems
-        ?.where((item) => !_resolvedExpenseIds.contains(item.id))
+        ?.where(
+          (item) =>
+              widget.filter.includes(item) &&
+              !_resolvedExpenseIds.contains(item.id),
+        )
         .toList();
+    final canPayExpenses =
+        ref.watch(managerProfileProvider).valueOrNull?.canPayExpenses == true;
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Approvals')),
-      body: RefreshIndicator(
-        onRefresh: () async => ref.invalidate(managerExpensesProvider),
-        child: switch (visibleItems) {
-          final items? => ListView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.all(16),
-            children: [
-              if (expenses.hasError) ...[
-                _ApprovalRefreshError(
-                  onRetry: () => ref.invalidate(managerExpensesProvider),
-                ),
-                const SizedBox(height: 12),
-              ],
-              Text(
-                'Pending expenses',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
-              ),
-              const SizedBox(height: 8),
-              if (items.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 48),
-                  child: Center(child: Text('No expense approvals pending')),
-                )
-              else
-                for (final request in items)
-                  _ExpenseApprovalCard(
-                    request: request,
-                    onResolved: _markResolved,
-                  ),
-            ],
-          ),
-          null when expenses.isLoading => const Center(
-            child: CircularProgressIndicator(),
-          ),
-          null => ListView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.all(16),
-            children: [
+    final body = RefreshIndicator(
+      onRefresh: () async => ref.invalidate(managerExpensesProvider),
+      child: switch (visibleItems) {
+        final items? => ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.all(16),
+          children: [
+            if (expenses.hasError) ...[
               _ApprovalRefreshError(
-                initialLoad: true,
                 onRetry: () => ref.invalidate(managerExpensesProvider),
               ),
+              const SizedBox(height: 12),
+            ],
+            if (items.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 48),
+                child: Center(child: Text(widget.filter.emptyMessage)),
+              )
+            else ...[
+              _ExpenseSectionTitle(
+                title: widget.filter.sectionTitle,
+                count: items.length,
+              ),
+              for (final request in items)
+                _ExpenseApprovalCard(
+                  request: request,
+                  canPay: canPayExpenses,
+                  onResolved: _markResolved,
+                  onOpen: () => context.push(
+                    '/manager/expenses/${Uri.encodeComponent(request.id)}',
+                  ),
+                ),
+            ],
+          ],
+        ),
+        null when expenses.isLoading => const Center(
+          child: CircularProgressIndicator(),
+        ),
+        null => ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.all(16),
+          children: [
+            _ApprovalRefreshError(
+              initialLoad: true,
+              onRetry: () => ref.invalidate(managerExpensesProvider),
+            ),
+          ],
+        ),
+      },
+    );
+    if (widget.embedded) return body;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Expenses')),
+      body: body,
+    );
+  }
+}
+
+class ManagerExpenseDetailScreen extends ConsumerWidget {
+  const ManagerExpenseDetailScreen({super.key, required this.expenseRequestId});
+
+  final String expenseRequestId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final expenses = ref.watch(managerExpensesProvider);
+    final request = _managerExpenseById(expenses.valueOrNull, expenseRequestId);
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Expense details')),
+      body: switch (request) {
+        final item? => RefreshIndicator(
+          onRefresh: () async => ref.invalidate(managerExpensesProvider),
+          child: _ManagerExpenseDetail(request: item),
+        ),
+        null when expenses.isLoading => const Center(
+          child: CircularProgressIndicator(),
+        ),
+        null when expenses.hasError => _ManagerExpenseDetailUnavailable(
+          message: 'Could not load this expense.',
+          onRetry: () => ref.invalidate(managerExpensesProvider),
+        ),
+        null => _ManagerExpenseDetailUnavailable(
+          message: 'This expense is no longer available.',
+          onRetry: () => ref.invalidate(managerExpensesProvider),
+        ),
+      },
+    );
+  }
+}
+
+class _ManagerExpenseDetail extends StatelessWidget {
+  const _ManagerExpenseDetail({required this.request});
+
+  final ExpenseRequest request;
+
+  @override
+  Widget build(BuildContext context) {
+    final details = <(String, String?)>[
+      ('Reference', request.displayNumber),
+      ('Raised by', request.requestedByName ?? 'Unavailable'),
+      ('Approver', request.selectedApproverName),
+      ('Work order', request.workOrderId),
+      ('Expense date', request.expenseDate),
+      ('Submitted', _expenseTimestamp(request.submittedAt)),
+      ('Approved', _expenseTimestamp(request.approvedAt)),
+      ('Rejected', _expenseTimestamp(request.rejectedAt)),
+      ('Paid', _expenseTimestamp(request.paidAt)),
+    ];
+    final paymentDetails = <(String, String?)>[
+      ('Payment status', _displayStatus(request.paymentStatus)),
+      ('Beneficiary', request.verifiedBeneficiaryName),
+      ('Bank', request.recipientBankName),
+      ('Account', request.maskedAccountNumber),
+    ];
+    final erpDetails = <(String, String?)>[
+      ('ERP claim', request.erpClaimNumber),
+      ('ERP claim status', _displayStatus(request.erpClaimStatus)),
+      ('ERP sync status', _displayStatus(request.erpSyncStatus)),
+    ];
+
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.all(16),
+      children: [
+        Text(
+          request.purpose ?? request.displayNumber,
+          style: Theme.of(
+            context,
+          ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 10,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Chip(label: Text(request.statusLabel)),
+            Text(
+              _money(request.currency, request.totalAmount),
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        _ExpenseDetailSection(title: 'Request', values: details),
+        if (request.notes != null || request.rejectionReason != null) ...[
+          const SizedBox(height: 12),
+          _ExpenseDetailSection(
+            title: 'Decision notes',
+            values: [
+              ('Notes', request.notes),
+              ('Rejection reason', request.rejectionReason),
             ],
           ),
-        },
+        ],
+        if (paymentDetails.any((entry) => entry.$2 != null) ||
+            request.paymentError != null) ...[
+          const SizedBox(height: 12),
+          _ExpenseDetailSection(
+            title: 'Payment',
+            values: [
+              ...paymentDetails,
+              ('Payment issue', request.paymentError),
+            ],
+          ),
+        ],
+        if (erpDetails.any((entry) => entry.$2 != null) ||
+            request.erpSyncError != null) ...[
+          const SizedBox(height: 12),
+          _ExpenseDetailSection(
+            title: 'ERP delivery',
+            values: [...erpDetails, ('ERP issue', request.erpSyncError)],
+          ),
+        ],
+        const SizedBox(height: 12),
+        Text(
+          'Items (${request.items.length})',
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 8),
+        if (request.items.isEmpty)
+          const Card(
+            child: Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('No line items are available.'),
+            ),
+          )
+        else
+          for (final item in request.items)
+            Card(
+              margin: const EdgeInsets.only(bottom: 10),
+              child: ListTile(
+                title: Text(item.description ?? item.categoryLabel),
+                subtitle: Text(
+                  [
+                        item.categoryLabel,
+                        item.expenseDate,
+                        item.vendorName,
+                        item.notes,
+                      ]
+                      .whereType<String>()
+                      .where((value) => value.isNotEmpty)
+                      .join(' · '),
+                ),
+                trailing: Text(
+                  _money(request.currency, item.amount),
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+            ),
+      ],
+    );
+  }
+}
+
+class _ExpenseDetailSection extends StatelessWidget {
+  const _ExpenseDetailSection({required this.title, required this.values});
+
+  final String title;
+  final List<(String, String?)> values;
+
+  @override
+  Widget build(BuildContext context) {
+    final visibleValues = values.where((entry) => entry.$2 != null).toList();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 12),
+            for (var index = 0; index < visibleValues.length; index++) ...[
+              if (index > 0) const Divider(height: 20),
+              Text(
+                visibleValues[index].$1,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: AppColors.subdued(context),
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(visibleValues[index].$2!),
+            ],
+          ],
+        ),
       ),
     );
   }
+}
+
+class _ManagerExpenseDetailUnavailable extends StatelessWidget {
+  const _ManagerExpenseDetailUnavailable({
+    required this.message,
+    required this.onRetry,
+  });
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(message, textAlign: TextAlign.center),
+          const SizedBox(height: 12),
+          OutlinedButton(onPressed: onRetry, child: const Text('Retry')),
+        ],
+      ),
+    ),
+  );
 }
 
 class _ApprovalRefreshError extends StatelessWidget {
@@ -351,20 +933,24 @@ class _ApprovalRefreshError extends StatelessWidget {
 }
 
 class _QuickActions extends StatelessWidget {
-  const _QuickActions();
+  const _QuickActions({required this.canViewTeamMap});
+
+  final bool canViewTeamMap;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _ActionTile(
-          icon: Icons.map_outlined,
-          title: 'Team location',
-          subtitle: 'Live sharing status and current work context',
-          onTap: () => context.go('/map'),
-        ),
-        const SizedBox(height: 10),
+        if (canViewTeamMap) ...[
+          _ActionTile(
+            icon: Icons.map_outlined,
+            title: 'Team location',
+            subtitle: 'Live sharing status and current work context',
+            onTap: () => context.go('/map'),
+          ),
+          const SizedBox(height: 10),
+        ],
         _ActionTile(
           icon: Icons.assignment_ind_outlined,
           title: 'Dispatch queue',
@@ -450,39 +1036,94 @@ class _ActionTile extends StatelessWidget {
 }
 
 class _TeamMapPanel extends StatelessWidget {
-  const _TeamMapPanel({required this.technicians});
+  const _TeamMapPanel({
+    required this.positions,
+    required this.mapController,
+    required this.showTiles,
+    required this.onPositionTap,
+  });
 
-  final List<ManagerTechnician> technicians;
+  final List<ManagerTeamMapPosition> positions;
+  final MapController mapController;
+  final bool showTiles;
+  final ValueChanged<ManagerTeamMapPosition> onPositionTap;
 
   @override
   Widget build(BuildContext context) {
-    final live = technicians
-        .where(
-          (tech) =>
-              tech.isLive && tech.latitude != null && tech.longitude != null,
-        )
-        .toList();
+    final points = [
+      for (final position in positions)
+        LatLng(position.latitude, position.longitude),
+    ];
+    final initialCenter = points.isEmpty ? defaultMapCenter : points.first;
     return Card(
       clipBehavior: Clip.antiAlias,
       child: SizedBox(
-        height: 260,
+        height: 330,
         child: Stack(
           children: [
             Positioned.fill(
-              child: CustomPaint(
-                painter: _MapGridPainter(
-                  color: AppColors.border(context),
-                  fill: AppColors.softTeal(context),
+              child: FlutterMap(
+                mapController: mapController,
+                options: MapOptions(
+                  initialCenter: initialCenter,
+                  initialZoom: points.length == 1 ? 15 : 11,
+                  initialCameraFit: points.length > 1
+                      ? CameraFit.coordinates(
+                          coordinates: points,
+                          padding: const EdgeInsets.all(42),
+                          maxZoom: 15,
+                        )
+                      : null,
+                  cameraConstraint: finiteMapCameraConstraint,
                 ),
+                children: [
+                  if (showTiles)
+                    TileLayer(
+                      urlTemplate:
+                          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                      userAgentPackageName: 'io.dotmac.dotmac_field',
+                    ),
+                  MarkerLayer(
+                    markers: [
+                      for (final position in positions)
+                        Marker(
+                          point: LatLng(position.latitude, position.longitude),
+                          width: 48,
+                          height: 48,
+                          child: _TeamMapMarker(
+                            position: position,
+                            onTap: () => onPositionTap(position),
+                          ),
+                        ),
+                    ],
+                  ),
+                  if (showTiles)
+                    const Align(
+                      alignment: Alignment.bottomLeft,
+                      child: Padding(
+                        padding: EdgeInsets.all(4),
+                        child: Text(
+                          '© OpenStreetMap contributors',
+                          style: TextStyle(fontSize: 10),
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
-            if (live.isEmpty)
-              const Center(
-                child: Text('No live locations in the current window'),
-              )
-            else
-              for (final tech in live)
-                _MapDot(technician: tech, offset: _relativeOffset(tech, live)),
+            if (positions.isEmpty)
+              ColoredBox(
+                color: AppColors.surface(context).withValues(alpha: 0.88),
+                child: const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Text(
+                      'No technicians are currently sharing a mapped location',
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+              ),
             Positioned(
               left: 12,
               top: 12,
@@ -498,12 +1139,23 @@ class _TeamMapPanel extends StatelessWidget {
                     vertical: 8,
                   ),
                   child: Text(
-                    '${live.length} live',
+                    '${positions.where((item) => item.isLive).length} live'
+                    ' · ${positions.where((item) => !item.isLive).length} stale',
                     style: const TextStyle(fontWeight: FontWeight.w800),
                   ),
                 ),
               ),
             ),
+            if (positions.isNotEmpty)
+              Positioned(
+                right: 12,
+                top: 12,
+                child: IconButton.filledTonal(
+                  tooltip: 'Fit all technicians',
+                  onPressed: () => _fitPositions(mapController, points),
+                  icon: const Icon(Icons.center_focus_strong),
+                ),
+              ),
           ],
         ),
       ),
@@ -511,81 +1163,47 @@ class _TeamMapPanel extends StatelessWidget {
   }
 }
 
-class _MapGridPainter extends CustomPainter {
-  const _MapGridPainter({required this.color, required this.fill});
+class _TeamMapMarker extends StatelessWidget {
+  const _TeamMapMarker({required this.position, required this.onTap});
 
-  final Color color;
-  final Color fill;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = fill
-      ..style = PaintingStyle.fill;
-    canvas.drawRect(Offset.zero & size, paint);
-    final linePaint = Paint()
-      ..color = color.withValues(alpha: 0.65)
-      ..strokeWidth = 1;
-    for (var x = 0.0; x <= size.width; x += 42) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), linePaint);
-    }
-    for (var y = 0.0; y <= size.height; y += 42) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), linePaint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _MapGridPainter oldDelegate) =>
-      oldDelegate.color != color || oldDelegate.fill != fill;
-}
-
-class _MapDot extends StatelessWidget {
-  const _MapDot({required this.technician, required this.offset});
-
-  final ManagerTechnician technician;
-  final Offset offset;
+  final ManagerTeamMapPosition position;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Positioned(
-      left: offset.dx,
-      top: offset.dy,
+    final color = _positionColor(context, position);
+    final status = _positionStatus(position);
+    return Semantics(
+      button: true,
+      label: '${position.label}, $status',
       child: Tooltip(
-        message: technician.name,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 22,
-              height: 22,
-              decoration: BoxDecoration(
-                color: AppColors.semanticPositive,
-                shape: BoxShape.circle,
-                border: Border.all(color: AppColors.panel, width: 3),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x33000000),
-                    blurRadius: 8,
-                    offset: Offset(0, 3),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 4),
-            DecoratedBox(
-              decoration: BoxDecoration(
-                color: AppColors.surface(context).withValues(alpha: 0.9),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                child: Text(
-                  _firstName(technician.name),
-                  style: Theme.of(context).textTheme.labelSmall,
+        message: '${position.label} · $status',
+        child: GestureDetector(
+          key: Key('team-map-marker-${position.technicianId}'),
+          onTap: onTap,
+          child: Container(
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+              border: Border.all(color: AppColors.panel, width: 3),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x33000000),
+                  blurRadius: 8,
+                  offset: Offset(0, 3),
                 ),
+              ],
+            ),
+            child: Text(
+              _initials(position.label),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
               ),
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -593,38 +1211,345 @@ class _MapDot extends StatelessWidget {
 }
 
 class _TechnicianTile extends StatelessWidget {
-  const _TechnicianTile({required this.technician});
+  const _TechnicianTile({
+    required this.technician,
+    required this.position,
+    required this.onTap,
+  });
 
   final ManagerTechnician technician;
+  final ManagerTeamMapPosition? position;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final color = technician.isLive
-        ? AppColors.semanticPositive
-        : technician.locationSharingEnabled
-        ? AppColors.accent
-        : AppColors.subdued(context);
+    final color = position == null
+        ? technician.locationSharingEnabled
+              ? AppColors.accent
+              : AppColors.subdued(context)
+        : _positionColor(context, position!);
+    final status = position == null
+        ? technician.locationSharingEnabled
+              ? 'Waiting for location'
+              : 'Not sharing'
+        : _positionStatus(position!);
+    final details = [
+      technician.title,
+      technician.region,
+      technician.status.replaceAll('_', ' '),
+      if (technician.activeWorkOrderTitle != null)
+        technician.activeWorkOrderTitle,
+    ].whereType<String>().where((value) => value.isNotEmpty).join(' · ');
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
-      child: ListTile(
-        leading: Icon(Icons.person_pin_circle_outlined, color: color),
-        title: Text(technician.name),
-        subtitle: Text(
-          [
-            technician.title,
-            technician.region,
-            technician.status.replaceAll('_', ' '),
-            if (technician.activeWorkOrderTitle != null)
-              technician.activeWorkOrderTitle,
-          ].whereType<String>().where((value) => value.isNotEmpty).join(' · '),
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxWidth < 360;
+          return ListTile(
+            key: Key('team-technician-${technician.personId}'),
+            leading: Icon(Icons.person_pin_circle_outlined, color: color),
+            title: Text(technician.name),
+            isThreeLine: compact,
+            subtitle: compact
+                ? Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        details,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      _StatusPill(label: status, color: color),
+                    ],
+                  )
+                : Text(details, maxLines: 2, overflow: TextOverflow.ellipsis),
+            trailing: compact ? null : _StatusPill(label: status, color: color),
+            onTap: onTap,
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _TeamMapControls extends StatelessWidget {
+  const _TeamMapControls({
+    required this.filter,
+    required this.total,
+    required this.onQueryChanged,
+    required this.onFilterChanged,
+  });
+
+  final _TeamFilter filter;
+  final int? total;
+  final ValueChanged<String> onQueryChanged;
+  final ValueChanged<_TeamFilter> onFilterChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        TextField(
+          key: const Key('team-map-search'),
+          onChanged: onQueryChanged,
+          decoration: const InputDecoration(
+            labelText: 'Search technicians',
+            hintText: 'Name, region, title, or work order',
+            prefixIcon: Icon(Icons.search),
+          ),
         ),
-        trailing: _StatusPill(
-          label: technician.isLive ? 'Live' : 'Idle',
-          color: color,
+        const SizedBox(height: 10),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              _TeamFilterChip(
+                label: 'All',
+                value: _TeamFilter.all,
+                selected: filter,
+                onChanged: onFilterChanged,
+              ),
+              _TeamFilterChip(
+                label: 'Live',
+                value: _TeamFilter.live,
+                selected: filter,
+                onChanged: onFilterChanged,
+              ),
+              _TeamFilterChip(
+                label: 'Stale',
+                value: _TeamFilter.stale,
+                selected: filter,
+                onChanged: onFilterChanged,
+              ),
+              _TeamFilterChip(
+                label: 'Not sharing',
+                value: _TeamFilter.notSharing,
+                selected: filter,
+                onChanged: onFilterChanged,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+        Text(
+          total == null ? 'Technicians' : 'Technicians · $total total',
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+        ),
+      ],
+    );
+  }
+}
+
+class _TeamFilterChip extends StatelessWidget {
+  const _TeamFilterChip({
+    required this.label,
+    required this.value,
+    required this.selected,
+    required this.onChanged,
+  });
+
+  final String label;
+  final _TeamFilter value;
+  final _TeamFilter selected;
+  final ValueChanged<_TeamFilter> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: ChoiceChip(
+        label: Text(label),
+        selected: selected == value,
+        showCheckmark: false,
+        onSelected: (_) => onChanged(value),
+      ),
+    );
+  }
+}
+
+class _TechnicianLocationSheet extends ConsumerWidget {
+  const _TechnicianLocationSheet({
+    required this.technician,
+    required this.position,
+    required this.onOpenDispatch,
+  });
+
+  final ManagerTechnician? technician;
+  final ManagerTeamMapPosition? position;
+  final VoidCallback? onOpenDispatch;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final title = technician?.name ?? position?.label ?? 'Technician';
+    final locationDetail = position == null
+        ? null
+        : ref.watch(
+            managerTechnicianLocationDetailProvider(position!.technicianId),
+          );
+    final displayedPosition = locationDetail?.valueOrNull?.position ?? position;
+    final status = displayedPosition == null
+        ? technician?.locationSharingEnabled == true
+              ? 'Waiting for a shared location'
+              : 'Location sharing is off'
+        : _positionStatus(displayedPosition);
+    return SafeArea(
+      child: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                title,
+                style: Theme.of(
+                  context,
+                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 6),
+              Text(status),
+              if (locationDetail != null) ...[
+                const SizedBox(height: 14),
+                Text(
+                  displayedPosition!.isLive
+                      ? 'Live location address'
+                      : 'Last known address',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 3),
+                locationDetail.when(
+                  loading: () => const Row(
+                    children: [
+                      SizedBox.square(
+                        dimension: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      SizedBox(width: 8),
+                      Expanded(child: Text('Finding nearest address...')),
+                    ],
+                  ),
+                  error: (_, _) => Row(
+                    children: [
+                      const Expanded(
+                        child: Text('Address currently unavailable'),
+                      ),
+                      TextButton(
+                        onPressed: () => ref.invalidate(
+                          managerTechnicianLocationDetailProvider(
+                            position!.technicianId,
+                          ),
+                        ),
+                        child: const Text('Retry'),
+                      ),
+                    ],
+                  ),
+                  data: (detail) {
+                    final address = detail.addressText?.trim();
+                    if (detail.addressStatus !=
+                            ManagerLocationAddressStatus.available ||
+                        address == null ||
+                        address.isEmpty) {
+                      return const Text('Nearest address unavailable');
+                    }
+                    return Text(address);
+                  },
+                ),
+              ],
+              if (displayedPosition?.lastLocationAt != null) ...[
+                const SizedBox(height: 10),
+                Text(
+                  'Location updated '
+                  '${_relativeTime(displayedPosition!.lastLocationAt!)}',
+                ),
+              ],
+              if (displayedPosition?.accuracyM != null) ...[
+                const SizedBox(height: 4),
+                Text('Accuracy ±${displayedPosition!.accuracyM!.round()} m'),
+              ],
+              if (technician?.activeWorkOrderTitle != null) ...[
+                const SizedBox(height: 14),
+                Text(
+                  'Current work order',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 3),
+                Text(technician!.activeWorkOrderTitle!),
+              ],
+              if (onOpenDispatch != null) ...[
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: onOpenDispatch,
+                  icon: const Icon(Icons.assignment_ind_outlined),
+                  label: const Text('View dispatch'),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
+    );
+  }
+}
+
+class _TeamMapMessage extends StatelessWidget {
+  const _TeamMapMessage({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: SizedBox(height: 330, child: Center(child: child)),
+    );
+  }
+}
+
+class _RetryMessage extends StatelessWidget {
+  const _RetryMessage({required this.message, required this.onRetry});
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(message, textAlign: TextAlign.center),
+          const SizedBox(height: 8),
+          TextButton(onPressed: onRetry, child: const Text('Retry')),
+        ],
+      ),
+    );
+  }
+}
+
+class _InlineRefreshWarning extends StatelessWidget {
+  const _InlineRefreshWarning({required this.message, required this.onRetry});
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        const Icon(Icons.cloud_off_outlined, size: 18),
+        const SizedBox(width: 8),
+        Expanded(child: Text(message)),
+        TextButton(onPressed: onRetry, child: const Text('Retry')),
+      ],
     );
   }
 }
@@ -717,10 +1642,17 @@ class _DispatchJobCard extends ConsumerWidget {
 }
 
 class _ExpenseApprovalCard extends ConsumerStatefulWidget {
-  const _ExpenseApprovalCard({required this.request, required this.onResolved});
+  const _ExpenseApprovalCard({
+    required this.request,
+    required this.canPay,
+    required this.onResolved,
+    required this.onOpen,
+  });
 
   final ExpenseRequest request;
+  final bool canPay;
   final ValueChanged<String> onResolved;
+  final VoidCallback onOpen;
 
   @override
   ConsumerState<_ExpenseApprovalCard> createState() =>
@@ -754,15 +1686,53 @@ class _ExpenseApprovalCardState extends ConsumerState<_ExpenseApprovalCard> {
     }, failureMessage: 'Could not reject expense');
   }
 
+  Future<void> _pay() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Pay expense?'),
+        content: Text(
+          'This will initiate a bank transfer of '
+          '${_money(widget.request.currency, widget.request.totalAmount)} '
+          'through ERP and Paystack.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Pay expense'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _run(
+      () async {
+        final result = await ref
+            .read(managerRepositoryProvider)
+            .payExpense(widget.request.id);
+        return result.paymentStatus == 'queued'
+            ? 'Payment queued; waiting for ERP'
+            : 'Payment status: ${result.paymentStatus}';
+      },
+      failureMessage: 'Could not initiate payment. No retry was assumed.',
+      hideResolvedItem: false,
+    );
+  }
+
   Future<void> _run(
     Future<String> Function() action, {
     required String failureMessage,
+    bool hideResolvedItem = true,
   }) async {
     if (_busy) return;
     setState(() => _busy = true);
     try {
       final message = await action();
-      widget.onResolved(widget.request.id);
+      if (hideResolvedItem) widget.onResolved(widget.request.id);
       ref
         ..invalidate(managerExpensesProvider)
         ..invalidate(managerSummaryProvider);
@@ -785,69 +1755,140 @@ class _ExpenseApprovalCardState extends ConsumerState<_ExpenseApprovalCard> {
   @override
   Widget build(BuildContext context) {
     final request = widget.request;
+    final paymentActive = const {
+      'queued',
+      'pending',
+      'processing',
+      'indeterminate',
+    }.contains(request.paymentStatus);
     return Card(
+      clipBehavior: Clip.antiAlias,
       margin: const EdgeInsets.only(bottom: 10),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.receipt_long_outlined, color: AppColors.primary),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    request.purpose ?? request.displayNumber,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w800,
+      child: InkWell(
+        onTap: widget.onOpen,
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.receipt_long_outlined, color: AppColors.primary),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      request.purpose ?? request.displayNumber,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
                   ),
-                ),
-                Text(
-                  _money(request.currency, request.totalAmount),
-                  style: const TextStyle(fontWeight: FontWeight.w800),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text(
-              [
-                request.displayNumber,
-                request.workOrderId == null
-                    ? null
-                    : 'WO ${request.workOrderId}',
-                '${request.items.length} item${request.items.length == 1 ? '' : 's'}',
-              ].whereType<String>().join(' · '),
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: AppColors.subdued(context),
+                  Text(
+                    _money(request.currency, request.totalAmount),
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ],
               ),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _busy ? null : _reject,
-                    icon: const Icon(Icons.close),
-                    label: const Text('Reject'),
-                  ),
+              const SizedBox(height: 8),
+              Text(
+                [
+                  request.displayNumber,
+                  request.workOrderId == null
+                      ? null
+                      : 'WO ${request.workOrderId}',
+                  '${request.items.length} item${request.items.length == 1 ? '' : 's'}',
+                ].whereType<String>().join(' · '),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: AppColors.subdued(context),
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: _busy ? null : _approve,
-                    icon: const Icon(Icons.check),
-                    label: const Text('Approve'),
-                  ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                request.requestedByName == null
+                    ? 'Raised by unavailable'
+                    : 'Raised by ${request.requestedByName}',
+                key: Key('expense-requester-${request.id}'),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: AppColors.subdued(context),
+                  fontWeight: FontWeight.w600,
                 ),
+              ),
+              const SizedBox(height: 12),
+              if (request.paymentStatus != null) ...[
+                Text(
+                  'Payment: ${request.paymentStatus!.replaceAll('_', ' ')}',
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+                if (request.paymentError != null)
+                  Text(
+                    request.paymentError!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                const SizedBox(height: 10),
               ],
-            ),
-          ],
+              if (request.status == 'submitted')
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _busy ? null : _reject,
+                        icon: const Icon(Icons.close),
+                        label: const Text('Reject'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: _busy ? null : _approve,
+                        icon: const Icon(Icons.check),
+                        label: const Text('Approve'),
+                      ),
+                    ),
+                  ],
+                )
+              else if (request.status == 'approved' && widget.canPay)
+                FilledButton.icon(
+                  onPressed: _busy || paymentActive ? null : _pay,
+                  icon: Icon(
+                    paymentActive
+                        ? Icons.hourglass_top
+                        : Icons.payments_outlined,
+                  ),
+                  label: Text(
+                    paymentActive ? 'Payment in progress' : 'Pay expense',
+                  ),
+                )
+              else
+                Text(
+                  request.status.replaceAll('_', ' '),
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+            ],
+          ),
         ),
       ),
     );
   }
+}
+
+class _ExpenseSectionTitle extends StatelessWidget {
+  const _ExpenseSectionTitle({required this.title, required this.count});
+
+  final String title;
+  final int count;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Text(
+      '$title ($count)',
+      style: Theme.of(
+        context,
+      ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+    ),
+  );
 }
 
 String expenseApprovalMessage(ExpenseApprovalResult result) {
@@ -860,6 +1901,26 @@ String expenseApprovalMessage(ExpenseApprovalResult result) {
     'not_queued' => 'Expense approved; ERP sync needs attention',
     _ => 'Expense approved; waiting for ERP',
   };
+}
+
+String? _displayStatus(String? value) {
+  if (value == null || value.isEmpty) return null;
+  final normalized = value.replaceAll('_', ' ');
+  return '${normalized[0].toUpperCase()}${normalized.substring(1)}';
+}
+
+String? _expenseTimestamp(DateTime? value) =>
+    value == null ? null : DateFormat('d MMM y, HH:mm').format(value.toLocal());
+
+ExpenseRequest? _managerExpenseById(
+  List<ExpenseRequest>? expenses,
+  String expenseRequestId,
+) {
+  if (expenses == null) return null;
+  for (final expense in expenses) {
+    if (expense.id == expenseRequestId) return expense;
+  }
+  return null;
 }
 
 class _StatusPill extends StatelessWidget {
@@ -1076,18 +2137,52 @@ class _RejectExpenseDialogState extends State<_RejectExpenseDialog> {
   }
 }
 
-Offset _relativeOffset(ManagerTechnician tech, List<ManagerTechnician> live) {
-  final lats = live.map((item) => item.latitude!).toList();
-  final lngs = live.map((item) => item.longitude!).toList();
-  final minLat = lats.reduce(math.min);
-  final maxLat = lats.reduce(math.max);
-  final minLng = lngs.reduce(math.min);
-  final maxLng = lngs.reduce(math.max);
-  final latRange = (maxLat - minLat).abs() < 0.00001 ? 1 : maxLat - minLat;
-  final lngRange = (maxLng - minLng).abs() < 0.00001 ? 1 : maxLng - minLng;
-  final x = ((tech.longitude! - minLng) / lngRange).clamp(0.0, 1.0);
-  final y = (1 - ((tech.latitude! - minLat) / latRange)).clamp(0.0, 1.0);
-  return Offset(26 + x * 250, 54 + y * 150);
+void _fitPositions(MapController controller, List<LatLng> points) {
+  if (points.isEmpty) return;
+  if (points.length == 1) {
+    controller.move(points.single, 15);
+    return;
+  }
+  controller.fitCamera(
+    CameraFit.coordinates(
+      coordinates: points,
+      padding: const EdgeInsets.all(42),
+      maxZoom: 15,
+    ),
+  );
+}
+
+Color _positionColor(BuildContext context, ManagerTeamMapPosition position) {
+  if (!position.isLive) return AppColors.subdued(context);
+  if (position.status == ManagerPresenceStatus.onBreak) {
+    return AppColors.accent;
+  }
+  return AppColors.semanticPositive;
+}
+
+String _positionStatus(ManagerTeamMapPosition position) {
+  final freshness = position.isLive ? 'Live' : 'Stale';
+  return '$freshness · ${position.status.label}';
+}
+
+String _initials(String name) {
+  final parts = name
+      .trim()
+      .split(RegExp(r'\s+'))
+      .where((part) => part.isNotEmpty)
+      .take(2)
+      .toList();
+  if (parts.isEmpty) return '?';
+  return parts.map((part) => part[0].toUpperCase()).join();
+}
+
+String _relativeTime(DateTime timestamp) {
+  final elapsed = DateTime.now().difference(timestamp.toLocal());
+  if (elapsed.isNegative || elapsed.inSeconds < 30) return 'just now';
+  if (elapsed.inMinutes < 1) return '${elapsed.inSeconds}s ago';
+  if (elapsed.inHours < 1) return '${elapsed.inMinutes}m ago';
+  if (elapsed.inDays < 1) return '${elapsed.inHours}h ago';
+  return DateFormat('d MMM, HH:mm').format(timestamp.toLocal());
 }
 
 String _firstName(String name) {

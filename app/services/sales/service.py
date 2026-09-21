@@ -42,7 +42,7 @@ from sqlalchemy.sql.elements import ColumnElement, SQLColumnExpression
 
 from app.models.audit import AuditActorType
 from app.models.domain_settings import SettingDomain
-from app.models.party import Party, PartyContactPoint
+from app.models.party import Party, PartyContactPoint, PartyIdentityStatus
 from app.models.project import ProjectType
 from app.models.sales import (
     Lead,
@@ -259,6 +259,31 @@ class LeadListQueryResult:
     total_count: int
     query: LeadListQuery
     summary: LeadPipelineSummary
+
+
+@dataclass(frozen=True, slots=True)
+class QuoteLeadSearchQuery:
+    """Bounded typeahead request for Leads eligible for Quote authoring."""
+
+    term: str
+    limit: int = 20
+
+
+@dataclass(frozen=True, slots=True)
+class QuoteLeadSearchMatch:
+    """Stable selected-value projection for one eligible Quote Lead."""
+
+    id: uuid.UUID
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
+class QuoteLeadSearchPage:
+    """Bounded typeahead response over eligible Quote Leads."""
+
+    items: tuple[QuoteLeadSearchMatch, ...]
+    count: int
+    limit: int
 
 
 class QuoteListSortField(StrEnum):
@@ -624,6 +649,30 @@ def _lead_list_filters(query: LeadListQuery) -> _LeadListFilters:
         owner_agent_id=query.owner_agent_id,
         lead_source=query.lead_source.value if query.lead_source is not None else None,
         is_active=True,
+    )
+
+
+def _quote_lead_label(lead: Lead) -> str:
+    lead_number = str(lead.id).split("-", 1)[0].upper()
+    title = (lead.title or "").strip() or f"Lead {lead_number}"
+    person_name = (lead.party.display_name or "").strip() if lead.party else ""
+    label = f"{lead_number} — {title}"
+    if person_name and person_name.casefold() != title.casefold():
+        label = f"{label} — {person_name}"
+    return label
+
+
+def _quote_lead_eligibility_predicates() -> tuple[ColumnElement[bool], ...]:
+    return (
+        Lead.is_active.is_(True),
+        Lead.status.in_(_OPEN_LEAD_STATUSES),
+        Lead.party_id.is_not(None),
+        Party.status.in_(
+            (
+                PartyIdentityStatus.active.value,
+                PartyIdentityStatus.quarantined.value,
+            )
+        ),
     )
 
 
@@ -1341,6 +1390,49 @@ def stage_lead_maintenance(db: Session, command: LeadMaintenanceUpdate) -> Lead:
 
 class Leads(ListResponseMixin):
     @staticmethod
+    def search_for_quote(
+        db: Session, request: QuoteLeadSearchQuery
+    ) -> QuoteLeadSearchPage:
+        """Return matching eligible Leads without eagerly loading the pipeline."""
+
+        term = normalize_lead_search(request.term)
+        limit = max(1, min(request.limit, 50))
+        if term is None or len(term) < 2:
+            return QuoteLeadSearchPage(items=(), count=0, limit=limit)
+        rows = tuple(
+            db.scalars(
+                select(Lead)
+                .join(Party, Party.id == Lead.party_id)
+                .where(
+                    *_quote_lead_eligibility_predicates(),
+                    _lead_search_predicate(term),
+                )
+                .options(selectinload(Lead.party))
+                .order_by(Lead.updated_at.desc(), Lead.id.asc())
+                .limit(limit)
+            ).all()
+        )
+        items = tuple(
+            QuoteLeadSearchMatch(id=lead.id, label=_quote_lead_label(lead))
+            for lead in rows
+        )
+        return QuoteLeadSearchPage(items=items, count=len(items), limit=limit)
+
+    @staticmethod
+    def quote_match(db: Session, lead_id: uuid.UUID) -> QuoteLeadSearchMatch | None:
+        """Resolve one eligible Lead for a selected typeahead value."""
+
+        lead = db.scalars(
+            select(Lead)
+            .join(Party, Party.id == Lead.party_id)
+            .where(Lead.id == lead_id, *_quote_lead_eligibility_predicates())
+            .options(selectinload(Lead.party))
+        ).one_or_none()
+        if lead is None:
+            return None
+        return QuoteLeadSearchMatch(id=lead.id, label=_quote_lead_label(lead))
+
+    @staticmethod
     def query(db: Session, request: LeadListQueryInput) -> LeadListQueryResult:
         """Return one filtered Lead page from the typed authoritative query."""
 
@@ -1983,17 +2075,21 @@ class Quotes(ListResponseMixin):
         )
 
         lead_id = data.get("lead_id")
-        if lead_id is None:
-            raise HTTPException(status_code=400, detail="lead_id is required")
-        lead = db.get(Lead, lead_id)
-        if lead is None or not lead.is_active:
+        subscriber_id = data.get("subscriber_id")
+        if lead_id is None and subscriber_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="A quote requires either lead_id or subscriber_id",
+            )
+
+        lead = db.get(Lead, lead_id) if lead_id else None
+        if lead_id and (lead is None or not lead.is_active):
             raise HTTPException(status_code=404, detail="Lead not found")
 
-        subscriber_id = data.get("subscriber_id")
         subscriber = db.get(Subscriber, subscriber_id) if subscriber_id else None
-        if subscriber_id and subscriber is None:
+        if subscriber_id and (subscriber is None or not subscriber.is_active):
             raise HTTPException(status_code=404, detail="Subscriber not found")
-        if subscriber is not None:
+        if subscriber is not None and lead is not None:
             try:
                 lead_lifecycle.validate_lead_subscriber_alignment(
                     db, lead=lead, subscriber=subscriber
@@ -2001,18 +2097,20 @@ class Quotes(ListResponseMixin):
             except lead_lifecycle.LeadLifecycleError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-        # Human label remains a projection; Lead is the required relationship.
+        # Human label remains a projection; the quote subject is the relationship.
         if not data.get("metadata_"):
             data["metadata_"] = {}
         if isinstance(data["metadata_"], dict):
             display_name = (
                 lead.party.display_name
-                if lead.party is not None
+                if lead is not None and lead.party is not None
                 else (
                     subscriber.display_name
                     or f"{subscriber.first_name} {subscriber.last_name}"
                     if subscriber is not None
                     else lead.title
+                    if lead is not None
+                    else "Quote"
                 )
             )
             data["metadata_"]["quote_name"] = display_name
@@ -2040,7 +2138,13 @@ class Quotes(ListResponseMixin):
             action="quote.created",
             quote_id=quote.id,
             context=context,
-            metadata={"lead_id": str(quote.lead_id), "status": quote.status},
+            metadata={
+                "lead_id": str(quote.lead_id) if quote.lead_id else None,
+                "subscriber_id": (
+                    str(quote.subscriber_id) if quote.subscriber_id else None
+                ),
+                "status": quote.status,
+            },
         )
         db.commit()
         db.refresh(quote)
@@ -2155,7 +2259,7 @@ class Quotes(ListResponseMixin):
                 )
                 raise HTTPException(
                     status_code=409,
-                    detail="Save Quote edits before accepting it",
+                    detail="Save the quote changes first, then accept it.",
                 )
             db_session_adapter.release_read_transaction(db)
             quote_acceptance.accept_quote(
@@ -2165,7 +2269,7 @@ class Quotes(ListResponseMixin):
                     or CommandContext.system(
                         actor="sales.quote-update-adapter",
                         scope="sales:quote-acceptance",
-                        reason="Accept Quote and convert Lead",
+                        reason="Accept Quote into downstream sales fulfillment",
                         idempotency_key=f"quote-acceptance:{quote_uuid}",
                     ),
                     quote_id=quote_uuid,
@@ -2190,12 +2294,15 @@ class Quotes(ListResponseMixin):
         if prospective_subscriber_id is not None and subscriber is None:
             raise HTTPException(status_code=404, detail="Subscriber not found")
         prospective_lead_id = data["lead_id"] if "lead_id" in data else quote.lead_id
-        if prospective_lead_id is None:
-            raise HTTPException(status_code=400, detail="lead_id is required")
-        lead = db.get(Lead, prospective_lead_id)
-        if lead is None or not lead.is_active:
+        if prospective_lead_id is None and prospective_subscriber_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="A quote requires either lead_id or subscriber_id",
+            )
+        lead = db.get(Lead, prospective_lead_id) if prospective_lead_id else None
+        if prospective_lead_id and (lead is None or not lead.is_active):
             raise HTTPException(status_code=404, detail="Lead not found")
-        if subscriber is not None:
+        if subscriber is not None and lead is not None:
             try:
                 lead_lifecycle.validate_lead_subscriber_alignment(
                     db, lead=lead, subscriber=subscriber

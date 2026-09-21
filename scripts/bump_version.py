@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -13,6 +14,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION_FILE = ROOT / "VERSION"
+COMPOSITION_OBSERVATION_FILE = ROOT / "docs/kernel-runtime-composition.json"
+
+DEPENDENCY_MANIFEST_OBSERVATION_ID = "dependency-manifest"
+DEPENDENCY_MANIFEST_SOURCE_PATH = "pyproject.toml"
+DEPENDENCY_MANIFEST_SELECTOR = "whole-file.v1"
 
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
@@ -105,6 +111,78 @@ def update_changelog(version: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _normalize_json_object(value: object, *, context: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise RuntimeError(f"Expected {context} to be a JSON object")
+
+    normalized: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise RuntimeError(f"Expected every key in {context} to be a string")
+        normalized[key] = item
+    return normalized
+
+
+def refresh_dependency_manifest_observation() -> None:
+    """Bind the dependency-manifest observation to the updated manifest bytes."""
+
+    document_value: object = json.loads(
+        COMPOSITION_OBSERVATION_FILE.read_text(encoding="utf-8")
+    )
+    document = _normalize_json_object(
+        document_value,
+        context="the Kernel composition observation document",
+    )
+    observation_values = document.get("observations")
+    if not isinstance(observation_values, list):
+        raise RuntimeError(
+            "Expected the Kernel composition observation document to contain "
+            "an observations list"
+        )
+
+    observations = [
+        _normalize_json_object(
+            value,
+            context=f"Kernel composition observation row {index}",
+        )
+        for index, value in enumerate(observation_values)
+    ]
+    dependency_manifest_rows = [
+        row
+        for row in observations
+        if row.get("id") == DEPENDENCY_MANIFEST_OBSERVATION_ID
+    ]
+    if len(dependency_manifest_rows) != 1:
+        raise RuntimeError(
+            "Expected exactly one dependency-manifest Kernel composition "
+            f"observation, found {len(dependency_manifest_rows)}"
+        )
+
+    dependency_manifest = dependency_manifest_rows[0]
+    expected_coordinates = {
+        "source_path": DEPENDENCY_MANIFEST_SOURCE_PATH,
+        "selector": DEPENDENCY_MANIFEST_SELECTOR,
+    }
+    for field, expected in expected_coordinates.items():
+        actual = dependency_manifest.get(field)
+        if actual != expected:
+            raise RuntimeError(
+                f"Expected dependency-manifest {field} to be {expected!r}, "
+                f"got {actual!r}"
+            )
+
+    manifest_digest = hashlib.sha256(
+        (ROOT / DEPENDENCY_MANIFEST_SOURCE_PATH).read_bytes()
+    ).hexdigest()
+    dependency_manifest["source_blob_sha256"] = manifest_digest
+    dependency_manifest["extract_sha256"] = manifest_digest
+    document["observations"] = observations
+    COMPOSITION_OBSERVATION_FILE.write_text(
+        json.dumps(document, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def update_files(version: str) -> None:
     VERSION_FILE.write_text(version + "\n", encoding="utf-8")
     update_json_version(ROOT / "package.json", version)
@@ -127,6 +205,7 @@ def update_files(version: str) -> None:
         f"options.release = 'dotmac-mobile@{version}';",
     )
     update_changelog(version)
+    refresh_dependency_manifest_observation()
 
 
 def run_git(args: list[str]) -> None:
@@ -162,7 +241,8 @@ def main() -> int:
     update_files(version)
     print(f"Bumped version: {current} -> {version}")
     print("Updated VERSION, package.json, package-lock.json, pyproject.toml,")
-    print("mobile/pubspec.yaml, mobile Dart version defaults, and CHANGELOG.md.")
+    print("mobile/pubspec.yaml, mobile Dart version defaults, CHANGELOG.md, and")
+    print("the dependency-manifest Kernel composition observation.")
 
     if args.tag:
         run_git(["tag", "-a", f"v{version}", "-m", f"Release v{version}"])

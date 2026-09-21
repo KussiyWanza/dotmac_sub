@@ -124,6 +124,46 @@ def test_set_wifi_password_success_returns_success_action_result(
     assert captured["ont_unit_id"] == str(ont.id)
 
 
+# ── timeout_sec propagation ─────────────────────────────────────────────────
+
+
+def test_set_wifi_password_passes_explicit_timeout_sec_to_reconcile_ont(
+    db_session, ont, monkeypatch
+):
+    """An operator-supplied ``timeout_sec`` must reach ``reconcile_ont`` so a
+    slow OLT shelf can be given a longer apply/idle-in-transaction budget
+    than the 60s default."""
+    captured: dict = {}
+
+    def _fake_reconcile(db, ont_unit_id, *, proposed_change, mode, **kwargs):
+        captured["kwargs"] = kwargs
+        return _stub_reconcile_result(success=True)
+
+    monkeypatch.setattr("app.services.network.reconcile.reconcile_ont", _fake_reconcile)
+
+    set_wifi_password(db_session, str(ont.id), "newpw", timeout_sec=180)
+
+    assert captured["kwargs"].get("timeout_sec") == 180
+
+
+def test_set_wifi_password_omits_timeout_sec_when_not_supplied(
+    db_session, ont, monkeypatch
+):
+    """No explicit override means ``reconcile_ont`` keeps using its own
+    default (60s) — this change must not alter default behavior."""
+    captured: dict = {}
+
+    def _fake_reconcile(db, ont_unit_id, *, proposed_change, mode, **kwargs):
+        captured["kwargs"] = kwargs
+        return _stub_reconcile_result(success=True)
+
+    monkeypatch.setattr("app.services.network.reconcile.reconcile_ont", _fake_reconcile)
+
+    set_wifi_password(db_session, str(ont.id), "newpw")
+
+    assert "timeout_sec" not in captured["kwargs"]
+
+
 # ── Failure paths ───────────────────────────────────────────────────────────
 
 

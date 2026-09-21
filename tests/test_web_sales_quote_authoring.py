@@ -29,6 +29,7 @@ from app.models.system_user import SystemUser
 from app.services import web_sales
 from app.services.db_session_adapter import db_session_adapter
 from app.services.sales import quote_authoring
+from app.services.sales import service as sales_service
 from app.web.admin.sales import templates as sales_templates
 
 
@@ -132,10 +133,15 @@ def test_new_quote_template_has_mutually_exclusive_lead_and_customer_selectors()
     )
 
     assert 'name="lead_id"' in template
-    assert "Select a Lead" in template
+    assert "/admin/sales/quotes/leads/search" in template
+    assert "searchLeads()" in template
     assert 'name="customer_id"' in template
     assert "searchCustomers()" in template
     assert "clearCustomer()" in template
+    assert template.count('role="combobox"') == 2
+    assert "@keydown.arrow-down.prevent" in template
+    assert "AbortController" in template
+    assert '<select id="quote-lead"' not in template
     assert 'name="person_id"' not in template
     assert 'name="subscriber_id"' not in template
     assert 'name="account_id"' not in template
@@ -158,6 +164,19 @@ def test_new_quote_template_retains_responsive_dark_install_and_line_contracts()
     assert 'loading_label="Submitting..."' in template
     assert "form_warnings|default(())" in template
     assert 'role="status"' in template
+
+
+def test_quote_edit_requires_changes_to_be_saved_before_acceptance():
+    template = Path("templates/admin/sales/quotes/form.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'x-init="captureInitialEditState($el)"' in template
+    assert "name !== '_csrf_token' && name !== 'status'" in template
+    assert "statusInput.value === 'accepted'" in template
+    assert "this.editState(event.target) !== this.initialEditState" in template
+    assert "Save the quote changes first, then accept it." in template
+    assert 'role="alert" aria-live="assertive"' in template
 
 
 def test_new_quote_context_renders_defaults_and_one_empty_line(db_session):
@@ -240,6 +259,89 @@ def test_missing_and_nonexistent_leads_fail_server_side(db_session):
 
     with pytest.raises(quote_authoring.QuoteAuthoringError, match="valid Lead"):
         _create(db_session, actor, lead, lead_id=str(uuid4()))
+
+
+def test_customer_backed_quote_uses_subscriber_without_creating_lead(
+    db_session, subscriber
+):
+    actor, lead, _party = _identity(db_session)
+    lead_count = db_session.query(Lead).count()
+
+    quote_id = _create(
+        db_session,
+        actor,
+        lead,
+        lead_id=None,
+        customer_id=str(subscriber.id),
+    )
+    quote = db_session.get(Quote, quote_id)
+
+    assert quote.lead_id is None
+    assert quote.subscriber_id == subscriber.id
+    assert quote.metadata_["customer_quote"] == {"subscriber_id": str(subscriber.id)}
+    assert db_session.query(Lead).count() == lead_count
+
+
+def test_customer_backed_quote_does_not_require_party_binding(db_session, subscriber):
+    actor, lead, _party = _identity(db_session)
+    subscriber.party_id = None
+    subscriber.party_bound_at = None
+    subscriber.party_binding_source = None
+    subscriber.party_binding_reason = None
+    db_session.commit()
+
+    quote_id = _create(
+        db_session,
+        actor,
+        lead,
+        lead_id=None,
+        customer_id=str(subscriber.id),
+    )
+
+    assert db_session.get(Quote, quote_id).subscriber_id == subscriber.id
+
+
+def test_inactive_customer_fails_server_side(db_session, subscriber):
+    actor, lead, _party = _identity(db_session)
+    subscriber.is_active = False
+    db_session.commit()
+
+    with pytest.raises(quote_authoring.QuoteAuthoringError, match="inactive"):
+        _create(
+            db_session,
+            actor,
+            lead,
+            lead_id=None,
+            customer_id=str(subscriber.id),
+        )
+
+
+def test_quote_lead_typeahead_is_bounded_and_eligibility_scoped(db_session):
+    _actor, lead, _party = _identity(db_session)
+    result = sales_service.leads.search_for_quote(
+        db_session,
+        sales_service.QuoteLeadSearchQuery(term="Fiber deploy", limit=20),
+    )
+
+    assert [item.id for item in result.items] == [lead.id]
+    assert result.items[0].label.endswith("Fiber deployment — Amina Bello")
+    assert (
+        sales_service.leads.search_for_quote(
+            db_session,
+            sales_service.QuoteLeadSearchQuery(term="F", limit=20),
+        ).items
+        == ()
+    )
+
+    lead.status = LeadStatus.won.value
+    db_session.commit()
+    assert (
+        sales_service.leads.search_for_quote(
+            db_session,
+            sales_service.QuoteLeadSearchQuery(term="Fiber deploy", limit=20),
+        ).items
+        == ()
+    )
 
 
 def test_inactive_and_partyless_leads_fail_closed(db_session, subscriber):

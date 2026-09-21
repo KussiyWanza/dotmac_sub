@@ -20,9 +20,11 @@ from app.models.team_inbox import (
 from app.schemas.fiber_inquiry import FiberInquiryRequest
 from app.services import (
     conversation_lead_relationships,
+    inbox_sla,
     team_inbox_assignment,
     team_inbox_automation,
     team_inbox_channel_receive,
+    team_inbox_customer_completion_policy,
     team_inbox_fiber_receive,
     team_inbox_operations,
     team_inbox_participants,
@@ -195,6 +197,9 @@ def receive_fiber_inquiry(
         metadata["party_id"] = str(lead_result.party_id)
 
     conversation = InboxConversation(
+        customer_completion_policy_version_id=team_inbox_customer_completion_policy.snapshot_active_policy_id(
+            db
+        ),
         subscriber_id=identity.subscriber_id,
         channel_type=channel.value,
         status=InboxConversationStatus.open.value,
@@ -247,6 +252,9 @@ def receive_fiber_inquiry(
     )
     db.add(message)
     db.flush()
+    inbox_sla.record_inbound(
+        db, conversation, occurred_at=message.received_at or message.created_at
+    )
     team_inbox_participants.record_message_participants(
         db,
         conversation=conversation,
@@ -454,7 +462,7 @@ def _resolve_thread_conversation(
 
     Only a live thread is joinable. The referenced message used to be matched
     with no conditions on its conversation at all, so a reply could attach to a
-    soft-deleted thread, or to a resolved one — and since inbound email never
+    soft-deleted thread, or to a resolved one â€” and since inbound email never
     changes status, a resolved thread did not reopen either, so the message
     landed where nobody was looking.
 
@@ -549,11 +557,11 @@ def receive_inbound_email(
     received_at = payload.received_at or datetime.now(UTC)
 
     # Email resolves its sender exactly like every other channel. It used to
-    # carry only whatever `subscriber_id` the caller supplied — and no caller
-    # supplies one — so every inbound email landed with a null subscriber and
+    # carry only whatever `subscriber_id` the caller supplied â€” and no caller
+    # supplies one â€” so every inbound email landed with a null subscriber and
     # no `contact_resolution`, invisible to the contact filter and to the
     # customer record's communications section.
-    # The already-parsed address, not the raw `From:` header — a header carries
+    # The already-parsed address, not the raw `From:` header â€” a header carries
     # a display name ("Ada <ada@example.com>") and the channel normalizer does
     # not strip one, so passing it raw resolved nobody.
     resolution = team_inbox_channel_receive.resolve_contact_context(
@@ -570,6 +578,9 @@ def receive_inbound_email(
 
     if conversation is None:
         conversation = InboxConversation(
+            customer_completion_policy_version_id=team_inbox_customer_completion_policy.snapshot_active_policy_id(
+                db
+            ),
             subscriber_id=resolution.subscriber_id,
             channel_type=InboxChannelType.email.value,
             status=InboxConversationStatus.open.value,
@@ -647,6 +658,9 @@ def receive_inbound_email(
     )
     db.add(message)
     db.flush()
+    inbox_sla.record_inbound(
+        db, conversation, occurred_at=message.received_at or message.created_at
+    )
 
     # Shadow projection: record which endpoints took part. Nothing reads it for
     # a threading or export decision yet, so a failure here must not cost us an

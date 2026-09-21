@@ -12,6 +12,7 @@
 {% set usage_notifications_enabled = notification_meta.get('usage_notifications', True) %}
 {% set general_notifications_enabled = notification_meta.get('general_notifications', True) %}
 {% set nin_locked = subscriber and subscriber.metadata_ and subscriber.metadata_.get('nin_verified') %}
+{% set individual_customer = subscriber and subscriber.category and subscriber.category.value == 'residential' %}
 {% set masked_nin = (subscriber.nin[:6] ~ ('*' * (subscriber.nin|length - 6))) if subscriber and subscriber.nin and subscriber.nin|length > 6 else (subscriber.nin if subscriber and subscriber.nin else '') %}
 <div class="space-y-8">
     <!-- Page Header -->
@@ -23,6 +24,12 @@
     <div class="rounded-xl border border-stone-200 bg-white px-5 py-4 text-sm text-stone-600 shadow-premium dark:border-stone-700 dark:bg-stone-800 dark:text-stone-300">
         Authentication is managed via RADIUS. Credentials are tied to your device service.
     </div>
+
+    {% if biodata_required %}
+    <div class="rounded-xl border-2 border-amber-200 bg-amber-50 px-5 py-4 text-sm font-medium text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-200">
+        Your biodata is incomplete. Date of birth, gender, and an 11-digit NIN are required to continue.
+    </div>
+    {% endif %}
 
     {% if success %}
     <div class="rounded-xl border-2 border-emerald-200 bg-emerald-50 px-5 py-4 dark:border-emerald-900/50 dark:bg-emerald-900/20">
@@ -148,7 +155,7 @@
                     </div>
                     <div>
                         <label class="{{ _lbl }}">National Identification Number</label>
-                        <input type="text" name="nin" inputmode="numeric" maxlength="11"
+                        <input type="text" name="nin" inputmode="numeric" minlength="11" maxlength="11" pattern="[0-9]{11}"{% if individual_customer and not nin_locked %} required{% endif %}
                                value="{{ '' if nin_locked else (subscriber.nin if subscriber and subscriber.nin else '') }}"
                                {% if nin_locked %}placeholder="{{ masked_nin }}" readonly{% endif %}
                                class="{{ _inp }}">
@@ -162,13 +169,13 @@
                     </div>
                     <div>
                         <label class="{{ _lbl }}">Date of Birth</label>
-                        <input type="date" name="date_of_birth"
+                        <input type="date" name="date_of_birth"{% if individual_customer %} required{% endif %}
                                value="{{ subscriber.date_of_birth.isoformat() if subscriber and subscriber.date_of_birth else '' }}" class="{{ _inp }}">
                     </div>
                     <div>
                         <label class="{{ _lbl }}">Gender</label>
                         {% set _g = subscriber.gender.value if subscriber and subscriber.gender else 'unknown' %}
-                        <select name="gender" class="{{ _inp }}">
+                        <select name="gender"{% if individual_customer %} required{% endif %} class="{{ _inp }}">
                             <option value="unknown" {{ 'selected' if _g == 'unknown' }}>Prefer not to say</option>
                             <option value="female" {{ 'selected' if _g == 'female' }}>Female</option>
                             <option value="male" {{ 'selected' if _g == 'male' }}>Male</option>

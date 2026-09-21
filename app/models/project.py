@@ -111,6 +111,13 @@ class ProjectTaskDependencyType(enum.Enum):
     start_to_finish = "start_to_finish"
 
 
+class ProjectTaskTemplatePlanState(enum.Enum):
+    """Whether a generated task belongs to the project's current template plan."""
+
+    current = "current"
+    superseded = "superseded"
+
+
 class ProjectTemplate(Base):
     __tablename__ = "project_templates"
     __table_args__ = (
@@ -126,6 +133,7 @@ class ProjectTemplate(Base):
     creates_vendor_assignment_scope: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     created_at: Mapped[datetime] = mapped_column(
@@ -182,6 +190,7 @@ class Project(Base):
     project_template_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("project_templates.id")
     )
+    applied_template_revision: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(
         String(40), default=ProjectStatus.open.value, nullable=False
     )
@@ -328,6 +337,16 @@ class ProjectTask(Base):
             "external_reference",
             name="uq_project_tasks_external_system_reference",
         ),
+        CheckConstraint(
+            "template_plan_state IS NULL OR "
+            "template_plan_state IN ('current','superseded')",
+            name="ck_project_tasks_template_plan_state",
+        ),
+        Index(
+            "ix_project_tasks_project_template_plan_state",
+            "project_id",
+            "template_plan_state",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -347,6 +366,8 @@ class ProjectTask(Base):
     template_task_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("project_template_tasks.id")
     )
+    template_revision: Mapped[int | None] = mapped_column(Integer)
+    template_plan_state: Mapped[str | None] = mapped_column(String(20))
     status: Mapped[str] = mapped_column(
         String(40), default=ProjectTaskStatus.todo.value, nullable=False
     )
@@ -429,12 +450,23 @@ class ProjectTaskAssignee(Base):
 
 class ProjectTemplateTask(Base):
     __tablename__ = "project_template_tasks"
+    __table_args__ = (
+        CheckConstraint(
+            "parent_template_task_id IS NULL OR parent_template_task_id <> id",
+            name="ck_project_template_tasks_no_self_parent",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     template_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("project_templates.id"), nullable=False
+    )
+    parent_template_task_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("project_template_tasks.id", ondelete="RESTRICT"),
+        index=True,
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
@@ -460,6 +492,11 @@ class ProjectTemplateTask(Base):
     )
 
     template = relationship("ProjectTemplate", back_populates="tasks")
+    parent_template_task = relationship(
+        "ProjectTemplateTask",
+        remote_side=[id],
+        foreign_keys=[parent_template_task_id],
+    )
 
 
 class ProjectTemplateTaskDependency(Base):

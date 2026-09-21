@@ -19,9 +19,19 @@ from sqlalchemy.orm import Session
 from app.models.ai_intake import AiIntakePolicyVersion, AiIntakeSession
 from app.models.team_inbox import InboxConversation
 from app.schemas.ai_intake import (
+    DEFAULT_CLARIFICATION_QUESTIONS,
+    GENERIC_FOLLOW_UP_QUESTION,
+    NATURAL_CLARIFICATION_QUESTION,
+    AiClassifierAttempt,
+    AiClassifierAttemptStatus,
+    AiClassifierFailureKind,
+    AiIntakeAffectAssessment,
+    AiIntakeAffectLevel,
+    AiIntakeAffectSource,
     AiIntakeAnswerStatus,
     AiIntakeClassification,
     AiIntakeExtractedFacts,
+    AiIntakeReason,
 )
 from app.services.common import coerce_uuid
 from app.services.customer_identity_normalization import (
@@ -43,9 +53,40 @@ CUSTOMER_IDENTIFIER_REQUEST = "customer_identifier"
 
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
 PHONE_RE = re.compile(r"(?:\+?234|0)?[789][01]\d{8}\b")
+HIGH_FRUSTRATION_RE = re.compile(
+    r"\b(?:fuck(?:ing|ed)?|fucking|shit|bullshit|fed\s+up|furious|enraged)\b",
+    re.I,
+)
+MODERATE_FRUSTRATION_RE = re.compile(
+    r"\b(?:frustrat(?:ed|ing)|angry|annoyed|upset|unacceptable|ridiculous)\b",
+    re.I,
+)
+REPEATED_FAILURE_RE = re.compile(
+    r"\b(?:again|already|multiple times|several times|\d+\s+times|"
+    r"restarted?\s+(?:it\s+)?(?:twice|three times|\d+\s+times))\b",
+    re.I,
+)
+PRIOR_INTERACTION_RE = re.compile(
+    r"\b(?:contacted|called|reported|complained|messaged)\s+(?:you|support)\s+before\b",
+    re.I,
+)
 OUTAGE_CONTEXT_RE = re.compile(
     r"\b(?:since|for)\s+([a-z0-9][a-z0-9\s-]{0,60}?)"
     r"(?=(?:\s+(?:and|but|so|because)\b)|[,.!?;]|$)",
+    re.I,
+)
+CONNECTIVITY_DOWN_RE = re.compile(
+    r"\b(?:no\s+(?:internet|service)|(?:internet|network)\s+(?:is\s+)?down|"
+    r"not\s+browsing|not\s+working)\b",
+    re.I,
+)
+DURATION_SHORTHAND_RE = re.compile(
+    r"\b(?:(?:for|since)\s+)?(?P<count>[1-9]\d{0,2})\s*"
+    r"(?P<unit>dys?|days?|hrs?|hours?|wks?|weeks?)\b",
+    re.I,
+)
+GREETING_ONLY_RE = re.compile(
+    r"^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))(?:\s+there)?[!.?]*$",
     re.I,
 )
 PORTAL_RE = re.compile(
@@ -121,6 +162,205 @@ DEFAULT_IDENTIFIER_REQUEST_ORDER: tuple[str, ...] = (
     "portal_id",
 )
 PLAYBOOK_POLICY_KEYS: tuple[str, ...] = ("first_line_playbooks", "playbooks")
+
+# These are semantic policy defaults, not primary response copy. Activated policy
+# versions may replace them through ``conversation_policy.inquiry_plans``.
+DEFAULT_FACT_PURPOSES: dict[str, str] = {
+    "issue_started_when": "Establish when the current problem began.",
+    "device_scope": (
+        "Determine whether the problem is isolated to the device being used or "
+        "also occurs on another device the customer can test, without assuming "
+        "that the customer owns multiple devices."
+    ),
+    "connection_medium": "Determine whether the problem differs between Wi-Fi and a wired connection.",
+    "connection_pattern": "Determine whether the problem is constant or intermittent.",
+    "router_powered": "Confirm whether the router or ONU currently has power.",
+    "restart_attempted": "Establish whether a restart has already been attempted.",
+    "los_state": "Establish the observed LOS indicator state without diagnosing its cause.",
+    "billing_concern": "Clarify which bill, invoice, charge, or balance the customer is asking about.",
+    "invoice_or_charge_reference": "Identify the relevant invoice or charge reference if the customer has it.",
+    "payment_reference": "Obtain the payment reference needed to locate the payment.",
+    "payment_date": "Establish when the payment was made.",
+    "payment_amount": "Establish the amount the customer reports paying.",
+    "renewal_service": "Clarify which service the customer wants to renew.",
+    "desired_renewal_period": "Clarify the renewal period the customer wants.",
+    "desired_plan": "Clarify which plan the customer wants to change to.",
+    "coverage_location": "Obtain the location where the customer wants coverage checked.",
+    "installation_location": "Obtain the proposed installation location.",
+    "service_interest": "Clarify which available service the customer is interested in.",
+    "account_access_problem": "Clarify what prevents the customer from accessing the account.",
+    "complaint_subject": "Clarify the concrete service or interaction the complaint concerns.",
+    "desired_resolution": "Clarify what outcome the customer is seeking without promising it.",
+    "enquiry_topic": "Clarify the service or topic the customer wants information about.",
+}
+
+SAFE_FALLBACK_QUESTION_COPY: dict[str, str] = {
+    "issue_started_when": "When did the problem start?",
+    "device_scope": "Are you able to check whether the same issue happens on another device?",
+    "connection_medium": "Does the issue differ between Wi-Fi and a wired connection?",
+    "connection_pattern": "Is the issue constant, or does it come and go?",
+    "router_powered": "Is the router or ONU powered on right now?",
+    "restart_attempted": "Has the router already been restarted since the issue began?",
+    "los_state": "What is the LOS light currently showing?",
+    "billing_concern": "Which bill, invoice, charge, or balance would you like help with?",
+    "invoice_or_charge_reference": "Do you have the relevant invoice or charge reference?",
+    "payment_reference": "What payment reference was provided for the transaction?",
+    "payment_date": "When was the payment made?",
+    "payment_amount": "What amount was paid?",
+    "renewal_service": "Which service would you like to renew?",
+    "desired_renewal_period": "What renewal period would you prefer?",
+    "desired_plan": "Which plan would you like to move to?",
+    "coverage_location": "What location would you like us to check for coverage?",
+    "installation_location": "Where would you like the new connection installed?",
+    "service_interest": "Which of our services would you like to know more about?",
+    "account_access_problem": "What happens when you try to access the account?",
+    "complaint_subject": "What service or interaction is your complaint about?",
+    "desired_resolution": "What outcome would you like the team to consider?",
+    "enquiry_topic": "What service or topic would you like information about?",
+}
+
+
+def _default_fact(
+    key: str, priority: int, *, required: bool = True
+) -> dict[str, object]:
+    return {
+        "key": key,
+        "purpose": DEFAULT_FACT_PURPOSES[key],
+        "priority": priority,
+        "required": required,
+    }
+
+
+DEFAULT_INQUIRY_PLANS: tuple[dict[str, object], ...] = (
+    {
+        "key": "technical_no_browsing",
+        "intent": "technical_support",
+        "category": "no_internet",
+        "allowed_tools": ["customer_lookup", "subscriber_monitoring"],
+        "facts": [
+            _default_fact("issue_started_when", 100),
+            _default_fact("device_scope", 90),
+            _default_fact("router_powered", 80),
+            _default_fact("los_state", 70),
+        ],
+    },
+    {
+        "key": "technical_slow_browsing",
+        "intent": "technical_support",
+        "category": "slow_internet",
+        "allowed_tools": ["customer_lookup", "subscriber_monitoring"],
+        "facts": [
+            _default_fact("device_scope", 100),
+            _default_fact("issue_started_when", 90),
+            _default_fact("connection_medium", 80),
+            _default_fact("connection_pattern", 70),
+        ],
+    },
+    {
+        "key": "technical_intermittent",
+        "intent": "technical_support",
+        "category": "intermittent_connection",
+        "allowed_tools": ["customer_lookup", "subscriber_monitoring"],
+        "facts": [
+            _default_fact("issue_started_when", 100),
+            _default_fact("device_scope", 90),
+            _default_fact("connection_medium", 80),
+        ],
+    },
+    {
+        "key": "technical_default",
+        "intent": "technical_support",
+        "allowed_tools": ["customer_lookup", "subscriber_monitoring"],
+        "facts": [
+            _default_fact("issue_started_when", 100),
+            _default_fact("device_scope", 90),
+            _default_fact("router_powered", 80),
+            _default_fact("los_state", 70),
+        ],
+    },
+    {
+        "key": "billing_issue",
+        "intent": "billing_issue",
+        "allowed_tools": ["customer_lookup"],
+        "facts": [
+            _default_fact("billing_concern", 100),
+            _default_fact("invoice_or_charge_reference", 80, required=False),
+        ],
+    },
+    {
+        "key": "payment_confirmation",
+        "intent": "payment_confirmation",
+        "allowed_tools": ["customer_lookup"],
+        "facts": [
+            _default_fact("payment_reference", 100),
+            _default_fact("payment_date", 90),
+            _default_fact("payment_amount", 80),
+        ],
+    },
+    {
+        "key": "subscription_renewal",
+        "intent": "subscription_renewal",
+        "allowed_tools": ["customer_lookup"],
+        "facts": [
+            _default_fact("renewal_service", 100),
+            _default_fact("desired_renewal_period", 80, required=False),
+        ],
+    },
+    {
+        "key": "plan_change",
+        "intent": "plan_change",
+        "allowed_tools": ["customer_lookup"],
+        "facts": [_default_fact("desired_plan", 100)],
+    },
+    {
+        "key": "coverage_request",
+        "intent": "coverage_request",
+        "allowed_tools": [],
+        "facts": [
+            _default_fact("coverage_location", 100),
+            _default_fact("service_interest", 80, required=False),
+        ],
+    },
+    {
+        "key": "new_connection",
+        "intent": "new_connection",
+        "allowed_tools": [],
+        "facts": [
+            _default_fact("installation_location", 100),
+            _default_fact("service_interest", 80),
+        ],
+    },
+    {
+        "key": "account_access",
+        "intent": "account_access",
+        "allowed_tools": ["customer_lookup"],
+        "facts": [_default_fact("account_access_problem", 100)],
+    },
+    {
+        "key": "complaint",
+        "intent": "complaint",
+        "allowed_tools": [],
+        "facts": [
+            _default_fact("complaint_subject", 100),
+            _default_fact("desired_resolution", 80, required=False),
+        ],
+    },
+    {
+        "key": "general_enquiry",
+        "intent": "general_enquiry",
+        "allowed_tools": [],
+        "facts": [
+            _default_fact("service_interest", 100),
+            _default_fact("enquiry_topic", 80, required=False),
+        ],
+    },
+    {
+        "key": "unknown",
+        "intent": "unknown",
+        "allowed_tools": [],
+        "facts": [_default_fact("enquiry_topic", 100)],
+    },
+)
 ACCOUNT_BOUND_INTENTS = frozenset(
     {
         "billing_issue",
@@ -164,6 +404,10 @@ class QuestionState:
     key: str
     expected_fact: str
     prompt: str
+    purpose: str = ""
+    priority: int = 0
+    priority_source: str = "default_policy"
+    required: bool = True
     answer_status: AiIntakeAnswerStatus = AiIntakeAnswerStatus.pending
     attempts: int = 1
     asked_at: str | None = None
@@ -190,6 +434,10 @@ class QuestionState:
             key=key,
             expected_fact=expected,
             prompt=prompt,
+            purpose=str(value.get("purpose") or "").strip(),
+            priority=_bounded_int(value.get("priority"), default=0, low=0, high=1000),
+            priority_source=str(value.get("priority_source") or "default_policy")[:40],
+            required=bool(value.get("required", True)),
             answer_status=answer_status,
             attempts=max(1, min(attempts, 2)),
             asked_at=_text_or_none(value.get("asked_at")),
@@ -201,6 +449,10 @@ class QuestionState:
             "key": self.key,
             "expected_fact": self.expected_fact,
             "prompt": self.prompt,
+            "purpose": self.purpose,
+            "priority": self.priority,
+            "priority_source": self.priority_source,
+            "required": self.required,
             "answer_status": self.answer_status.value,
             "attempts": self.attempts,
             "asked_at": self.asked_at,
@@ -220,6 +472,14 @@ class ConversationalState:
     confidence: float | None = None
     classification_requires_follow_up: bool = False
     classification_follow_up_question: str | None = None
+    classifier_attempt_status: AiClassifierAttemptStatus = (
+        AiClassifierAttemptStatus.not_attempted
+    )
+    classifier_failure_reason: AiIntakeReason | None = None
+    classifier_failure_kind: AiClassifierFailureKind | None = None
+    classifier_retry_count: int = 0
+    classifier_retry_limit: int = 0
+    classifier_retries_exhausted: bool = False
     subscriber_id: str | None = None
     contact_identity: dict[str, object] = field(default_factory=dict)
     portal_id: str | None = None
@@ -244,6 +504,23 @@ class ConversationalState:
     clarification_count: int = 0
     question_history: list[QuestionState] = field(default_factory=list)
     acknowledged_issue_key: str | None = None
+    issue_acknowledged: bool = False
+    issue_acknowledgement_required: bool = False
+    frustration_level: AiIntakeAffectLevel = AiIntakeAffectLevel.none
+    agitation_level: AiIntakeAffectLevel = AiIntakeAffectLevel.none
+    repeated_complaint: bool = False
+    repeated_failed_steps: bool = False
+    prior_failed_interaction: bool = False
+    affect_sources: list[str] = field(default_factory=list)
+    acknowledgement_required: bool = False
+    frustration_acknowledged: bool = False
+    candidate_question_keys: list[str] = field(default_factory=list)
+    effective_question_order: list[dict[str, object]] = field(default_factory=list)
+    selected_question_key: str | None = None
+    selected_question_priority: int | None = None
+    selected_priority_source: str | None = None
+    response_validator_result: str | None = None
+    response_validator_reason: str | None = None
     last_response_source: str | None = None
 
     @classmethod
@@ -283,6 +560,24 @@ class ConversationalState:
                 classification_follow_up_question=_text_or_none(
                     raw.get("classification_follow_up_question")
                 ),
+                classifier_attempt_status=_classifier_attempt_status(
+                    raw.get("classifier_attempt_status")
+                ),
+                classifier_failure_reason=_classifier_failure_reason(
+                    raw.get("classifier_failure_reason")
+                ),
+                classifier_failure_kind=_classifier_failure_kind(
+                    raw.get("classifier_failure_kind")
+                ),
+                classifier_retry_count=_bounded_int(
+                    raw.get("classifier_retry_count"), default=0, low=0, high=10
+                ),
+                classifier_retry_limit=_bounded_int(
+                    raw.get("classifier_retry_limit"), default=0, low=0, high=5
+                ),
+                classifier_retries_exhausted=bool(
+                    raw.get("classifier_retries_exhausted")
+                ),
                 subscriber_id=_text_or_none(raw.get("subscriber_id")),
                 contact_identity=_dict(raw.get("contact_identity")),
                 portal_id=_text_or_none(raw.get("portal_id")),
@@ -311,6 +606,37 @@ class ConversationalState:
                 clarification_count=int(raw.get("clarification_count") or 0),
                 question_history=question_history,
                 acknowledged_issue_key=_text_or_none(raw.get("acknowledged_issue_key")),
+                issue_acknowledged=bool(
+                    raw.get("issue_acknowledged") or raw.get("acknowledged_issue_key")
+                ),
+                issue_acknowledgement_required=bool(
+                    raw.get("issue_acknowledgement_required")
+                ),
+                frustration_level=_affect_level(raw.get("frustration_level")),
+                agitation_level=_affect_level(raw.get("agitation_level")),
+                repeated_complaint=bool(raw.get("repeated_complaint")),
+                repeated_failed_steps=bool(raw.get("repeated_failed_steps")),
+                prior_failed_interaction=bool(raw.get("prior_failed_interaction")),
+                affect_sources=list(_list(raw.get("affect_sources"))),
+                acknowledgement_required=bool(raw.get("acknowledgement_required")),
+                frustration_acknowledged=bool(raw.get("frustration_acknowledged")),
+                candidate_question_keys=list(_list(raw.get("candidate_question_keys"))),
+                effective_question_order=list(
+                    _dict_list(raw.get("effective_question_order"))
+                ),
+                selected_question_key=_text_or_none(raw.get("selected_question_key")),
+                selected_question_priority=_int_or_none(
+                    raw.get("selected_question_priority")
+                ),
+                selected_priority_source=_text_or_none(
+                    raw.get("selected_priority_source")
+                ),
+                response_validator_result=_text_or_none(
+                    raw.get("response_validator_result")
+                ),
+                response_validator_reason=_text_or_none(
+                    raw.get("response_validator_reason")
+                ),
                 last_response_source=_text_or_none(raw.get("last_response_source")),
             )
         return cls(
@@ -337,6 +663,20 @@ class ConversationalState:
                 self.classification_requires_follow_up
             ),
             "classification_follow_up_question": self.classification_follow_up_question,
+            "classifier_attempt_status": self.classifier_attempt_status.value,
+            "classifier_failure_reason": (
+                self.classifier_failure_reason.value
+                if self.classifier_failure_reason is not None
+                else None
+            ),
+            "classifier_failure_kind": (
+                self.classifier_failure_kind.value
+                if self.classifier_failure_kind is not None
+                else None
+            ),
+            "classifier_retry_count": self.classifier_retry_count,
+            "classifier_retry_limit": self.classifier_retry_limit,
+            "classifier_retries_exhausted": self.classifier_retries_exhausted,
             "subscriber_id": self.subscriber_id,
             "contact_identity": self.contact_identity,
             "portal_id": self.portal_id,
@@ -363,6 +703,23 @@ class ConversationalState:
                 question.to_dict() for question in self.question_history[-12:]
             ],
             "acknowledged_issue_key": self.acknowledged_issue_key,
+            "issue_acknowledged": self.issue_acknowledged,
+            "issue_acknowledgement_required": self.issue_acknowledgement_required,
+            "frustration_level": self.frustration_level.value,
+            "agitation_level": self.agitation_level.value,
+            "repeated_complaint": self.repeated_complaint,
+            "repeated_failed_steps": self.repeated_failed_steps,
+            "prior_failed_interaction": self.prior_failed_interaction,
+            "affect_sources": self.affect_sources,
+            "acknowledgement_required": self.acknowledgement_required,
+            "frustration_acknowledged": self.frustration_acknowledged,
+            "candidate_question_keys": self.candidate_question_keys,
+            "effective_question_order": self.effective_question_order,
+            "selected_question_key": self.selected_question_key,
+            "selected_question_priority": self.selected_question_priority,
+            "selected_priority_source": self.selected_priority_source,
+            "response_validator_result": self.response_validator_result,
+            "response_validator_reason": self.response_validator_reason,
             "last_response_source": self.last_response_source,
         }
 
@@ -418,17 +775,27 @@ def run_conversational_turn(
     version: AiIntakePolicyVersion | None,
     latest_body: str,
     classification: AiIntakeClassification | None,
+    classifier_attempt: AiClassifierAttempt | None = None,
     now: datetime | None = None,
     tool_mode: str = "live_read_only",
 ) -> ConversationEngineDecision:
     state = ConversationalState.load(conversation=conversation, session=session)
+    _reset_turn_planner_evidence(state)
     policy = _policy(version, channel=conversation.channel_type)
     now = now or datetime.now(UTC)
     state.turn_count += 1
     _append_statement(state, latest_body)
+    resolved_classifier_attempt = _resolve_classifier_attempt(
+        classification=classification,
+        classifier_attempt=classifier_attempt,
+        retry_limit=max(0, min(session.max_turns - 1, 5)),
+    )
+    _merge_classifier_attempt(state, resolved_classifier_attempt)
     facts = extract_facts(latest_body)
     _merge_facts(state, facts)
+    _merge_affect(state, detect_affect(latest_body, state=state), fresh_signal=True)
     _merge_classification(state, classification)
+    _refresh_issue_acknowledgement_requirement(state)
     latest_facts = dict(facts)
     if classification is not None:
         latest_facts.update(
@@ -450,6 +817,15 @@ def run_conversational_turn(
                 policy,
                 default="I will pass this to a support agent now.",
             ),
+        )
+
+    if classifier_attempt_unavailable(resolved_classifier_attempt):
+        return classifier_unavailable_decision(
+            state=state,
+            policy=policy,
+            classifier_attempt=resolved_classifier_attempt,
+            question=_classifier_unavailable_question(version),
+            now=now,
         )
 
     _merge_contact_from_conversation(state, conversation, db)
@@ -481,6 +857,10 @@ def run_conversational_turn(
                 metadata={
                     "reason": "identifier_reply_missing_value",
                     "question_key": requested,
+                    "expected_fact": requested,
+                    "question_purpose": _identifier_question_purpose(requested),
+                    "priority_source": "playbook",
+                    "acknowledgement_required": state.acknowledgement_required,
                     "next_action": "ask_question",
                     "response_source": "template",
                 },
@@ -498,20 +878,41 @@ def run_conversational_turn(
     if _requires_identity_before_tools(state, policy):
         requested_identifier = _next_identifier_to_request(state, policy)
         if requested_identifier is not None:
-            state.missing_facts = _with_unique(
-                state.missing_facts, requested_identifier
+            question = _record_question(
+                state,
+                key=requested_identifier,
+                expected_fact=requested_identifier,
+                prompt=_identifier_question(requested_identifier),
+                purpose=_identifier_question_purpose(requested_identifier),
+                priority=1000,
+                priority_source="playbook",
+                required=True,
+                now=now,
             )
-            state.already_requested_fields = _with_unique(
-                state.already_requested_fields, requested_identifier
-            )
-            state.clarification_count += 1
+            state.candidate_question_keys = [question.key]
+            state.effective_question_order = [
+                {
+                    "key": question.key,
+                    "priority": question.priority,
+                    "source": question.priority_source,
+                    "required": question.required,
+                }
+            ]
             return ConversationEngineDecision(
                 action="respond",
                 state=state,
-                response_text=_identifier_question(requested_identifier),
+                response_text=question.prompt,
                 metadata={
                     "reason": "missing_customer_identifier",
-                    "question_key": requested_identifier,
+                    "question_key": question.key,
+                    "expected_fact": question.expected_fact,
+                    "question_purpose": question.purpose,
+                    "question_priority": question.priority,
+                    "priority_source": question.priority_source,
+                    "question_required": question.required,
+                    "candidate_question_keys": list(state.candidate_question_keys),
+                    "effective_question_order": list(state.effective_question_order),
+                    "acknowledgement_required": state.acknowledgement_required,
                     "next_action": "ask_question",
                     "response_source": "template",
                 },
@@ -528,6 +929,26 @@ def run_conversational_turn(
                 ),
             ),
         )
+
+    playbook_decision = _configured_playbook_decision(
+        db,
+        state,
+        policy,
+        conversation=conversation,
+        tool_mode=tool_mode,
+    )
+    if playbook_decision is not None:
+        return playbook_decision
+
+    rule_decision = _configured_troubleshooting_decision(
+        db,
+        state,
+        policy,
+        conversation=conversation,
+        tool_mode=tool_mode,
+    )
+    if rule_decision is not None:
+        return rule_decision
 
     if _should_run_monitoring(state, policy):
         result, latency_ms = _execute_timed_tool(
@@ -573,55 +994,20 @@ def run_conversational_turn(
                 ),
             )
 
-    playbook_decision = _configured_playbook_decision(
-        db,
-        state,
-        policy,
-        conversation=conversation,
-        tool_mode=tool_mode,
-    )
-    if playbook_decision is not None:
-        return playbook_decision
-
-    rule_decision = _configured_troubleshooting_decision(
-        db,
-        state,
-        policy,
-        conversation=conversation,
-        tool_mode=tool_mode,
-    )
-    if rule_decision is not None:
-        return rule_decision
-
     if _technical_issue(state) and _monitoring_offline(state):
         state.troubleshooting_completed = _with_unique(
             state.troubleshooting_completed, "monitoring_checked"
         )
 
-    follow_up = _next_useful_question(state, policy, now=now)
-    if follow_up is not None:
-        return ConversationEngineDecision(
-            action="respond",
-            state=state,
-            response_text=follow_up.prompt,
-            metadata={
-                "reason": "useful_missing_fact",
-                "question_key": follow_up.key,
-                "expected_fact": follow_up.expected_fact,
-                "answer_status": follow_up.answer_status.value,
-                "next_action": "ask_question",
-                "response_source": "template",
-            },
-        )
-
-    if _should_handoff_after_classification(state, policy):
+    inquiry_escalation = _inquiry_escalation_reason(state, policy)
+    if inquiry_escalation is not None:
         return _handoff_decision(
             policy,
             state,
-            reason="classified_ready_for_handoff",
+            reason=inquiry_escalation,
             response=_handoff_response(
                 policy,
-                default="I have the details needed and will pass this to the right team.",
+                default="I will pass this to the support team for investigation.",
             ),
         )
 
@@ -647,6 +1033,41 @@ def run_conversational_turn(
                 "next_action": "ask_question",
                 "response_source": "template",
             },
+        )
+
+    follow_up = _next_useful_question(state, policy, now=now)
+    if follow_up is not None:
+        return ConversationEngineDecision(
+            action="respond",
+            state=state,
+            response_text=follow_up.prompt,
+            metadata={
+                "reason": "useful_missing_fact",
+                "question_key": follow_up.key,
+                "expected_fact": follow_up.expected_fact,
+                "question_purpose": follow_up.purpose,
+                "question_priority": follow_up.priority,
+                "priority_source": follow_up.priority_source,
+                "question_required": follow_up.required,
+                "candidate_question_keys": list(state.candidate_question_keys),
+                "effective_question_order": list(state.effective_question_order),
+                "acknowledgement_required": state.acknowledgement_required,
+                "tone_requirements": _inquiry_tone_requirements(state, policy),
+                "answer_status": follow_up.answer_status.value,
+                "next_action": "ask_question",
+                "response_source": "template",
+            },
+        )
+
+    if _should_handoff_after_classification(state, policy):
+        return _handoff_decision(
+            policy,
+            state,
+            reason="classified_ready_for_handoff",
+            response=_handoff_response(
+                policy,
+                default="I have the details needed and will pass this to the right team.",
+            ),
         )
 
     return _handoff_decision(
@@ -720,10 +1141,7 @@ def extract_facts(text: str) -> dict[str, object]:
         facts["portal_id"] = portal.group(1).strip()
     if HUMAN_RE.search(value):
         facts["human_requested"] = True
-    if any(
-        item in lowered
-        for item in ("not browsing", "internet is down", "no internet", "not working")
-    ):
+    if CONNECTIVITY_DOWN_RE.search(value):
         facts["connectivity_problem"] = True
         facts["connectivity_state"] = "down"
     if "slow" in lowered:
@@ -781,9 +1199,33 @@ def extract_facts(text: str) -> dict[str, object]:
     if "restart" in lowered or "reboot" in lowered:
         facts["router_restarted"] = True
         facts["restart_attempted"] = True
-    outage_context = OUTAGE_CONTEXT_RE.search(value)
-    if outage_context:
-        issue_started_when = outage_context.group(0).strip()[:80]
+    shorthand_duration = DURATION_SHORTHAND_RE.search(value)
+    if shorthand_duration:
+        count = int(shorthand_duration.group("count"))
+        raw_unit = shorthand_duration.group("unit").lower()
+        unit = (
+            "day"
+            if raw_unit.startswith("d")
+            else "hour"
+            if raw_unit.startswith("h")
+            else "week"
+        )
+        bounded = (
+            (unit == "hour" and count <= 168)
+            or (unit == "day" and count <= 365)
+            or (unit == "week" and count <= 52)
+        )
+        issue_started_when = (
+            f"for {count} {unit}{'' if count == 1 else 's'}" if bounded else None
+        )
+    elif re.search(r"\bsince\s+yesterday\b", value, re.I):
+        issue_started_when = "since yesterday"
+    else:
+        outage_context = OUTAGE_CONTEXT_RE.search(value)
+        issue_started_when = (
+            outage_context.group(0).strip()[:80] if outage_context else None
+        )
+    if issue_started_when:
         facts["outage_context"] = issue_started_when
         facts["issue_started_when"] = issue_started_when
     if (
@@ -813,6 +1255,112 @@ def extract_facts(text: str) -> dict[str, object]:
         facts["slow_internet"] = True
         facts["connectivity_state"] = "slow"
     return facts
+
+
+def is_greeting_only(text: str) -> bool:
+    """Return true only for a short, bounded greeting with no support content."""
+
+    normalized = " ".join(str(text or "").strip().split())
+    return bool(
+        normalized and len(normalized) <= 40 and GREETING_ONLY_RE.fullmatch(normalized)
+    )
+
+
+def detect_affect(
+    text: str, *, state: ConversationalState | None = None
+) -> AiIntakeAffectAssessment:
+    """Return only bounded affect directly supported by message/context evidence."""
+
+    value = " ".join(str(text or "").split())
+    high = bool(HIGH_FRUSTRATION_RE.search(value))
+    moderate = bool(MODERATE_FRUSTRATION_RE.search(value))
+    repeated_failed_steps = bool(REPEATED_FAILURE_RE.search(value)) and bool(
+        re.search(r"\b(?:restart|reboot|tried|checked|called|reported)\b", value, re.I)
+    )
+    prior_failed_interaction = bool(PRIOR_INTERACTION_RE.search(value))
+    repeated_complaint = bool(
+        re.search(
+            r"\b(?:again|still|fed\s+up|keeps? happening|not fixed)\b", value, re.I
+        )
+    ) and bool(state and (len(state.customer_statements) > 1 or state.turn_count > 1))
+    frustration = (
+        AiIntakeAffectLevel.high
+        if high
+        else AiIntakeAffectLevel.moderate
+        if moderate or repeated_failed_steps or repeated_complaint
+        else AiIntakeAffectLevel.none
+    )
+    agitation = (
+        AiIntakeAffectLevel.high
+        if high
+        and bool(re.search(r"\b(?:furious|enraged|fuck(?:ing|ed)?)\b", value, re.I))
+        else AiIntakeAffectLevel.moderate
+        if high or moderate
+        else AiIntakeAffectLevel.none
+    )
+    sources: list[AiIntakeAffectSource] = []
+    if (
+        frustration is not AiIntakeAffectLevel.none
+        or agitation is not AiIntakeAffectLevel.none
+        or repeated_failed_steps
+        or prior_failed_interaction
+    ):
+        sources.append(AiIntakeAffectSource.deterministic)
+    if repeated_complaint:
+        sources.append(AiIntakeAffectSource.conversation_context)
+    return AiIntakeAffectAssessment(
+        frustration_level=frustration,
+        agitation_level=agitation,
+        repeated_complaint=repeated_complaint,
+        repeated_failed_steps=repeated_failed_steps,
+        prior_failed_interaction=prior_failed_interaction,
+        sources=tuple(sources),
+    )
+
+
+def _merge_affect(
+    state: ConversationalState,
+    affect: AiIntakeAffectAssessment,
+    *,
+    fresh_signal: bool,
+) -> None:
+    state.frustration_level = max(
+        state.frustration_level, affect.frustration_level, key=_affect_rank
+    )
+    state.agitation_level = max(
+        state.agitation_level, affect.agitation_level, key=_affect_rank
+    )
+    state.repeated_complaint = state.repeated_complaint or affect.repeated_complaint
+    state.repeated_failed_steps = (
+        state.repeated_failed_steps or affect.repeated_failed_steps
+    )
+    state.prior_failed_interaction = (
+        state.prior_failed_interaction or affect.prior_failed_interaction
+    )
+    for source in affect.sources:
+        state.affect_sources = _with_unique(state.affect_sources, source.value)
+    current_requires_ack = any(
+        _affect_rank(level) >= _affect_rank(AiIntakeAffectLevel.moderate)
+        for level in (affect.frustration_level, affect.agitation_level)
+    )
+    if fresh_signal and current_requires_ack:
+        state.frustration_acknowledged = False
+    state.acknowledgement_required = (
+        any(
+            _affect_rank(level) >= _affect_rank(AiIntakeAffectLevel.moderate)
+            for level in (state.frustration_level, state.agitation_level)
+        )
+        and not state.frustration_acknowledged
+    )
+
+
+def _affect_rank(level: AiIntakeAffectLevel) -> int:
+    return {
+        AiIntakeAffectLevel.none: 0,
+        AiIntakeAffectLevel.mild: 1,
+        AiIntakeAffectLevel.moderate: 2,
+        AiIntakeAffectLevel.high: 3,
+    }[level]
 
 
 def _meaningful_understanding_facts(
@@ -1023,6 +1571,10 @@ def _policy(
     for key in PLAYBOOK_POLICY_KEYS:
         if key not in policy and isinstance(metadata.get(key), list):
             policy[key] = metadata[key]
+    if "inquiry_plans" not in policy and isinstance(
+        metadata.get("inquiry_plans"), list
+    ):
+        policy["inquiry_plans"] = metadata["inquiry_plans"]
     if channel:
         overrides = _dict(metadata.get("channel_overrides"))
         channel_override = _dict(overrides.get(channel))
@@ -1032,6 +1584,7 @@ def _policy(
             "troubleshooting_rules",
             "playbooks",
             "first_line_playbooks",
+            "inquiry_plans",
             "handoff",
         ):
             if key in channel_override:
@@ -1128,6 +1681,222 @@ def _merge_facts(state: ConversationalState, facts: dict[str, object]) -> None:
         state.collected_facts["slow_internet"] = False
 
 
+def _resolve_classifier_attempt(
+    *,
+    classification: AiIntakeClassification | None,
+    classifier_attempt: AiClassifierAttempt | None,
+    retry_limit: int,
+) -> AiClassifierAttempt:
+    if classifier_attempt is not None:
+        if classifier_attempt.status is AiClassifierAttemptStatus.accepted:
+            if classification is not None:
+                return classifier_attempt
+            return AiClassifierAttempt(
+                status=AiClassifierAttemptStatus.no_accepted_intent,
+                reason=AiIntakeReason.classifier_unavailable,
+                failure_kind=AiClassifierFailureKind.no_accepted_intent,
+                retry_count=max(1, classifier_attempt.retry_count),
+                retry_limit=classifier_attempt.retry_limit,
+                retries_exhausted=classifier_attempt.retry_limit == 0,
+                provider=classifier_attempt.provider,
+                model=classifier_attempt.model,
+            )
+        if classifier_attempt.status is not AiClassifierAttemptStatus.not_attempted:
+            return classifier_attempt
+    if classification is not None:
+        return AiClassifierAttempt(
+            status=AiClassifierAttemptStatus.accepted,
+            retry_limit=retry_limit,
+        )
+    return AiClassifierAttempt(
+        status=AiClassifierAttemptStatus.unavailable,
+        reason=AiIntakeReason.classifier_unavailable,
+        failure_kind=AiClassifierFailureKind.classifier_unavailable,
+        retry_count=1,
+        retry_limit=retry_limit,
+        retries_exhausted=retry_limit == 0,
+    )
+
+
+def classifier_attempt_unavailable(attempt: AiClassifierAttempt) -> bool:
+    return attempt.status in {
+        AiClassifierAttemptStatus.invalid_output,
+        AiClassifierAttemptStatus.unavailable,
+        AiClassifierAttemptStatus.no_accepted_intent,
+    }
+
+
+def _merge_classifier_attempt(
+    state: ConversationalState, attempt: AiClassifierAttempt
+) -> None:
+    state.classifier_attempt_status = attempt.status
+    state.classifier_failure_reason = attempt.reason
+    state.classifier_failure_kind = attempt.failure_kind
+    state.classifier_retry_count = attempt.retry_count
+    state.classifier_retry_limit = attempt.retry_limit
+    state.classifier_retries_exhausted = attempt.retries_exhausted
+    if classifier_attempt_unavailable(attempt):
+        state.classification_requires_follow_up = not attempt.retries_exhausted
+        state.classification_follow_up_question = None
+
+
+def _classifier_unavailable_question(
+    version: AiIntakePolicyVersion | None,
+) -> str:
+    allow_category_menu = category_menu_clarification_enabled(version)
+    raw = version.clarification_questions if version is not None else None
+    if isinstance(raw, list | tuple) and raw:
+        question = str(raw[0] or "").strip()
+        if question:
+            if question == GENERIC_FOLLOW_UP_QUESTION and not allow_category_menu:
+                return NATURAL_CLARIFICATION_QUESTION
+            return question[:300]
+    return DEFAULT_CLARIFICATION_QUESTIONS[0]
+
+
+def category_menu_clarification_enabled(
+    version: AiIntakePolicyVersion | None,
+) -> bool:
+    metadata = dict(version.metadata_ or {}) if version is not None else {}
+    conversation_policy = metadata.get("conversation_policy")
+    return bool(
+        isinstance(conversation_policy, Mapping)
+        and conversation_policy.get("allow_category_menu_clarification")
+    )
+
+
+def classifier_unavailable_decision(
+    *,
+    state: ConversationalState,
+    policy: dict[str, object],
+    classifier_attempt: AiClassifierAttempt,
+    question: str,
+    now: datetime,
+) -> ConversationEngineDecision:
+    if classifier_attempt.retries_exhausted:
+        return _handoff_decision(
+            policy,
+            state,
+            reason=AiIntakeReason.classifier_unavailable_after_retries.value,
+            response=_handoff_response(
+                policy,
+                default=(
+                    "I could not reliably understand the request after the "
+                    "available clarification attempts, so I will pass it to "
+                    "the support team."
+                ),
+            ),
+        )
+    fact_path = _deterministic_support_path(state)
+    if fact_path is not None:
+        state.current_intent, state.category = fact_path
+        clarification = _next_useful_question(state, policy, now=now)
+        if clarification is not None:
+            return ConversationEngineDecision(
+                action="respond",
+                state=state,
+                response_text=clarification.prompt,
+                metadata={
+                    "reason": AiIntakeReason.classifier_unavailable.value,
+                    "classifier_attempt_status": classifier_attempt.status.value,
+                    "classifier_failure_kind": (
+                        classifier_attempt.failure_kind.value
+                        if classifier_attempt.failure_kind is not None
+                        else None
+                    ),
+                    "classifier_retry_count": classifier_attempt.retry_count,
+                    "classifier_retry_limit": classifier_attempt.retry_limit,
+                    "classifier_retries_exhausted": False,
+                    "fact_driven_path": True,
+                    "question_key": clarification.key,
+                    "expected_fact": clarification.expected_fact,
+                    "question_purpose": clarification.purpose,
+                    "question_priority": clarification.priority,
+                    "priority_source": clarification.priority_source,
+                    "candidate_question_keys": list(state.candidate_question_keys),
+                    "effective_question_order": list(state.effective_question_order),
+                    "acknowledgement_required": state.acknowledgement_required,
+                    "issue_acknowledgement_required": (
+                        state.issue_acknowledgement_required
+                    ),
+                    "next_action": "ask_question",
+                    "response_source": "template",
+                },
+            )
+    clarification = _record_question(
+        state,
+        key="classifier_unavailable_clarification",
+        expected_fact="intent",
+        prompt=question,
+        now=now,
+    )
+    return ConversationEngineDecision(
+        action="respond",
+        state=state,
+        response_text=clarification.prompt,
+        metadata={
+            "reason": AiIntakeReason.classifier_unavailable.value,
+            "classifier_failure_reason": (
+                classifier_attempt.reason.value
+                if classifier_attempt.reason is not None
+                else None
+            ),
+            "classifier_attempt_status": classifier_attempt.status.value,
+            "classifier_failure_kind": (
+                classifier_attempt.failure_kind.value
+                if classifier_attempt.failure_kind is not None
+                else None
+            ),
+            "classifier_retry_count": classifier_attempt.retry_count,
+            "classifier_retry_limit": classifier_attempt.retry_limit,
+            "classifier_retries_exhausted": False,
+            "question_key": clarification.key,
+            "expected_fact": clarification.expected_fact,
+            "answer_status": clarification.answer_status.value,
+            "next_action": "ask_question",
+            "response_source": "template",
+        },
+    )
+
+
+def _deterministic_support_path(
+    state: ConversationalState,
+) -> tuple[str, str] | None:
+    connectivity_state = str(state.collected_facts.get("connectivity_state") or "")
+    category = {
+        "down": "no_internet",
+        "slow": "slow_internet",
+        "intermittent": "intermittent_connection",
+    }.get(connectivity_state)
+    if category is None:
+        return None
+    return "technical_support", category
+
+
+def _refresh_issue_acknowledgement_requirement(state: ConversationalState) -> None:
+    state.issue_acknowledgement_required = bool(
+        not state.issue_acknowledged
+        and (
+            _deterministic_support_path(state) is not None
+            or (state.category or "")
+            in {
+                "no_internet",
+                "slow_internet",
+                "intermittent_connection",
+                "router_issue",
+            }
+        )
+    )
+
+
+def _reset_turn_planner_evidence(state: ConversationalState) -> None:
+    state.candidate_question_keys = []
+    state.effective_question_order = []
+    state.selected_question_key = None
+    state.selected_question_priority = None
+    state.selected_priority_source = None
+
+
 def _merge_classification(
     state: ConversationalState, classification: AiIntakeClassification | None
 ) -> None:
@@ -1145,23 +1914,23 @@ def _merge_classification(
     state.category = next_category
     if issue_changed:
         state.acknowledged_issue_key = None
+        state.issue_acknowledged = False
     state.confidence = classification.confidence
     state.classification_requires_follow_up = classification.requires_follow_up
     state.classification_follow_up_question = classification.follow_up_question
     _merge_facts(state, _meaningful_understanding_facts(classification.message_facts))
+    _merge_affect(state, classification.message_affect, fresh_signal=True)
 
 
-QUESTION_PROMPTS: dict[str, str] = {
-    "issue_started_when": "When did the problem start?",
-    "device_scope": "Is the issue affecting every device or only one device?",
-    "connection_medium": (
-        "Is the issue the same over Wi-Fi and a wired Ethernet connection?"
-    ),
-    "connection_pattern": "Is the issue constant, or does it come and go?",
-    "router_powered": "Is your router or ONU powered on right now?",
-    "restart_attempted": "Have you restarted the router since the issue began?",
-    "los_state": "Is the LOS light on the ONU red, off, or not showing red?",
-}
+@dataclass(frozen=True, slots=True)
+class QuestionCandidate:
+    key: str
+    expected_fact: str
+    purpose: str
+    priority: int
+    priority_source: str
+    required: bool
+    fallback_prompt: str
 
 
 def _canonical_fact_key(field: str) -> str:
@@ -1246,6 +2015,10 @@ def _record_question(
     key: str,
     expected_fact: str,
     prompt: str,
+    purpose: str = "",
+    priority: int = 0,
+    priority_source: str = "default_policy",
+    required: bool = True,
     now: datetime,
 ) -> QuestionState:
     existing = next(
@@ -1256,11 +2029,22 @@ def _record_question(
         existing.answer_status = AiIntakeAnswerStatus.pending
         existing.asked_at = now.isoformat()
         existing.prompt = prompt
+        existing.purpose = purpose or existing.purpose
+        existing.priority = priority or existing.priority
+        existing.priority_source = priority_source or existing.priority_source
+        existing.required = required
+        state.selected_question_key = existing.key
+        state.selected_question_priority = existing.priority
+        state.selected_priority_source = existing.priority_source
         return existing
     question = QuestionState(
         key=key,
         expected_fact=expected_fact,
         prompt=prompt,
+        purpose=purpose,
+        priority=priority,
+        priority_source=priority_source,
+        required=required,
         asked_at=now.isoformat(),
     )
     state.question_history.append(question)
@@ -1269,45 +2053,159 @@ def _record_question(
     )
     state.missing_facts = _with_unique(state.missing_facts, expected_fact)
     state.clarification_count += 1
+    state.selected_question_key = question.key
+    state.selected_question_priority = question.priority
+    state.selected_priority_source = question.priority_source
     return question
 
 
-def _required_question_keys(
+def _matching_inquiry_plan(
     state: ConversationalState, policy: dict[str, object]
-) -> tuple[str, ...]:
-    configured: list[str] = []
+) -> tuple[dict[str, object] | None, str]:
+    configured_plans = policy.get("inquiry_plans")
+    if isinstance(configured_plans, list):
+        matches = [
+            _dict(raw)
+            for raw in configured_plans
+            if isinstance(raw, dict)
+            and str(raw.get("intent") or "") == str(state.current_intent or "unknown")
+            and str(raw.get("category") or "") in {"", str(state.category or "")}
+        ]
+        matches.sort(
+            key=lambda item: bool(str(item.get("category") or "")), reverse=True
+        )
+        selected = matches[0] if matches else None
+        return selected, str((selected or {}).get("_priority_source") or "playbook")
+    return None, "default_policy"
+
+
+def _has_explicit_inquiry_policy(policy: Mapping[str, object]) -> bool:
+    return "inquiry_plans" in policy
+
+
+def _inquiry_tone_requirements(
+    state: ConversationalState, policy: dict[str, object]
+) -> str:
+    plan, _source = _matching_inquiry_plan(state, policy)
+    return str((plan or {}).get("tone_requirements") or "").strip()[:500]
+
+
+def _inquiry_escalation_reason(
+    state: ConversationalState, policy: dict[str, object]
+) -> str | None:
+    plan, _source = _matching_inquiry_plan(state, policy)
+    for raw in _list((plan or {}).get("escalation_conditions")):
+        item = _dict(raw)
+        condition = _dict(item.get("condition")) or item
+        if _condition_matches(state, condition):
+            return str(item.get("reason") or "inquiry_plan_escalation")[:120]
+    return None
+
+
+def _question_candidates(
+    state: ConversationalState, policy: dict[str, object]
+) -> tuple[QuestionCandidate, ...]:
+    plan, source = _matching_inquiry_plan(state, policy)
+    raw_facts = plan.get("facts") if plan is not None else None
+    candidates: list[QuestionCandidate] = []
+    if isinstance(raw_facts, list):
+        for index, raw in enumerate(raw_facts):
+            item = _dict(raw)
+            key = _canonical_fact_key(str(item.get("key") or item.get("field") or ""))
+            purpose = str(item.get("purpose") or DEFAULT_FACT_PURPOSES.get(key) or "")
+            if not key or not purpose or key not in SAFE_FALLBACK_QUESTION_COPY:
+                continue
+            when = item.get("when")
+            if isinstance(when, dict) and not _condition_matches(state, when):
+                continue
+            skip_when = item.get("skip_when")
+            if isinstance(skip_when, dict) and _condition_matches(state, skip_when):
+                continue
+            candidates.append(
+                QuestionCandidate(
+                    key=key,
+                    expected_fact=key,
+                    purpose=purpose[:500],
+                    priority=_bounded_int(
+                        item.get("priority"),
+                        default=max(1, 100 - index),
+                        low=0,
+                        high=1000,
+                    ),
+                    priority_source=source,
+                    required=bool(item.get("required", True)),
+                    fallback_prompt=str(
+                        item.get("fallback_prompt") or SAFE_FALLBACK_QUESTION_COPY[key]
+                    )[:800],
+                )
+            )
+        return tuple(sorted(candidates, key=lambda item: -item.priority))
+
+    # Once a version declares inquiry_plans, absence is itself policy. Do not
+    # silently resurrect legacy required fields or implementation defaults.
+    if _has_explicit_inquiry_policy(policy):
+        return ()
+
+    # Backward-compatible policy versions keep their declared required-field
+    # order. This path is lower authority than inquiry_plans and above defaults.
     for raw in _list(policy.get("intent_definitions")):
         definition = _dict(raw)
         if str(definition.get("intent") or definition.get("key") or "") != str(
             state.current_intent or ""
         ):
             continue
-        for item in _list(definition.get("required_fields")):
-            key = _canonical_fact_key(str(item).strip())
-            if key in QUESTION_PROMPTS and key not in configured:
-                configured.append(key)
-    if configured:
-        return tuple(configured)
-    if not _technical_issue(state):
+        required_fields = _list(definition.get("required_fields"))
+        for index, raw_field in enumerate(required_fields):
+            key = _canonical_fact_key(str(raw_field).strip())
+            if key not in SAFE_FALLBACK_QUESTION_COPY:
+                continue
+            candidates.append(
+                QuestionCandidate(
+                    key=key,
+                    expected_fact=key,
+                    purpose=DEFAULT_FACT_PURPOSES[key],
+                    priority=max(1, len(required_fields) - index),
+                    priority_source="required_fields",
+                    required=True,
+                    fallback_prompt=SAFE_FALLBACK_QUESTION_COPY[key],
+                )
+            )
+        if candidates:
+            return tuple(candidates)
+    defaults = [
+        item
+        for item in DEFAULT_INQUIRY_PLANS
+        if str(item.get("intent") or "") == str(state.current_intent or "unknown")
+        and str(item.get("category") or "") in {"", str(state.category or "")}
+    ]
+    defaults.sort(key=lambda item: bool(str(item.get("category") or "")), reverse=True)
+    if not defaults:
         return ()
-    if _monitoring_offline(state):
-        return ("router_powered", "los_state", "issue_started_when", "device_scope")
-    connectivity = str(state.collected_facts.get("connectivity_state") or "")
-    if connectivity == "slow" or state.collected_facts.get("slow_internet"):
-        return (
-            "device_scope",
-            "issue_started_when",
-            "connection_medium",
-            "connection_pattern",
-        )
-    if connectivity == "intermittent":
-        return ("issue_started_when", "device_scope", "connection_medium")
-    return ("issue_started_when", "device_scope", "router_powered", "los_state")
+    default_policy = {
+        **policy,
+        "inquiry_plans": [{**dict(defaults[0]), "_priority_source": "default_policy"}],
+    }
+    return _question_candidates(state, default_policy)
 
 
 def _next_useful_question(
     state: ConversationalState, policy: dict[str, object], *, now: datetime
 ) -> QuestionState | None:
+    candidates = _question_candidates(state, policy)
+    state.effective_question_order = [
+        {
+            "key": candidate.key,
+            "priority": candidate.priority,
+            "source": candidate.priority_source,
+            "required": candidate.required,
+        }
+        for candidate in candidates
+    ]
+    state.candidate_question_keys = [
+        candidate.key
+        for candidate in candidates
+        if not _fact_is_known(state, candidate.expected_fact)
+    ]
     pending = next(
         (
             question
@@ -1326,34 +2224,53 @@ def _next_useful_question(
             AiIntakeAnswerStatus.unclear,
             AiIntakeAnswerStatus.partially_answered,
         }:
-            prompt = "No problem. " + QUESTION_PROMPTS.get(
-                pending.expected_fact, pending.prompt
-            )
-            return _record_question(
+            retry = _record_question(
                 state,
                 key=pending.key,
                 expected_fact=pending.expected_fact,
-                prompt=prompt,
+                prompt=pending.prompt,
+                purpose=pending.purpose,
+                priority=pending.priority,
+                priority_source=pending.priority_source,
+                required=pending.required,
                 now=now,
             )
+            state.selected_question_key = retry.key
+            state.selected_question_priority = retry.priority
+            state.selected_priority_source = retry.priority_source
+            return retry
         if pending.answer_status is AiIntakeAnswerStatus.pending:
+            state.selected_question_key = pending.key
+            state.selected_question_priority = pending.priority
+            state.selected_priority_source = pending.priority_source
             return pending
-    for fact_key in _required_question_keys(state, policy):
-        if _fact_is_known(state, fact_key):
+    for candidate in candidates:
+        if _fact_is_known(state, candidate.expected_fact):
             continue
         prior = next(
-            (item for item in reversed(state.question_history) if item.key == fact_key),
+            (
+                item
+                for item in reversed(state.question_history)
+                if item.key == candidate.key
+            ),
             None,
         )
         if prior is not None and (
             prior.attempts >= 2 or prior.answer_status is AiIntakeAnswerStatus.declined
         ):
             continue
+        state.selected_question_key = candidate.key
+        state.selected_question_priority = candidate.priority
+        state.selected_priority_source = candidate.priority_source
         return _record_question(
             state,
-            key=fact_key,
-            expected_fact=fact_key,
-            prompt=QUESTION_PROMPTS[fact_key],
+            key=candidate.key,
+            expected_fact=candidate.expected_fact,
+            prompt=candidate.fallback_prompt,
+            purpose=candidate.purpose,
+            priority=candidate.priority,
+            priority_source=candidate.priority_source,
+            required=candidate.required,
             now=now,
         )
     return None
@@ -1368,6 +2285,21 @@ def _identify_customer(
     tool_mode: str,
 ) -> None:
     if state.subscriber_id:
+        return
+    if not _tool_allowed_for_state(policy, "customer_lookup", state):
+        if any(
+            _identifier_value(state, identifier_type)
+            for identifier_type in _permitted_identifiers(policy)
+        ):
+            _record_tool_result(
+                state,
+                "customer_lookup",
+                {
+                    "status": "unauthorized",
+                    "reason": "tool_not_allowed_for_state",
+                },
+                latency_ms=0,
+            )
         return
     for identifier_type in _permitted_identifiers(policy):
         value = _identifier_value(state, identifier_type)
@@ -1431,6 +2363,7 @@ def _requires_identity_before_tools(
         _account_context_required(state)
         and not state.subscriber_id
         and bool(policy.get("require_identity_before_tools", True))
+        and _tool_allowed_for_state(policy, "customer_lookup", state)
     )
 
 
@@ -1513,9 +2446,7 @@ def _should_run_monitoring(
         item.get("tool") == "subscriber_monitoring" for item in state.tool_executions
     ):
         return False
-    return _tool_enabled_for_intent(
-        policy, "subscriber_monitoring", state.current_intent
-    )
+    return _tool_allowed_for_state(policy, "subscriber_monitoring", state)
 
 
 def _technical_issue(state: ConversationalState) -> bool:
@@ -1555,7 +2486,7 @@ def _configured_playbook_decision(
                 tool_key = str(raw_step.get("tool") or "").strip()
                 if not tool_key:
                     continue
-                if not _tool_enabled_for_intent(policy, tool_key, state.current_intent):
+                if not _tool_allowed_for_state(policy, tool_key, state):
                     continue
                 if any(item.get("tool") == tool_key for item in state.tool_executions):
                     continue
@@ -1615,12 +2546,28 @@ def _configured_playbook_decision(
                 )
                 if prior is not None and prior.attempts >= 2:
                     return None
-                response = str(raw_step.get("response") or _field_question(field))
+                response = str(
+                    raw_step.get("fallback_response")
+                    or raw_step.get("response")
+                    or _field_question(field)
+                )
+                purpose = str(
+                    raw_step.get("question_purpose")
+                    or DEFAULT_FACT_PURPOSES.get(_canonical_fact_key(field))
+                    or "Obtain the policy-required fact without assuming its value."
+                )[:500]
+                priority = _bounded_int(
+                    raw_step.get("priority"), default=1000 - index, low=0, high=1000
+                )
                 question = _record_question(
                     state,
                     key=field,
                     expected_fact=_canonical_fact_key(field),
                     prompt=_playbook_response(playbook, state, response),
+                    purpose=purpose,
+                    priority=priority,
+                    priority_source="playbook",
+                    required=bool(raw_step.get("required", True)),
                     now=datetime.now(UTC),
                 )
                 return ConversationEngineDecision(
@@ -1634,6 +2581,20 @@ def _configured_playbook_decision(
                         "playbook": playbook_key,
                         "question_key": question.key,
                         "expected_fact": question.expected_fact,
+                        "question_purpose": question.purpose,
+                        "question_priority": question.priority,
+                        "priority_source": question.priority_source,
+                        "question_required": question.required,
+                        "candidate_question_keys": [question.key],
+                        "effective_question_order": [
+                            {
+                                "key": question.key,
+                                "priority": question.priority,
+                                "source": question.priority_source,
+                                "required": question.required,
+                            }
+                        ],
+                        "acknowledgement_required": state.acknowledgement_required,
                         "next_action": "ask_question",
                         "response_source": "playbook",
                     },
@@ -1649,6 +2610,7 @@ def _configured_playbook_decision(
                     metadata={
                         "reason": str(raw_step.get("reason") or "playbook_resolved"),
                         "playbook": playbook_key,
+                        "acknowledgement_required": state.acknowledgement_required,
                         "next_action": "resolve",
                         "response_source": "playbook",
                     },
@@ -1731,15 +2693,10 @@ def _playbook_response(
 def _field_question(field: str) -> str:
     if field in SUPPORTED_IDENTIFIER_TYPES:
         return _identifier_question(field)
-    if field == "router_powered":
-        return "Is your router or ONU powered on right now?"
-    if field == "los_status":
-        return "Are you seeing a red LOS warning light on the ONU?"
-    if field == "router_restarted":
-        return "Have you restarted the router recently?"
-    if field == "outage_context":
-        return "How long has this been happening?"
-    return "Please share that detail so I can continue checking this."
+    return SAFE_FALLBACK_QUESTION_COPY.get(
+        _canonical_fact_key(field),
+        "Please share that detail so I can continue safely.",
+    )
 
 
 def _configured_troubleshooting_decision(
@@ -1772,7 +2729,7 @@ def _configured_troubleshooting_decision(
             tool_key = str(raw.get("tool") or "").strip()
             if not tool_key:
                 continue
-            if not _tool_enabled_for_intent(policy, tool_key, state.current_intent):
+            if not _tool_allowed_for_state(policy, tool_key, state):
                 continue
             if any(item.get("tool") == tool_key for item in state.tool_executions):
                 continue
@@ -1807,12 +2764,27 @@ def _configured_troubleshooting_decision(
         if action == "request_field":
             field = str(raw.get("field") or raw.get("tool") or "").strip()
             if field and not _fact_is_known(state, field):
-                response = str(raw.get("response") or _field_question(field))
+                response = str(
+                    raw.get("fallback_response")
+                    or raw.get("response")
+                    or _field_question(field)
+                )
+                purpose = str(
+                    raw.get("question_purpose")
+                    or DEFAULT_FACT_PURPOSES.get(_canonical_fact_key(field))
+                    or "Obtain the policy-required fact without assuming its value."
+                )[:500]
                 question = _record_question(
                     state,
                     key=field,
                     expected_fact=_canonical_fact_key(field),
                     prompt=response,
+                    purpose=purpose,
+                    priority=_bounded_int(
+                        raw.get("priority"), default=100, low=0, high=1000
+                    ),
+                    priority_source="playbook",
+                    required=bool(raw.get("required", True)),
                     now=datetime.now(UTC),
                 )
                 return ConversationEngineDecision(
@@ -1823,6 +2795,20 @@ def _configured_troubleshooting_decision(
                         "reason": "troubleshooting_required_field",
                         "question_key": question.key,
                         "expected_fact": question.expected_fact,
+                        "question_purpose": question.purpose,
+                        "question_priority": question.priority,
+                        "priority_source": question.priority_source,
+                        "question_required": question.required,
+                        "candidate_question_keys": [question.key],
+                        "effective_question_order": [
+                            {
+                                "key": question.key,
+                                "priority": question.priority,
+                                "source": question.priority_source,
+                                "required": question.required,
+                            }
+                        ],
+                        "acknowledgement_required": state.acknowledgement_required,
                         "next_action": "ask_question",
                         "response_source": "playbook",
                     },
@@ -1837,6 +2823,7 @@ def _configured_troubleshooting_decision(
                 or "Thanks. I have recorded this as resolved from the details provided.",
                 metadata={
                     "reason": "troubleshooting_resolved",
+                    "acknowledgement_required": state.acknowledgement_required,
                     "next_action": "resolve",
                     "response_source": "playbook",
                 },
@@ -2011,7 +2998,12 @@ def _handoff_decision(
         )
         if not _dict(policy.get("handoff")).get("summary_template")
         else None,
-        metadata={"reason": reason},
+        metadata={
+            "reason": reason,
+            "acknowledgement_required": state.acknowledgement_required,
+            "next_action": "handoff",
+            "response_source": "playbook",
+        },
     )
 
 
@@ -2147,6 +3139,20 @@ def _identifier_question(identifier_type: str) -> str:
     return "Please share that detail so I can continue checking this."
 
 
+def _identifier_question_purpose(identifier_type: str) -> str:
+    labels = {
+        "portal_id": "Portal or account ID",
+        "registered_email": "registered email address",
+        "registered_phone": "registered phone number",
+        CUSTOMER_IDENTIFIER_REQUEST: "one policy-permitted account identifier",
+    }
+    label = labels.get(identifier_type, "policy-permitted account identifier")
+    return (
+        f"Request the customer's {label} so the account can be identified, without "
+        "requesting a password, PIN, OTP, token, or payment credential."
+    )
+
+
 def _identifier_retry_question(identifier_type: str) -> str:
     if identifier_type == CUSTOMER_IDENTIFIER_REQUEST:
         return (
@@ -2251,6 +3257,39 @@ def _tool_enabled_for_intent(
     return True
 
 
+def _tool_allowed_for_state(
+    policy: dict[str, object], key: str, state: ConversationalState
+) -> bool:
+    if not _tool_enabled(policy, key):
+        return False
+    plan, source = _matching_inquiry_plan(state, policy)
+    if plan is None and _has_explicit_inquiry_policy(policy):
+        return False
+    if plan is None and source == "default_policy":
+        for raw in _list(policy.get("intent_definitions")):
+            definition = _dict(raw)
+            if str(definition.get("intent") or definition.get("key") or "") != str(
+                state.current_intent or ""
+            ):
+                continue
+            allowed = [str(item) for item in _list(definition.get("allowed_tools"))]
+            return not allowed or key in allowed
+        defaults = [
+            item
+            for item in DEFAULT_INQUIRY_PLANS
+            if str(item.get("intent") or "") == str(state.current_intent or "unknown")
+            and str(item.get("category") or "") in {"", str(state.category or "")}
+        ]
+        defaults.sort(
+            key=lambda item: bool(str(item.get("category") or "")), reverse=True
+        )
+        plan = dict(defaults[0]) if defaults else None
+    if plan is not None:
+        allowed = [str(item) for item in _list(plan.get("allowed_tools"))]
+        return key in allowed
+    return _tool_enabled_for_intent(policy, key, state.current_intent)
+
+
 def _tool_failure_requires_handoff(
     policy: Mapping[str, object], *, tool_key: str, status: str
 ) -> bool:
@@ -2317,6 +3356,45 @@ def _float_or_none(value: object) -> float | None:
     try:
         return float(str(value)) if value is not None else None
     except (TypeError, ValueError):
+        return None
+
+
+def _int_or_none(value: object) -> int | None:
+    try:
+        return int(str(value)) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _affect_level(value: object) -> AiIntakeAffectLevel:
+    try:
+        return AiIntakeAffectLevel(str(value or AiIntakeAffectLevel.none.value))
+    except ValueError:
+        return AiIntakeAffectLevel.none
+
+
+def _classifier_attempt_status(value: object) -> AiClassifierAttemptStatus:
+    try:
+        return AiClassifierAttemptStatus(str(value or "not_attempted"))
+    except ValueError:
+        return AiClassifierAttemptStatus.not_attempted
+
+
+def _classifier_failure_reason(value: object) -> AiIntakeReason | None:
+    if value is None:
+        return None
+    try:
+        return AiIntakeReason(str(value))
+    except ValueError:
+        return None
+
+
+def _classifier_failure_kind(value: object) -> AiClassifierFailureKind | None:
+    if value is None:
+        return None
+    try:
+        return AiClassifierFailureKind(str(value))
+    except ValueError:
         return None
 
 

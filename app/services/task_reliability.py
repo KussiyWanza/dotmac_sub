@@ -91,6 +91,15 @@ REDRIVE = FailureVisibility.ADMIN_REDRIVE
 
 
 TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
+    "app.tasks.inbox_sla.evaluate_inbox_sla": _c(
+        "support",
+        SWEEP,
+        IDEMP,
+        LOG,
+        "Periodic bounded evaluation locks each clock; persisted warning and "
+        "breach evidence prevents duplicate transitions. Task failures are logged "
+        "and the next scheduled sweep re-evaluates eligible clocks.",
+    ),
     "app.tasks.field_location_retention.prune_field_location_history": _c(
         "field_operations",
         AUTORETRY,
@@ -261,9 +270,13 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
         IDEMP,
         STATUS,
         "Read-only ERP status poll for in-flight material requests; re-run safe, "
-        "refreshes support_status on the source row.",
+        "rotates bounded pages by observation freshness and delegates each valid "
+        "outcome to the typed material owner.",
     ),
     "app.tasks.dotmac_erp_outbox.repair_purchase_invoice_sync": _c(
+        "integration", SWEEP, IDEMP, STATUS
+    ),
+    "app.tasks.dotmac_erp_outbox.repair_purchase_order_writebacks": _c(
         "integration", SWEEP, IDEMP, STATUS
     ),
     "app.tasks.dotmac_erp_outbox.refresh_purchase_invoice_statuses": _c(
@@ -352,6 +365,17 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
         DEAD,
         "Durable delivery state, stable Meta event ID, bounded retry, and "
         "dead-letter evidence.",
+    ),
+    "app.tasks.integration_inbox.reclaim_stale_claims": _c(
+        "integrations",
+        SWEEP,
+        IDEMP,
+        STATUS,
+        "Beat-rerun sweep, modeled on events.mark_stale_processing_events. "
+        "Moves an expired-lease 'processing' receipt to 'retryable'; a "
+        "receipt already moved no longer matches the sweep's own filter, so "
+        "a repeat run is a no-op for it. The receipt's state/error_code is "
+        "the visible domain status.",
     ),
     "app.tasks.invoice_pdf.generate_invoice_pdf_export": _c(
         "billing", MANUAL, IDEMP, STATUS
@@ -511,6 +535,23 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
         STATUS,
         "The dispatch outbox admits an existing operation once; exact assignment, "
         "configuration-head, revision, and readback evidence prevent stale delivery.",
+    ),
+    "app.tasks.ont_service_configuration.verify_readback": _c(
+        "network",
+        STATE,
+        IDEMP,
+        STATUS,
+        "No autoretry_for is configured, so Celery never retries this task "
+        "automatically. force_readback_only=True is fixed in the task and "
+        "accepted from neither the caller nor the dispatch payload, so this "
+        "path can only observe device state through reconcile's "
+        "readback-only branch and never calls setParameterValues or any "
+        "other OLT write function -- repeated execution against the same "
+        "operation is inherently safe, unlike the sibling apply task it "
+        "otherwise mirrors. The dispatch outbox still admits the queued "
+        "verification operation once; an operator queues a fresh attempt "
+        "through verify_ont_service_configuration_readback, which is itself "
+        "gated on a fresh ACS Inform since the original failure.",
     ),
     "app.tasks.ont_reconcile.run_ont_reconcile_sweep": _c(
         "network", SWEEP, IDEMP, HEALTH
@@ -686,9 +727,9 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
         SWEEP,
         IDEMP,
         STATUS,
-        "Routes only expired AI intake waits through the configured fallback; "
-        "locked rows already settled by inbound processing or an earlier sweep "
-        "are skipped on re-run.",
+        "Normalizes legacy AI wait deadlines and hands expired waits to normal "
+        "agent assignment or durable FIFO queue admission; locked rows already "
+        "settled by inbound processing or an earlier sweep are skipped on re-run.",
     ),
     "app.tasks.team_inbox.process_ai_intake_sessions": _c(
         "support",

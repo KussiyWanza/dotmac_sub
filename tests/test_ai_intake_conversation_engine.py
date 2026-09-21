@@ -4,6 +4,8 @@ import inspect
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
+
 from app.models.ai_intake import AiIntakePolicy, AiIntakePolicyVersion, AiIntakeSession
 from app.models.subscriber import (
     Gender,
@@ -14,10 +16,15 @@ from app.models.subscriber import (
 )
 from app.models.team_inbox import InboxChannelType, InboxConversation
 from app.schemas.ai_intake import (
+    AiClassifierAttempt,
+    AiClassifierAttemptStatus,
+    AiClassifierFailureKind,
+    AiIntakeAffectLevel,
     AiIntakeCategory,
     AiIntakeClassification,
     AiIntakeExtractedFacts,
     AiIntakeIntent,
+    AiIntakeReason,
 )
 from app.services import (
     ai_conversation_intake,
@@ -173,6 +180,8 @@ def test_identified_subscriber_does_not_request_portal_id(db_session, monkeypatc
 
     assert decision.action == "respond"
     assert decision.metadata["question_key"] == "device_scope"
+    assert decision.state.collected_facts.get("device_scope") is None
+    assert "every device" not in (decision.response_text or "").lower()
     assert "Portal ID" not in (decision.response_text or "")
     assert decision.state.subscriber_id == str(subscriber.id)
     assert decision.state.monitoring_results == [{"status": "no_data"}]
@@ -472,7 +481,7 @@ def test_monitoring_no_data_and_unavailable_are_not_offline(db_session, monkeypa
         assert engine._monitoring_offline(state) is False
 
 
-def test_first_turn_handoff_rule_is_ignored_at_runtime(db_session):
+def test_first_turn_handoff_rule_does_not_override_general_enquiry_plan(db_session):
     conversation = _conversation(db_session)
     version = _version(
         db_session,
@@ -507,8 +516,9 @@ def test_first_turn_handoff_rule_is_ignored_at_runtime(db_session):
         ),
     )
 
-    assert decision.action == "handoff"
-    assert decision.metadata["reason"] == "unsupported_or_troubleshooting_exhausted"
+    assert decision.action == "respond"
+    assert decision.metadata["reason"] == "useful_missing_fact"
+    assert decision.metadata["question_key"] == "service_interest"
     assert decision.metadata["reason"] != "bad_immediate_handoff"
 
 
@@ -538,7 +548,7 @@ def test_rich_first_message_extracts_existing_facts(db_session):
     assert "router_restarted" not in decision.state.already_requested_fields
 
 
-def test_configured_no_internet_playbook_asks_first_line_steps(db_session):
+def test_configured_no_internet_playbook_asks_first_line_steps(db_session, monkeypatch):
     subscriber = _subscriber(db_session)
     conversation = _conversation(db_session, subscriber_id=subscriber.id)
     version = _version(
@@ -546,7 +556,7 @@ def test_configured_no_internet_playbook_asks_first_line_steps(db_session):
         metadata={
             "tools": {
                 "customer_lookup": {"enabled": True},
-                "subscriber_monitoring": {"enabled": False},
+                "subscriber_monitoring": {"enabled": True},
             },
             "conversation_policy": {
                 "max_turns": 6,
@@ -580,6 +590,12 @@ def test_configured_no_internet_playbook_asks_first_line_steps(db_session):
         },
     )
     session = _session(db_session, conversation, version)
+    monitoring_calls: list[str] = []
+    monkeypatch.setattr(
+        engine.support_monitoring,
+        "project_support_monitoring",
+        lambda *_args: monitoring_calls.append("called"),
+    )
 
     first = engine.run_conversational_turn(
         db_session,
@@ -610,6 +626,7 @@ def test_configured_no_internet_playbook_asks_first_line_steps(db_session):
     assert "los_state" in second.state.already_requested_fields
     assert second.metadata["question_key"] == "los_status"
     assert second.metadata["expected_fact"] == "los_state"
+    assert monitoring_calls == []
 
 
 def test_no_internet_without_playbook_does_not_auto_handoff_after_classification(
@@ -673,7 +690,8 @@ def test_monitoring_troubleshooting_then_red_los_handoff_retains_state(db_sessio
     )
 
     assert first.action == "respond"
-    assert "powered on" in (first.response_text or "")
+    assert first.metadata["question_key"] == "issue_started_when"
+    assert "problem start" in (first.response_text or "").lower()
     assert second.action == "handoff"
     assert second.state.collected_facts["router_restarted"] is True
     assert second.state.collected_facts["router_powered"] is True
@@ -874,6 +892,158 @@ def test_explicit_human_request_escalates(db_session):
     assert decision.state.escalation_reason == "human_requested"
 
 
+def test_langgraph_classifier_unavailable_asks_and_preserves_facts(db_session):
+    conversation = _conversation(db_session)
+    version = _version(
+        db_session,
+        metadata={"conversation_engine_mode": "langgraph_v1"},
+    )
+    session = _session(db_session, conversation, version)
+
+    decision = ai_intake_graph.run_ai_intake_graph(
+        db_session,
+        conversation=conversation,
+        session=session,
+        version=version,
+        latest_body="7dys no service",
+        classification=None,
+        classifier_attempt=AiClassifierAttempt(
+            status=AiClassifierAttemptStatus.invalid_output,
+            reason=AiIntakeReason.classifier_invalid_output,
+            failure_kind=AiClassifierFailureKind.invalid_model_output,
+            retry_count=1,
+            retry_limit=2,
+            provider="test-provider",
+            model="test-model",
+        ),
+        tool_mode="simulation",
+    )
+
+    assert decision.action == "respond"
+    assert decision.metadata["next_action"] == "ask_question"
+    assert decision.metadata["reason"] == "classifier_unavailable"
+    assert "handle_classifier_unavailable" in decision.metadata["node_trace"]
+    assert "handoff" not in decision.metadata["node_trace"]
+    assert decision.state.collected_facts["connectivity_state"] == "down"
+    assert decision.state.collected_facts["connectivity_problem"] is True
+    assert decision.state.collected_facts["issue_started_when"] == "for 7 days"
+    assert decision.state.current_intent == "technical_support"
+    assert decision.state.category == "no_internet"
+    assert decision.state.issue_acknowledgement_required is True
+    assert decision.metadata["question_key"] == "device_scope"
+    assert decision.metadata["fact_driven_path"] is True
+    assert "whether your request is about" not in decision.response_text.lower()
+    assert decision.state.classifier_failure_reason is (
+        AiIntakeReason.classifier_invalid_output
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_state", "expected_duration"),
+    [
+        ("7dys no service", "down", "for 7 days"),
+        ("No internet for 7 days", "down", "for 7 days"),
+        ("Internet down 2hrs", "down", "for 2 hours"),
+        ("Network down for 1wk", "down", "for 1 week"),
+        ("Not browsing since yesterday", "down", "since yesterday"),
+        ("The internet is not working for 3 hours", "down", "for 3 hours"),
+    ],
+)
+def test_bounded_support_shorthand_normalizes_typed_facts(
+    text, expected_state, expected_duration
+):
+    facts = engine.extract_facts(text)
+
+    assert facts["connectivity_state"] == expected_state
+    assert facts["connectivity_problem"] is True
+    assert facts["issue_started_when"] == expected_duration
+
+
+def test_slow_internet_duration_is_retained_and_not_asked_again(db_session):
+    subscriber = _subscriber(db_session)
+    conversation = _conversation(db_session, subscriber_id=subscriber.id)
+    version = _version(db_session)
+    session = _session(db_session, conversation, version)
+
+    decision = engine.run_conversational_turn(
+        db_session,
+        conversation=conversation,
+        session=session,
+        version=version,
+        latest_body="My internet has been slow for 3 days",
+        classification=_classification(category="slow_internet"),
+        tool_mode="simulation",
+    )
+
+    assert decision.state.collected_facts["issue_started_when"] == "for 3 days"
+    assert decision.metadata["question_key"] == "device_scope"
+    assert "issue_started_when" not in decision.state.candidate_question_keys
+
+
+def test_langgraph_classifier_unavailable_hands_off_after_retry_limit(db_session):
+    conversation = _conversation(db_session)
+    version = _version(
+        db_session,
+        metadata={"conversation_engine_mode": "langgraph_v1"},
+    )
+    session = _session(db_session, conversation, version)
+
+    decision = ai_intake_graph.run_ai_intake_graph(
+        db_session,
+        conversation=conversation,
+        session=session,
+        version=version,
+        latest_body="Still need help",
+        classification=None,
+        classifier_attempt=AiClassifierAttempt(
+            status=AiClassifierAttemptStatus.unavailable,
+            reason=AiIntakeReason.classifier_unavailable,
+            failure_kind=AiClassifierFailureKind.classifier_unavailable,
+            retry_count=3,
+            retry_limit=2,
+            retries_exhausted=True,
+        ),
+        tool_mode="simulation",
+    )
+
+    assert decision.action == "handoff"
+    assert decision.metadata["reason"] == "classifier_unavailable_after_retries"
+    assert decision.state.escalation_reason == "classifier_unavailable_after_retries"
+    assert "handle_classifier_unavailable" in decision.metadata["node_trace"]
+
+
+def test_langgraph_human_request_precedes_classifier_unavailable(db_session):
+    conversation = _conversation(db_session)
+    version = _version(
+        db_session,
+        metadata={"conversation_engine_mode": "langgraph_v1"},
+    )
+    session = _session(db_session, conversation, version)
+
+    decision = ai_intake_graph.run_ai_intake_graph(
+        db_session,
+        conversation=conversation,
+        session=session,
+        version=version,
+        latest_body="My internet is down but I want an agent",
+        classification=None,
+        classifier_attempt=AiClassifierAttempt(
+            status=AiClassifierAttemptStatus.invalid_output,
+            reason=AiIntakeReason.classifier_invalid_output,
+            failure_kind=AiClassifierFailureKind.schema_validation_failure,
+            retry_count=1,
+            retry_limit=2,
+        ),
+        tool_mode="simulation",
+    )
+
+    assert decision.action == "handoff"
+    assert decision.metadata["reason"] == "human_requested"
+    assert decision.state.human_requested is True
+    assert decision.state.collected_facts["connectivity_state"] == "down"
+    assert "handle_classifier_unavailable" not in decision.metadata["node_trace"]
+
+
 def test_follow_up_classification_is_not_handed_off_by_engine(db_session):
     conversation = _conversation(db_session)
     version = _version(
@@ -979,6 +1149,196 @@ def test_slow_issue_skips_facts_already_supplied_and_asks_one_useful_question(
     assert (decision.response_text or "").count("?") == 1
     assert decision.state.collected_facts["device_scope"] == "all_devices"
     assert decision.state.collected_facts["issue_started_when"] == "since yesterday"
+
+
+def test_strong_profanity_sets_bounded_affect_and_acknowledgement_obligation():
+    affect = engine.detect_affect("I'm fucking fed up of you guys")
+    state = engine.ConversationalState(
+        conversation_id=str(uuid4()),
+        session_id=str(uuid4()),
+        policy_version_id=None,
+        channel="whatsapp",
+    )
+
+    engine._merge_affect(state, affect, fresh_signal=True)
+
+    assert affect.frustration_level is AiIntakeAffectLevel.high
+    assert affect.agitation_level is AiIntakeAffectLevel.high
+    assert state.acknowledgement_required is True
+    assert state.frustration_acknowledged is False
+    assert state.affect_sources == ["deterministic"]
+
+
+def test_new_frustration_is_acknowledged_separately_from_known_issue(
+    db_session,
+):
+    subscriber = _subscriber(db_session)
+    conversation = _conversation(db_session, subscriber_id=subscriber.id)
+    version = _version(
+        db_session,
+        metadata={
+            "tools": {
+                "customer_lookup": {"enabled": True},
+                "subscriber_monitoring": {"enabled": False},
+            }
+        },
+    )
+    session = _session(db_session, conversation, version)
+    first = engine.run_conversational_turn(
+        db_session,
+        conversation=conversation,
+        session=session,
+        version=version,
+        latest_body="My internet is slow.",
+        classification=_classification(category="slow_internet"),
+    )
+    first.state.issue_acknowledged = True
+    first.state.frustration_acknowledged = False
+    engine.persist_state(session, first.state)
+
+    angry = engine.run_conversational_turn(
+        db_session,
+        conversation=conversation,
+        session=session,
+        version=version,
+        latest_body="I'm fucking fed up of you guys",
+        classification=_classification(category="slow_internet"),
+    )
+
+    assert angry.state.issue_acknowledged is True
+    assert angry.state.frustration_acknowledged is False
+    assert angry.state.acknowledgement_required is True
+    assert angry.metadata["question_key"] == "device_scope"
+
+
+def test_general_enquiry_selects_policy_clarification_instead_of_handoff(db_session):
+    conversation = _conversation(db_session)
+    version = _version(db_session)
+    session = _session(db_session, conversation, version)
+
+    decision = engine.run_conversational_turn(
+        db_session,
+        conversation=conversation,
+        session=session,
+        version=version,
+        latest_body="I would like to make enquiries about your services",
+        classification=_classification(
+            intent="general_enquiry", category="general_enquiry"
+        ),
+    )
+
+    assert decision.action == "respond"
+    assert decision.metadata["question_key"] == "service_interest"
+    assert decision.metadata["priority_source"] == "default_policy"
+
+
+@pytest.mark.parametrize(
+    ("intent", "category", "expected_question"),
+    [
+        ("billing_issue", "other_billing_issue", "billing_concern"),
+        ("payment_confirmation", "payment_confirmation", "payment_reference"),
+        ("subscription_renewal", "renewal_request", "renewal_service"),
+        ("plan_change", "plan_change_request", "desired_plan"),
+    ],
+)
+def test_nontechnical_intents_use_default_inquiry_policy(
+    db_session, intent, category, expected_question
+):
+    subscriber = _subscriber(db_session)
+    conversation = _conversation(db_session, subscriber_id=subscriber.id)
+    version = _version(db_session)
+    session = _session(db_session, conversation, version)
+
+    decision = engine.run_conversational_turn(
+        db_session,
+        conversation=conversation,
+        session=session,
+        version=version,
+        latest_body="Please help me with this.",
+        classification=_classification(intent=intent, category=category),
+    )
+
+    assert decision.action == "respond"
+    assert decision.metadata["question_key"] == expected_question
+    assert decision.metadata["priority_source"] == "default_policy"
+
+
+def test_explicit_inquiry_plan_is_authoritative_and_records_priority_source():
+    state = engine.ConversationalState(
+        conversation_id=str(uuid4()),
+        session_id=str(uuid4()),
+        policy_version_id=None,
+        channel="whatsapp",
+        current_intent="general_enquiry",
+        category="general_enquiry",
+    )
+    policy = {
+        "inquiry_plans": [
+            {
+                "intent": "general_enquiry",
+                "allowed_tools": [],
+                "facts": [
+                    {
+                        "key": "enquiry_topic",
+                        "purpose": "identify the information the customer needs",
+                        "priority": 700,
+                        "required": True,
+                    }
+                ],
+            }
+        ]
+    }
+
+    [candidate] = engine._question_candidates(state, policy)
+
+    assert candidate.key == "enquiry_topic"
+    assert candidate.priority == 700
+    assert candidate.priority_source == "playbook"
+
+
+def test_explicit_inquiry_policy_does_not_fall_back_for_uncovered_intent():
+    state = engine.ConversationalState(
+        conversation_id=str(uuid4()),
+        session_id=str(uuid4()),
+        policy_version_id=None,
+        channel="whatsapp",
+        current_intent="billing_issue",
+        category="other_billing_issue",
+    )
+    policy = {
+        "inquiry_plans": [
+            {
+                "intent": "general_enquiry",
+                "allowed_tools": [],
+                "facts": [],
+            }
+        ]
+    }
+
+    assert engine._question_candidates(state, policy) == ()
+    assert engine._tool_allowed_for_state(policy, "customer_lookup", state) is False
+
+
+def test_inquiry_policy_validation_rejects_unstructured_customer_copy():
+    with pytest.raises(ValueError, match="fact is unsupported"):
+        ai_conversation_intake._validate_inquiry_plans(
+            {
+                "inquiry_plans": [
+                    {
+                        "intent": "general_enquiry",
+                        "allowed_tools": [],
+                        "facts": [
+                            {
+                                "key": "ask_this_sentence",
+                                "purpose": "ask a hard-coded sentence",
+                                "priority": 100,
+                                "required": True,
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
 
 
 def test_model_fact_correction_replaces_stale_connectivity_state(db_session):
@@ -1261,6 +1621,8 @@ def test_langgraph_topology_contains_expected_nodes_and_edges():
 
     assert set(ai_intake_graph.GRAPH_NODE_SEQUENCE) <= set(topology)
     assert topology["load_policy"] == ("load_state",)
+    assert "handle_classifier_unavailable" in topology["determine_missing_information"]
+    assert topology["handle_classifier_unavailable"] == ("decide_next_action",)
     assert "request_identifier" in topology["determine_missing_information"]
     assert "execute_tool" in topology["select_tool"]
     assert "handoff" in topology["decide_next_action"]
@@ -1278,6 +1640,9 @@ def test_langgraph_tool_failure_handoff_requires_explicit_policy(db_session):
         version=version,
         latest_body="No internet.",
         classification=_classification(),
+        classifier_attempt=AiClassifierAttempt(
+            status=AiClassifierAttemptStatus.accepted,
+        ),
         recent_messages=(),
         now=datetime.now(UTC),
         tool_mode="simulation",

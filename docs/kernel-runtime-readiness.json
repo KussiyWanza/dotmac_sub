@@ -1,0 +1,74 @@
+{
+  "schema": "kernel-runtime-readiness.v1",
+  "product": "dotmac_sub",
+  "subject": "sub-kernel-successor-readiness",
+  "requirements": [
+    {
+      "id": "tenant-guc-is-a-class-scoped-after-begin-listener",
+      "statement": "Sub's operator-tenant scope hook is registered via @event.listens_for(Session, \"after_begin\") against the base sqlalchemy.orm.Session class, not against a specific sessionmaker or engine, so it fires on every root transaction opened by any session factory in the process -- including one produced by a shared Kernel session runtime, without any change to that hook.",
+      "satisfied": true,
+      "source_reference": "app/services/session_hooks.py:116-124"
+    },
+    {
+      "id": "tenant-guc-fires-only-on-root-transactions",
+      "statement": "The after_begin listener returns immediately when transaction.parent is not None, so it re-arms exactly once per root transaction and never re-fires for a SAVEPOINT/nested transaction.",
+      "satisfied": true,
+      "source_reference": "app/services/session_hooks.py:116-124"
+    },
+    {
+      "id": "tenant-guc-value-is-transaction-local-set-config",
+      "statement": "The operator-tenant scope is installed with SELECT set_config('app.current_tenant', :tenant_id, true) -- PostgreSQL's parameterisable SET LOCAL equivalent -- so the value is discarded at commit/rollback and cannot leak across a pooled connection to a session opened by a different factory, and the hook is a no-op on any non-PostgreSQL dialect.",
+      "satisfied": true,
+      "source_reference": "app/services/operator_tenant.py:62-89"
+    },
+    {
+      "id": "isolation-modes-apply-via-connection-execution-options-not-a-new-session-factory",
+      "statement": "begin_serializable_write and begin_read_only_snapshot each take an existing caller-owned db: Session and call db.connection(execution_options=dict(...)) to pin the transaction's isolation level; neither function constructs a new Engine or sessionmaker, so pointing either one at a session produced by a different (e.g. Kernel-owned) factory introduces no third session factory.",
+      "satisfied": true,
+      "source_reference": "app/db.py:146-173"
+    },
+    {
+      "id": "read-only-mode-is-repeatable-read-plus-postgresql-readonly-true",
+      "statement": "READ_ONLY_SNAPSHOT_OPTIONS is exactly {isolation_level: \"REPEATABLE READ\", postgresql_readonly: True}.",
+      "satisfied": true,
+      "source_reference": "app/db.py:124-129"
+    },
+    {
+      "id": "serializable-write-mode-is-serializable-plus-postgresql-readonly-false",
+      "statement": "SERIALIZABLE_WRITE_OPTIONS is exactly {isolation_level: \"SERIALIZABLE\", postgresql_readonly: False}.",
+      "satisfied": true,
+      "source_reference": "app/db.py:138-142"
+    },
+    {
+      "id": "no-set-transaction-sql-is-issued-for-isolation-mode",
+      "statement": "Sub applies isolation mode through SQLAlchemy execution_options rather than issuing a literal SET TRANSACTION ISOLATION LEVEL statement, precisely because the tenant-GUC after_begin listener above always runs a statement first -- so the two mechanisms (a class-scoped after_begin listener and a connection-level execution_options isolation pin) do not compete for \"first statement in the transaction\" position the way two literal SQL statements would.",
+      "satisfied": true,
+      "source_reference": "app/db.py:113-121"
+    },
+    {
+      "id": "tenant-guc-ordering-is-compatible-with-a-pre-begin-kernel-isolation-pin",
+      "statement": "DECLARED, not fully measured by this validator: Starter's Kernel successor (Slice 3, merged on Starter main) applies readonly_session()/serializable_session()'s isolation mode via execution_options set before the transaction's BEGIN, so it precedes every after_begin listener -- that half is a fact about Starter's own tree, which this repository does not contain and this validator does not sweep; it is taken as given from the landed Starter change, not re-derived here. What IS measured, from Sub's own tree, is the half that makes the declared ordering relevant: Sub's tenant-GUC hook fires via after_begin (see tenant-guc-is-a-class-scoped-after-begin-listener) and issues no literal SET TRANSACTION statement of its own (checked here), so it never competes with a pre-BEGIN isolation pin for the one-shot 'first statement' position PostgreSQL enforces for SET TRANSACTION. The satisfied value below reflects only that measured Sub-side half; it is not, and cannot be, a claim this validator makes about Starter's session_runtime.py.",
+      "satisfied": true,
+      "source_reference": "app/services/operator_tenant.py:62-89"
+    }
+  ],
+  "composition": [
+    {
+      "declaration": "Sub imports exactly one name from dotmac_kernel.models -- Tenant -- to model its single operator tenant; it does not import or construct dotmac_kernel.session_runtime.DatabaseRuntime anywhere, and app/db.py remains Sub's own session and transaction authority.",
+      "source_reference": "app/services/operator_tenant.py:29"
+    },
+    {
+      "declaration": "Sub pins dotmac-kernel at exactly 0.1.0a94 (no range) from the private forgejo index in [project.dependencies].",
+      "source_reference": "pyproject.toml:52"
+    }
+  ],
+  "source_references": [
+    "app/db.py",
+    "app/services/session_hooks.py",
+    "app/services/operator_tenant.py",
+    "app/services/party_identity_backfill.py",
+    "app/services/migration_source_export.py",
+    "pyproject.toml",
+    "docs/sub-runtime-readiness-inventory.md"
+  ]
+}

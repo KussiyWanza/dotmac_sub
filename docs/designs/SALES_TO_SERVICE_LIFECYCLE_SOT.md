@@ -1,6 +1,6 @@
 # Sales-to-Service Lifecycle Source of Truth
 
-**Status:** Approved and implemented through migration 480
+**Status:** Approved and implemented through migration 584
 **System of record:** Sub
 **Decision owner:** Michael
 
@@ -10,9 +10,9 @@
 signed interaction / staff capture
   -> IntegrationInbox receipt (when external)
   -> Party + immutable Lead origin
-  -> manually authored Lead-backed Quote(s)
+  -> manually authored Lead- or customer-backed Quote(s)
   -> accepted Quote
-  -> exact Lead/Party account conversion + Lead Won
+  -> exact Lead/Party account conversion + Lead Won, or existing Subscriber
   -> SalesOrder + copied Quote lines
   -> Project + InstallationProject + configured ProjectTemplate Tasks
   -> configured WorkOrder(s), each scoped to its ProjectTask
@@ -73,8 +73,8 @@ Funding, verified implementation, service-order release, and CX acceptance are
 consumed through `sales.fulfillment`'s receipted owner commands
 (`consume_funding_satisfaction` / `consume_verified_implementation` /
 `consume_service_order_release` / `consume_cx_acceptance`). The funding
-consumer's catalog, invoice, add-on, route, service-order, and payment helpers
-are flush-only participants; its complete effect and unique
+consumer's installation-invoice and account-payment helpers are flush-only
+participants; its complete effect and unique
 `(consumer, event_id)` receipt commit atomically via `events.owner_outputs`
 (ADR 0007 §2), so redelivery is an exact no-op.
 
@@ -88,8 +88,8 @@ drives an invoice, payment, balance, access decision, or funding transition.
 
 ```text
 sales_order.funding_satisfied   (sales.orders, atomically with the paid edge)
-  -> pending Subscription + draft ServiceOrder per service line
-     + order payment evidence            [sales.fulfillment, receipted]
+  -> installation settlement + order payment evidence
+     + unapplied remainder as account credit       [sales.fulfillment, receipted]
   -> sales.fulfillment.funding_applied
   -> proposed BillingContractVersion     [billing.contracts, shadow + receipted]
   -> proposed first-period obligation    [billing.obligations, shadow + receipted]
@@ -115,6 +115,16 @@ deposit reference, amount, and provider evidence. An exact verification retry
 replays the same conversion and SalesOrder bookkeeping; changed evidence fails
 closed before SalesOrder money can be overwritten.
 
+Before that deposit path can begin, a self-serve Quote is visible to the
+customer as `Draft — Awaiting staff review`. `sales.quote_payment_review`
+requires an authorized staff user to review the install address, feasibility,
+line items, price, tax, discount, and deposit policy, then approve or reject the
+exact SHA-256 snapshot. Approval records the reviewer, time, and revision. Any
+later commercial change makes that approval stale and every payment endpoint
+fails closed until the revised snapshot is approved. Approval changes the
+customer projection to `Approved — Payment required`; it does not create an
+Invoice, SalesOrder, or Project. Those remain consequences of verified payment.
+
 ## Named owners
 
 | Decision or fact | Owner |
@@ -123,7 +133,9 @@ closed before SalesOrder money can be overwritten.
 | Party-first capture and source replay | `sales.capture` |
 | Atomic admin Person and Lead authoring and maintenance | `sales.lead_authoring` |
 | Immutable origin | `sales.lead_lifecycle` |
-| Atomic Lead-backed New Quote authoring | `sales.quote_authoring` |
+| Atomic Lead- or customer-backed New Quote authoring | `sales.quote_authoring` |
+| Staff approval of the exact Quote snapshot for customer payment | `sales.quote_payment_review` |
+| Customer Quote payment eligibility and payable deposit | `sales.quote_payment_eligibility` |
 | Atomic Quote acceptance and sales conversion | `sales.quote_acceptance` |
 | Flush-only exact Lead/Party account conversion participant | `sales.account_conversion` |
 | Pipeline and Quote | `sales.service` |
@@ -239,19 +251,27 @@ depend on HTTP request/response or exception types.
   POST-Redirect-GET and HTTP 303 on success.
 - Audience and job: staff with `crm:quote:write` create a pricing proposal for
   exactly one eligible Lead or eligible active Customer while retaining the existing optional Install Location.
-- Decision owners: `sales.quote_authoring` owns typed validation, Lead/Party
-  recipient resolution, line-reference validation, Decimal calculations,
+- Decision owners: `sales.quote_authoring` owns typed validation, Lead/Party or
+  active Customer recipient resolution, line-reference validation, Decimal
+  calculations,
   metadata enrichment, Draft/Sent initial status, idempotency, audit, and
   transactional event staging. `sales.quote_acceptance` exclusively owns the
   later Accepted transition and conversion. Tax configuration, Lead lifecycle, account,
   order, Project, Task, WorkOrder, and fulfillment owners retain their named
   decisions.
-- Identity contract: staff select exactly one Lead or Customer. A customer search
-  is server-backed and exposes only active accounts with reviewed active Party
-  bindings. `sales.customer_quote_linkage` locks the submitted Customer and
-  reuses (or creates) its unique system Lead; the Quote remains Lead-backed and
-  also carries the existing Subscriber id. Browser values never establish Party,
-  account, or owner identity; the authenticated SystemUser supplies ownership.
+- Identity contract: staff select exactly one Lead or Customer through bounded,
+  lazy server-backed typeaheads. Lead search exposes eligible active, open,
+  Party-bound Leads. Customer search exposes active Subscriber accounts by
+  related name, account, email, or phone characters and does not require a Party
+  binding. A Lead selection stores `lead_id`; a Customer selection stores
+  `subscriber_id` directly with `lead_id = NULL`. Quote authoring never
+  manufactures a Lead for an existing Customer. Browser values never establish
+  Party, account, or owner identity; the authenticated SystemUser supplies
+  ownership.
+- Legacy compatibility: existing `customer_quote_lead_links` rows and accepted
+  Quotes that already carry both identifiers remain readable historical
+  evidence. No active authoring owner writes that linkage table or creates a
+  synthetic Lead for an existing Customer.
 - First viewport: Quotes breadcrumb, New Quote title and purpose, mutually
   exclusive Lead and Customer pickers (one required),
   Draft-default status, NGN-default currency, required Project Type, and the
@@ -267,15 +287,20 @@ depend on HTTP request/response or exception types.
   optional. Manual Tax Total is accepted only without a configured Tax Rate.
 - Lifecycle contract: new Quotes may be Draft or Sent only. Draft has no
   downstream consequences and Sent sets `sent_at`; Accepted is a separate
-  action invoking the atomic acceptance coordinator. Rejecting or expiring one
+  action invoking the atomic acceptance coordinator. Acceptance converts and
+  marks Won only a genuine Lead-backed Quote; a customer-backed Quote validates
+  and uses its existing active Subscriber directly. Both paths then create the
+  same SalesOrder and implementation scope. Rejecting or expiring one
   of several Quotes does not close the Lead. Exact submission replay returns
   the same Quote, while conflicting reuse fails closed.
 - States and recovery: ordinary validation failures render an accessible error
   banner and preserve all scalar, location, line, and suggestion-identifier
   values. An active Tax Rate with an invalid percentage is excluded from the
   selectable projection, emits structured drift evidence, and renders a
-  partial-data warning instead of preventing Quote authoring. Native browser
-  constraints cover required Lead, currency, and numeric bounds. The submit
+  partial-data warning instead of preventing Quote authoring. Typeaheads expose
+  loading, empty, unavailable, keyboard-navigation, and exact-selection states;
+  stale requests are aborted. Native browser constraints cover the required
+  Lead-or-Customer choice, currency, and numeric bounds. The submit
   control exposes a Submitting state and rejects an in-flight duplicate
   submission.
 - Responsive projection: the form card is centered at `max-w-3xl`; multi-column
@@ -398,16 +423,42 @@ configuration. Changing one requires a migration/versioned contract and tests.
 5. Every non-cancelled SalesOrder receives at most one structurally linked
    Project and InstallationProject. Users may create a WorkOrder against the
    Project or an individual ProjectTask. ProjectTask may own several
-   WorkOrders; WorkOrder owns the foreign key.
-6. A partially paid SalesOrder records the receipt but creates no Subscription
-   or ServiceOrder. Full funding stages `sales_order.funding_satisfied`
-   atomically with the paid transition; the lifecycle projection handler
-   creates one pending Subscription and one idempotent ServiceOrder per
-   service line through `sales.fulfillment.consume_funding_satisfaction`. The
-   same receipted transaction stages the Phase 1 structural shadow input. An
-   unresolved consequence (for example an offer that no longer resolves)
-   fails the delivery visibly instead of being skipped.
-7. Sales ServiceOrders remain `draft` until the vendor-project owner records an
+   WorkOrders; WorkOrder owns the foreign key. When the order records tax,
+   the installation invoice uses the single active TaxRate that reproduces
+   the order's effective tax percentage. The invoice owner snapshots that
+   rate on the installation line and derives subtotal, tax, gross receivable,
+   and balance; the project stores the gross invoiced amount. A missing or
+   ambiguous matching rate blocks invoice issuance and records a retryable
+   project error instead of silently understating tax.
+6. An operator never sets a SalesOrder to `paid` (or `fulfilled`) from the
+   generic sales edit. The SalesOrder detail action opens Finance's canonical
+   account-scoped **Record Payment** flow with the remaining order balance
+   suggested. Finance previews and confirms the receipt, posts it to the
+   customer account, allocates it to eligible open invoices oldest/soonest-due
+   first (including the structurally linked installation invoice), and retains
+   any remainder as account credit. The linked-invoice allocation is the
+   structural evidence used to reconcile SalesOrder coverage. A partial
+   receipt updates the SalesOrder to partial but creates no Subscription or
+   ServiceOrder. Once successful payment evidence covers the complete order,
+   Sales advances it to `paid` and stages `sales_order.funding_satisfied`
+   atomically. The lifecycle projection records the order payment and settles
+   the installation invoice through
+   `sales.fulfillment.consume_funding_satisfaction`; any excess remains
+   customer account credit. Funding creates no Subscription, recurring invoice,
+   credential, add-on, IP assignment, or ServiceOrder. An authorized staff user
+   creates the Subscription explicitly after confirming the offer, service
+   address, access method, NAS/site and IP requirements. Pending creation keeps
+   `start_at` and `next_billing_at` empty; invoice generation is a separate,
+   explicit option. The same receipted funding transaction stages the Phase 1
+   structural shadow input.
+   Once any receipt or waiver exists, the SalesOrder's commercial header and
+   line terms are immutable. Corrections use the Finance refund, credit-note,
+   or adjustment owners; deleting or repricing the receipted sale is refused.
+7. A staff-created pending Subscription may create its provisioning
+   ServiceOrder only after the operator has selected the required IPAM and
+   access-network inputs. Sales funding itself never allocates network
+   resources. Sales-linked ServiceOrders remain `draft` until the
+   vendor-project owner records an
    append-only staff verification event. After that fact commits, the registered
    lifecycle projection handler asks `sales.fulfillment` to complete the native
    Project and release linked ServiceOrders. Replay is idempotent and failure is
@@ -415,7 +466,7 @@ configuration. Changing one requires a migration/versioned contract and tests.
    The committed `service_order.released` output then moves the sales-linked
    ServiceOrder into `provisioning` through its lifecycle owner; repair and
    reprovisioning orders keep manual progression.
-8. Billing cannot directly activate a sales-created pending Subscription.
+8. Billing cannot directly activate a pending Subscription.
    Only a successful provisioning result may transition the linked ServiceOrder
    to `active`; that transition asks the subscription owner to activate access.
 9. Successful activation emits the committed service-order completion fact.

@@ -67,6 +67,7 @@ def _address_summary(
             "address_line2": address.address_line2,
             "city": address.city,
             "region": address.region,
+            "lga": address.lga,
             "postal_code": address.postal_code,
             "country_code": address.country_code,
         }
@@ -79,6 +80,7 @@ def _address_summary(
             "address_line2": subscriber.address_line2,
             "city": subscriber.city,
             "region": subscriber.region,
+            "lga": subscriber.lga,
             "postal_code": subscriber.postal_code,
             "country_code": subscriber.country_code,
         }

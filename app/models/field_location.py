@@ -72,6 +72,25 @@ class FieldTechLocationPing(Base):
         ),
         Index("ix_field_tech_location_pings_received_at", "received_at"),
         Index("ix_field_tech_location_pings_crm_work_order_id", "crm_work_order_id"),
+        # Scoped, not global, uniqueness. FieldJobEvent.client_event_id (the
+        # precedent this mirrors) uses a bare global-unique index on the
+        # client-supplied id alone, which lets one client's key collide with
+        # a DIFFERENT technician's row and wrongly deny that unrelated
+        # technician's ping. A ping only needs replay-safety within the
+        # technician that sent it, so this is deliberately a composite
+        # (technician_id, client_observation_id) unique index instead of a
+        # bare global unique constraint — a documented deviation from the
+        # FieldJobEvent shape, not an oversight; that precedent's own
+        # global-unique index carries this same latent weakness. The column
+        # is nullable, and Postgres unique indexes never treat two NULLs as
+        # equal, so pings from app builds that predate this field keep
+        # today's no-dedup behavior unchanged.
+        Index(
+            "ix_field_tech_location_pings_technician_client_observation",
+            "technician_id",
+            "client_observation_id",
+            unique=True,
+        ),
         CheckConstraint(
             "latitude >= -90 AND latitude <= 90",
             name="ck_field_tech_location_pings_lat_range",
@@ -100,5 +119,11 @@ class FieldTechLocationPing(Base):
         DateTime(timezone=True), nullable=False
     )
     source: Mapped[str] = mapped_column(String(32), default="mobile", nullable=False)
+    # Nullable: a stable client-supplied identifier that lets a mobile retry
+    # after an ambiguous network failure (timeout after the server actually
+    # committed) be recognized as a replay instead of a new row. Old/already-
+    # shipped app builds omit it, and that path is unaffected — see the
+    # composite unique index above and record_ping's dedup check.
+    client_observation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
 
     technician = relationship("TechnicianProfile")

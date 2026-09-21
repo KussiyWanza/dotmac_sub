@@ -13,15 +13,20 @@ GENERIC_FOLLOW_UP_QUESTION = (
     "Please tell us whether your request is about your internet connection, "
     "payment, subscription, account, or a new installation."
 )
+NATURAL_CLARIFICATION_QUESTION = "Could you briefly tell me what you need help with?"
 CUSTOMER_TYPE_FOLLOW_UP_QUESTION = (
     "Is this new internet request for you personally or for an organization?"
 )
 DEFAULT_CLARIFICATION_QUESTIONS = (
-    GENERIC_FOLLOW_UP_QUESTION,
+    NATURAL_CLARIFICATION_QUESTION,
     CUSTOMER_TYPE_FOLLOW_UP_QUESTION,
 )
 APPROVED_FOLLOW_UP_QUESTIONS = frozenset(
-    {GENERIC_FOLLOW_UP_QUESTION, CUSTOMER_TYPE_FOLLOW_UP_QUESTION}
+    {
+        NATURAL_CLARIFICATION_QUESTION,
+        GENERIC_FOLLOW_UP_QUESTION,
+        CUSTOMER_TYPE_FOLLOW_UP_QUESTION,
+    }
 )
 
 
@@ -124,6 +129,44 @@ class AiIntakeLosState(StrEnum):
     unknown = "unknown"
 
 
+class AiIntakeAffectLevel(StrEnum):
+    none = "none"
+    mild = "mild"
+    moderate = "moderate"
+    high = "high"
+
+
+class AiIntakeAffectSource(StrEnum):
+    deterministic = "deterministic"
+    model = "model"
+    conversation_context = "conversation_context"
+
+
+class AiIntakeAffectAssessment(BaseModel):
+    """Bounded affect evidence; it is never a diagnosis of the customer."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    frustration_level: AiIntakeAffectLevel = AiIntakeAffectLevel.none
+    agitation_level: AiIntakeAffectLevel = AiIntakeAffectLevel.none
+    repeated_complaint: StrictBool = False
+    repeated_failed_steps: StrictBool = False
+    prior_failed_interaction: StrictBool = False
+    sources: tuple[AiIntakeAffectSource, ...] = ()
+
+
+class AiProviderAffectAssessment(BaseModel):
+    """Untrusted provider affect candidate without authoritative provenance."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    frustration_level: AiIntakeAffectLevel = AiIntakeAffectLevel.none
+    agitation_level: AiIntakeAffectLevel = AiIntakeAffectLevel.none
+    repeated_complaint: StrictBool = False
+    repeated_failed_steps: StrictBool = False
+    prior_failed_interaction: StrictBool = False
+
+
 class AiIntakeAnswerStatus(StrEnum):
     pending = "pending"
     answered = "answered"
@@ -153,6 +196,7 @@ class AiIntakeResponsePurpose(StrEnum):
 class AiIntakeStatus(StrEnum):
     skipped = "skipped"
     classifying = "classifying"
+    classification_unavailable = "classification_unavailable"
     awaiting_follow_up = "awaiting_follow_up"
     classified = "classified"
     fallback = "fallback"
@@ -202,10 +246,55 @@ class AiIntakeReason(StrEnum):
     follow_up_limit_reached = "follow_up_limit_reached"
     gateway_unavailable = "gateway_unavailable"
     invalid_model_output = "invalid_model_output"
+    classifier_invalid_output = "classifier_invalid_output"
+    classifier_unavailable = "classifier_unavailable"
+    classifier_unavailable_after_retries = "classifier_unavailable_after_retries"
     invalid_configuration = "invalid_configuration"
     context_error = "context_error"
     fallback_timeout = "fallback_timeout"
     no_text_content = "no_text_content"
+
+
+class AiClassifierAttemptStatus(StrEnum):
+    not_attempted = "not_attempted"
+    accepted = "accepted"
+    invalid_output = "invalid_output"
+    unavailable = "unavailable"
+    no_accepted_intent = "no_accepted_intent"
+
+
+class AiClassifierFailureKind(StrEnum):
+    invalid_model_output = "invalid_model_output"
+    schema_validation_failure = "schema_validation_failure"
+    classifier_unavailable = "classifier_unavailable"
+    no_accepted_intent = "no_accepted_intent"
+
+
+class AiClassifierValidationIssue(BaseModel):
+    """Sanitized provider-schema evidence without customer or completion content."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    location: str = Field(min_length=1, max_length=240)
+    error_type: str = Field(min_length=1, max_length=120)
+    expected_type: str = Field(min_length=1, max_length=120)
+    actual_type: str = Field(min_length=1, max_length=80)
+
+
+class AiClassifierAttempt(BaseModel):
+    """Safe classifier evidence passed from classification into orchestration."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: AiClassifierAttemptStatus = AiClassifierAttemptStatus.not_attempted
+    reason: AiIntakeReason | None = None
+    failure_kind: AiClassifierFailureKind | None = None
+    retry_count: Annotated[int, Field(ge=0, le=10)] = 0
+    retry_limit: Annotated[int, Field(ge=0, le=5)] = 0
+    retries_exhausted: bool = False
+    provider: str | None = Field(default=None, max_length=80)
+    model: str | None = Field(default=None, max_length=160)
+    validation_issues: tuple[AiClassifierValidationIssue, ...] = ()
 
 
 class AiIntakeContextMessage(BaseModel):
@@ -239,6 +328,23 @@ class AiIntakeExtractedFacts(BaseModel):
     portal_id: str | None = Field(default=None, max_length=32)
     registered_email: str | None = Field(default=None, max_length=254)
     registered_phone: str | None = Field(default=None, max_length=32)
+    service_interest: str | None = Field(default=None, max_length=120)
+    enquiry_topic: str | None = Field(default=None, max_length=160)
+    billing_concern: str | None = Field(default=None, max_length=160)
+    invoice_or_charge_reference: str | None = Field(default=None, max_length=80)
+    payment_reference: str | None = Field(default=None, max_length=80)
+    payment_date: str | None = Field(default=None, max_length=40)
+    payment_amount: Annotated[float | None, Field(default=None, strict=True, ge=0)] = (
+        None
+    )
+    renewal_service: str | None = Field(default=None, max_length=120)
+    desired_renewal_period: str | None = Field(default=None, max_length=80)
+    desired_plan: str | None = Field(default=None, max_length=120)
+    coverage_location: str | None = Field(default=None, max_length=160)
+    installation_location: str | None = Field(default=None, max_length=160)
+    account_access_problem: str | None = Field(default=None, max_length=160)
+    complaint_subject: str | None = Field(default=None, max_length=160)
+    desired_resolution: str | None = Field(default=None, max_length=160)
 
 
 class AiIntakeRequest(BaseModel):
@@ -250,6 +356,9 @@ class AiIntakeRequest(BaseModel):
     inbound_message_id: str = Field(min_length=1, max_length=255)
     body: str = Field(min_length=1, max_length=4000)
     conversation_id: UUID | None = None
+    session_id: UUID | None = None
+    policy_version_id: UUID | None = None
+    persisted_inbound_message_id: UUID | None = None
     recent_messages: tuple[AiIntakeContextMessage, ...] = ()
     conversation_tags: tuple[str, ...] = ()
     campaign_attributed: bool = False
@@ -259,6 +368,7 @@ class AiIntakeRequest(BaseModel):
     has_active_assignment: bool = False
     awaiting_follow_up: bool = False
     follow_up_count: Annotated[int, Field(ge=0, le=10)] = 0
+    classifier_failure_count: Annotated[int, Field(ge=0, le=10)] = 0
 
 
 class AiProviderClassification(BaseModel):
@@ -277,6 +387,9 @@ class AiProviderClassification(BaseModel):
     party_type_confidence: Annotated[float, Field(strict=True, ge=0.0, le=1.0)] = 0.0
     message_facts: AiIntakeExtractedFacts = Field(
         default_factory=lambda: AiIntakeExtractedFacts()
+    )
+    message_affect: AiProviderAffectAssessment = Field(
+        default_factory=AiProviderAffectAssessment
     )
 
     @model_validator(mode="after")
@@ -302,6 +415,9 @@ class AiIntakeClassification(BaseModel):
     message_facts: AiIntakeExtractedFacts = Field(
         default_factory=lambda: AiIntakeExtractedFacts()
     )
+    message_affect: AiIntakeAffectAssessment = Field(
+        default_factory=AiIntakeAffectAssessment
+    )
 
     @model_validator(mode="after")
     def validate_follow_up_shape(self) -> AiIntakeClassification:
@@ -323,6 +439,7 @@ class AiIntakeOutcome(BaseModel):
     provider: str | None = Field(default=None, max_length=80)
     model: str | None = Field(default=None, max_length=160)
     duration_ms: Annotated[int, Field(ge=0)] = 0
+    classifier_attempt: AiClassifierAttempt = Field(default_factory=AiClassifierAttempt)
 
 
 class AiIntakeSafeCustomerIdentity(BaseModel):
@@ -360,6 +477,8 @@ class AiIntakePlaybookStepContext(BaseModel):
     key: str | None = Field(default=None, max_length=120)
     action: AiIntakeNextAction
     approved_instruction: str = Field(min_length=1, max_length=800)
+    question_purpose: str | None = Field(default=None, max_length=500)
+    expected_fact: str | None = Field(default=None, max_length=80)
 
 
 class AiCustomerResponseCompositionRequest(BaseModel):
@@ -378,7 +497,11 @@ class AiCustomerResponseCompositionRequest(BaseModel):
     playbook_step: AiIntakePlaybookStepContext
     business_tone: str = Field(min_length=1, max_length=1000)
     approved_isp_information: str | None = Field(default=None, max_length=4000)
-    issue_already_acknowledged: bool = False
+    affect: AiIntakeAffectAssessment = Field(default_factory=AiIntakeAffectAssessment)
+    acknowledgement_required: bool = False
+    issue_acknowledgement_required: bool = False
+    issue_acknowledged: bool = False
+    frustration_acknowledged: bool = False
 
 
 class AiProviderCustomerResponse(BaseModel):
@@ -390,6 +513,7 @@ class AiProviderCustomerResponse(BaseModel):
     purpose: AiIntakeResponsePurpose
     follow_up_fact_key: str | None = Field(default=None, max_length=80)
     acknowledges_issue: StrictBool = False
+    acknowledges_frustration: StrictBool = False
 
 
 class AiCustomerResponseCompositionOutcome(BaseModel):
@@ -399,6 +523,7 @@ class AiCustomerResponseCompositionOutcome(BaseModel):
     purpose: AiIntakeResponsePurpose
     follow_up_fact_key: str | None = Field(default=None, max_length=80)
     acknowledges_issue: bool = False
+    acknowledges_frustration: bool = False
     response_source: str = Field(pattern="^(model|playbook|template)$")
     provider: str | None = Field(default=None, max_length=80)
     model: str | None = Field(default=None, max_length=160)

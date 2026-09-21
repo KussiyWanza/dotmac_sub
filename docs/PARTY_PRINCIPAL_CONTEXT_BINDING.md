@@ -271,6 +271,22 @@ infer identity or authority.
 
 ## Guarded writers
 
+### Reviewed Party reactivation
+
+`party.identity_reactivation` is the sole command writer for restoring a
+reviewed canonical Party from `quarantined` to `active`. Its typed command names
+the exact Party UUID, expected Party type and update timestamp, attributable
+reviewer, aware review time, decision source, and bounded reason. It locks the
+Party and fails closed for stale evidence, missing identities, changed types,
+merged or archived identities, and active state without exact replay evidence.
+
+The transition, PII-free audit record, and `party.identity_reactivated` event
+commit atomically. Exact command replay emits no duplicate evidence. This owner
+does not infer identity, repoint or merge a Party, activate a principal, grant
+access, or change membership. Operators follow
+`docs/runbooks/PARTY_IDENTITY_REACTIVATION.md`; direct SQL restoration is not a
+fallback.
+
 Only the following `app.services.party` commands write these links.
 
 ### SystemUser

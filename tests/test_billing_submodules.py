@@ -78,15 +78,29 @@ from app.services.settings_spec import get_spec
 
 
 def _deliver_prepaid_renewal(db_session: Session, payment: Payment) -> None:
-    """Deliver the deferred payment consequence inside the nested test session."""
-    PrepaidRenewalHandler().handle(
-        db_session,
-        Event(
-            event_type=EventType.payment_received,
-            payload={"payment_id": str(payment.id)},
-            account_id=payment.account_id,
-        ),
+    """Deliver the deferred payment consequence inside the nested test session.
+
+    Calls the handler directly rather than through the real dispatcher (to
+    stay inside this test's own already-open transaction/session), but
+    still persists a real `EventStore` row for the event first -- exactly
+    what the real dispatcher does before invoking any handler. Required
+    since 2026-09 round 8's fail-closed guard
+    (`financial.prepaid_service_renewals.evaluate_prepaid_service_after_
+    settlement`): an `event_id` with no matching `EventStore` row is now a
+    hard failure, not a warn-and-continue, and this helper's `Event()`
+    previously carried an in-memory-only, auto-generated `event_id`
+    (`field(default_factory=uuid4)`) that was never durably recorded.
+    """
+    from app.services import event_store as event_store_service
+
+    event = Event(
+        event_type=EventType.payment_received,
+        payload={"payment_id": str(payment.id)},
+        account_id=payment.account_id,
     )
+    event_store_service.create_event_record(db_session, event)
+    db_session.flush()
+    PrepaidRenewalHandler().handle(db_session, event)
 
 
 def _make_subscriber(db_session: object) -> Subscriber:

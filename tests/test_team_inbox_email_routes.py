@@ -491,6 +491,9 @@ def test_ai_intake_admin_lifecycle_uses_canonical_separate_actions():
     assert 'name="generic_clarification_question"' in ROUTES_TEMPLATE
     assert 'name="customer_type_clarification_question"' in ROUTES_TEMPLATE
     assert 'name="handoff_after_classification"' in ROUTES_TEMPLATE
+    assert 'name="customer_wait_handoff_minutes"' in ROUTES_TEMPLATE
+    assert 'name="customer_wait_expiry_hours"' not in ROUTES_TEMPLATE
+    assert "ai_conversation_intake.CustomerWaitHandoffPolicy(" in ROUTES_MODULE
     assert '"handoff_after_classification": bool(handoff_after_classification)' in (
         ROUTES_MODULE
     )

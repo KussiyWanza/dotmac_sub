@@ -318,6 +318,15 @@ def test_integration_sot_names_the_live_cutover_owners() -> None:
     )
 
 
+def test_control_plane_consumes_typed_integration_evidence_projection() -> None:
+    control_plane = _read(PROJECT_ROOT / "app/services/web_control_plane.py")
+
+    assert "installed_integration_projections" in control_plane
+    assert "build_installed_integrations_data" not in control_plane
+    assert 'row["health"]' not in control_plane
+    assert 'row.get("health_stats")' not in control_plane
+
+
 def test_narrative_sot_names_each_integration_authority_migration() -> None:
     relationships = _read(SOT_MAP)
 

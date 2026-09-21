@@ -105,13 +105,16 @@ def test_assigning_a_non_member_is_refused_not_silently_dropped(db_session):
     """The owner reports this in the result instead of raising, so the route
     must inspect `kind` — otherwise the operator is told it worked."""
     team_id = _team(db_session)  # no members
+    non_member, _person = add_bound_staff_user(db_session)
+    non_member_id = non_member.id
+    db_session.commit()
     conversation_id = _conversation(db_session, team_id=team_id)
 
     outcome = team_inbox_commands.assign_conversation(
         db_session,
         conversation_id=conversation_id,
         service_team_id=team_id,
-        person_id=uuid.uuid4(),
+        person_id=non_member_id,
     )
 
     assert outcome.kind == "invalid_agent"
@@ -181,10 +184,9 @@ def test_run_macro_is_wired_and_distinct_from_inserting_text():
     """Inserting a macro body is text; running it applies its actions."""
     assert "/run-macro" in CONVERSATION
     assert "team_inbox_commands.run_macro" in ROUTES
-    assert (
-        "execute_macro_actions"
-        in Path("app/services/team_inbox_commands.py").read_text()
-    )
+    assert "execute_macro_actions" in Path(
+        "app/services/team_inbox_commands.py"
+    ).read_text(encoding="utf-8")
     # The insert path must still exist and still carry identity.
     assert "inbox-insert-text" in CONVERSATION
     assert "macroId" in CONVERSATION

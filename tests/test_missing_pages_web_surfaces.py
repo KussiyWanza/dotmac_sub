@@ -48,6 +48,8 @@ def test_help_center_uses_docs_layout_without_new_article_content() -> None:
     route = _read("app/web/admin/help_center.py")
     template = _read("templates/admin/help/index.html")
 
+    assert "support:ticket:read" not in route
+    assert "require_permission" not in route
     assert 'article: str = Query("")' in route
     assert "selected_article" in route
     assert "grouped_articles" in route

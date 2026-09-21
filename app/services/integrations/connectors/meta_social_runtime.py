@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -82,14 +84,38 @@ def _endpoint(config: Mapping[str, Any], channel: MetaSocialChannel) -> str:
     return f"https://graph.instagram.com/{version}/me/messages"
 
 
+def _attachment_upload_endpoint(
+    config: Mapping[str, Any], channel: MetaSocialChannel
+) -> str:
+    version = _graph_version(config)
+    account_id = _configured_account_id(config, channel)
+    if channel is MetaSocialChannel.facebook_messenger:
+        return f"https://graph.facebook.com/{version}/{account_id}/message_attachments"
+    if _auth_mode(config) == META_SOCIAL_AUTH_MODE_OAUTH:
+        return f"https://graph.facebook.com/{version}/{account_id}/message_attachments"
+    return f"https://graph.instagram.com/{version}/{account_id}/message_attachments"
+
+
 def _payload(
     *,
     config: Mapping[str, Any],
     channel: MetaSocialChannel,
     recipient_id: str,
-    body: str,
+    body: str | None = None,
+    attachment_type: str | None = None,
+    attachment_id: str | None = None,
 ) -> dict[str, Any]:
-    message = {"text": body}
+    if body:
+        message: dict[str, Any] = {"text": body}
+    elif attachment_type and attachment_id:
+        message = {
+            "attachment": {
+                "type": attachment_type,
+                "payload": {"attachment_id": attachment_id},
+            }
+        }
+    else:
+        raise ValueError("message_content_required")
     if (
         channel is MetaSocialChannel.instagram_dm
         and _auth_mode(config) == META_SOCIAL_AUTH_MODE_INDIVIDUAL
@@ -147,9 +173,12 @@ def _safe_receipt(response: httpx.Response) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return receipt
     message_id = raw.get("message_id") or raw.get("id")
+    attachment_id = raw.get("attachment_id")
     recipient_id = raw.get("recipient_id")
     if message_id:
         receipt["provider_message_id"] = str(message_id)
+    if attachment_id:
+        receipt["provider_attachment_id"] = str(attachment_id)
     if recipient_id:
         receipt["provider_recipient_id"] = str(recipient_id)
     return receipt
@@ -289,14 +318,32 @@ class MetaSocialRuntimeRunner:
         account_id = str(params.get("provider_account_id") or "").strip()
         recipient_id = str(params.get("recipient_id") or "").strip()
         body = str(params.get("body") or "").strip()
+        raw_attachment = params.get("attachment")
+        attachment = raw_attachment if isinstance(raw_attachment, dict) else None
         if account_id != _configured_account_id(config, channel):
             return self._rejected(envelope, "provider_account_not_bound")
         if not recipient_id:
             return self._rejected(envelope, "recipient_required")
-        if not body:
-            return self._rejected(envelope, "body_required")
+        if bool(body) == bool(attachment):
+            return self._rejected(envelope, "message_content_invalid")
+        attachment_type = ""
+        attachment_id = ""
+        if attachment is not None:
+            attachment_type = str(attachment.get("attachment_type") or "").strip()
+            supported_types = {"image", "audio", "video", "file"}
+            if attachment_type not in supported_types:
+                return self._rejected(envelope, "attachment_type_unsupported")
+            if channel is MetaSocialChannel.instagram_dm and attachment_type == "file":
+                return self._rejected(envelope, "instagram_attachment_type_unsupported")
+            if not str(attachment.get("content_base64") or "").strip():
+                return self._rejected(envelope, "attachment_content_required")
         payload = _payload(
-            config=config, channel=channel, recipient_id=recipient_id, body=body
+            config=config,
+            channel=channel,
+            recipient_id=recipient_id,
+            body=body or None,
+            attachment_type=attachment_type or None,
+            attachment_id="preview-attachment-id" if attachment is not None else None,
         )
         output: dict[str, Any] = {
             "channel": channel.value,
@@ -317,6 +364,90 @@ class MetaSocialRuntimeRunner:
             return self._rejected(envelope, "channel_credential_missing")
         remaining = max(1.0, (envelope.deadline_at - datetime.now(UTC)).total_seconds())
         timeout = min(float(config.get("timeout_seconds") or 10), remaining)
+        receipt: dict[str, Any] = {}
+        if attachment is not None:
+            try:
+                content = base64.b64decode(
+                    str(attachment.get("content_base64") or ""), validate=True
+                )
+            except (binascii.Error, ValueError):
+                return self._rejected(envelope, "attachment_content_invalid")
+            if not content:
+                return self._rejected(envelope, "attachment_content_required")
+            filename = str(attachment.get("filename") or "attachment").strip()
+            content_type = str(
+                attachment.get("content_type") or "application/octet-stream"
+            ).strip()
+            upload_message = json.dumps(
+                {
+                    "attachment": {
+                        "type": attachment_type,
+                        "payload": {"is_reusable": False},
+                    }
+                },
+                separators=(",", ":"),
+            )
+            try:
+                upload_response = httpx.post(
+                    _attachment_upload_endpoint(config, channel),
+                    data={"message": upload_message},
+                    files={"filedata": (filename, content, content_type)},
+                    headers={"Authorization": f"Bearer {credential}"},
+                    timeout=timeout,
+                )
+            except httpx.ConnectTimeout:
+                return self._failed(
+                    envelope,
+                    OperationStatus.retryable,
+                    "provider_attachment_upload_connect_timeout",
+                )
+            except httpx.TimeoutException:
+                return self._failed(
+                    envelope,
+                    OperationStatus.retryable,
+                    "provider_attachment_upload_timeout",
+                )
+            except httpx.RequestError:
+                return self._failed(
+                    envelope,
+                    OperationStatus.retryable,
+                    "provider_attachment_upload_unavailable",
+                )
+            receipt = _safe_receipt(upload_response)
+            output["upload_status_code"] = upload_response.status_code
+            if upload_response.status_code == 429 or upload_response.status_code >= 500:
+                return OperationResult(
+                    operation_id=envelope.operation_id,
+                    status=OperationStatus.retryable,
+                    output=output,
+                    external_receipt=receipt,
+                    error_code="provider_attachment_upload_retryable_response",
+                )
+            if upload_response.status_code >= 400:
+                return OperationResult(
+                    operation_id=envelope.operation_id,
+                    status=OperationStatus.rejected,
+                    output=output,
+                    external_receipt=receipt,
+                    error_code="provider_attachment_upload_rejected",
+                )
+            attachment_id = str(receipt.get("provider_attachment_id") or "").strip()
+            if not attachment_id:
+                return OperationResult(
+                    operation_id=envelope.operation_id,
+                    status=OperationStatus.reconciliation_required,
+                    output=output,
+                    external_receipt=receipt,
+                    error_code="provider_attachment_id_missing",
+                )
+            payload = _payload(
+                config=config,
+                channel=channel,
+                recipient_id=recipient_id,
+                attachment_type=attachment_type,
+                attachment_id=attachment_id,
+            )
+            output["payload"] = payload
         try:
             response = httpx.post(
                 _endpoint(config, channel),
@@ -342,7 +473,7 @@ class MetaSocialRuntimeRunner:
                 envelope, OperationStatus.retryable, "provider_unavailable"
             )
 
-        receipt = _safe_receipt(response)
+        receipt.update(_safe_receipt(response))
         output["status_code"] = response.status_code
         if response.status_code == 429 or response.status_code >= 500:
             return OperationResult(

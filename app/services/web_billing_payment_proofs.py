@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -20,8 +21,21 @@ from app.services.action_forms import (
     ActionOption,
     ActionTone,
 )
+from app.services.action_readiness import (
+    ActionableBlocker,
+    ActionReadiness,
+    BlockerEvidence,
+    ReadinessState,
+)
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
+from app.services.payment_proofs import PaymentProofReviewEligibility
+from app.services.web_action_readiness import ReadinessPanel, readiness_panel
+
+#: The registered SOT owner of every payment-proof review decision. The
+#: readiness verdict below only changes the TRANSPORT SHAPE of that owner's
+#: existing `review_eligibility` decision — it never re-decides eligibility.
+_PAYMENT_PROOF_OWNER = "financial.payment_proofs"
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -108,6 +122,77 @@ def _reviewer_identity(
     )
 
 
+def _review_readiness(
+    proof: PaymentProof,
+    eligibility: PaymentProofReviewEligibility,
+    *,
+    action_key: str,
+) -> ActionReadiness:
+    """Translate the EXISTING `PaymentProofReviewEligibility` verdict.
+
+    Same underlying decision, new transport shape: `review_eligibility` still
+    owns whether verify/reject is allowed and why not. This only re-expresses
+    that verdict as an `ActionReadiness` so it can flow through
+    `ActionForm.gated_by` and render through the shared readiness panel.
+    """
+
+    if action_key == VERIFY_ACTION_KEY:
+        allowed = eligibility.verify_allowed
+        reason = eligibility.verify_unavailable_reason
+    else:
+        allowed = eligibility.reject_allowed
+        reason = eligibility.reject_unavailable_reason
+
+    evaluated_at = datetime.now(UTC)
+    if allowed:
+        return ActionReadiness(
+            action_key=action_key,
+            subject_type="payment_proof",
+            subject_id=str(proof.id),
+            owner=_PAYMENT_PROOF_OWNER,
+            state=ReadinessState.ready,
+            evaluated_at=evaluated_at,
+        )
+
+    message = reason or "This review action is not available for this proof."
+    return ActionReadiness(
+        action_key=action_key,
+        subject_type="payment_proof",
+        subject_id=str(proof.id),
+        owner=_PAYMENT_PROOF_OWNER,
+        state=ReadinessState.blocked,
+        evaluated_at=evaluated_at,
+        blockers=(
+            ActionableBlocker(
+                code=f"{action_key}.unavailable",
+                owner=_PAYMENT_PROOF_OWNER,
+                customer_message=message,
+                staff_detail=message,
+                evidence=BlockerEvidence(summary=message),
+            ),
+        ),
+    )
+
+
+def review_readiness_panel(
+    proof: PaymentProof,
+    duplicates: list[PaymentProof] | tuple[PaymentProof, ...],
+    *,
+    can_review: bool,
+) -> ReadinessPanel | None:
+    """Project the verify-action readiness panel for the detail page.
+
+    Returns `None` when review is not applicable, mirroring `_review_actions`'
+    own "no reviewer, or already terminal" short-circuit.
+    """
+
+    if not can_review or proof.status != PaymentProofStatus.submitted:
+        return None
+    eligibility = payment_proofs_service.review_eligibility(proof, duplicates)
+    readiness = _review_readiness(proof, eligibility, action_key=VERIFY_ACTION_KEY)
+    return readiness_panel(readiness, audience="staff")
+
+
 def _review_actions(
     proof: PaymentProof,
     duplicates: list[PaymentProof],
@@ -186,6 +271,11 @@ def _review_actions(
         else "Record a succeeded payment for the confirmed amount and apply the "
         "selected allocation policy?"
     )
+    # `allowed`/`disabled_reason` are derived from the readiness transport
+    # shape rather than set as literals, but the underlying decision is still
+    # `payment_proofs_service.review_eligibility` above — `.gated_by(...)`
+    # changes no eligibility logic. This is an admin-only surface, so the
+    # staff-facing reason is used (`customer_facing=False`).
     actions = (
         ActionForm(
             key=VERIFY_ACTION_KEY,
@@ -200,8 +290,9 @@ def _review_actions(
                 title="Confirm financial posting",
                 message=verify_confirmation,
             ),
-            allowed=eligibility.verify_allowed,
-            disabled_reason=eligibility.verify_unavailable_reason,
+        ).gated_by(
+            _review_readiness(proof, eligibility, action_key=VERIFY_ACTION_KEY),
+            customer_facing=False,
         ),
         ActionForm(
             key=REJECT_ACTION_KEY,
@@ -227,8 +318,9 @@ def _review_actions(
                 title="Confirm rejection",
                 message="Reject this transfer proof and notify the submitter?",
             ),
-            allowed=eligibility.reject_allowed,
-            disabled_reason=eligibility.reject_unavailable_reason,
+        ).gated_by(
+            _review_readiness(proof, eligibility, action_key=REJECT_ACTION_KEY),
+            customer_facing=False,
         ),
     )
     if submission is None:
@@ -421,6 +513,9 @@ def detail_data(
         ),
         "correction": correction,
         "review_outcome": proof.status != PaymentProofStatus.submitted,
+        "review_readiness_panel": review_readiness_panel(
+            proof, duplicates, can_review=can_review
+        ),
     }
 
 

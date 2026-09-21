@@ -26,7 +26,7 @@ app/api/field/materials.py 1
 app/api/field/worklogs.py 1
 app/api/gis.py 10
 app/api/integrations.py 3
-app/api/me.py 16
+app/api/me.py 14
 app/api/nas.py 1
 app/api/network_ont_ops.py 3
 app/api/notifications.py 8

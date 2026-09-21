@@ -22,10 +22,21 @@ class EventType(enum.Enum):
 
     # Staff notification events
     staff_notification_opened = "staff_notification.opened"
+    field_work_order_note_created = "field_work_order_note.created"
+
+    # Authentication-session security events
+    authentication_session_rotated = "authentication_session.rotated"
+    authentication_session_refresh_refused = "authentication_session.refresh_refused"
+
+    # Canonical Party identity events
+    party_identity_reactivated = "party.identity_reactivated"
 
     # Subscriber events
     subscriber_created = "subscriber.created"
     subscriber_updated = "subscriber.updated"
+    subscriber_service_location_updated = "subscriber.service_location_updated"
+    subscriber_location_confirmed = "subscriber.location_confirmed"
+    subscriber_location_prompt_snoozed = "subscriber.location_prompt_snoozed"
     field_location_history_pruned = "field_location.history_pruned"
     subscriber_billing_approval_changed = "subscriber.billing_approval_changed"
     carried_source_identity_adjudicated = "billing.carried_source_identity.adjudicated"
@@ -104,6 +115,9 @@ class EventType(enum.Enum):
     billing_cutover_verification_approved = "billing.cutover_verification.approved"
     customer_subledger_opening_positions_captured = (
         "customer_subledger.opening_positions_captured"
+    )
+    customer_subledger_opening_position_corrected = (
+        "customer_subledger.opening_position_corrected"
     )
     customer_subledger_authority_activated = "customer_subledger.authority_activated"
 
@@ -202,6 +216,9 @@ class EventType(enum.Enum):
     # each owning transition; the materials lifecycle projection handler
     # applies cross-owner consequences with durable receipts.
     field_material_request_approved = "field_material_request.approved"
+    field_material_request_cancellation_requested = (
+        "field_material_request.cancellation_requested"
+    )
     field_material_request_fulfilled = "field_material_request.fulfilled"
     field_material_consumption_recorded = "field_material.consumption_recorded"
     vendor_purchase_invoice_approved = "vendor_purchase_invoice.approved"
@@ -241,8 +258,13 @@ class EventType(enum.Enum):
     lead_updated = "lead.updated"
     lead_account_converted = "lead.account_converted"
     meta_lead_customer_match_reconciled = "meta_lead.customer_match_reconciled"
+    inbox_sla_policy_changed = "inbox.sla.policy_changed.v1"
+    inbox_sla_clock_changed = "inbox.sla.clock_changed.v1"
     quote_created = "quote.created"
     quote_accepted = "quote.accepted"
+    quote_payment_review_requested = "quote.payment_review_requested"
+    quote_payment_approved = "quote.payment_approved"
+    quote_payment_rejected = "quote.payment_rejected"
     quote_discount_applied = "quote.discount_applied"
     quote_discount_changed = "quote.discount_changed"
     quote_discount_removed = "quote.discount_removed"

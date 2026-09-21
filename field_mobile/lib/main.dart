@@ -121,6 +121,7 @@ Future<Widget> buildFieldAppRoot() async {
           store.locationQueueFile,
           cipher: store.cipher,
           scopeKey: store.scopeKey,
+          work: store.work,
         );
       }),
       syncServiceProvider.overrideWith((ref) {
@@ -134,7 +135,7 @@ Future<Widget> buildFieldAppRoot() async {
           connectivity: DeviceConnectivity(),
           evidence: store.evidence,
         );
-        Future.microtask(sync.flushAll);
+        Future.microtask(sync.requestBackgroundFlush);
         ref.onDispose(sync.dispose);
         return sync;
       }),

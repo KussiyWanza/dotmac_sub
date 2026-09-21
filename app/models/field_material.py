@@ -29,6 +29,7 @@ FIELD_MATERIAL_REQUEST_STATUSES = (
     "canceled",
     "accepted_by_erp",
     "pending_stock",
+    "cancellation_pending",
     "sync_failed",
 )
 FIELD_MATERIAL_REQUEST_PRIORITIES = ("low", "medium", "high", "urgent")
@@ -199,6 +200,14 @@ class FieldMaterialRequest(Base):
         Index("ix_field_material_requests_status", "status"),
         Index("ix_field_material_requests_requested_by", "requested_by_technician_id"),
         Index(
+            "ix_field_material_requests_requested_by_person",
+            "requested_by_person_id",
+        ),
+        Index(
+            "ix_field_material_requests_requested_by_system_user",
+            "requested_by_system_user_id",
+        ),
+        Index(
             "ix_field_material_requests_support_reference",
             "support_reference",
         ),
@@ -206,7 +215,7 @@ class FieldMaterialRequest(Base):
         CheckConstraint(
             "status IN ('draft', 'submitted', 'approved', 'rejected', 'issued', "
             "'fulfilled', 'canceled', 'accepted_by_erp', 'pending_stock', "
-            "'sync_failed')",
+            "'cancellation_pending', 'sync_failed')",
             name="ck_field_material_requests_status",
         ),
         CheckConstraint(

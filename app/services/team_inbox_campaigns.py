@@ -25,7 +25,7 @@ from app.models.team_inbox import (
     InboxTeamRole,
     InboxTeamSource,
 )
-from app.services import team_inbox_status
+from app.services import team_inbox_customer_completion_policy, team_inbox_status
 
 
 def ensure_campaign_conversation(
@@ -62,6 +62,9 @@ def ensure_campaign_conversation(
         return conversation
 
     conversation = InboxConversation(
+        customer_completion_policy_version_id=team_inbox_customer_completion_policy.snapshot_active_policy_id(
+            db
+        ),
         subscriber_id=subscriber_id,
         primary_service_team_id=service_team_id,
         channel_type=channel_type,

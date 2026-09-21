@@ -199,13 +199,25 @@ class EvidenceConclusion(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class ReleaseArtifactEvidence:
-    """Immutable output of the one application-image build."""
+    """Immutable output of the one application-image build.
+
+    ``build_run_id`` and ``evidence_run_id`` are deliberately distinct
+    identities (schema v3). They coincide on a fresh build, and diverge on a
+    resumed run that reuses a previously published image: ``build_run_id`` is
+    the run that BUILT the image (baked into the image's own
+    ``io.dotmac.release.build-run`` label, and never rewritten), while
+    ``evidence_run_id`` is the run that wrote/uploaded THIS evidence document.
+    Conflating them previously broke whichever downstream check needed the
+    other meaning -- the image-producing run for the deployed-container label
+    assertion, or the evidence-writing run for the artifact-download identity.
+    """
 
     source_revision: GitCommitSha
     source_tree: GitTreeSha
     image_digest: OCIImageDigest
     product_manifest_digest: ProductManifestDigest
     build_run_id: WorkflowRunId
+    evidence_run_id: WorkflowRunId
     source_ci_conclusion: EvidenceConclusion
 
 

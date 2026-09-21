@@ -562,7 +562,11 @@ SERVICES: tuple[SOTService, ...] = (
             "Customer self-service WiFi requests prove subscriber and "
             "subscription scope inside this owner, commit desired state and "
             "durable dispatch without device I/O, and use the same revision "
-            "and readback lifecycle as operator configuration. The customer "
+            "and readback lifecycle as operator configuration. Admin CPE-detail "
+            "WiFi requests resolve exactly one active TR-069 row by its CPE ID, "
+            "require its linked ONT and one coherent active assignment, and "
+            "delegate to this owner without serial/default-ACS fallback or "
+            "direct device I/O. The customer "
             "status query reads the newest WiFi revision for the active "
             "assignment, even after a later section supersedes it."
         ),
@@ -649,7 +653,11 @@ SERVICES: tuple[SOTService, ...] = (
                     name="effective ONT configuration pack",
                     owner="network.ont_provisioning_execution",
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                    source="effective config-pack resolution for the locked ONT and OLT",
+                    source=(
+                        "effective config-pack resolution for the locked ONT and OLT, "
+                        "including model-specific TR-069 data-model and WiFi password "
+                        "target paths"
+                    ),
                 ),
                 AuthorityInput(
                     name="declared ONT WAN service intent",
@@ -676,6 +684,15 @@ SERVICES: tuple[SOTService, ...] = (
                     source="OntServiceConfigurationHead and revision records",
                 ),
                 AuthorityInput(
+                    name="CPE WiFi admission identity",
+                    owner="network.ont_service_configuration",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "exact CPE, active TR-069 row, linked ONT, active assignment, "
+                        "customer identity and ONT object-scope decision"
+                    ),
+                ),
+                AuthorityInput(
                     name="lifecycle-bound ONT reconcile projection",
                     owner="network.ont_reconcile_projection",
                     kind=AuthorityKind.DERIVED_PROJECTION,
@@ -698,7 +715,9 @@ SERVICES: tuple[SOTService, ...] = (
                 ),
                 locking=(
                     "Locks ONT, active assignment, assignment configuration head, "
-                    "current revision and relevant active intent in canonical order."
+                    "current revision and relevant active intent in canonical order; "
+                    "CPE-origin WiFi commands first lock and revalidate CPE/TR-069/"
+                    "ONT/assignment identity."
                 ),
                 idempotency=(
                     "The assignment head plus idempotency key and keyed material-input "
@@ -734,7 +753,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "network.ont_service_configuration.active_assignment_required",
                     "network.ont_service_configuration.ambiguous_assignment",
                     "network.ont_service_configuration.assignment_incomplete",
-                    "network.ont_service_configuration.subscription_not_active",
+                    "network.ont_service_configuration.subscription_missing",
                     "network.ont_service_configuration.assignment_identity_conflict",
                     "network.ont_service_configuration.pon_not_ready",
                     "network.ont_service_configuration.olt_not_ready",
@@ -755,12 +774,22 @@ SERVICES: tuple[SOTService, ...] = (
                     "network.ont_service_configuration.retry_not_eligible",
                     "network.ont_service_configuration.exact_ont_ids_required",
                     "network.ont_service_configuration.reviewed_evidence_required",
+                    "network.ont_service_configuration.cpe_device_not_found",
+                    "network.ont_service_configuration.cpe_device_ambiguous",
+                    "network.ont_service_configuration.cpe_ont_not_linked",
+                    "network.ont_service_configuration.cpe_ont_missing",
+                    "network.ont_service_configuration.cpe_assignment_inactive",
+                    "network.ont_service_configuration.cpe_assignment_ambiguous",
+                    "network.ont_service_configuration.cpe_assignment_identity_conflict",
+                    "network.ont_service_configuration.cpe_scope_denied",
+                    "network.ont_service_configuration.cpe_identity_changed",
                 ),
                 mapping_owner=(
                     "app.web.admin.network_onts, app.web.customer.routes and app.api.me"
                 ),
                 fail_closed_on=(
                     "missing or ambiguous assignment, subscription, PON or commissioning identity",
+                    "CPE/ONT customer mismatch, object-scope denial or identity relink",
                     "missing authoritative PPP credential or delivery authorization "
                     "for routed operator configuration",
                     "stale assignment, head, revision or operation identity",
@@ -833,7 +862,10 @@ SERVICES: tuple[SOTService, ...] = (
             migration=MigrationContract(
                 state=AuthorityMigrationState.COMPLETE,
                 new_owner="network.ont_service_configuration",
-                old_owner="app.services.web_network_ont_actions.update_ont_config",
+                old_owner=(
+                    "app.services.web_network_ont_actions.update_ont_config and "
+                    "app.services.network.cpe_action_wifi direct GenieACS writes"
+                ),
                 verification=(
                     "Architecture tests pin that the route only constructs typed commands "
                     "and never calls the reconciler, device adapters or Celery directly."
@@ -854,9 +886,100 @@ SERVICES: tuple[SOTService, ...] = (
             ),
             test_refs=(
                 "tests/test_ont_service_configuration.py",
+                "tests/test_cpe_wifi_ownership_cutover.py",
+                "tests/test_eg8145v5_wifi_capability_migration.py",
+                "tests/test_reconcile_adapters.py",
+                "tests/test_reconcile_applier.py",
                 "tests/test_return_to_inventory.py",
                 "tests/architecture/test_ont_service_configuration_boundary.py",
+                "tests/integration/test_cpe_wifi_ownership_postgres.py",
                 "tests/integration/test_ont_service_configuration_concurrency.py",
+            ),
+        ),
+    ),
+    SOTService(
+        name="network.cpe_assignment_drift",
+        module="app.services.network.cpe_assignment_drift",
+        owns=("read-only live-device/no-active-assignment review projection",),
+        depends_on=(
+            "network.identity",
+            "network.ont_assignment_identity",
+            "network.radius_sessions",
+        ),
+        notes=(
+            "Projects independently observed live service against the canonical "
+            "active ONT assignment. A fresh exact-subscription RADIUS session is "
+            "blocking evidence; a recent GenieACS Inform alone is advisory because "
+            "commissioning devices may legitimately inform without an assignment. "
+            "The projection never creates or reactivates an assignment: reviewed "
+            "repair delegates to network.ont_assignment_commands."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="read-only live-device/no-active-assignment review projection",
+                    role=OwnerRole.RESOLVER,
+                    input_names=(
+                        "canonical active ONT assignment",
+                        "fresh exact-subscription RADIUS session",
+                        "recent GenieACS Inform",
+                    ),
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="canonical active ONT assignment",
+                    owner="network.ont_assignment_identity",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="active OntAssignment keyed by exact OntUnit",
+                ),
+                AuthorityInput(
+                    name="fresh exact-subscription RADIUS session",
+                    owner="network.radius_sessions",
+                    kind=AuthorityKind.OBSERVATION,
+                    source="radius_active_sessions exact subscription binding",
+                ),
+                AuthorityInput(
+                    name="recent GenieACS Inform",
+                    owner="external:genieacs",
+                    kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                    source="Tr069CpeDevice.last_inform_at persisted by Inform handling",
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.READ_ONLY,
+                boundary="Runs inside the caller's read transaction and writes nothing.",
+                locking="None; every row is a current review observation.",
+                idempotency="The same stored observations produce the same queue.",
+                retries="A later read naturally re-evaluates current evidence.",
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    "network.cpe_assignment_drift.active_radius_without_assignment",
+                    "network.cpe_assignment_drift.recent_inform_without_assignment",
+                ),
+                mapping_owner="app.services.network_explorer",
+                fail_closed_on=(
+                    "missing canonical active assignment despite live evidence",
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.NATIVE,
+                new_owner="network.cpe_assignment_drift",
+                old_owner=None,
+                verification=(
+                    "Tests prove blocking/advisory separation and that the detector "
+                    "contains no assignment mutation."
+                ),
+            ),
+            steward="network operations",
+            design_refs=(
+                "docs/designs/ONT_UI_SERVICE_CONFIGURATION_SOT.md",
+                "docs/SOT_RELATIONSHIP_MAP.md",
+            ),
+            test_refs=(
+                "tests/test_cpe_assignment_drift.py",
+                "tests/test_network_explorer.py",
             ),
         ),
     ),

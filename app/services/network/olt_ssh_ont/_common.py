@@ -13,7 +13,6 @@ from paramiko.ssh_exception import SSHException
 from app.services.network.huawei_cli_response import (
     HuaweiCliErrorCode,
     HuaweiDeviceOutcome,
-    describe_huawei_rejection,
 )
 from app.services.network.parsers.cli import canonical_fsp
 
@@ -222,18 +221,36 @@ def _run_ont_config_command(
     timeout_sec: int = 12,
 ) -> tuple[bool, str]:
     """Run a single ONT-scoped config command on a GPON interface."""
+    outcome = _run_ont_config_command_outcome(
+        olt, fsp, command, success_message=success_message, timeout_sec=timeout_sec
+    )
+    return outcome.succeeded, outcome.message
+
+
+def _run_ont_config_command_outcome(
+    olt,
+    fsp: str,
+    command: str,
+    *,
+    success_message: str,
+    timeout_sec: int = 12,
+) -> HuaweiDeviceOutcome:
+    """Run an ONT config command and retain its typed Huawei result code."""
     from app.services.network import olt_ssh as core
 
     parts = canonical_fsp(fsp)
     if parts is None:
-        return False, invalid_fsp_message(fsp)
+        return HuaweiDeviceOutcome.transport_failure(
+            invalid_fsp_message(fsp),
+            code=HuaweiCliErrorCode.UNKNOWN_ERROR,
+        )
 
     frame_slot = parts.frame_slot
 
     try:
         transport, channel, _policy = core._open_shell(olt)
     except (SSHException, OSError, TimeoutError, ValueError) as exc:
-        return False, f"Connection failed: {exc}"
+        return HuaweiDeviceOutcome.transport_failure(f"Connection failed: {exc}")
 
     try:
         channel.send("enable\n")
@@ -263,8 +280,8 @@ def _run_ont_config_command(
                 olt.name,
                 output.strip()[-150:],
             )
-            return False, describe_huawei_rejection(output, detail_limit=150)
-        return True, success_message
+            return HuaweiDeviceOutcome.rejected_by_device(output, detail_limit=150)
+        return HuaweiDeviceOutcome.accepted(success_message, device_detail=output)
     except (*_SSH_CONNECTION_ERRORS, RuntimeError) as exc:
         logger.error(
             "Error running ONT config command on OLT %s: %s",
@@ -272,7 +289,7 @@ def _run_ont_config_command(
             exc,
             exc_info=True,
         )
-        return False, f"Error: {exc}"
+        return HuaweiDeviceOutcome.transport_failure(f"Error: {exc}")
     finally:
         transport.close()
 

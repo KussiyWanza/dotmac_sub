@@ -16,8 +16,19 @@ class DeviceCommandOutcome {
   final String message;
 
   bool get succeeded => status == 'succeeded';
-  bool get accepted =>
-      const {'queued', 'waiting', 'succeeded'}.contains(status);
+
+  /// Delivered to the device, but exact readback confirmation is
+  /// unavailable -- distinct from [succeeded] so a caller that cares about
+  /// the difference can show it, while [accepted] still treats it as a
+  /// non-failure outcome.
+  bool get needsVerification => status == 'needs_verification';
+
+  bool get accepted => const {
+        'queued',
+        'waiting',
+        'succeeded',
+        'needs_verification',
+      }.contains(status);
 
   factory DeviceCommandOutcome.fromJson(Map<String, dynamic> json) =>
       DeviceCommandOutcome(

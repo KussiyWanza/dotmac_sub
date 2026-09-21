@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.domain_settings import DomainSetting, SettingDomain
+from app.schemas.geocoding import ReverseGeocodeQuery, ReverseGeocodeResult
 
 logger = logging.getLogger(__name__)
 _LAST_REQUEST_LOCK = threading.Lock()
@@ -220,6 +221,23 @@ def reverse_geocode(db: Session, latitude: float, longitude: float) -> dict | No
         }
     except (TypeError, ValueError):
         return None
+
+
+def resolve_coordinates(
+    db: Session, query: ReverseGeocodeQuery
+) -> ReverseGeocodeResult | None:
+    """Resolve a typed coordinate query to a provider-neutral display address."""
+    result = reverse_geocode(db, query.latitude, query.longitude)
+    if result is None:
+        return None
+    display_name = result.get("display_name")
+    if not isinstance(display_name, str) or not display_name.strip():
+        return None
+    return ReverseGeocodeResult(
+        display_name=display_name.strip(),
+        latitude=float(result["latitude"]),
+        longitude=float(result["longitude"]),
+    )
 
 
 def _google_search(db: Session, query: str, limit: int) -> list[dict]:

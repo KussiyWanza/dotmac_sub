@@ -38,8 +38,14 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists"
-            exit 0
+            existing_commit="$(git rev-parse "$TAG^{commit}")"
+            current_commit="$(git rev-parse HEAD)"
+            if [ "$existing_commit" = "$current_commit" ]; then
+              echo "Tag $TAG already exists and points at the current commit ($current_commit); nothing to do."
+              exit 0
+            fi
+            echo "::error::Tag $TAG already exists but its peeled commit is $existing_commit, not the current commit $current_commit. Refusing to silently accept a version tag that names the wrong release."
+            exit 1
           fi
 
           git config user.name "github-actions[bot]"

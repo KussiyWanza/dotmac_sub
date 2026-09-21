@@ -255,6 +255,7 @@ from app.models.customer_subledger import (  # noqa: F401
     CustomerPositionEffect,
     CustomerPostingGroup,
     CustomerSubledgerAuthorityCutover,
+    CustomerSubledgerOpeningCorrection,
     CustomerSubledgerOpeningPosition,
     PositionEffectKind,
     PostingCommandKind,
@@ -434,6 +435,12 @@ from app.models.imports import (  # noqa: F401
     ImportRunStatus,
     PaymentImportBatchReversal,
     PaymentImportBatchReversalItem,
+)
+from app.models.inbox_sla import (  # noqa: F401
+    InboxSlaClock,
+    InboxSlaEvent,
+    InboxSlaPolicy,
+    InboxSlaRule,
 )
 from app.models.integration import (  # noqa: F401
     IntegrationJob,

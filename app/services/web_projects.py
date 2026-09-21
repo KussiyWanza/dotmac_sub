@@ -24,7 +24,7 @@ from datetime import datetime
 from urllib.parse import urlencode
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
@@ -35,7 +35,6 @@ from app.models.project import (
     ProjectStatus,
     ProjectTask,
     ProjectTaskDependency,
-    ProjectTaskDependencyType,
     ProjectTaskPriority,
     ProjectTaskStatus,
     ProjectTemplateTask,
@@ -53,6 +52,8 @@ from app.schemas.project import (
     ProjectTaskCreate,
     ProjectTaskUpdate,
     ProjectTemplateCreate,
+    ProjectTemplatePlanReplace,
+    ProjectTemplatePlanTaskInput,
     ProjectTemplateTaskCreate,
     ProjectTemplateTaskUpdate,
     ProjectTemplateUpdate,
@@ -74,6 +75,12 @@ from app.services.audit_helpers import build_audit_activities, log_audit_event
 from app.services.common import coerce_uuid
 from app.services.domain_errors import DomainError
 from app.services.dynamic_filters import FilterValidationError
+from app.services.field.note_commands import (
+    ListStaffFieldWorkOrderNotes,
+    ProjectTaskFieldNoteScope,
+    StaffFieldNoteAccess,
+    list_staff_field_work_order_notes,
+)
 from app.services.file_storage import file_uploads
 from app.services.list_query import ListDefinition, ListFieldDefinition, ListQuery
 from app.services.ui_contracts import Action
@@ -580,6 +587,8 @@ def _task_work_order_create_action(
 ) -> tuple[Action, str | None]:
     if not task.is_active:
         allowed, reason = False, "Archived tasks cannot create field work"
+    elif task.template_plan_state == "superseded":
+        allowed, reason = False, "Previous template tasks cannot create new field work"
     elif project.status == ProjectStatus.completed.value:
         allowed, reason = False, "Completed projects cannot create field work"
     elif project.status == ProjectStatus.canceled.value:
@@ -727,6 +736,35 @@ def _project_template_map(templates: list) -> dict[str, str]:
         if item.project_type:
             mapping[str(item.project_type)] = str(item.id)
     return mapping
+
+
+def _project_template_plan_map(
+    db: Session, templates: list
+) -> dict[str, dict[str, int]]:
+    template_ids = [item.id for item in templates]
+    rows = (
+        db.query(ProjectTemplateTask)
+        .filter(
+            ProjectTemplateTask.template_id.in_(template_ids),
+            ProjectTemplateTask.is_active.is_(True),
+        )
+        .all()
+        if template_ids
+        else []
+    )
+    result = {
+        str(item.id): {
+            "revision": int(item.revision),
+            "task_count": 0,
+            "subtask_count": 0,
+        }
+        for item in templates
+    }
+    for row in rows:
+        item = result[str(row.template_id)]
+        item["task_count"] += 1
+        item["subtask_count"] += int(row.parent_template_task_id is not None)
+    return result
 
 
 def project_options(db: Session, limit: int = 500) -> list:
@@ -1194,6 +1232,12 @@ def build_project_form_context(
         "project": project,
         "project_templates": templates,
         "project_template_map": _project_template_map(templates),
+        "project_template_plan_map": _project_template_plan_map(db, templates),
+        "original_project_template_id": (
+            str(project.project_template_id)
+            if project is not None and project.project_template_id
+            else ""
+        ),
         "project_types": [item.value for item in ProjectType],
         "project_statuses": [item.value for item in ProjectStatus],
         "project_priorities": [item.value for item in ProjectPriority],
@@ -1346,6 +1390,23 @@ def build_project_detail_context(
         offset=0,
         include_assigned=True,
     )
+    task_ids = {task.id for task in tasks}
+    task_children: dict[str, list[ProjectTask]] = {}
+    root_tasks: list[ProjectTask] = []
+    for task in tasks:
+        if task.parent_task_id and task.parent_task_id in task_ids:
+            task_children.setdefault(str(task.parent_task_id), []).append(task)
+        else:
+            root_tasks.append(task)
+    previous_template_tasks = (
+        db.query(ProjectTask)
+        .filter(
+            ProjectTask.project_id == project.id,
+            ProjectTask.template_plan_state == "superseded",
+        )
+        .order_by(ProjectTask.created_at.desc(), ProjectTask.id)
+        .all()
+    )
     comments = projects_service.project_comments.list(
         db,
         project_id=str(project.id),
@@ -1400,6 +1461,9 @@ def build_project_detail_context(
         "project": project,
         "project_url": project_url(project),
         "tasks": tasks,
+        "root_tasks": root_tasks,
+        "task_children": task_children,
+        "previous_template_tasks": previous_template_tasks,
         "project_actions_locked": _project_actions_locked(project),
         "project_actions_locked_reason": _project_actions_locked_reason(project),
         "show_field_work": can_read_work_orders,
@@ -1660,6 +1724,7 @@ def build_task_form_context(
 
     prefill = {
         "project_id": _value("project_id"),
+        "parent_task_id": _value("parent_task_id"),
         "title": _value("title"),
         "description": _value("description"),
         "status": _value("status") or ProjectTaskStatus.todo.value,
@@ -1669,10 +1734,33 @@ def build_task_form_context(
         "due_at": _value("due_at"),
         "effort_hours": _value("effort_hours"),
     }
+    parent_rows = projects_service.project_tasks.list(
+        db,
+        project_id=None,
+        status=None,
+        priority=None,
+        assigned_to_person_id=None,
+        parent_task_id=None,
+        is_active=None,
+        order_by="created_at",
+        order_dir="asc",
+        limit=5000,
+        offset=0,
+    )
+    if task is not None:
+        parent_rows = [row for row in parent_rows if row.id != task.id]
     context: dict[str, object] = {
         "prefill": prefill,
         "task": task,
         "projects": project_options(db, limit=1000),
+        "parent_task_options": [
+            {
+                "id": str(row.id),
+                "project_id": str(row.project_id),
+                "label": f"{row.title} ({row.number or row.id})",
+            }
+            for row in parent_rows
+        ],
         "staff_options": staff_options(db, include_ids=list(assignee_ids)),
         "task_statuses": [item.value for item in ProjectTaskStatus],
         "task_priorities": [item.value for item in ProjectTaskPriority],
@@ -1696,6 +1784,8 @@ def _task_payload_data(*, actor_id: str | None = None, **form) -> dict:
         "priority": str(form.get("priority") or "").strip()
         or ProjectTaskPriority.normal.value,
     }
+    if "parent_task_id" in form:
+        data["parent_task_id"] = parse_uuid_or_none(form.get("parent_task_id"))
     description = str(form.get("description") or "").strip()
     if description:
         data["description"] = description
@@ -1825,8 +1915,37 @@ def build_task_detail_context(
     task: ProjectTask,
     can_read_work_orders: bool = False,
     can_read_material_requests: bool = False,
+    field_note_access: StaffFieldNoteAccess | None = None,
 ) -> dict:
     project = projects_service.projects.get(db, str(task.project_id))
+    task_is_historical = task.template_plan_state == "superseded"
+    parent_task = (
+        db.get(ProjectTask, task.parent_task_id) if task.parent_task_id else None
+    )
+    child_tasks = (
+        db.query(ProjectTask)
+        .filter(
+            ProjectTask.parent_task_id == task.id,
+            ProjectTask.is_active.is_(True),
+        )
+        .order_by(ProjectTask.created_at.asc(), ProjectTask.id.asc())
+        .limit(500)
+        .all()
+        if task_is_historical
+        else projects_service.project_tasks.list(
+            db,
+            project_id=str(task.project_id),
+            status=None,
+            priority=None,
+            assigned_to_person_id=None,
+            parent_task_id=str(task.id),
+            is_active=None,
+            order_by="created_at",
+            order_dir="asc",
+            limit=500,
+            offset=0,
+        )
+    )
     comments = projects_service.project_task_comments.list(
         db,
         task_id=str(task.id),
@@ -1860,19 +1979,47 @@ def build_task_detail_context(
         ).items
     else:
         material_requests = ()
+    field_note_page = (
+        list_staff_field_work_order_notes(
+            db,
+            ListStaffFieldWorkOrderNotes(
+                scope=ProjectTaskFieldNoteScope(project_task_id=task.id),
+                access=field_note_access,
+            ),
+        )
+        if can_read_work_orders and field_note_access is not None
+        else None
+    )
+    project_actions_locked = _project_actions_locked(project) or task_is_historical
+    project_actions_locked_reason = (
+        "This task belongs to a previous template plan and is read-only."
+        if task_is_historical
+        else _project_actions_locked_reason(project)
+    )
     return {
         "task": task,
         "task_url": task_url(task),
         "project": project,
         "project_href": project_url(project),
-        "project_actions_locked": _project_actions_locked(project),
-        "project_actions_locked_reason": _project_actions_locked_reason(project),
+        "parent_task": parent_task,
+        "child_tasks": child_tasks,
+        "completed_child_task_count": sum(
+            child.status == ProjectTaskStatus.done.value for child in child_tasks
+        ),
+        "add_subtask_url": (
+            f"/admin/projects/tasks/new?project_id={project.id}&parent_task_id={task.id}"
+        ),
+        "task_is_historical": task_is_historical,
+        "project_actions_locked": project_actions_locked,
+        "project_actions_locked_reason": project_actions_locked_reason,
         "show_field_work": can_read_work_orders,
         "task_work_orders": (
             work_order_views.list_task_work_order_summaries(db, task.id)
             if can_read_work_orders
             else ()
         ),
+        "field_notes": field_note_page.items if field_note_page else (),
+        "field_note_total": field_note_page.total if field_note_page else 0,
         "material_requests": material_requests,
         "material_request_create_url": (
             "/admin/operations/material-requests/new?"
@@ -2048,6 +2195,15 @@ def build_template_detail_context(db: Session, *, template_id: str) -> dict:
         offset=0,
     )
     task_ids = [task.id for task in tasks]
+    template_subtasks: dict[str, list[ProjectTemplateTask]] = {}
+    template_root_tasks: list[ProjectTemplateTask] = []
+    for task in tasks:
+        if task.parent_template_task_id:
+            template_subtasks.setdefault(str(task.parent_template_task_id), []).append(
+                task
+            )
+        else:
+            template_root_tasks.append(task)
     dependency_labels: dict[str, list[str]] = {}
     if task_ids:
         titles = {str(task.id): task.title for task in tasks}
@@ -2066,6 +2222,8 @@ def build_template_detail_context(db: Session, *, template_id: str) -> dict:
     return {
         "template": template,
         "template_tasks": tasks,
+        "template_root_tasks": template_root_tasks,
+        "template_subtasks": template_subtasks,
         "dependency_labels": dependency_labels,
     }
 
@@ -2096,31 +2254,37 @@ def build_template_tasks_editor_payload(db: Session, template_id: str) -> list[d
         {
             "client_id": str(task.id),
             "id": str(task.id),
+            "parent_client_id": (
+                str(task.parent_template_task_id)
+                if task.parent_template_task_id
+                else None
+            ),
             "title": task.title,
             "description": task.description or "",
+            "status": task.status,
+            "priority": task.priority,
             "effort_hours": task.effort_hours if task.effort_hours is not None else "",
+            "auto_create_work_order": task.auto_create_work_order,
+            "work_order_requires_as_built_evidence": (
+                task.work_order_requires_as_built_evidence
+            ),
             "dependencies": dependencies_map.get(str(task.id), []),
         }
         for task in tasks
     ]
 
 
-class _TemplateTaskJSONItem(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    client_id: str
-    title: str
-    description: str = ""
-    effort_hours: int | str | None = None
-    dependencies: list[str] = Field(default_factory=list)
-
-
-_TEMPLATE_TASKS_JSON_ADAPTER = TypeAdapter(list[_TemplateTaskJSONItem])
+_TEMPLATE_TASKS_JSON_ADAPTER = TypeAdapter(list[ProjectTemplatePlanTaskInput])
 
 
 def save_template_tasks_from_editor(
-    db: Session, *, template_id: str, tasks_json: str
-) -> None:
+    db: Session,
+    *,
+    template_id: str,
+    expected_revision: int,
+    tasks_json: str,
+    actor_id: str | None = None,
+) -> projects_service.ProjectTemplatePlanReplaceOutcome:
     """Bulk task/dependency editor save — ported from CRM's editor POST.
 
     Upserts template tasks by ``client_id`` (existing task UUID or a fresh
@@ -2128,7 +2292,6 @@ def save_template_tasks_from_editor(
     finish-to-start dependency links. Raises ``ValueError`` with a
     user-facing message on invalid input.
     """
-    template = projects_service.project_templates.get(db, template_id)
     raw = (tasks_json or "").strip()
     try:
         items = _TEMPLATE_TASKS_JSON_ADAPTER.validate_json(raw) if raw else []
@@ -2144,118 +2307,35 @@ def save_template_tasks_from_editor(
             f"Tasks data is invalid: {loc}: {message}" if loc else message
         ) from exc
 
-    seen_client_ids: set[str] = set()
-    normalized: list[dict] = []
-    for item in items:
-        client_id = item.client_id.strip()
-        title = item.title.strip()
-        if not client_id:
-            raise ValueError("Each task must have a client_id.")
-        if not title:
-            raise ValueError("Each task must have a title.")
-        if client_id in seen_client_ids:
-            raise ValueError("Duplicate task client_id found.")
-        seen_client_ids.add(client_id)
-        effort_raw = "" if item.effort_hours is None else str(item.effort_hours).strip()
-        effort_hours: int | None = None
-        if effort_raw:
-            try:
-                effort_hours = int(effort_raw)
-            except ValueError as exc:
-                raise ValueError(f"Invalid effort_hours for task '{title}'.") from exc
-        normalized.append(
-            {
-                "client_id": client_id,
-                "title": title,
+    normalized = [
+        item.model_copy(
+            update={
+                "client_id": item.client_id.strip(),
+                "parent_client_id": (
+                    item.parent_client_id.strip() if item.parent_client_id else None
+                ),
+                "title": item.title.strip(),
                 "description": item.description.strip(),
-                "effort_hours": effort_hours,
-                "dependencies": item.dependencies or [],
+                "dependencies": [value.strip() for value in item.dependencies],
             }
         )
-
-    task_order = {
-        str(task_data["client_id"]): index for index, task_data in enumerate(normalized)
-    }
-    for task_data in normalized:
-        task_index = task_order[str(task_data["client_id"])]
-        for dependency_client_id in task_data["dependencies"]:
-            dependency_index = task_order.get(str(dependency_client_id))
-            if dependency_index is None:
-                continue
-            if dependency_index >= task_index:
-                raise ValueError(
-                    f"Task '{task_data['title']}' may depend only on an earlier task."
-                )
-
-    template_uuid = template.id
-    existing_tasks = (
-        db.query(ProjectTemplateTask)
-        .filter(ProjectTemplateTask.template_id == template_uuid)
-        .all()
-    )
-    existing_map = {str(task.id): task for task in existing_tasks}
-    client_id_to_task_id: dict[str, str] = {}
-    kept_task_ids: set[str] = set()
-
-    for index, task_data in enumerate(normalized):
-        client_id = task_data["client_id"]
-        if client_id in existing_map:
-            task = existing_map[client_id]
-            task.title = task_data["title"]
-            task.description = task_data["description"] or None
-            task.sort_order = index
-            task.effort_hours = task_data["effort_hours"]
-            task.is_active = True
-        else:
-            task = ProjectTemplateTask(
-                template_id=template_uuid,
-                title=task_data["title"],
-                description=task_data["description"] or None,
-                sort_order=index,
-                effort_hours=task_data["effort_hours"],
-                is_active=True,
-            )
-            db.add(task)
-            db.flush()
-        kept_task_ids.add(str(task.id))
-        client_id_to_task_id[client_id] = str(task.id)
-
-    for task in existing_tasks:
-        if str(task.id) not in kept_task_ids:
-            task.is_active = False
-
-    all_task_ids = [coerce_uuid(task_id) for task_id in existing_map] + [
-        coerce_uuid(task_id) for task_id in kept_task_ids if task_id not in existing_map
+        for item in items
     ]
-    if all_task_ids:
-        db.query(ProjectTemplateTaskDependency).filter(
-            ProjectTemplateTaskDependency.template_task_id.in_(all_task_ids)
-        ).delete(synchronize_session=False)
-
-    dependency_pairs: set[tuple[str, str]] = set()
-    for task_data in normalized:
-        task_id = client_id_to_task_id.get(task_data["client_id"])
-        if not task_id:
-            continue
-        for depends_on_client_id in task_data["dependencies"]:
-            dependency_client_id = str(depends_on_client_id)
-            depends_on_id = client_id_to_task_id.get(dependency_client_id)
-            if not depends_on_id or depends_on_id == task_id:
-                continue
-            key = (task_id, depends_on_id)
-            if key in dependency_pairs:
-                continue
-            dependency_pairs.add(key)
-            db.add(
-                ProjectTemplateTaskDependency(
-                    template_task_id=coerce_uuid(task_id),
-                    depends_on_template_task_id=coerce_uuid(depends_on_id),
-                    dependency_type=ProjectTaskDependencyType.finish_to_start.value,
-                    lag_days=0,
-                )
-            )
-
-    db.commit()
+    if any(not item.client_id for item in normalized):
+        raise ValueError("Each task must have a client_id.")
+    if any(not item.title for item in normalized):
+        raise ValueError("Each task must have a title.")
+    command = ProjectTemplatePlanReplace(
+        template_id=coerce_uuid(template_id),
+        expected_revision=expected_revision,
+        tasks=normalized,
+        reason="admin template task-plan editor save",
+    )
+    return projects_service.project_template_tasks.replace_plan(
+        db,
+        command,
+        actor_id=parse_uuid_or_none(actor_id),
+    )
 
 
 def build_template_task_form_context(

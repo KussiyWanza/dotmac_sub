@@ -71,7 +71,7 @@ DOMAIN = DomainSOT(
                         owner="external:ncc",
                         kind=AuthorityKind.EXTERNAL_OBSERVATION,
                         source=(
-                            "versioned NCC workbook columns, categories, geography, "
+                            "versioned NCC CSV columns, categories, geography, "
                             "and validation rules"
                         ),
                     ),
@@ -103,9 +103,7 @@ DOMAIN = DomainSOT(
                     state=AuthorityMigrationState.CUT_OVER,
                     old_owner="dotmac_crm NCC complaints report projection",
                     new_owner="compliance.ncc_complaints_reporting",
-                    verification=(
-                        "native row, validation, workbook, route, and pack tests"
-                    ),
+                    verification=("native row, validation, CSV, route, and pack tests"),
                     cutover_gate="CRM versus native bounded-window comparison",
                     fallback_retirement=(
                         "CRM report route retires under the CRM web retirement gate"

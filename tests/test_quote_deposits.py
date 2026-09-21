@@ -19,10 +19,16 @@ from app.models.billing import Invoice, InvoiceStatus, Payment
 from app.models.party import Party
 from app.models.project import ProjectTemplate
 from app.models.quote_mirror import QuoteMirror
-from app.models.sales import Quote, QuoteDepositInvoiceLink, SalesOrder
+from app.models.sales import (
+    Quote,
+    QuoteDepositInvoiceLink,
+    QuotePaymentReviewStatus,
+    SalesOrder,
+)
 from app.models.subscriber import Subscriber
+from app.models.system_user import SystemUser
 from app.services import quote_deposits, quotes_mirror
-from app.services.sales import quote_acceptance, selfserve
+from app.services.sales import quote_acceptance, quote_payment_review, selfserve
 
 
 @pytest.fixture(autouse=True)
@@ -207,13 +213,29 @@ def _native_quote(db, sub):
         "app.services.sales.selfserve._nearest_fiber_access_point",
         return_value=(_FAP, 1300.0),
     ):
-        return selfserve.selfserve_quotes.request_quote(
+        quote = selfserve.selfserve_quotes.request_quote(
             db,
             str(sub.id),
             latitude=9.0765,
             longitude=7.3986,
             address="12 Mississippi St, Maitama",
         )
+    reviewer = SystemUser(
+        first_name="Quote",
+        last_name="Reviewer",
+        email=f"deposit-reviewer-{uuid.uuid4().hex[:8]}@example.com",
+        is_active=True,
+    )
+    db.add(reviewer)
+    db.flush()
+    db.refresh(quote, attribute_names=["line_items"])
+    quote.payment_review_status = QuotePaymentReviewStatus.approved.value
+    quote.payment_review_revision = 1
+    quote.payment_reviewed_by_system_user_id = reviewer.id
+    quote.payment_reviewed_at = datetime.now(UTC)
+    quote.payment_review_fingerprint = quote_payment_review.quote_fingerprint(quote)
+    db.commit()
+    return quote
 
 
 def _flag_on():

@@ -7,7 +7,8 @@ Status: implementation in progress
 `network.ont_service_configuration`
 (`app.services.network.ont_service_configuration`) is the application
 coordinator for customer-service configuration submitted from the ONT Configure
-UI or the authenticated customer WiFi action. The supported path is:
+UI, the admin CPE-detail WiFi action, or the authenticated customer WiFi action.
+The supported path is:
 
 ```text
 typed UI command
@@ -87,8 +88,12 @@ not guess bindings for existing errors or events.
 Operator lock order is `OntUnit -> active OntAssignment -> configuration head
 -> active WAN intent -> credential inputs -> operation/dispatch`. Operator
 admission rechecks the authenticated scope, exact active assignment and
-subscription, PON identity, authorization/commissioning readiness, submitted
-section, and effective config pack before mutation.
+resolvable subscription identity, PON identity, authorization/commissioning
+readiness, submitted section, and effective config pack before mutation.
+Operator configuration is desired-state staging, not service delivery, so it
+deliberately does not gate on subscription lifecycle status; delivery
+authorization is a separate concern owned by RADIUS access-state and PPP
+delivery-authorization checks.
 
 Customer WiFi admission accepts only SSID and optional password fields. It
 proves the exact active subscriber/subscription assignment inside the owner,
@@ -96,6 +101,43 @@ preserves unrelated WiFi settings, encrypts the password before persistence,
 and returns the queued operation without WAN-intent, PPP-credential, OLT, ACS,
 or other network I/O. Its shorter lock order ends at the configuration head and
 operation/dispatch records.
+
+Admin CPE-detail WiFi admission resolves exactly one active
+`Tr069CpeDevice` by the submitted `cpe_device_id`, requires its exact linked
+`OntUnit` and one coherent active assignment whose subscriber identity (and,
+when the CPE names one, subscription identity) agrees with the CPE inventory
+row, and then submits the typed WiFi section through this coordinator. Missing,
+ambiguous, unlinked, unassigned, or cross-customer identity is a distinct
+fail-closed result. The web adapter also proves that the current principal may
+manage the resolved ONT. The owner then locks and revalidates the submitted
+CPE, TR-069, ONT, and assignment identities so a concurrent relink is refused,
+and applies SSID/password as a sparse patch under the same owner transaction so
+concurrent field changes compose. This mutation path never falls back to
+serial-number matching or a default ACS server and never writes directly to
+GenieACS; the reconciler remains the sole device-delivery path.
+`uq_tr069_cpe_devices_active_cpe_device_id` enforces the corresponding
+one-active-TR-069-row-per-CPE invariant atomically; its migration refuses
+duplicate live identities for reviewed adjudication rather than selecting a
+winner.
+
+Other CPE remote actions retain their existing delivery owners but share a
+typed `resolved | ambiguous | unresolved` GenieACS identity verdict. Each
+resolution tier enumerates all local and live ACS candidates; more than one
+candidate carries no device target and the action fails closed with
+`network.cpe_identity.ambiguous`. The compatibility resolver may unwrap only a
+`resolved` verdict. This prevents a non-WiFi CPE action from restoring the
+first-row/first-ACS-document behavior removed from the WiFi path.
+
+`network.cpe_assignment_drift` is the read-only operational backstop for a
+device that is demonstrably serving or informing while the canonical active
+ONT assignment is absent. A fresh exact-subscription RADIUS session is
+blocking/high-confidence evidence; a recent GenieACS Inform without that
+corroboration is advisory because assignment-free commissioning is valid. The
+coverage page exposes both populations as a human review queue. Neither arm
+creates, guesses, or reactivates an assignment: reviewed repair must use
+`network.ont_assignment_commands` after customer and replacement-device
+identity are verified. `OntObservation` is deliberately not the population
+source because return-to-inventory can remove a device from that sweep.
 
 A command advances the head once and atomically:
 
@@ -151,6 +193,18 @@ WiFi execution is explicitly ACS-only. It carries forward the last OLT
 observation and does not resolve an OLT adapter or evaluate PPP authorization;
 neither concern can consume the WiFi delivery deadline or block the action.
 
+The effective model capability pack owns any non-standard WiFi password target
+set. The reconciler always resolves the standard primary `wifi.psk` path, then
+adds only the ordered `wifi.psk.additional.N` paths explicitly declared for
+that vendor/model/firmware capability. It never guesses password targets from
+`max_ssids`. One admitted password is resolved once and sent to every declared
+target in the same CWMP transaction; audit evidence records only the target
+count and redacted field name. For Huawei EG8145V5, deployed evidence selects
+the TR-098 root, WLAN instance 1 is the standard primary target, and capability
+entry `wifi.psk.additional.1` names WLAN instance 5. The supported value leaf
+is `PreSharedKey.1.PreSharedKey`; a CWMP 9007 from `KeyPassphrase` is a failed
+write, never convergence evidence.
+
 ## Return to inventory
 
 `network.ont_reconcile_projection` exposes the typed flush-only participant
@@ -175,6 +229,8 @@ The ONT Configure page is an editor for one asynchronous transition.
   observation, and one valid next action.
 - Submission: one typed section per request; success immediately shows
   “Configuration queued” and the operation ID.
+- CPE detail: SSID/password actions apply the same admission and return the
+  queued operation identity; they do not claim that the device is configured.
 - VLAN: show the effective customer VLAN and typed source (`config_pack`,
   `service_intent`, or `reviewed_override`).
 - PPP: show only a masked derived username/provenance. The form neither accepts

@@ -12,6 +12,9 @@ from starlette.datastructures import MutableHeaders, UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.services.application_exception_observability import (
+    record_unhandled_http_exception,
+)
 from app.services.domain_errors import DomainError
 from app.services.ticket_work_order_handoff import TicketWorkOrderHandoffError
 from app.services.unit_of_work import ConcurrencyConflict
@@ -510,11 +513,19 @@ def register_error_handlers(app) -> None:
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
+        fingerprint = record_unhandled_http_exception(exc)
         logger.exception(
-            "Unhandled exception on %s %s",
-            request.method,
-            request.url.path,
-            extra={"request_id": _request_id(request)},
+            "unhandled_application_exception",
+            extra={
+                "request_id": _request_id(request),
+                "method": request.method,
+                "path": request.url.path,
+                "route_path": getattr(
+                    request.scope.get("route"), "path", "<unmatched>"
+                ),
+                "status": 500,
+                "exception_fingerprint": fingerprint,
+            },
         )
         if _is_html_request(request):
             return _template_response(

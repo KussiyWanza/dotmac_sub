@@ -204,7 +204,9 @@ class _FakeERPClient:
 
 def test_payload_mapping_matches_neutral_erp_contract(db_session):
     request = _make_approved_request(db_session)
-    payload = material_sync.build_material_request_payload(request)
+    payload = material_sync.build_material_request_payload(request).model_dump(
+        mode="json", exclude_none=True
+    )
 
     assert payload["source_request_id"] == str(request.id)
     assert payload["request_type"] == "ISSUE"
@@ -232,7 +234,9 @@ def test_payload_supports_legacy_serials_and_warehouse_metadata(db_session):
     request.items[0].metadata_ = {"serial_numbers": ["SN-1", " SN-2 ", ""]}
     db_session.flush()
 
-    line = material_sync.build_material_request_payload(request)["items"][0]
+    line = material_sync.build_material_request_payload(request).model_dump(
+        mode="json", exclude_none=True
+    )["items"][0]
     assert line["from_warehouse_code"] == "WH-LAGOS"
     assert line["serial_numbers"] == ["SN-1", "SN-2"]
 
@@ -414,6 +418,73 @@ def test_delivery_rejected_records_erp_status(db_session):
     assert request.status == "canceled"
 
 
+def test_pending_stock_cancellation_is_sent_and_confirmed_by_erp(db_session):
+    request = _make_approved_request(db_session)
+    request.status = "pending_stock"
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.material_request.value})
+    enable_erp_capability(db_session, ERP_OUTBOX_CAPABILITY)
+    db_session.commit()
+    command_id = uuid4()
+    command = material_requests.ReviewMaterialRequest(
+        context=CommandContext(
+            command_id=command_id,
+            correlation_id=command_id,
+            actor=f"user:{request.requested_by_system_user_id}",
+            scope="field:material_requests:write",
+            reason="field_material_request_cancellation",
+            idempotency_key=str(command_id),
+        ),
+        request_id=request.id,
+        reason="Job no longer requires the stock",
+        requester_person_id=request.requested_by_person_id,
+        requester_system_user_id=request.requested_by_system_user_id,
+    )
+    db_session.rollback()
+
+    outcome = material_requests.cancel_material_request(
+        db_session,
+        command,
+    )
+
+    assert (
+        outcome.status is material_requests.MaterialRequestStatus.CANCELLATION_PENDING
+    )
+    assert outcome.can_cancel is False
+    replayed = material_requests.cancel_material_request(db_session, command)
+    assert (
+        replayed.status is material_requests.MaterialRequestStatus.CANCELLATION_PENDING
+    )
+    rows = _outbox_rows(db_session, request)
+    assert len(rows) == 1
+    assert rows[0].idempotency_key == f"mr-{request.id}-cancel-v1"
+    assert rows[0].payload["status"] == "cancelled"
+
+    delivery = outbox.deliver_pending(
+        db_session,
+        client=_FakeERPClient(
+            post_outcomes=[{"request_id": "ERP-MR-CANCEL", "status": "cancelled"}]
+        ),
+    )
+    db_session.refresh(request)
+    db_session.refresh(rows[0])
+    assert delivery.accepted == 1
+    assert rows[0].status == FieldErpSyncStatus.accepted.value
+    assert request.status == "canceled"
+
+
+def test_erp_issue_wins_a_cancellation_race(db_session):
+    request = _make_approved_request(db_session)
+    request.status = "cancellation_pending"
+
+    material_sync.apply_material_response(
+        db_session,
+        request,
+        {"request_id": "ERP-MR-ISSUED", "status": "issued"},
+    )
+
+    assert request.status == "issued"
+
+
 # ---------------------------------------------------------------------------
 # Ownership guard — the inert guarantee
 # ---------------------------------------------------------------------------
@@ -459,6 +530,7 @@ def test_local_issue_is_blocked_after_material_flow_cutover(db_session):
 
 
 def test_refresh_updates_status_for_in_flight_request(db_session):
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.material_request.value})
     request = _make_approved_request(db_session)
     request.support_system = "dotmac_erp"
     request.support_reference = "ERP-MR-9"
@@ -472,14 +544,188 @@ def test_refresh_updates_status_for_in_flight_request(db_session):
     result = material_sync.refresh_material_request_statuses(db_session, client=client)
 
     db_session.refresh(request)
-    assert result["processed"] == 1
-    assert result["updated"] == 1
+    assert result.processed == 1
+    assert result.updated == 1
     assert client.status_calls == [str(request.id)]
     assert request.support_status == "fulfilled"
     assert request.status == "issued"
 
 
+def test_refresh_advances_freshness_when_erp_status_is_unchanged(db_session):
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.material_request.value})
+    request = _make_approved_request(db_session)
+    request.support_system = "dotmac_erp"
+    request.support_reference = "ERP-MR-STILL-PENDING"
+    request.support_status = "pending_stock"
+    request.status = "pending_stock"
+    request.last_reconciled_at = None
+    db_session.commit()
+
+    client = _FakeERPClient(
+        status_outcomes=[
+            {"request_id": request.support_reference, "status": "PENDING_STOCK"}
+        ]
+    )
+    result = material_sync.refresh_material_request_statuses(db_session, client=client)
+
+    db_session.refresh(request)
+    assert result.processed == 1
+    assert result.observed == 1
+    assert result.updated == 0
+    assert request.last_reconciled_at is not None
+
+
+def test_refresh_rotates_through_more_than_one_bounded_page(db_session):
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.material_request.value})
+    first = _make_approved_request(db_session)
+    first.status = "pending_stock"
+    first.support_system = "dotmac_erp"
+    first.support_status = "pending_stock"
+    requests = [first]
+    for _ in range(143):
+        request = FieldMaterialRequest(
+            work_order_mirror_id=first.work_order_mirror_id,
+            requested_by_person_id=first.requested_by_person_id,
+            requested_by_system_user_id=first.requested_by_system_user_id,
+            status="pending_stock",
+            priority="high",
+            fulfillment_channel="erp",
+            support_system="dotmac_erp",
+            support_status="pending_stock",
+            source_warehouse_code="WH-LAGOS",
+        )
+        db_session.add(request)
+        requests.append(request)
+    db_session.flush()
+    for request in requests:
+        request.support_reference = f"ERP-{request.id}"
+    db_session.commit()
+
+    class _EchoPendingClient:
+        def __init__(self):
+            self.status_calls: list[str] = []
+
+        def get_material_request_status(self, source_request_id):
+            self.status_calls.append(source_request_id)
+            return {
+                "request_id": f"ERP-{source_request_id}",
+                "status": "PENDING_STOCK",
+            }
+
+        def close(self):
+            return None
+
+    client = _EchoPendingClient()
+    first_cycle = material_sync.refresh_material_request_statuses(
+        db_session, client=client, limit=100
+    )
+    second_cycle = material_sync.refresh_material_request_statuses(
+        db_session, client=client, limit=100
+    )
+
+    assert first_cycle.processed == 100
+    assert second_cycle.processed == 100
+    assert len(set(client.status_calls)) == 144
+    assert {str(request.id) for request in requests} <= set(client.status_calls)
+
+
+@pytest.mark.parametrize("erp_status", ("CANCELLED", "CANCELED"))
+def test_refresh_projects_erp_cancellation_through_material_owner(
+    db_session, erp_status
+):
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.material_request.value})
+    request = _make_approved_request(db_session)
+    request.support_system = "dotmac_erp"
+    request.support_reference = "ERP-MR-CANCELLED"
+    request.support_status = "pending_stock"
+    request.status = "pending_stock"
+    db_session.commit()
+
+    client = _FakeERPClient(
+        status_outcomes=[
+            {"request_id": request.support_reference, "status": erp_status}
+        ]
+    )
+    result = material_sync.refresh_material_request_statuses(db_session, client=client)
+
+    db_session.refresh(request)
+    assert result.updated == 1
+    assert request.support_status == erp_status.lower()
+    assert request.status == "canceled"
+
+
+def test_refresh_drains_a_sent_row_that_the_linked_query_could_never_select(
+    db_session,
+):
+    """A ``sent`` row has no reference BY DEFINITION — the old query excluded it
+    forever (the dead end). The widened poller must find it via the outbox and
+    drain it to ``accepted`` once ERP returns a real id.
+    """
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.material_request.value})
+    enable_erp_capability(db_session, ERP_OUTBOX_CAPABILITY)
+    request = _make_approved_request(db_session)
+    outbox.deliver_pending(db_session, client=_FakeERPClient(post_outcomes=[{}]))
+    db_session.refresh(request)
+    assert request.support_reference is None
+    row = _outbox_rows(db_session, request)[0]
+    assert row.status == FieldErpSyncStatus.sent.value
+
+    client = _FakeERPClient(
+        status_outcomes=[{"request_id": "ERP-MR-LATE", "status": "fulfilled"}]
+    )
+    result = material_sync.refresh_material_request_statuses(db_session, client=client)
+
+    db_session.refresh(request)
+    row = _outbox_rows(db_session, request)[0]
+    assert row.status == FieldErpSyncStatus.accepted.value
+    assert request.support_reference == "ERP-MR-LATE"
+    assert result.processed == 1
+    assert result.updated == 1
+    assert client.status_calls == [str(request.id)]
+
+
+def test_unlinked_status_poll_makes_no_erp_call_for_a_crm_owned_flow(db_session):
+    """The poll-drain path (``_poll_unlinked_material_requests``, reached via
+    ``refresh_material_request_statuses``) makes a real ERP call
+    (``get_material_request_status``). It must be skipped for a currently
+    CRM-owned flow, even though the row was delivered while sub owned it —
+    ownership can move back to CRM after delivery (the cutover/shadow-phase
+    model this codebase uses), and this poll runs on a schedule left running
+    across cutovers.
+    """
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.material_request.value})
+    enable_erp_capability(db_session, ERP_OUTBOX_CAPABILITY)
+    request = _make_approved_request(db_session)
+    outbox.deliver_pending(db_session, client=_FakeERPClient(post_outcomes=[{}]))
+    db_session.refresh(request)
+    assert request.support_reference is None
+    row = _outbox_rows(db_session, request)[0]
+    assert row.status == FieldErpSyncStatus.sent.value
+
+    # Ownership moves back to CRM before the poll runs.
+    ownership_row = (
+        db_session.query(SyncFlowOwnership)
+        .filter(SyncFlowOwnership.flow == FieldErpSyncFlow.material_request.value)
+        .one()
+    )
+    ownership_row.owner = SyncFlowOwner.crm.value
+    db_session.commit()
+
+    client = _FakeERPClient(
+        status_outcomes=[{"request_id": "SHOULD-NOT-HAPPEN", "status": "issued"}]
+    )
+    result = material_sync.refresh_material_request_statuses(db_session, client=client)
+
+    assert client.status_calls == []
+    assert result.skipped_not_owned == 1
+    db_session.refresh(request)
+    assert request.support_reference is None
+    row = _outbox_rows(db_session, request)[0]
+    assert row.status == FieldErpSyncStatus.sent.value
+
+
 def test_refresh_skips_unsynced_and_terminal_requests(db_session):
+    _seed_ownership(db_session, sub_flows={FieldErpSyncFlow.material_request.value})
     # Not synced yet (no erp id) → excluded.
     unsynced = _make_approved_request(db_session, crm_work_order_id="wo-a")
     # Synced but already fulfilled (terminal) → excluded from the in-flight poll.
@@ -492,7 +738,7 @@ def test_refresh_skips_unsynced_and_terminal_requests(db_session):
     client = _FakeERPClient(status_outcomes=[])
     result = material_sync.refresh_material_request_statuses(db_session, client=client)
 
-    assert result["processed"] == 0
+    assert result.processed == 0
     assert client.status_calls == []
     assert unsynced.support_reference is None
 

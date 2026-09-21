@@ -123,6 +123,150 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="operations.field_location_ingest",
+            module="app.services.field.location_tracking",
+            owns=(
+                "field-location ping ingest",
+                "field-location sharing preference",
+            ),
+            depends_on=("auth.staff_provisioning",),
+            notes=(
+                "Single-ping and batched ping submission each enter their own "
+                "owner command; a batch additionally isolates every ping in "
+                "its own savepoint, so one rejected or conflicting row never "
+                "fails rows accepted earlier in the same submission. Geofence "
+                "auto-status evaluation runs strictly after the ingest owner "
+                "command has committed, as a separate, independently failing "
+                "operation: the auto-start writer (field_transitions.apply) "
+                "commits its own root transaction, and composing it inside "
+                "this owner command would collide with the single-commit "
+                "boundary here."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="field-location ping ingest",
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=(
+                            "authenticated field technician principal",
+                            "submitted field-location ping",
+                        ),
+                        canonical_writer="operations.field_location_ingest",
+                    ),
+                    ConcernContract(
+                        name="field-location sharing preference",
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=(
+                            "authenticated field technician principal",
+                            "field-location sharing preference command",
+                        ),
+                        canonical_writer="operations.field_location_ingest",
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="authenticated field technician principal",
+                        owner="auth.staff_provisioning",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=("active SystemUser login bound to a TechnicianProfile"),
+                    ),
+                    AuthorityInput(
+                        name="submitted field-location ping",
+                        owner="operations.field_location_ingest",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "mobile/API-submitted latitude, longitude, "
+                            "accuracy, captured_at, optional tagged "
+                            "work-order, and presence status"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="field-location sharing preference command",
+                        owner="operations.field_location_ingest",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "API-submitted location-sharing enabled flag and "
+                            "optional presence status"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.OWNER_MANAGED,
+                    boundary=(
+                        "The route opens (or is handed) a transaction-free "
+                        "session; a single ping, a sharing-preference change, "
+                        "and a batch each enter execute_owner_command exactly "
+                        "once. Inside a batch, every ping additionally runs "
+                        "inside its own execute_owner_savepoint, so a "
+                        "rejected or conflicting row rolls back only that "
+                        "row's writes before the batch commits the rows that "
+                        "succeeded."
+                    ),
+                    locking=(
+                        "Each command operates on the calling technician's "
+                        "own FieldTechPresence row; no cross-technician "
+                        "locking is required."
+                    ),
+                    idempotency=(
+                        "A ping has no dedup identity in this contract today; "
+                        "each accepted row is a new observation. A future "
+                        "duplicate-submission identity constraint surfaces as "
+                        "an IntegrityError at the per-row flush, which this "
+                        "owner already maps to a typed per-row rejection "
+                        "instead of a whole-batch failure."
+                    ),
+                    retries=(
+                        "Adapters retry a whole ping, sharing change, or "
+                        "batch only after complete rollback; a rejected row "
+                        "inside an otherwise-accepted batch never "
+                        "auto-retries."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "work_order_not_found",
+                        "work_order_not_trackable",
+                        "technician_not_assigned",
+                        "captured_at_in_future",
+                        "invalid_ping",
+                        "ping_conflict",
+                        *owner_command_boundary_error_codes(
+                            "operations.field_location_ingest"
+                        ),
+                    ),
+                    mapping_owner="field-location ingest API adapter",
+                    fail_closed_on=(
+                        "a tagged work order that is missing, inactive, or "
+                        "not assigned to the submitting technician",
+                        "a ping timestamp beyond the future clock-skew bound",
+                        "a per-row flush-time integrity conflict",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=("field_location.ping_ingested",),
+                    schema_version=1,
+                    delivery_owner="events.store",
+                    compatibility=(
+                        "Version 1 is reserved for aggregate ingest outcome "
+                        "counts; no event is emitted yet, so no payload shape "
+                        "is committed."
+                    ),
+                    replay=(
+                        "Accepted FieldTechLocationPing rows and the current "
+                        "FieldTechPresence snapshot reconstruct ingest "
+                        "outcomes; no event replay is required today."
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.NATIVE,
+                    new_owner="operations.field_location_ingest",
+                ),
+                steward="field operations",
+                design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+                test_refs=("tests/test_field_location_tracking.py",),
+            ),
+        ),
+        SOTService(
             name="operations.service_team_source_retirement",
             module="app.services.service_team_source_retirement",
             owns=(

@@ -85,6 +85,54 @@ def test_workforce_facade_maps_stable_provider_error(monkeypatch):
     assert "technical" not in exc.value.message.lower()
 
 
+def test_shift_eligibility_requires_erp_confirmed_check_in(monkeypatch):
+    client = MagicMock()
+    client.get_attendance_today.return_value = _erp_response("not_checked_in")
+    monkeypatch.setattr(
+        "app.services.workforce_attendance.capability_client", lambda _db: client
+    )
+
+    with pytest.raises(WorkforceAttendanceError) as exc:
+        WorkforceAttendanceService(MagicMock()).require_checked_in_for_shift(
+            SUBJECT,
+            request_id="shift-gate-1",
+        )
+
+    assert exc.value.code == "check_in_required"
+    assert "check in" in exc.value.message.lower()
+
+
+def test_confirmed_punch_resolves_ambiguous_result_from_erp_state(monkeypatch):
+    client = MagicMock()
+    client.punch_attendance.side_effect = DotMacERPTransientError(
+        "attendance_unavailable"
+    )
+    client.get_attendance_today.return_value = _erp_response("checked_in") | {
+        "check_in_at": "2026-09-09T07:30:00+01:00",
+        "status": "PRESENT",
+        "allowed_actions": ["check_out"],
+    }
+    monkeypatch.setattr(
+        "app.services.workforce_attendance.capability_client", lambda _db: client
+    )
+
+    result = WorkforceAttendanceService(MagicMock()).punch_confirmed(
+        AttendanceAction.CHECK_IN,
+        SUBJECT,
+        BrowserLocation(
+            latitude=9.0765,
+            longitude=7.3986,
+            accuracy_m=8.5,
+            observed_at=datetime(2026, 9, 9, 6, 29, 58, tzinfo=UTC),
+        ),
+        idempotency_key="mobile-punch-1",
+        request_id="correlation-1",
+    )
+
+    assert result.attendance.state == AttendanceState.CHECKED_IN
+    assert result.resolution.value == "reconciled"
+
+
 def test_erp_client_sends_trusted_subject_and_same_idempotency_key():
     captured: dict[str, str] = {}
 

@@ -14,6 +14,167 @@
 {% endmacro %}
 
 {% if contact_context %}
+{% set completion = contact_context.resolution_readiness %}
+{% call ctx_section("Resolution readiness") %}
+    {% if completion.classification.value == 'customer' %}
+        <p class="text-xs font-semibold {% if completion.can_agent_resolve %}text-emerald-700 dark:text-emerald-300{% else %}text-rose-700 dark:text-rose-300{% endif %}">
+            {% if completion.can_agent_resolve %}Customer information complete · Resolve enabled{% else %}Customer information incomplete · Resolve disabled{% endif %}
+        </p>
+        <ul class="mt-2 space-y-1 text-xs">
+            {% for item in completion.fields %}
+            <li class="flex justify-between gap-2"><span>{{ item.label }}</span><strong class="{% if item.complete %}text-emerald-700 dark:text-emerald-300{% else %}text-rose-700 dark:text-rose-300{% endif %}">{{ 'Complete' if item.complete else 'Missing' }}</strong></li>
+            {% endfor %}
+        </ul>
+        {% if not completion.can_agent_resolve %}<p class="mt-2 text-xs text-slate-500">Complete and save the required Customer information before resolving this conversation.</p>{% endif %}
+    {% elif completion.classification.value == 'lead' %}
+        <p class="text-xs font-semibold text-emerald-700 dark:text-emerald-300">Lead information is optional · Resolve remains available</p>
+    {% else %}
+        <p class="text-xs font-semibold text-rose-700 dark:text-rose-300">Identify what this conversation is about before resolving it.</p>
+        <div class="mt-3 grid gap-3 sm:grid-cols-2">
+            {% if can_link_customer %}
+            <form method="post" action="/admin/inbox/{{ contact_context.conversation_id }}/contact-link" class="space-y-2 rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+                {% include "components/forms/csrf_input.html" %}
+                <input type="hidden" name="target_type" value="subscriber">
+                <label for="inbox-customer-search-{{ contact_context.conversation_id }}" class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Existing Customer</label>
+                <div class="relative mt-1"
+                     data-typeahead-url="/admin/inbox/{{ contact_context.conversation_id }}/customer-link-options"
+                     data-typeahead-initial-url="/admin/inbox/{{ contact_context.conversation_id }}/customer-link-options"
+                     data-typeahead-min="2"
+                     data-typeahead-limit="8"
+                     data-typeahead-label="Customers"
+                     data-typeahead-initial-empty="No likely Customers found. Type to search all Customers."
+                     data-typeahead-validate-selection="true">
+                    <input id="inbox-customer-search-{{ contact_context.conversation_id }}"
+                           type="search"
+                           data-typeahead-input
+                           required
+                           autocomplete="off"
+                           role="combobox"
+                           aria-haspopup="listbox"
+                           aria-autocomplete="list"
+                           aria-controls="inbox-customer-options-{{ contact_context.conversation_id }}"
+                           placeholder="Select a suggestion or search all Customers"
+                           class="min-h-10 w-full rounded-lg border-slate-300 px-3 pr-10 text-xs dark:border-slate-700 dark:bg-slate-950">
+                    <button type="button" data-typeahead-clear class="absolute right-2 top-2 hidden min-h-6 min-w-6 rounded text-slate-500 hover:text-slate-800 dark:hover:text-slate-200" aria-label="Clear selected Customer">×</button>
+                    <input type="hidden" name="subscriber_id" data-typeahead-hidden>
+                    <div id="inbox-customer-options-{{ contact_context.conversation_id }}" data-typeahead-results aria-live="polite"></div>
+                </div>
+                <p class="text-[11px] text-slate-500">Open the field for likely matches, or type at least 2 characters to search all active Customers.</p>
+                <p class="text-[11px] text-slate-500">Use this only when the sender is the Customer. Their address becomes a reusable Customer contact route.</p>
+                <button class="min-h-10 w-full rounded-lg border border-cyan-300 px-3 text-xs font-semibold text-cyan-800 dark:border-cyan-700 dark:text-cyan-200">Link Customer</button>
+            </form>
+            {% else %}
+            <div class="rounded-lg border border-slate-200 p-3 text-xs text-slate-500 dark:border-slate-700">Customer linking is restricted.</div>
+            {% endif %}
+            <div class="rounded-lg border border-slate-200 p-3 text-xs dark:border-slate-700">
+                <p class="font-semibold text-slate-700 dark:text-slate-200">Lead</p>
+                <p class="mt-1 text-[11px] text-slate-500">Link an existing Lead or create a Party-backed Lead. Lead details are optional for resolution.</p>
+                {% if contact_context.lead_action.action_type.value not in ['unauthorized', 'unavailable'] %}
+                <form method="post" action="/admin/inbox/{{ contact_context.conversation_id }}/actions/lead" class="mt-2">
+                    {% include "components/forms/csrf_input.html" %}
+                    <button class="min-h-10 w-full rounded-lg border border-cyan-300 px-3 text-xs font-semibold text-cyan-800 dark:border-cyan-700 dark:text-cyan-200">{{ contact_context.lead_action.label }}</button>
+                </form>
+                {% endif %}
+            </div>
+            <form method="post" action="/admin/inbox/{{ contact_context.conversation_id }}/represented-customer" class="space-y-3 rounded-lg border border-slate-200 p-3 sm:col-span-2 dark:border-slate-700">
+                {% include "components/forms/csrf_input.html" %}
+                <div>
+                    <p class="text-xs font-semibold text-slate-700 dark:text-slate-200">Representative for an existing Customer</p>
+                    <p class="mt-1 text-[11px] text-slate-500">Use this when the person messaging is speaking for someone else. It links only this conversation and does not turn the representative's address into the Customer's contact address.</p>
+                </div>
+                {% if contact_context.participants %}
+                <div class="grid gap-3 sm:grid-cols-2">
+                    <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Person speaking
+                        <select name="participant_id" required class="mt-1 min-h-10 w-full rounded-lg border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950">
+                            <option value="">Choose a conversation participant...</option>
+                            {% for participant in contact_context.participants %}
+                            <option value="{{ participant.id }}">{{ participant.display_name or participant.normalized_endpoint }} ({{ participant.admission_source | replace('_', ' ') }})</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Customer represented
+                        <div class="relative mt-1" data-typeahead-url="/api/v1/search/subscribers" data-typeahead-min="2" data-typeahead-limit="8" data-typeahead-label="Customers" data-typeahead-validate-selection="true">
+                            <input type="search" data-typeahead-input required autocomplete="off" placeholder="Search name, phone, email or account" class="min-h-10 w-full rounded-lg border-slate-300 px-3 text-xs dark:border-slate-700 dark:bg-slate-950">
+                            <input type="hidden" name="subscriber_id" data-typeahead-hidden>
+                            <div data-typeahead-results></div>
+                        </div>
+                    </label>
+                </div>
+                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Reason for representation
+                    <textarea name="reason" required maxlength="2000" rows="2" placeholder="For example: calling on behalf of the account holder" class="mt-1 w-full rounded-lg border-slate-300 px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-950"></textarea>
+                </label>
+                <button class="min-h-10 w-full rounded-lg border border-cyan-300 px-3 text-xs font-semibold text-cyan-800 hover:bg-cyan-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 focus-visible:ring-offset-2 dark:border-cyan-700 dark:text-cyan-200 dark:hover:bg-cyan-950/30">Link represented Customer</button>
+                {% else %}
+                <p class="text-xs text-rose-700 dark:text-rose-300">No conversation participant is available to record as the representative.</p>
+                {% endif %}
+            </form>
+            {% if can_manage_leads %}
+            <form method="post" action="/admin/inbox/{{ contact_context.conversation_id }}/represented-lead" class="space-y-3 rounded-lg border border-slate-200 p-3 sm:col-span-2 dark:border-slate-700">
+                {% include "components/forms/csrf_input.html" %}
+                <div>
+                    <p class="text-xs font-semibold text-slate-700 dark:text-slate-200">Representative for an existing Lead</p>
+                    <p class="mt-1 text-[11px] text-slate-500">Select the person speaking and the existing Lead this conversation concerns. This does not create a Lead or reuse the representative's address.</p>
+                </div>
+                {% if contact_context.participants %}
+                <div class="grid gap-3 sm:grid-cols-2">
+                    <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Person speaking
+                        <select name="participant_id" required class="mt-1 min-h-10 w-full rounded-lg border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950">
+                            <option value="">Choose a conversation participant...</option>
+                            {% for participant in contact_context.participants %}
+                            <option value="{{ participant.id }}">{{ participant.display_name or participant.normalized_endpoint }} ({{ participant.admission_source | replace('_', ' ') }})</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Lead represented
+                        <div class="relative mt-1" data-typeahead-url="/admin/inbox/search/leads" data-typeahead-min="2" data-typeahead-limit="8" data-typeahead-label="Leads" data-typeahead-validate-selection="true">
+                            <input type="search" data-typeahead-input required autocomplete="off" placeholder="Search Lead name, phone or email" class="min-h-10 w-full rounded-lg border-slate-300 px-3 text-xs dark:border-slate-700 dark:bg-slate-950">
+                            <input type="hidden" name="lead_id" data-typeahead-hidden>
+                            <div data-typeahead-results></div>
+                        </div>
+                    </label>
+                </div>
+                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Reason for representation
+                    <textarea name="reason" required maxlength="2000" rows="2" placeholder="For example: contacting us for the prospective account holder" class="mt-1 w-full rounded-lg border-slate-300 px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-950"></textarea>
+                </label>
+                <button class="min-h-10 w-full rounded-lg border border-cyan-300 px-3 text-xs font-semibold text-cyan-800 hover:bg-cyan-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 focus-visible:ring-offset-2 dark:border-cyan-700 dark:text-cyan-200 dark:hover:bg-cyan-950/30">Link represented Lead</button>
+                {% else %}
+                <p class="text-xs text-rose-700 dark:text-rose-300">No conversation participant is available to record as the representative.</p>
+                {% endif %}
+            </form>
+            {% endif %}
+        </div>
+    {% endif %}
+{% endcall %}
+
+{% if completion.classification.value == 'customer' and contact_context.subscriber_id and contact_context.profile.availability.value == 'available' and contact_context.can_edit_customer_profile %}
+{% set profile = contact_context.profile.items[0] %}
+{% call ctx_section("Complete Customer information") %}
+    <form method="post" action="/admin/inbox/{{ contact_context.conversation_id }}/customer-profile" hx-post="/admin/inbox/{{ contact_context.conversation_id }}/customer-profile" hx-target="#inbox-contact-content" hx-swap="innerHTML" class="space-y-3">
+        {% include "components/forms/csrf_input.html" %}
+        <input type="hidden" name="customer_id" value="{{ contact_context.subscriber_id }}">
+        {% for requirement in completion.fields %}
+        {% set field = requirement.field.value %}
+        {% set label = requirement.label %}
+        {% set value = contact_context.customer_values.get(requirement.field) %}
+        <div>
+            <input type="hidden" name="submitted_fields" value="{{ field }}">
+            <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">{{ label }}
+                {% if field == 'gender' %}
+                <select name="gender" required class="mt-1 min-h-10 w-full rounded-lg border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-950"><option value="">Select…</option>{% for option in ['female', 'male', 'non_binary', 'other'] %}<option value="{{ option }}" {% if value == option %}selected{% endif %}>{{ option | replace('_', ' ') | title }}</option>{% endfor %}</select>
+                {% else %}
+                <input name="{{ field }}" value="{{ value or '' }}" {% if field == 'date_of_birth' %}type="date"{% endif %} required class="mt-1 min-h-10 w-full rounded-lg border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-950">
+                {% endif %}
+            </label>
+            {% if value %}
+            <label class="mt-1 flex items-start gap-2 text-[11px] text-slate-500"><input type="checkbox" name="confirmed_replacements" value="{{ field }}" class="mt-0.5 rounded border-slate-300">Confirm replacement if I change the stored value shown above</label>
+            {% endif %}
+        </div>
+        {% endfor %}
+        <button class="min-h-10 w-full rounded-lg bg-cyan-600 px-3 text-xs font-semibold text-white hover:bg-cyan-500">Save to Customer record</button>
+    </form>
+{% endcall %}
+{% endif %}
+
 {% call ctx_section("Customer actions") %}
     <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {% for action in [contact_context.profile_action, contact_context.lead_action] %}

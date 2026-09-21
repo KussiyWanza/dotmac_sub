@@ -2,6 +2,7 @@
     "use strict";
 
     const DEFAULT_INTERVAL_MS = 10 * 60 * 1000;
+    const REFRESH_LEAD_MS = 60 * 1000;
     const LOCK_TTL_MS = 15 * 1000;
     const WAIT_TIMEOUT_MS = 12 * 1000;
     const POLL_MS = 100;
@@ -116,11 +117,21 @@
     }
 
     async function fetchRefresh(win, refreshUrl, loginUrl) {
+        const csrfToken =
+            typeof win.getCsrfToken === "function" ? win.getCsrfToken() : "";
         const response = await win.fetch(refreshUrl, {
+            method: "POST",
             cache: "no-store",
             credentials: "same-origin",
-            headers: { "X-Session-Refresh": "true" },
+            headers: {
+                "X-Session-Refresh": "true",
+                ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+            },
         });
+        const expiresAtHeader =
+            response.headers && typeof response.headers.get === "function"
+                ? response.headers.get("X-Session-Expires-At")
+                : null;
         const redirectTo =
             response.status === 401 || responseReachedLogin(win, response, loginUrl)
                 ? loginRedirect(win, loginUrl)
@@ -129,6 +140,7 @@
             completedAt: nowMs(win),
             status: response.status,
             redirectTo,
+            expiresAt: Number(expiresAtHeader || 0),
         };
     }
 
@@ -206,26 +218,36 @@
         const storage = storageFor(win);
         const channel = openChannel(win);
         const ownerId = makeTabId(win);
+        let inFlight = null;
+        let expiresAtMs = Number(config.expiresAt || 0) * 1000;
 
-        async function refreshSession() {
+        function rememberResult(result) {
+            const resultExpiry = Number((result && result.expiresAt) || 0);
+            if (resultExpiry > 0) {
+                expiresAtMs = resultExpiry * 1000;
+            }
+            return result;
+        }
+
+        async function refreshWithStorageLock() {
             if (!storage) {
-                const result = await fetchRefresh(win, config.refreshUrl, config.loginUrl);
-                applyRefreshResult(win, result);
-                return result;
+                return rememberResult(
+                    await fetchRefresh(win, config.refreshUrl, config.loginUrl),
+                );
             }
 
             const startedAt = nowMs(win);
             const recent = readJson(storage, RESULT_KEY);
             if (shouldUseRecentResult(recent, startedAt)) {
                 applyRefreshResult(win, recent);
-                return recent;
+                return rememberResult(recent);
             }
 
             if (!tryAcquireRefreshLock(storage, ownerId, startedAt)) {
                 const result = await waitForResult(win, storage, channel, startedAt);
                 if (result) {
                     applyRefreshResult(win, result);
-                    return result;
+                    return rememberResult(result);
                 }
             }
 
@@ -237,7 +259,7 @@
                 const result = await fetchRefresh(win, config.refreshUrl, config.loginUrl);
                 publishResult(storage, channel, result);
                 applyRefreshResult(win, result);
-                return result;
+                return rememberResult(result);
             } catch (err) {
                 return null;
             } finally {
@@ -245,8 +267,53 @@
             }
         }
 
+        async function coordinateRefresh() {
+            const locks = win.navigator && win.navigator.locks;
+            if (locks && typeof locks.request === "function") {
+                return locks.request(LOCK_KEY, async () => {
+                    const recent = storage ? readJson(storage, RESULT_KEY) : null;
+                    if (shouldUseRecentResult(recent, nowMs(win))) {
+                        applyRefreshResult(win, recent);
+                        return rememberResult(recent);
+                    }
+                    const result = await fetchRefresh(
+                        win,
+                        config.refreshUrl,
+                        config.loginUrl,
+                    );
+                    if (storage) {
+                        publishResult(storage, channel, result);
+                    }
+                    applyRefreshResult(win, result);
+                    return rememberResult(result);
+                });
+            }
+            return refreshWithStorageLock();
+        }
+
+        function refreshSession() {
+            if (inFlight) {
+                return inFlight;
+            }
+            inFlight = coordinateRefresh()
+                .catch(() => null)
+                .finally(() => {
+                    inFlight = null;
+                });
+            return inFlight;
+        }
+
         return {
             refreshSession,
+            isRefreshing() {
+                return Boolean(inFlight);
+            },
+            needsRefresh(leadMs = REFRESH_LEAD_MS) {
+                return expiresAtMs <= 0 || expiresAtMs - nowMs(win) <= leadMs;
+            },
+            expiresAtMs() {
+                return expiresAtMs;
+            },
             close() {
                 if (channel) {
                     channel.close();
@@ -264,13 +331,44 @@
      * @param {string} config.loginUrl - Redirect URL on session expiry
      * @param {number} [config.intervalMs=600000] - Refresh interval
      */
+    function pauseHtmxForRefresh(coordinator, event) {
+        if (!coordinator.isRefreshing() && !coordinator.needsRefresh()) {
+            return false;
+        }
+        event.preventDefault();
+        coordinator.refreshSession().then((result) => {
+            if (!result || (result.status !== 401 && !result.redirectTo)) {
+                event.detail.issueRequest(true);
+            }
+        });
+        return true;
+    }
+
     function initSessionRefresh(config) {
         const intervalMs = config.intervalMs || DEFAULT_INTERVAL_MS;
         const coordinator = createSessionRefreshCoordinator(root, config);
+        let refreshTimer = null;
+
+        function scheduleRefresh() {
+            if (refreshTimer) {
+                root.clearTimeout(refreshTimer);
+            }
+            const expiry = coordinator.expiresAtMs();
+            const delay = expiry > 0
+                ? Math.max(0, expiry - nowMs(root) - REFRESH_LEAD_MS)
+                : intervalMs;
+            refreshTimer = root.setTimeout(async () => {
+                const result = await coordinator.refreshSession();
+                if (result && result.status >= 200 && result.status < 300) {
+                    scheduleRefresh();
+                } else if (!result || result.status !== 401) {
+                    refreshTimer = root.setTimeout(scheduleRefresh, 30 * 1000);
+                }
+            }, delay);
+        }
 
         function startRefresh() {
-            coordinator.refreshSession();
-            root.setInterval(() => coordinator.refreshSession(), intervalMs);
+            scheduleRefresh();
         }
 
         if (root.document.readyState === "loading") {
@@ -280,10 +378,22 @@
         }
 
         root.document.addEventListener("visibilitychange", () => {
-            if (!root.document.hidden) {
+            if (!root.document.hidden && coordinator.needsRefresh()) {
                 coordinator.refreshSession();
             }
         });
+
+        root.document.addEventListener("htmx:confirm", (event) => {
+            pauseHtmxForRefresh(coordinator, event);
+        });
+
+        const closeCoordinator = coordinator.close.bind(coordinator);
+        coordinator.close = function () {
+            if (refreshTimer) {
+                root.clearTimeout(refreshTimer);
+            }
+            closeCoordinator();
+        };
 
         return coordinator;
     }
@@ -300,6 +410,7 @@
                 responseReachedLogin,
                 shouldUseRecentResult,
                 tryAcquireRefreshLock,
+                pauseHtmxForRefresh,
             },
         };
     }

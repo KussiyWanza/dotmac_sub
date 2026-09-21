@@ -8,6 +8,8 @@
 .claude
 .vscode
 .idea
+.worktrees
+_worktrees
 
 # Secrets & local env (provided at runtime via compose env_file, never baked)
 .env

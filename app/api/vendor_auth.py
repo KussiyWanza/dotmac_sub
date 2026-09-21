@@ -286,7 +286,7 @@ def vendor_refresh(
     expiry."""
 
     resolved = AuthFlow.resolve_refresh_token(
-        request=request, refresh_token=payload.refresh_token, db=db
+        request=request, refresh_token=payload.refresh_token, db=None
     )
     if not resolved:
         raise HTTPException(
@@ -295,11 +295,11 @@ def vendor_refresh(
     result = auth_flow_service.auth_flow.refresh(
         db=db, refresh_token=resolved, request=request
     )
-    vendor_id = _vendor_id_or_refuse(db, result)
-    refresh_token = result.get("refresh_token")
-    refresh_token = refresh_token if isinstance(refresh_token, str) else None
+    result_values = result.model_dump()
+    vendor_id = _vendor_id_or_refuse(db, result_values)
+    refresh_token = result.refresh_token
     body = VendorTokenResponse(
-        access_token=_issued_token(result, "access_token"),
+        access_token=result.access_token,
         refresh_token=refresh_token if wants_refresh_in_body(request) else None,
         vendor_id=vendor_id,
     )

@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import '../../app/theme.dart';
 import '../../app/status_presentation.dart';
 import '../../app/widgets/status_pill.dart';
+import '../attendance/attendance_repository.dart';
 import '../jobs/jobs_providers.dart';
 import '../jobs/job_models.dart';
 import '../jobs/widgets/job_card.dart';
@@ -44,6 +45,7 @@ class TodayScreen extends ConsumerWidget {
           onRefresh: () async {
             ref.invalidate(meProvider);
             ref.invalidate(todayJobsProvider);
+            ref.invalidate(attendanceControllerProvider);
           },
           child: CustomScrollView(
             physics: const AlwaysScrollableScrollPhysics(),

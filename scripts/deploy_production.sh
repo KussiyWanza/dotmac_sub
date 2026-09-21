@@ -142,9 +142,24 @@ fi
 APP_CONTAINER="${APP_CONTAINER:-dotmac_sub_app}"
 TARGET_REVISION=""
 REVISION_OUTPUTS="$(mktemp)"
-if run_repo_module scripts.release_candidate_evidence verify-production \
-  --path "${AUTHORIZATION_FILE}" \
-  --github-output "${REVISION_OUTPUTS}" >/dev/null; then
+# Bind this read to what the deploy was actually handed: the exact digest
+# being deployed, and -- when present -- the exact authorization run id
+# already threaded through this script (AUTHORIZATION_RUN_ID, the same
+# environment variable required above for post-migration resume and passed
+# in by production-deploy.yml on every invocation). Without this, the
+# anti-rollback gate would accept any authorization document naming a
+# forward-looking TARGET_REVISION, even one that does not match the digest
+# this invocation is actually deploying.
+VERIFY_PRODUCTION_ARGS=(
+  verify-production
+  --path "${AUTHORIZATION_FILE}"
+  --github-output "${REVISION_OUTPUTS}"
+  --expected-image-digest "${DIGEST}"
+)
+if [[ -n "${AUTHORIZATION_RUN_ID:-}" ]]; then
+  VERIFY_PRODUCTION_ARGS+=(--expected-authorization-run-id "${AUTHORIZATION_RUN_ID}")
+fi
+if run_repo_module scripts.release_candidate_evidence "${VERIFY_PRODUCTION_ARGS[@]}" >/dev/null; then
   TARGET_REVISION="$(sed -n 's/^release_revision=//p' "${REVISION_OUTPUTS}")"
 else
   rm -f "${REVISION_OUTPUTS}"

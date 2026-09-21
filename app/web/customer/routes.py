@@ -40,6 +40,7 @@ from app.services import chat_session as chat_session_service
 from app.services import (
     crm_portal,
     customer_portal,
+    location_capture,
     payment_intent_management,
     portal_ticket_deflection,
     support_ticket_settings,
@@ -52,8 +53,14 @@ from app.services import customer_portal_flow_payment_methods as customer_cards
 from app.services import customer_portal_notifications as customer_notifications_service
 from app.services import payment_proofs as payment_proofs_service
 from app.services import service_address as service_address_service
+from app.services import web_customer_actions as customer_profile_service
 from app.services import web_customer_auth as web_customer_auth_service
 from app.services import web_network_speedtests as web_network_speedtests_service
+from app.services.application_exception_observability import (
+    PaymentVerificationChannel,
+    PaymentVerificationOutcome,
+    record_payment_verification_outcome,
+)
 from app.services.audit_helpers import log_audit_event
 from app.services.bandwidth import add_directions_to_series, bandwidth_samples
 from app.services.customer_context import (
@@ -153,8 +160,17 @@ def _payment_verification_error_response(
     *,
     status_code: int = 400,
 ) -> Response:
-    logger.info(
-        "Customer payment verification failed",
+    record_payment_verification_outcome(
+        channel=PaymentVerificationChannel.CUSTOMER_PORTAL,
+        outcome=PaymentVerificationOutcome.UNEXPECTED_FAILURE,
+    )
+    logger.warning(
+        "customer_payment_verification_failed",
+        extra={
+            "payment_verification_outcome": PaymentVerificationOutcome.UNEXPECTED_FAILURE.value,
+            "exception_fingerprint": type(exc).__name__[:80],
+            "status": status_code,
+        },
         exc_info=(type(exc), exc, exc.__traceback__),
     )
     return templates.TemplateResponse(
@@ -265,14 +281,15 @@ def _profile_audit_snapshot(subscriber: Subscriber) -> dict[str, object]:
 
 
 def _profile_completion(subscriber) -> dict[str, object]:
-    gender_value = _profile_value(getattr(subscriber, "gender", None))
-    if not isinstance(gender_value, str):
-        gender_value = ""
-    required = {
-        "date_of_birth": bool(getattr(subscriber, "date_of_birth", None)),
-        "gender": gender_value not in {"", "unknown"},
-        "nin": bool(getattr(subscriber, "nin", None)),
-    }
+    completion = customer_profile_service.evaluate_individual_biodata(subscriber)
+    if completion.applicable:
+        required = {
+            "date_of_birth": "date_of_birth" not in completion.missing,
+            "gender": "gender" not in completion.missing,
+            "nin": "nin" not in completion.missing,
+        }
+    else:
+        required = {"date_of_birth": True, "gender": True, "nin": True}
     missing = [key for key, complete in required.items() if not complete]
     return {
         "required": required,
@@ -1291,7 +1308,9 @@ def customer_reboot_service_ont(
 
     from app.services.customer_device_commands import (
         CustomerDeviceCommandError,
+        CustomerDeviceCommandKind,
         reboot_subscription_device,
+        record_device_command_refusal,
     )
 
     account_id = require_customer_account_id(db, customer)
@@ -1306,6 +1325,12 @@ def customer_reboot_service_ont(
     except CustomerDeviceCommandError as exc:
         outcome = None
         ok, message = False, str(exc)
+        record_device_command_refusal(
+            kind=CustomerDeviceCommandKind.reboot,
+            code=exc.code,
+            correlation_id=str(subscription_id),
+            details=exc.details,
+        )
     if outcome is not None and outcome.success:
         _emit_customer_event(
             db,
@@ -1348,21 +1373,23 @@ def customer_update_service_wifi(
 
     from app.services.customer_device_commands import (
         CustomerDeviceCommandError,
+        CustomerDeviceCommandKind,
+        record_device_command_refusal,
         update_subscription_wifi,
     )
 
     account_id = require_customer_account_id(db, customer)
+    command_id = uuid4()
+    request_id = str(getattr(request.state, "request_id", "") or "").strip()
+    try:
+        correlation_id = UUID(request_id)
+    except ValueError:
+        correlation_id = command_id
     try:
         if password.strip() != password_confirm.strip():
             raise CustomerDeviceCommandError(
                 "wifi_password_mismatch", "WiFi passwords do not match"
             )
-        command_id = uuid4()
-        request_id = str(getattr(request.state, "request_id", "") or "").strip()
-        try:
-            correlation_id = UUID(request_id)
-        except ValueError:
-            correlation_id = command_id
         finish_read_transaction(db)
         outcome = update_subscription_wifi(
             db,
@@ -1383,6 +1410,15 @@ def customer_update_service_wifi(
     except CustomerDeviceCommandError as exc:
         outcome = None
         ok, message = False, str(exc)
+        # Recorded here, outside update_subscription_wifi's owner-command
+        # transaction, which already rolled back on this exception -- see
+        # ``record_device_command_refusal``'s docstring.
+        record_device_command_refusal(
+            kind=CustomerDeviceCommandKind.wifi_update,
+            code=exc.code,
+            correlation_id=str(correlation_id),
+            details=exc.details,
+        )
     status = "wifi_queued" if ok else "wifi_error"
     evidence = ""
     if outcome is not None:
@@ -1593,6 +1629,7 @@ def _profile_context(
     verify_sent: str | None = None,
     sessions: str | None = None,
     error: str | None = None,
+    biodata_required: str | None = None,
 ) -> dict[str, object]:
     from app.models.subscriber import Subscriber as _Subscriber
 
@@ -1623,6 +1660,7 @@ def _profile_context(
     return {
         "request": request,
         "customer": customer,
+        "biodata_required": biodata_required == "1",
         "subscriber": subscriber,
         "mfa_methods": mfa_methods,
         "mfa_enabled": any(
@@ -1646,6 +1684,7 @@ def customer_profile(
     saved: str | None = None,
     verify_sent: str | None = None,
     sessions: str | None = None,
+    biodata_required: str | None = None,
     db: Session = Depends(get_db),
 ) -> Response:
     """Customer profile settings."""
@@ -1663,6 +1702,7 @@ def customer_profile(
             saved=saved,
             verify_sent=verify_sent,
             sessions=sessions,
+            biodata_required=biodata_required,
         ),
     )
 
@@ -1770,6 +1810,9 @@ def customer_update_profile(
                 usage_notifications=usage_notifications,
                 general_notifications=general_notifications,
                 locale=locale,
+                enforce_biodata=location_capture.service_location_requirement_enabled(
+                    db
+                ),
             )
         except (ValueError, IntegrityError) as exc:
             db.rollback()
@@ -2292,6 +2335,10 @@ def customer_verify_payment(
             and subscriber_id
             and not is_subscriber_restricted(db, subscriber_id)
         )
+        record_payment_verification_outcome(
+            channel=PaymentVerificationChannel.CUSTOMER_PORTAL,
+            outcome=PaymentVerificationOutcome.SETTLED,
+        )
         return templates.TemplateResponse(
             "customer/billing/pay_success.html",
             {
@@ -2315,6 +2362,10 @@ def customer_verify_payment(
             },
         )
     except GatewayPaymentIncomplete as exc:
+        record_payment_verification_outcome(
+            channel=PaymentVerificationChannel.CUSTOMER_PORTAL,
+            outcome=PaymentVerificationOutcome.PENDING_PROVIDER_CONFIRMATION,
+        )
         return _render_payment_return_status(
             request,
             reference=reference,

@@ -31,6 +31,7 @@ from app.models.team_inbox import (
     InboxStatusTransitionEvent,
 )
 from app.services import (
+    ai_conversation_ownership,
     conversation_ticket_handoff,
     service_team_lifecycle,
     subscriber_summary,
@@ -230,6 +231,7 @@ class InboxQueueRequest:
     per_page: int = 25
     selected_conversation_id: str | UUID | None = None
     actor_person_id: UUID | None = None
+    actor_permission_keys: frozenset[str] = frozenset()
     composition: InboxQueueComposition = InboxQueueComposition.full_workspace
     include_total_count: bool = True
 
@@ -258,13 +260,27 @@ class WhatsAppContactOption:
 
 @dataclass(frozen=True, slots=True)
 class InboxActionEligibility:
+    control_owner: str
+    ai_session_id: UUID | None
+    ai_session_state: str | None
+    waiting_for_customer: bool
+    can_take_over: bool
+    takeover_team_id: UUID | None
+    takeover_team_options: tuple[InboxServiceTeamOption, ...]
+    takeover_needs_team_select: bool
     can_reply: bool
+    can_private_note: bool
+    can_assign: bool
+    can_change_status: bool
+    can_create_ticket: bool
+    can_run_macro: bool
     can_resolve: bool
     can_reopen: bool
     can_link_contact: bool
     can_mark_read: bool
     can_issue_lead_form: bool
     lead_form_reason: str
+    denial_reason: str | None = None
     reason: str | None = None
 
 
@@ -425,6 +441,7 @@ class InboxAgentPresenceProjection:
 @dataclass(frozen=True, slots=True)
 class InboxAssignmentCounts:
     all: int
+    queued: int
     assigned_to_me: int
     my_team: int
     ai_handling: int
@@ -888,6 +905,7 @@ def build_manager_dashboard_projection(
             db.query(InboxConversation.channel_type, func.count(InboxConversation.id))
             .filter(InboxConversation.is_active.is_(True))
             .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
+            .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
             .group_by(InboxConversation.channel_type)
             .all()
         )
@@ -922,6 +940,7 @@ def build_manager_dashboard_projection(
         db.query(func.count(InboxConversation.id))
         .filter(InboxConversation.is_active.is_(True))
         .filter(InboxConversation.status == InboxConversationStatus.open.value)
+        .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
         .scalar()
         or 0
     )
@@ -929,6 +948,7 @@ def build_manager_dashboard_projection(
         db.query(func.count(InboxConversation.id))
         .filter(InboxConversation.is_active.is_(True))
         .filter(InboxConversation.status == InboxConversationStatus.pending.value)
+        .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
         .scalar()
         or 0
     )
@@ -936,6 +956,9 @@ def build_manager_dashboard_projection(
         team_inbox_read.list_conversations(
             db,
             open_only=True,
+            ownership_cohort=(
+                ai_conversation_ownership.ConversationOwnershipCohort.actionable
+            ),
             limit=8,
         ).items
     )
@@ -991,6 +1014,7 @@ def _assignment_counts(
                 .filter(
                     InboxConversation.status != InboxConversationStatus.resolved.value
                 )
+                .filter(~ai_conversation_ownership.ai_owned_conversation_clause())
                 .filter(InboxConversationTeam.is_active.is_(True))
                 .filter(InboxConversationTeam.service_team_id.in_(team_ids))
                 .scalar()
@@ -999,6 +1023,7 @@ def _assignment_counts(
     ai_handling = team_inbox_read.ai_handling_conversation_count(db)
     return InboxAssignmentCounts(
         all=all_count,
+        queued=team_inbox_read.queued_conversation_count(db),
         assigned_to_me=assigned_to_me,
         my_team=my_team,
         ai_handling=ai_handling,
@@ -1276,6 +1301,7 @@ def get_conversation_projection(
     *,
     conversation_id: UUID,
     actor_person_id: UUID | None,
+    actor_permission_keys: frozenset[str] = frozenset(),
     include_contact_candidates: bool = True,
     include_catalogue_options: bool = True,
     include_label_usage_counts: bool = False,
@@ -1284,6 +1310,20 @@ def get_conversation_projection(
     if timeline is None:
         return None
     is_resolved = timeline.status == InboxConversationStatus.resolved.value
+    ownership = ai_conversation_ownership.resolve_ai_conversation_ownership(
+        db,
+        conversation_id=conversation_id,
+    )
+    has_takeover_permissions = "*" in actor_permission_keys or {
+        "support:ticket:update",
+        "support:inbox:self_assign",
+    }.issubset(actor_permission_keys)
+    ai_denial_reason = (
+        "AI Intake currently owns this conversation. Take over the conversation "
+        "before performing human actions."
+        if ownership.ai_owned
+        else None
+    )
     outbound_unsupported = timeline.channel_type == InboxChannelType.website_fiber.value
     reply_window = _reply_window_projection(db, conversation_id, timeline)
     provider_window_blocks = (
@@ -1297,6 +1337,14 @@ def get_conversation_projection(
         verify_customer_identity=False,
     )
     activity_events = _conversation_activity(db, conversation_id)
+    takeover_team_options = list_service_team_options(db)
+    active_takeover_team_ids = {option.id for option in takeover_team_options}
+    primary_takeover_team_id = _uuid(timeline.primary_service_team_id)
+    if primary_takeover_team_id not in active_takeover_team_ids:
+        primary_takeover_team_id = None
+    takeover_team_id = primary_takeover_team_id or (
+        takeover_team_options[0].id if len(takeover_team_options) == 1 else None
+    )
     return InboxConversationProjection(
         timeline=timeline,
         subscriber_summary=summary,
@@ -1325,17 +1373,41 @@ def get_conversation_projection(
             else ()
         ),
         action_eligibility=InboxActionEligibility(
-            can_reply=not is_resolved
+            control_owner=ownership.control_owner.value,
+            ai_session_id=ownership.ai_session_id,
+            ai_session_state=ownership.ai_session_state,
+            waiting_for_customer=ownership.waiting_for_customer,
+            can_take_over=bool(
+                ownership.can_take_over
+                and actor_person_id is not None
+                and has_takeover_permissions
+                and takeover_team_options
+            ),
+            takeover_team_id=takeover_team_id,
+            takeover_team_options=takeover_team_options,
+            takeover_needs_team_select=(
+                takeover_team_id is None and bool(takeover_team_options)
+            ),
+            can_reply=not ownership.ai_owned
+            and not is_resolved
             and not outbound_unsupported
             and not provider_window_blocks,
-            can_resolve=not is_resolved,
-            can_reopen=is_resolved,
-            can_link_contact=bool(timeline.contact_address),
+            can_private_note=not ownership.ai_owned and not is_resolved,
+            can_assign=not ownership.ai_owned and not is_resolved,
+            can_change_status=not ownership.ai_owned,
+            can_create_ticket=not ownership.ai_owned and not is_resolved,
+            can_run_macro=not ownership.ai_owned and not is_resolved,
+            can_resolve=not ownership.ai_owned and not is_resolved,
+            can_reopen=not ownership.ai_owned and is_resolved,
+            can_link_contact=not ownership.ai_owned and bool(timeline.contact_address),
             can_mark_read=actor_person_id is not None,
-            can_issue_lead_form=lead_eligibility.eligible,
+            can_issue_lead_form=not ownership.ai_owned and lead_eligibility.eligible,
             lead_form_reason=lead_eligibility.reason,
+            denial_reason=ai_denial_reason,
             reason=(
-                "Resolved conversations must be reopened before replying."
+                ai_denial_reason
+                if ownership.ai_owned
+                else "Resolved conversations must be reopened before replying."
                 if is_resolved
                 else (
                     "Outbound replies for fiber website inquiries are not configured yet."
@@ -2150,8 +2222,8 @@ def _effective_open_only(
     single-status lifecycle filter.
     """
 
-    has_search = bool(str(search or "").strip())
-    return open_only or (not has_search and status is None and view != "all")
+    del search
+    return open_only or (status is None and view != "history")
 
 
 def _uses_lazy_history_pagination(
@@ -2162,7 +2234,30 @@ def _uses_lazy_history_pagination(
 ) -> bool:
     """Avoid a full count scan for demand-loaded historical queue queries."""
 
-    return bool(str(search or "").strip()) or view == "all" or status == "resolved"
+    return bool(str(search or "").strip()) or view == "history" or status == "resolved"
+
+
+def _normalize_inbox_view(value: object) -> str | None:
+    candidate = str(value or "").strip().lower()
+    return candidate if candidate in {"all", "ai_intake", "queue", "history"} else None
+
+
+def _ownership_cohort_for_view(
+    view: str | None,
+    *,
+    ai_handling: bool | None,
+) -> ai_conversation_ownership.ConversationOwnershipCohort:
+    if view == "ai_intake":
+        return ai_conversation_ownership.ConversationOwnershipCohort.ai_intake
+    if view == "queue":
+        return ai_conversation_ownership.ConversationOwnershipCohort.queue
+    if view == "history":
+        return ai_conversation_ownership.ConversationOwnershipCohort.history
+    if ai_handling is True:
+        # Preserve old bookmarked/filter URLs while deriving membership from the
+        # authoritative active AI session instead of projected metadata.
+        return ai_conversation_ownership.ConversationOwnershipCohort.ai_intake
+    return ai_conversation_ownership.ConversationOwnershipCohort.actionable
 
 
 def get_queue_row_projection(
@@ -2181,7 +2276,7 @@ def get_queue_row_projection(
         if request.status in {item.value for item in InboxConversationStatus}
         else None
     )
-    view = "all" if str(request.view or "").strip().lower() == "all" else None
+    view = _normalize_inbox_view(request.view)
     effective_open_only = _effective_open_only(
         search=request.search,
         open_only=request.open_only,
@@ -2279,6 +2374,10 @@ def get_queue_row_projection(
         unread_only=request.unread,
         reply_window_status=reply_window_status,
         ai_handling=request.ai_handling,
+        ownership_cohort=_ownership_cohort_for_view(
+            view,
+            ai_handling=request.ai_handling,
+        ),
         has_ticket=request.has_ticket,
         activity_from=request.activity_from,
         activity_to=request.activity_to,
@@ -2345,7 +2444,7 @@ def build_queue_projection(
         if raw_status in {item.value for item in InboxConversationStatus}
         else None
     )
-    view = "all" if str(raw_view or "").strip().lower() == "all" else None
+    view = _normalize_inbox_view(raw_view)
     effective_open_only = _effective_open_only(
         search=search,
         open_only=open_only,
@@ -2438,6 +2537,10 @@ def build_queue_projection(
             service_team_ids=team_id_scope,
             advanced_filters=advanced_filter_query,
             ai_handling=request.ai_handling,
+            ownership_cohort=_ownership_cohort_for_view(
+                view,
+                ai_handling=request.ai_handling,
+            ),
             has_ticket=request.has_ticket,
             activity_from=request.activity_from,
             activity_to=request.activity_to,
@@ -2514,6 +2617,7 @@ def build_queue_projection(
             db,
             conversation_id=selected_id,
             actor_person_id=request.actor_person_id,
+            actor_permission_keys=request.actor_permission_keys,
             include_contact_candidates=False,
         )
         if (
@@ -2544,6 +2648,7 @@ def build_queue_projection(
         if include_sidebar
         else InboxAssignmentCounts(
             all=0,
+            queued=0,
             assigned_to_me=0,
             my_team=0,
             ai_handling=0,
@@ -2567,7 +2672,7 @@ def build_queue_projection(
         count=result.count,
         list_query=list_query,
         page_meta=page_meta,
-        view=view or "",
+        view=view or "all",
         status=status or "",
         channel_type=channel or "",
         service_team_id=str(team_id) if team_id else "",

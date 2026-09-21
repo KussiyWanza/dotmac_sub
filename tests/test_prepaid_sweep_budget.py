@@ -72,6 +72,27 @@ def test_open_deadline_processes_the_full_cohort(
     assert subscriber_account.prepaid_low_balance_at is not None
 
 
+def test_busy_account_is_deferred_without_waiting_for_a_lock(
+    db_session, subscriber_account, subscription, monkeypatch
+):
+    from app.services.collections import prepaid_balance_sweep as sweep
+
+    _prepare(db_session, subscriber_account, subscription)
+
+    monkeypatch.setattr(sweep, "_lock_account_for_sweep", lambda *_args: None)
+
+    result = run_prepaid_balance_sweep(
+        db_session,
+        now=_MONDAY_NOON,
+        deadline=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    assert result["lock_deferred"] == 1
+    assert result["errors"] == 0
+    db_session.refresh(subscriber_account)
+    assert subscriber_account.prepaid_low_balance_at is None
+
+
 def test_repair_defers_chunks_past_deadline(db_session):
     expired = datetime.now(UTC) - timedelta(seconds=1)
 

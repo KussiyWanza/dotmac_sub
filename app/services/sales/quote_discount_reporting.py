@@ -19,6 +19,7 @@ from app.models.sales import (
     QuoteDiscountType,
     QuoteStatus,
 )
+from app.models.subscriber import Subscriber
 from app.models.system_user import SystemUser
 from app.services.domain_errors import DomainError
 from app.timezone import APP_TIMEZONE
@@ -128,6 +129,11 @@ def list_quote_discount_history(
             or_(
                 Party.display_name.icontains(normalized.customer, autoescape=True),
                 Lead.title.icontains(normalized.customer, autoescape=True),
+                Subscriber.display_name.icontains(normalized.customer, autoescape=True),
+                Subscriber.company_name.icontains(normalized.customer, autoescape=True),
+                Subscriber.first_name.icontains(normalized.customer, autoescape=True),
+                Subscriber.last_name.icontains(normalized.customer, autoescape=True),
+                Subscriber.email.icontains(normalized.customer, autoescape=True),
             )
         )
     if normalized.salesperson_id is not None:
@@ -147,6 +153,7 @@ def list_quote_discount_history(
         )
         .outerjoin(Lead.__table__, Lead.id == Quote.lead_id)
         .outerjoin(Party.__table__, Party.id == Lead.party_id)
+        .outerjoin(Subscriber.__table__, Subscriber.id == Quote.subscriber_id)
         .join(
             SystemUser.__table__,
             SystemUser.id == QuoteDiscountHistory.actor_system_user_id,
@@ -164,6 +171,11 @@ def list_quote_discount_history(
             Quote.status,
             Party.display_name,
             Lead.title,
+            Subscriber.company_name,
+            Subscriber.display_name,
+            Subscriber.first_name,
+            Subscriber.last_name,
+            Subscriber.email,
             SystemUser.display_name,
             SystemUser.first_name,
             SystemUser.last_name,
@@ -186,6 +198,11 @@ def list_quote_discount_history(
         status,
         party_name,
         lead_title,
+        subscriber_company_name,
+        subscriber_display_name,
+        subscriber_first_name,
+        subscriber_last_name,
+        subscriber_email,
         actor_display_name,
         actor_first_name,
         actor_last_name,
@@ -193,12 +210,20 @@ def list_quote_discount_history(
         actor_name = actor_display_name or (
             f"{actor_first_name or ''} {actor_last_name or ''}".strip()
         )
+        subscriber_name = (
+            subscriber_company_name
+            or subscriber_display_name
+            or f"{subscriber_first_name or ''} {subscriber_last_name or ''}".strip()
+            or subscriber_email
+        )
         items.append(
             QuoteDiscountHistoryItem(
                 history_id=history.id,
                 quote_id=history.quote_id,
                 revision=history.revision,
-                customer_name=party_name or lead_title or "Unknown customer",
+                customer_name=(
+                    party_name or subscriber_name or lead_title or "Unknown customer"
+                ),
                 currency=currency,
                 original_subtotal=history.original_subtotal,
                 discount_type=QuoteDiscountType(history.discount_type),

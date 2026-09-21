@@ -34,7 +34,10 @@ exactly one deployment, and none of it is readable from a copy of the files.
 - **One wipe.** Explicit sign-out, an authoritative token revocation and a
   different technician signing in all call the same journalled wipe. It destroys
   the scope's keys before its files, so an interruption can only leave
-  unopenable bytes, and the next launch finishes the job from the journal.
+  unopenable bytes, and the next launch finishes the job from the journal. The
+  wipe first refuses new offline work and waits for work already admitted before
+  closing the database, so a stale task can never try to reopen that retired
+  connection.
 - **Upgrading from the unencrypted store** re-encrypts and carries queued
   mutations, un-uploaded photos and signatures, saved drafts and unsent location
   pings, and destroys everything the server can resend. The plaintext source is

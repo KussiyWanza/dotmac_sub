@@ -10,12 +10,12 @@ Detailed source-to-UI handover documentation is in
 
 The legacy manually populated Quarterly Report and all CRM retention notes,
 dispositions, follow-ups, campaign/outreach history, and raw engagement records
-are intentionally outside Self-Care. The supported NCC complaints workbook is
+are intentionally outside Self-Care. The supported NCC complaints CSV is
 unrelated and remains native.
 
 | Capability | Self-Care owner/query | Route | Permission | UI/test state |
 | --- | --- | --- | --- | --- |
-| NCC complaints and Tuesday weekly XLSX delivery | `compliance.ncc_complaints_reporting`; `communications.ncc_weekly_delivery` | `/admin/reports/ncc-complaints`; exact scheduled artifact under `/ncc-weekly-runs/{run_id}/download` | `reports:ncc:read`; export/artifact requires `reports:ncc:export`; configuration requires `notification:write` | Native weekly page/export plus configurable Tuesday schedule, To/CC/BCC/body/sender parity, durable artifact and run evidence; disabled until controlled cutover |
+| NCC complaints and Tuesday weekly CSV delivery | `compliance.ncc_complaints_reporting`; `communications.ncc_weekly_delivery` | `/admin/reports/ncc-complaints`; exact scheduled artifact under `/ncc-weekly-runs/{run_id}/download` | `reports:ncc:read`; export/artifact requires `reports:ncc:export`; configuration requires `notification:write` | Native weekly page/export plus configurable Tuesday schedule, To/CC/BCC/body/sender parity, durable artifact and run evidence; disabled until controlled cutover |
 | NCC regulatory pack | `ncc_regulatory_pack` | `/admin/reports/ncc-pack` | `reports:ncc:read`; JSON/PDF requires `reports:ncc:export` | Existing native page/PDF tests |
 | Network infrastructure | `crm_reporting.network_infrastructure_facts` composed by `web_reports.get_network_report_data` | `/admin/reports/network` | `reports:network:read`; export separately gated | Repaired totals, observed ONT status, PON/fibre/FDH facts |
 | Subscriber overview | `crm_reporting.subscriber_segment_facts` plus customer/usage owners, composed by `web_reports.get_subscribers_report_data` | `/admin/reports/customers` | `customer:read` | Repaired plan/region/ticket cohorts and pagination |

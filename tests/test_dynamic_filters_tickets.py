@@ -10,11 +10,16 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
+from app.models.party import Party
+from app.models.service_team import ServiceTeam, ServiceTeamMember
 from app.models.support import Ticket, TicketAssignee, TicketChannel
+from app.models.system_user import SystemUser
 from app.services import support as support_service
+from app.services import web_support_tickets as web_support_tickets_service
 from app.services.domain_errors import DomainError
 from app.services.dynamic_filters import (
     FilterValidationError,
@@ -39,6 +44,40 @@ def _ticket(**overrides) -> Ticket:
     }
     defaults.update(overrides)
     return Ticket(**defaults)
+
+
+def _service_team(db_session, name: str) -> ServiceTeam:
+    team = ServiceTeam(name=f"{name} {uuid.uuid4().hex[:6]}", is_active=True)
+    db_session.add(team)
+    db_session.flush()
+    return team
+
+
+def _staff_member(db_session, team: ServiceTeam) -> SystemUser:
+    party = Party(
+        display_name="Ticket Filter Staff",
+        party_type="person",
+        status="active",
+    )
+    db_session.add(party)
+    db_session.flush()
+    user = SystemUser(
+        first_name="Ticket",
+        last_name="Staff",
+        email=f"ticket-staff-{uuid.uuid4().hex}@example.com",
+        is_active=True,
+        person_party_id=party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Explicit service-team filter staff fixture",
+    )
+    db_session.add(user)
+    db_session.flush()
+    db_session.add(
+        ServiceTeamMember(team_id=team.id, person_id=party.id, role="member")
+    )
+    db_session.flush()
+    return user
 
 
 # ── Engine: CRM-contract payload shapes ──────────────────────────────────────
@@ -280,6 +319,92 @@ def test_list_simple_params_priority_channel_creator(db_session):
     assert ids == {match.id}
 
 
+def test_list_filters_by_service_team_id(db_session):
+    field_team = _service_team(db_session, "Field Ops")
+    support_team = _service_team(db_session, "Support Ops")
+    match = _ticket(service_team_id=field_team.id)
+    other_team = _ticket(service_team_id=support_team.id)
+    no_team = _ticket()
+    db_session.add_all([match, other_team, no_team])
+    db_session.commit()
+
+    rows = support_service.tickets.list(
+        db_session,
+        service_team_id=str(field_team.id),
+        limit=50,
+    )
+    ids = {ticket.id for ticket in rows}
+
+    assert ids == {match.id}
+
+
+def test_list_service_team_filter_cleared_returns_all_service_teams(db_session):
+    field_team = _service_team(db_session, "Field Ops")
+    support_team = _service_team(db_session, "Support Ops")
+    first = _ticket(service_team_id=field_team.id)
+    second = _ticket(service_team_id=support_team.id)
+    db_session.add_all([first, second])
+    db_session.commit()
+
+    rows = support_service.tickets.list(db_session, service_team_id=None, limit=200)
+    ids = {ticket.id for ticket in rows}
+
+    assert first.id in ids
+    assert second.id in ids
+
+
+def test_service_team_filter_composes_with_assigned_to_me_scope(db_session):
+    field_team = _service_team(db_session, "Field Ops")
+    support_team = _service_team(db_session, "Support Ops")
+    user = _staff_member(db_session, field_team)
+    visible = _ticket(service_team_id=field_team.id)
+    hidden = _ticket(service_team_id=support_team.id)
+    db_session.add_all([visible, hidden])
+    db_session.commit()
+
+    visible_context = web_support_tickets_service.build_tickets_list_context(
+        db_session,
+        search=None,
+        status=None,
+        ticket_type=None,
+        region=None,
+        service_team_id=str(field_team.id),
+        assigned_to_me=True,
+        actor_id=str(user.id),
+        project_manager_person_id=None,
+        site_coordinator_person_id=None,
+        subscriber_id=None,
+        order_by="created_at",
+        order_dir="desc",
+        page=1,
+        per_page=25,
+        visible_columns_cookie=None,
+        filters=None,
+    )
+    hidden_context = web_support_tickets_service.build_tickets_list_context(
+        db_session,
+        search=None,
+        status=None,
+        ticket_type=None,
+        region=None,
+        service_team_id=str(support_team.id),
+        assigned_to_me=True,
+        actor_id=str(user.id),
+        project_manager_person_id=None,
+        site_coordinator_person_id=None,
+        subscriber_id=None,
+        order_by="created_at",
+        order_dir="desc",
+        page=1,
+        per_page=25,
+        visible_columns_cookie=None,
+        filters=None,
+    )
+
+    assert {ticket.id for ticket in visible_context["tickets"]} == {visible.id}
+    assert hidden_context["tickets"] == []
+
+
 def test_subscriber_filter_matches_customer_person_link(db_session, subscriber):
     match = _ticket(customer_person_id=subscriber.id)
     other = _ticket()
@@ -346,8 +471,6 @@ def test_serialize_ticket_filter_schema_shape():
 
 
 def test_admin_list_context_applies_filters_and_exposes_schema(db_session):
-    from app.services import web_support_tickets as web_support_tickets_service
-
     high = _ticket(priority="high")
     low = _ticket(priority="low")
     db_session.add_all([high, low])
@@ -378,6 +501,69 @@ def test_admin_list_context_applies_filters_and_exposes_schema(db_session):
     assert context["filters"] == '[["Ticket","priority","=","high"]]'
     schema_fields = {entry["field"] for entry in context["ticket_filter_schema"]}
     assert schema_fields == set(TICKET_FILTER_SPECS)
+
+
+def test_admin_list_context_filters_service_team_with_search_and_pagination(
+    db_session,
+):
+    field_team = _service_team(db_session, "Field Ops")
+    support_team = _service_team(db_session, "Support Ops")
+    field_tickets = [
+        _ticket(
+            title=f"Fiber team filter {index}",
+            service_team_id=field_team.id,
+        )
+        for index in range(11)
+    ]
+    other_team = _ticket(
+        title="Fiber team filter other",
+        service_team_id=support_team.id,
+    )
+    other_search = _ticket(title="Unrelated", service_team_id=field_team.id)
+    db_session.add_all([*field_tickets, other_team, other_search])
+    db_session.commit()
+
+    context = web_support_tickets_service.build_tickets_list_context(
+        db_session,
+        search="Fiber team filter",
+        status=None,
+        ticket_type=None,
+        region=None,
+        service_team_id=str(field_team.id),
+        assigned_to_me=False,
+        actor_id=None,
+        project_manager_person_id=None,
+        site_coordinator_person_id=None,
+        subscriber_id=None,
+        order_by="created_at",
+        order_dir="desc",
+        page=2,
+        per_page=10,
+        visible_columns_cookie=None,
+        filters=None,
+    )
+
+    returned_ids = {ticket.id for ticket in context["tickets"]}
+    assert context["total"] == 11
+    assert len(returned_ids) == 1
+    assert returned_ids <= {ticket.id for ticket in field_tickets}
+    assert other_team.id not in returned_ids
+    assert other_search.id not in returned_ids
+    assert context["service_team_id"] == str(field_team.id)
+    assert "service_team_id=" in context["list_query"].url(
+        "/admin/support/tickets", page=2
+    )
+
+
+def test_support_ticket_list_template_exposes_service_team_filter():
+    template = Path("templates/admin/support/tickets/_list.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="ticket-service-team-filter"' in template
+    assert 'name="service_team_id"' in template
+    assert "All Service Teams" in template
+    assert "{% for team in service_team_options %}" in template
 
 
 # ── API endpoint plumbing (GET /support/tickets) ─────────────────────────────

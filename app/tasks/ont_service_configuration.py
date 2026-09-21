@@ -69,3 +69,63 @@ def apply(
         "stale": outcome.stale,
         "message": outcome.message,
     }
+
+
+@celery_app.task(
+    name="app.tasks.ont_service_configuration.verify_readback",
+    soft_time_limit=150,
+    time_limit=180,
+)
+@managed_network_operation_dispatch(
+    "app.tasks.ont_service_configuration.verify_readback"
+)
+def verify_readback(
+    ont_id: str,
+    operation_id: str,
+    configuration_head_id: str,
+    revision: int,
+    *,
+    _network_dispatch_id: str | None = None,
+) -> dict[str, Any]:
+    """Execute a readback-only verification of a previously failed revision.
+
+    ``force_readback_only=True`` is fixed HERE and accepts no override from
+    the caller or the dispatch payload — this task can only observe device
+    state through ``reconcile_ont``'s readback-only path, which returns
+    before ever reaching ``apply_plan``. It never calls ``setParameterValues``
+    or any OLT write function.
+    """
+
+    command_id = UUID(_network_dispatch_id) if _network_dispatch_id else uuid4()
+    context = CommandContext.system(
+        actor="system:ont_service_configuration_worker",
+        scope="network:ont:execute",
+        reason=(
+            "Readback-only verification of a previously failed configuration delivery"
+        ),
+        command_id=command_id,
+        correlation_id=UUID(operation_id),
+        causation_id=command_id,
+        idempotency_key=f"ont-service-config-verify:{operation_id}",
+    )
+    with db_session_adapter.owner_command_session() as db:
+        outcome = execute_ont_service_configuration(
+            db,
+            ExecuteOntServiceConfigurationCommand(
+                context=context,
+                ont_unit_id=UUID(ont_id),
+                operation_id=UUID(operation_id),
+                configuration_head_id=UUID(configuration_head_id),
+                revision=int(revision),
+                verification_attempt=0,
+                explicit_repair=True,
+                force_readback_only=True,
+            ),
+        )
+    return {
+        "operation_id": str(outcome.operation_id),
+        "phase": outcome.phase.value,
+        "executed": outcome.executed,
+        "stale": outcome.stale,
+        "message": outcome.message,
+    }

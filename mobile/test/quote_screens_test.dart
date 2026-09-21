@@ -34,6 +34,9 @@ Quote _payableQuote() => Quote(
       total: '50000.00',
       depositAmount: '25000.00',
       depositPaid: false,
+      paymentReviewStatus: 'approved',
+      paymentReviewMessage: 'Approved — payment required.',
+      canPayDeposit: true,
       estimateProvisional: false,
       feasibility: QuoteFeasibility(coverage: 'covered', feasible: true),
     );
@@ -100,6 +103,36 @@ void main() {
 
     expect(find.text('Please contact support to continue.'), findsOneWidget);
     expect(find.text('Request installation'), findsNothing);
+    expect(find.textContaining('Pay deposit'), findsNothing);
+  });
+
+  testWidgets('pending staff review shows estimate and hides deposit payment',
+      (tester) async {
+    final quote = Quote(
+      id: 'quote-review',
+      status: 'draft',
+      currency: 'NGN',
+      total: '50000.00',
+      depositAmount: '25000.00',
+      depositPaid: false,
+      paymentReviewStatus: 'pending',
+      paymentReviewMessage:
+          'Your estimate is under staff review. We will notify you before payment.',
+      canPayDeposit: false,
+      estimateProvisional: false,
+      feasibility: QuoteFeasibility(coverage: 'covered', feasible: true),
+    );
+    await tester.pumpWidget(
+      _app(
+        child: const QuotesScreen(),
+        page: _page(actionsAvailable: true, quotes: [quote]),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Awaiting staff review'), findsOneWidget);
+    expect(find.textContaining('under staff review'), findsOneWidget);
+    expect(find.text('Estimate'), findsOneWidget);
     expect(find.textContaining('Pay deposit'), findsNothing);
   });
 

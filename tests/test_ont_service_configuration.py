@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, select
 
-from app.models.catalog import SubscriptionStatus
+from app.models.catalog import (
+    AccessType,
+    CatalogOffer,
+    OfferStatus,
+    PriceBasis,
+    ServiceType,
+    Subscription,
+    SubscriptionStatus,
+)
 from app.models.network import (
     OntAssignment,
     OntAuthorizationStatus,
@@ -32,6 +41,7 @@ from app.models.ont_service_configuration import (
     OntServiceConfigurationPhase,
     OntServiceConfigurationRevision,
 )
+from app.models.subscriber import Subscriber
 from app.services.catalog.ip_block_choices import IpBlockPrefix
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
@@ -45,6 +55,7 @@ from app.services.network.ont_service_configuration import (
     OntConfigurationNextAction,
     OntConfigurationSection,
     RetryOntServiceConfigurationCommand,
+    VerifyOntServiceConfigurationReadbackCommand,
     WanConfigurationChange,
     WifiConfigurationChange,
     configure_customer_wifi,
@@ -54,12 +65,14 @@ from app.services.network.ont_service_configuration import (
     get_ont_service_configuration_eligibility,
     get_ont_service_configuration_projection,
     retry_ont_service_configuration,
+    verify_ont_service_configuration_readback,
 )
 from app.services.network.reconcile.lifecycle import (
     RetireOntReconcileProjectionForInventory,
     retire_ont_reconcile_projection_for_inventory,
 )
 from app.services.owner_commands import CommandContext
+from tests.subscription_fixture_helpers import activate_test_subscription
 
 
 def _operation(db_session, ont: OntUnit, suffix: str) -> NetworkOperation:
@@ -85,7 +98,7 @@ def _admission_scope(
     subscription,
     subscriber,
 ) -> tuple[uuid.UUID, uuid.UUID]:
-    subscription.status = SubscriptionStatus.active
+    activate_test_subscription(db_session, subscription)
     olt_device.is_active = True
     pon = PonPort(
         olt_id=olt_device.id,
@@ -153,6 +166,31 @@ def _configure_command(
             static_subnet=None,
             static_gateway=None,
             static_dns=None,
+        ),
+    )
+
+
+def _customer_wifi_command(
+    subscriber_id: uuid.UUID,
+    subscription_id: uuid.UUID,
+    *,
+    idempotency_key: str,
+) -> ConfigureCustomerWifiCommand:
+    command_id = uuid.uuid4()
+    return ConfigureCustomerWifiCommand(
+        context=CommandContext(
+            command_id=command_id,
+            correlation_id=command_id,
+            actor="customer:test",
+            scope="customer:device:wifi",
+            reason="Customer requested a WiFi credential update",
+            idempotency_key=idempotency_key,
+        ),
+        subscriber_id=subscriber_id,
+        subscription_id=subscription_id,
+        change=CustomerWifiConfigurationChange(
+            ssid="CustomerSSID",
+            password=None,
         ),
     )
 
@@ -241,6 +279,68 @@ def test_configuration_admission_commits_intent_operation_and_dispatch_atomicall
     assert dispatch is not None
     assert dispatch.queue is None
     assert head.phase is OntServiceConfigurationPhase.queued
+
+
+def test_configuration_admission_does_not_gate_on_subscription_status(
+    db_session,
+    monkeypatch,
+    olt_device,
+    subscription,
+    subscriber,
+):
+    """Staff-initiated config is desired-state staging, not service delivery.
+
+    A suspended (or otherwise non-active) subscription must not block the
+    operator Configure path — delivery authorization is a separate concern
+    owned by radius_access_state.py / ppp_delivery_authorization.py.
+    """
+    ont_id, assignment_id = _admission_scope(
+        db_session,
+        monkeypatch,
+        olt_device=olt_device,
+        subscription=subscription,
+        subscriber=subscriber,
+    )
+    subscription.status = SubscriptionStatus.suspended
+    db_session.commit()
+    command = _configure_command(ont_id, idempotency_key="suspended-admission")
+
+    outcome = configure_ont_service(db_session, command)
+
+    head = db_session.get(OntServiceConfigurationHead, outcome.configuration_head_id)
+    operation = db_session.get(NetworkOperation, outcome.operation_id)
+
+    assert head is not None and head.assignment_id == assignment_id
+    assert operation is not None
+    assert head.phase is OntServiceConfigurationPhase.queued
+
+
+def test_configuration_admission_rejects_unresolvable_subscription(
+    db_session,
+    monkeypatch,
+    olt_device,
+    subscription,
+    subscriber,
+):
+    """A dangling/unresolvable subscription reference is a distinct failure
+    from an inactive-but-resolvable one, and keeps its own error code."""
+    ont_id, _assignment_id = _admission_scope(
+        db_session,
+        monkeypatch,
+        olt_device=olt_device,
+        subscription=subscription,
+        subscriber=subscriber,
+    )
+    monkeypatch.setattr(
+        "app.services.network.ont_service_configuration.assignment_subscription_snapshot",
+        lambda *_args, **_kwargs: None,
+    )
+    command = _configure_command(ont_id, idempotency_key="unresolvable-subscription")
+
+    with pytest.raises(DomainError) as excinfo:
+        configure_ont_service(db_session, command)
+
+    assert excinfo.value.code.endswith("subscription_missing")
 
 
 def test_customer_wifi_admission_saves_secret_and_queues_without_device_io(
@@ -334,6 +434,230 @@ def test_customer_wifi_admission_saves_secret_and_queues_without_device_io(
     assert status is not None
     assert status.operation_id == outcome.operation_id
     assert status.phase is OntServiceConfigurationPhase.queued
+
+
+def test_customer_wifi_admission_names_no_active_assignment(
+    db_session,
+    subscriber,
+    subscription,
+):
+    """Zero active-assignment candidates gets its own code, distinct from
+    ambiguity, a missing ONT row, and an inactive subscription."""
+    subscriber_id = subscriber.id
+    subscription_id = subscription.id
+    db_session.commit()
+    command = _customer_wifi_command(
+        subscriber_id, subscription_id, idempotency_key="no-assignment-candidate"
+    )
+
+    with pytest.raises(DomainError) as excinfo:
+        configure_customer_wifi(db_session, command)
+
+    assert excinfo.value.code.endswith("customer_active_assignment_required")
+    assert excinfo.value.details["candidate_count"] == 0
+    assert excinfo.value.details["subscriber_id"] == str(subscriber_id)
+    assert excinfo.value.details["subscription_id"] == str(subscription_id)
+
+
+def test_customer_wifi_admission_names_ambiguous_assignment(
+    db_session,
+    monkeypatch,
+    olt_device,
+    subscription,
+    subscriber,
+):
+    """More than one active-assignment candidate is a distinct cause from
+    having zero candidates."""
+    ont_id, assignment_id = _admission_scope(
+        db_session,
+        monkeypatch,
+        olt_device=olt_device,
+        subscription=subscription,
+        subscriber=subscriber,
+    )
+    second_ont = OntUnit(
+        serial_number=f"AMBIG-{uuid.uuid4().hex[:10]}",
+        is_active=True,
+        authorization_status=OntAuthorizationStatus.authorized,
+    )
+    db_session.add(second_ont)
+    db_session.flush()
+    db_session.add(
+        OntAssignment(
+            ont_unit_id=second_ont.id,
+            subscriber_id=subscriber.id,
+            subscription_id=subscription.id,
+            active=True,
+        )
+    )
+    subscriber_id = subscriber.id
+    subscription_id = subscription.id
+    db_session.commit()
+
+    command = _customer_wifi_command(
+        subscriber_id, subscription_id, idempotency_key="ambiguous-assignment"
+    )
+
+    with pytest.raises(DomainError) as excinfo:
+        configure_customer_wifi(db_session, command)
+
+    assert excinfo.value.code.endswith("customer_ambiguous_assignment")
+    assert excinfo.value.details["candidate_count"] == 2
+    assert str(assignment_id) in excinfo.value.details["candidate_assignment_ids"]
+
+
+def test_customer_wifi_admission_names_a_missing_ont_row(
+    db_session,
+    monkeypatch,
+    olt_device,
+    subscription,
+    subscriber,
+):
+    """A dangling assignment whose ONT row is gone is distinct from having
+    no assignment candidate at all."""
+    ont_id, assignment_id = _admission_scope(
+        db_session,
+        monkeypatch,
+        olt_device=olt_device,
+        subscription=subscription,
+        subscriber=subscriber,
+    )
+    subscriber_id = subscriber.id
+    subscription_id = subscription.id
+    db_session.commit()
+    # The deployed schema prevents manufacturing this drift through ordinary
+    # writes. Simulate the authoritative ONT lookup missing after the exact
+    # assignment candidate has been selected.
+    monkeypatch.setattr(db_session, "scalar", lambda *_args, **_kwargs: None)
+
+    command = _customer_wifi_command(
+        subscriber_id, subscription_id, idempotency_key="ont-row-missing"
+    )
+
+    with pytest.raises(DomainError) as excinfo:
+        configure_customer_wifi(db_session, command)
+
+    assert excinfo.value.code.endswith("customer_assigned_ont_missing")
+    assert excinfo.value.details["ont_unit_id"] == str(ont_id)
+    assert excinfo.value.details["assignment_id"] == str(assignment_id)
+
+
+def test_customer_wifi_admission_names_assignment_inconsistency(
+    db_session,
+    monkeypatch,
+    olt_device,
+    subscription,
+    subscriber,
+):
+    """The subscription-scoped candidate and the ONT's own active-assignment
+    set disagreeing is distinct from every other admission failure."""
+    ont_id, assignment_id = _admission_scope(
+        db_session,
+        monkeypatch,
+        olt_device=olt_device,
+        subscription=subscription,
+        subscriber=subscriber,
+    )
+    other_subscriber = Subscriber(
+        first_name="Other",
+        last_name="Customer",
+        email=f"other-{uuid.uuid4().hex[:8]}@example.com",
+        reseller_id=subscriber.reseller_id,
+    )
+    other_offer = CatalogOffer(
+        name="Other Offer",
+        service_type=ServiceType.residential,
+        access_type=AccessType.fiber,
+        price_basis=PriceBasis.flat,
+        status=OfferStatus.active,
+        is_active=True,
+    )
+    db_session.add_all([other_subscriber, other_offer])
+    db_session.flush()
+    other_subscription = Subscription(
+        subscriber_id=other_subscriber.id,
+        offer_id=other_offer.id,
+        status=SubscriptionStatus.pending,
+    )
+    db_session.add(other_subscription)
+    db_session.flush()
+    activate_test_subscription(db_session, other_subscription)
+    subscriber_id = subscriber.id
+    subscription_id = subscription.id
+    other_subscriber_id = other_subscriber.id
+    other_subscription_id = other_subscription.id
+    db_session.commit()
+
+    command = _customer_wifi_command(
+        subscriber_id, subscription_id, idempotency_key="assignment-inconsistent"
+    )
+
+    original_scalars = db_session.scalars
+    scalar_calls = 0
+
+    def inconsistent_assignments(*args, **kwargs):
+        nonlocal scalar_calls
+        scalar_calls += 1
+        result = original_scalars(*args, **kwargs)
+        if scalar_calls != 2:
+            return result
+        assignments = list(result)
+        return iter(
+            [
+                *assignments,
+                SimpleNamespace(
+                    id=uuid.uuid4(),
+                    ont_unit_id=ont_id,
+                    subscriber_id=other_subscriber_id,
+                    subscription_id=other_subscription_id,
+                    active=True,
+                ),
+            ]
+        )
+
+    monkeypatch.setattr(db_session, "scalars", inconsistent_assignments)
+
+    with pytest.raises(DomainError) as excinfo:
+        configure_customer_wifi(db_session, command)
+
+    assert excinfo.value.code.endswith("customer_assignment_inconsistent")
+    assert excinfo.value.details["candidate_assignment_id"] == str(assignment_id)
+    assert excinfo.value.details["ont_unit_id"] == str(ont_id)
+    assert len(excinfo.value.details["ont_active_assignment_ids"]) == 2
+
+
+def test_customer_wifi_admission_names_inactive_subscription(
+    db_session,
+    monkeypatch,
+    olt_device,
+    subscription,
+    subscriber,
+):
+    """An inactive subscription keeps the original, most-different-in-kind
+    ``customer_subscription_not_found`` code -- it is not an assignment
+    cardinality problem."""
+    ont_id, _assignment_id = _admission_scope(
+        db_session,
+        monkeypatch,
+        olt_device=olt_device,
+        subscription=subscription,
+        subscriber=subscriber,
+    )
+    subscription.status = SubscriptionStatus.suspended
+    subscriber_id = subscriber.id
+    subscription_id = subscription.id
+    db_session.commit()
+
+    command = _customer_wifi_command(
+        subscriber_id, subscription_id, idempotency_key="inactive-subscription"
+    )
+
+    with pytest.raises(DomainError) as excinfo:
+        configure_customer_wifi(db_session, command)
+
+    assert excinfo.value.code.endswith("customer_subscription_not_found")
+    assert excinfo.value.details["subscription_status"] == "suspended"
+    assert excinfo.value.details["subscriber_id"] == str(subscriber_id)
 
 
 def test_configuration_admission_rollback_leaves_no_partial_records(
@@ -1159,6 +1483,323 @@ def test_lan_cr_drain_exhaustion_reports_acs_blocker(db_session, monkeypatch):
     assert operation.status is NetworkOperationStatus.failed
 
 
+def _assert_cr_failure_absorbed_as_pending_drain(
+    db_session,
+    monkeypatch,
+    *,
+    section: OntConfigurationSection,
+    suffix: str,
+    desired_change_evidence: dict[str, object],
+):
+    """Shared proof for the section-agnostic ``acs_cr_failed`` absorption
+    path: a queued-but-CR-failed GenieACS delivery must land in
+    ``readback_pending`` with structured queued-task evidence recorded,
+    regardless of which section (WiFi/WAN/management) issued the write.
+    """
+    ont = OntUnit(
+        serial_number=f"{suffix.upper()}-{uuid.uuid4().hex[:10]}", is_active=True
+    )
+    db_session.add(ont)
+    db_session.flush()
+    assignment = OntAssignment(ont_unit_id=ont.id, active=True)
+    db_session.add(assignment)
+    db_session.flush()
+    head, revision, operation = _lifecycle(
+        db_session,
+        ont,
+        assignment,
+        phase=OntServiceConfigurationPhase.queued,
+        suffix=suffix,
+        section=section,
+        desired_change_evidence=desired_change_evidence,
+    )
+    operation.input_payload = {
+        "ont_id": str(ont.id),
+        "configuration_head_id": str(head.id),
+        "configuration_revision": revision.revision,
+    }
+    db_session.commit()
+
+    failure_message = (
+        "setParameterValues queued but Connection Request failed: "
+        "Connection request error: Unexpected status code 401."
+    )
+
+    def reconciled(*_args, **_kwargs):
+        return SimpleNamespace(
+            success=False,
+            sync_status="out_of_sync",
+            drift_after=(f"{section.value}.changed_field",),
+            failure=SimpleNamespace(
+                reason="acs_cr_failed",
+                message=failure_message,
+                evidence=None,
+            ),
+        )
+
+    monkeypatch.setattr("app.services.network.reconcile.core.reconcile_ont", reconciled)
+    command_id = uuid.uuid4()
+    ont_id = ont.id
+    operation_id = operation.id
+    head_id = head.id
+    revision_number = revision.revision
+    db_session_adapter.release_read_transaction(db_session)
+
+    outcome = execute_ont_service_configuration(
+        db_session,
+        ExecuteOntServiceConfigurationCommand(
+            context=CommandContext.system(
+                actor="test:worker",
+                scope="network:ont:execute",
+                reason=f"test {section.value} CR pending",
+                command_id=command_id,
+                correlation_id=operation_id,
+                idempotency_key=f"{suffix}-cr-pending",
+            ),
+            ont_unit_id=ont_id,
+            operation_id=operation_id,
+            configuration_head_id=head_id,
+            revision=revision_number,
+        ),
+    )
+
+    assert outcome.phase is OntServiceConfigurationPhase.readback_pending
+    assert "accepted by ACS" in outcome.message
+    assert head.waiting_reason == "awaiting_acs_task_drain"
+    assert head.failure_code is None
+    assert operation.status is NetworkOperationStatus.waiting
+
+    dispatch = db_session.scalar(
+        select(NetworkOperationDispatch).where(
+            NetworkOperationDispatch.operation_id == operation_id,
+            NetworkOperationDispatch.dispatch_key == "verify:1",
+        )
+    )
+    assert dispatch is not None
+
+    event = db_session.scalar(
+        select(OntProvisioningEvent)
+        .where(OntProvisioningEvent.configuration_head_id == head_id)
+        .order_by(OntProvisioningEvent.created_at.desc())
+    )
+    assert event is not None
+    assert event.status is OntProvisioningEventStatus.waiting
+    assert event.event_data is not None
+    assert event.event_data["acs_task_queued_despite_cr_failure"] is True
+    assert event.event_data["section"] == section.value
+    assert event.event_data["failure_reason"] == "acs_cr_failed"
+    assert event.event_data["failure_message"] == failure_message
+    assert (
+        event.event_data["confirmation_path"]
+        == "readback_only_verification_after_fresh_inform"
+    )
+    return ont_id, head_id, operation_id, revision_number
+
+
+def test_wifi_worker_treats_acs_connection_request_failure_as_pending_drain(
+    db_session, monkeypatch
+):
+    _assert_cr_failure_absorbed_as_pending_drain(
+        db_session,
+        monkeypatch,
+        section=OntConfigurationSection.wifi,
+        suffix="wifi-cr-pending",
+        desired_change_evidence={"wifi.ssid": "NewSSID"},
+    )
+
+
+def test_wan_worker_treats_acs_connection_request_failure_as_pending_drain(
+    db_session, monkeypatch
+):
+    _assert_cr_failure_absorbed_as_pending_drain(
+        db_session,
+        monkeypatch,
+        section=OntConfigurationSection.wan,
+        suffix="wan-cr-pending",
+        desired_change_evidence={"wan.vlan": 42},
+    )
+
+
+def test_management_worker_treats_acs_connection_request_failure_as_pending_drain(
+    db_session, monkeypatch
+):
+    _assert_cr_failure_absorbed_as_pending_drain(
+        db_session,
+        monkeypatch,
+        section=OntConfigurationSection.management,
+        suffix="mgmt-cr-pending",
+        desired_change_evidence={"management.acs_url": "https://acs.example/"},
+    )
+
+
+def test_acs_cr_failure_retry_dispatch_is_readback_only_never_a_second_write(
+    db_session, monkeypatch
+):
+    """Critical convergence proof: once a non-LAN section's ``acs_cr_failed``
+    delivery is absorbed into ``readback_pending``, the automatically staged
+    retry (``verify:1``) must re-enter ``_execution_locked`` with
+    ``readback_only=True`` — the exact flag
+    ``tests/test_reconcile_core.py``'s structural write-incapability tests
+    (``test_readback_only_never_calls_set_parameter_values`` and
+    ``test_readback_only_never_reaches_apply_plan_even_with_genuine_drift``)
+    prove makes a second ``setParameterValues`` structurally unreachable in
+    ``reconcile_ont`` itself. This test proves the ONT service-configuration
+    worker actually passes that flag on the automatic retry; the two tests
+    above prove what that flag guarantees once passed.
+    """
+    ont = OntUnit(serial_number=f"WIFIRETRY-{uuid.uuid4().hex[:10]}", is_active=True)
+    db_session.add(ont)
+    db_session.flush()
+    assignment = OntAssignment(ont_unit_id=ont.id, active=True)
+    db_session.add(assignment)
+    db_session.flush()
+    head, revision, operation = _lifecycle(
+        db_session,
+        ont,
+        assignment,
+        phase=OntServiceConfigurationPhase.readback_pending,
+        suffix="wifi-cr-retry",
+        section=OntConfigurationSection.wifi,
+        desired_change_evidence={"wifi.ssid": "NewSSID"},
+    )
+    head.waiting_reason = "awaiting_acs_task_drain"
+    operation.status = NetworkOperationStatus.waiting
+    operation.input_payload = {
+        "ont_id": str(ont.id),
+        "configuration_head_id": str(head.id),
+        "configuration_revision": revision.revision,
+    }
+    db_session.commit()
+
+    reconcile_calls: list[dict[str, object]] = []
+
+    def reconciled(*_args, **kwargs):
+        reconcile_calls.append(kwargs)
+        return SimpleNamespace(
+            success=True,
+            sync_status="synced",
+            drift_after=(),
+            failure=None,
+        )
+
+    monkeypatch.setattr("app.services.network.reconcile.core.reconcile_ont", reconciled)
+    command_id = uuid.uuid4()
+    ont_id = ont.id
+    operation_id = operation.id
+    head_id = head.id
+    revision_number = revision.revision
+    db_session_adapter.release_read_transaction(db_session)
+
+    outcome = execute_ont_service_configuration(
+        db_session,
+        ExecuteOntServiceConfigurationCommand(
+            context=CommandContext.system(
+                actor="test:worker",
+                scope="network:ont:execute",
+                reason="test WiFi CR retry is readback-only",
+                command_id=command_id,
+                correlation_id=operation_id,
+                idempotency_key="wifi-cr-retry",
+            ),
+            ont_unit_id=ont_id,
+            operation_id=operation_id,
+            configuration_head_id=head_id,
+            revision=revision_number,
+            verification_attempt=1,
+        ),
+    )
+
+    assert len(reconcile_calls) == 1
+    assert reconcile_calls[0]["readback_only"] is True
+    assert outcome.phase is OntServiceConfigurationPhase.verified
+
+
+def test_auto_triggered_verify_operation_execution_is_readback_only_and_converges(
+    db_session, monkeypatch
+):
+    """The automatic post-Inform trigger (``app.services.tr069.receive_inform``
+    -> ``verify_ont_service_configuration_readback``) queues an
+    ``ont_service_config_verify.v1`` dispatch, which the Celery
+    ``verify_readback`` task executes with ``force_readback_only=True`` fixed
+    and never caller-overridable (see
+    ``tests/architecture/test_ont_service_configuration_boundary.py::
+    test_verification_dispatch_is_structurally_readback_only``). This proves
+    that when that queued operation actually executes, ``_execution_locked``
+    computes ``readback_only=True`` unconditionally (regardless of
+    ``verification_attempt``) and converges -- so the automated recovery path
+    this Inform trigger completes never risks a second ``setParameterValues``,
+    for a non-LAN section (WiFi), mirroring the manual recovery run for Jabi.
+    """
+    ont = OntUnit(
+        serial_number=f"WIFIAUTOVERIFY-{uuid.uuid4().hex[:10]}", is_active=True
+    )
+    db_session.add(ont)
+    db_session.flush()
+    assignment = OntAssignment(ont_unit_id=ont.id, active=True)
+    db_session.add(assignment)
+    db_session.flush()
+    head, revision, operation = _lifecycle(
+        db_session,
+        ont,
+        assignment,
+        phase=OntServiceConfigurationPhase.queued,
+        suffix="wifi-auto-verify",
+        section=OntConfigurationSection.wifi,
+        desired_change_evidence={"wifi.ssid": "NewSSID"},
+    )
+    head.waiting_reason = "awaiting_dispatch"
+    operation.input_payload = {
+        "ont_id": str(ont.id),
+        "configuration_head_id": str(head.id),
+        "configuration_revision": revision.revision,
+    }
+    db_session.commit()
+
+    reconcile_calls: list[dict[str, object]] = []
+
+    def reconciled(*_args, **kwargs):
+        reconcile_calls.append(kwargs)
+        return SimpleNamespace(
+            success=True,
+            sync_status="synced",
+            drift_after=(),
+            failure=None,
+        )
+
+    monkeypatch.setattr("app.services.network.reconcile.core.reconcile_ont", reconciled)
+    command_id = uuid.uuid4()
+    ont_id = ont.id
+    operation_id = operation.id
+    head_id = head.id
+    revision_number = revision.revision
+    db_session_adapter.release_read_transaction(db_session)
+
+    outcome = execute_ont_service_configuration(
+        db_session,
+        ExecuteOntServiceConfigurationCommand(
+            context=CommandContext.system(
+                actor="test:worker",
+                scope="network:ont:execute",
+                reason="test auto-triggered verify is readback-only",
+                command_id=command_id,
+                correlation_id=operation_id,
+                idempotency_key="wifi-auto-verify",
+            ),
+            ont_unit_id=ont_id,
+            operation_id=operation_id,
+            configuration_head_id=head_id,
+            revision=revision_number,
+            verification_attempt=0,
+            explicit_repair=True,
+            force_readback_only=True,
+        ),
+    )
+
+    assert len(reconcile_calls) == 1
+    assert reconcile_calls[0]["readback_only"] is True
+    assert outcome.phase is OntServiceConfigurationPhase.verified
+
+
 def test_projection_surfaces_interrupted_latest_operation_as_retryable(db_session):
     ont = OntUnit(serial_number=f"INTERRUPT-{uuid.uuid4().hex[:10]}", is_active=True)
     db_session.add(ont)
@@ -1640,3 +2281,471 @@ def test_failed_current_revision_requires_explicit_retry_command(db_session):
         db_session.get(OntServiceConfigurationHead, head_id).latest_operation_id
         == outcome.operation_id
     )
+
+
+# ── VerifyOntServiceConfigurationReadbackCommand ────────────────────────────
+
+
+def _verify_setup(
+    db_session,
+    *,
+    suffix: str,
+    section: OntConfigurationSection = OntConfigurationSection.wifi,
+    desired_change_evidence: dict[str, object] | None = None,
+    fresh_inform: bool = True,
+):
+    ont = OntUnit(serial_number=f"VERIFY-{uuid.uuid4().hex[:10]}", is_active=True)
+    db_session.add(ont)
+    db_session.flush()
+    assignment = OntAssignment(ont_unit_id=ont.id, active=True)
+    db_session.add(assignment)
+    db_session.flush()
+    head, revision, operation = _lifecycle(
+        db_session,
+        ont,
+        assignment,
+        phase=OntServiceConfigurationPhase.failed,
+        suffix=suffix,
+        section=section,
+        desired_change_evidence=desired_change_evidence
+        or {"wifi.ssid": "Auto Computer"},
+    )
+    operation.status = NetworkOperationStatus.failed
+    failed_at = datetime(2026, 9, 1, 12, 0, 0, tzinfo=UTC)
+    operation.completed_at = failed_at
+    ont.acs_last_inform_at = (
+        failed_at + timedelta(minutes=10)
+        if fresh_inform
+        else failed_at - timedelta(minutes=10)
+    )
+    db_session.flush()
+    # No commit here (unlike earlier helpers that owned their own commit):
+    # ``execute_owner_command`` requires a transaction-free session at
+    # entry, and this ORM session expires instances on commit. Committing
+    # here and then reading ``.id``/``.revision`` back off the returned,
+    # now-expired instances would trigger an implicit SQLAlchemy autobegin
+    # refresh query -- leaving a *new*, unrelated transaction open by the
+    # time a test calls into ``verify_ont_service_configuration_readback``.
+    # Callers capture the plain ids they need and commit themselves,
+    # exactly once, immediately before invoking the owner command.
+    return ont, assignment, head, revision, operation
+
+
+def _verify_command(
+    *, ont_id, head_id, revision_number, failed_operation_id, idempotency_key: str
+) -> VerifyOntServiceConfigurationReadbackCommand:
+    command_id = uuid.uuid4()
+    return VerifyOntServiceConfigurationReadbackCommand(
+        context=CommandContext(
+            command_id=command_id,
+            correlation_id=command_id,
+            actor="test:operator",
+            scope="network:ont:write",
+            reason="reviewed readback verification of a confirmed-delivered failure",
+            idempotency_key=idempotency_key,
+        ),
+        ont_unit_id=ont_id,
+        expected_head_id=head_id,
+        expected_revision=revision_number,
+        failed_operation_id=failed_operation_id,
+    )
+
+
+def test_verify_rejects_when_head_is_not_failed(db_session):
+    ont, assignment, head, revision, operation = _verify_setup(
+        db_session, suffix="not-failed"
+    )
+    head.phase = OntServiceConfigurationPhase.queued
+    ont_id, head_id, revision_number, operation_id = (
+        ont.id,
+        head.id,
+        revision.revision,
+        operation.id,
+    )
+    db_session.commit()
+
+    with pytest.raises(DomainError) as excinfo:
+        verify_ont_service_configuration_readback(
+            db_session,
+            _verify_command(
+                ont_id=ont_id,
+                head_id=head_id,
+                revision_number=revision_number,
+                failed_operation_id=operation_id,
+                idempotency_key="verify-not-failed",
+            ),
+        )
+    assert "verification_not_eligible" in str(excinfo.value.code)
+
+
+def test_verify_rejects_operation_id_mismatch(db_session):
+    ont, assignment, head, revision, operation = _verify_setup(
+        db_session, suffix="mismatch"
+    )
+    other_operation = _operation(db_session, ont, "mismatch-other")
+    ont_id, head_id, revision_number, other_operation_id = (
+        ont.id,
+        head.id,
+        revision.revision,
+        other_operation.id,
+    )
+    db_session.commit()
+
+    with pytest.raises(DomainError) as excinfo:
+        verify_ont_service_configuration_readback(
+            db_session,
+            _verify_command(
+                ont_id=ont_id,
+                head_id=head_id,
+                revision_number=revision_number,
+                failed_operation_id=other_operation_id,
+                idempotency_key="verify-mismatch",
+            ),
+        )
+    assert "verification_operation_mismatch" in str(excinfo.value.code)
+
+
+def test_verify_reports_still_unverified_without_a_fresh_inform(db_session):
+    ont, assignment, head, revision, operation = _verify_setup(
+        db_session, suffix="stale-inform", fresh_inform=False
+    )
+    ont_id, head_id, revision_number, operation_id = (
+        ont.id,
+        head.id,
+        revision.revision,
+        operation.id,
+    )
+    db_session.commit()
+
+    outcome = verify_ont_service_configuration_readback(
+        db_session,
+        _verify_command(
+            ont_id=ont_id,
+            head_id=head_id,
+            revision_number=revision_number,
+            failed_operation_id=operation_id,
+            idempotency_key="verify-stale-inform",
+        ),
+    )
+
+    assert "still_unverified" in outcome.message
+    assert outcome.phase is OntServiceConfigurationPhase.failed
+    # No new operation was created: the referenced failure is untouched.
+    assert (
+        db_session.get(OntServiceConfigurationHead, head_id).latest_operation_id
+        == operation_id
+    )
+    assert (
+        db_session.scalar(
+            select(func.count())
+            .select_from(NetworkOperation)
+            .where(NetworkOperation.target_id == ont_id)
+        )
+        == 1
+    )
+
+
+def test_verify_ssid_convergence_marks_verified_through_reconcile(
+    db_session, monkeypatch
+):
+    ont, assignment, head, revision, operation = _verify_setup(
+        db_session,
+        suffix="converged",
+        section=OntConfigurationSection.wifi,
+        desired_change_evidence={"wifi.ssid": "Auto Computer"},
+    )
+    ont_id, head_id, revision_number = ont.id, head.id, revision.revision
+    failed_operation_id = operation.id
+    db_session.commit()
+
+    # Capture plain values BEFORE the verify call, read back through the
+    # session rather than the identity-mapped ``operation`` instance: a
+    # comparison against ``operation`` itself after the call would be
+    # tautological (``x == x``, always true, proving nothing), and the
+    # pre-flush Python value on ``operation`` is tz-aware while the value
+    # ``db_session.get(...)`` later returns is the DB-normalized (tz-naive)
+    # representation — reading both sides through the session keeps the
+    # comparison meaningful instead of comparing aware to naive.
+    refreshed_operation = db_session.get(NetworkOperation, failed_operation_id)
+    original_completed_at = refreshed_operation.completed_at
+    original_status = refreshed_operation.status
+    original_error = refreshed_operation.error
+    original_output_payload = refreshed_operation.output_payload
+    db_session.commit()
+
+    outcome = verify_ont_service_configuration_readback(
+        db_session,
+        _verify_command(
+            ont_id=ont_id,
+            head_id=head_id,
+            revision_number=revision_number,
+            failed_operation_id=failed_operation_id,
+            idempotency_key="verify-converged",
+        ),
+    )
+    assert outcome.phase is OntServiceConfigurationPhase.queued
+    new_operation_id = outcome.operation_id
+    assert new_operation_id != failed_operation_id
+    assert (
+        db_session.get(NetworkOperation, new_operation_id).redrive_of_id
+        == failed_operation_id
+    )
+    # The read above expired this session's instances and autobegan a fresh
+    # transaction on top of the completed verify command's own commit; clear
+    # it before the next owner command, which requires a transaction-free
+    # session at entry.
+    db_session.commit()
+
+    reconcile_calls: list[dict[str, object]] = []
+
+    def reconciled(*_args, **kwargs):
+        reconcile_calls.append(kwargs)
+        return SimpleNamespace(
+            success=True,
+            sync_status="synced",
+            drift_after=(),
+            failure=None,
+        )
+
+    monkeypatch.setattr("app.services.network.reconcile.core.reconcile_ont", reconciled)
+
+    execute_outcome = execute_ont_service_configuration(
+        db_session,
+        ExecuteOntServiceConfigurationCommand(
+            context=CommandContext.system(
+                actor="test:worker",
+                scope="network:ont:execute",
+                reason="test readback verification execution",
+                command_id=uuid.uuid4(),
+                correlation_id=new_operation_id,
+                idempotency_key="verify-converged-execute",
+            ),
+            ont_unit_id=ont_id,
+            operation_id=new_operation_id,
+            configuration_head_id=head_id,
+            revision=revision_number,
+            force_readback_only=True,
+        ),
+    )
+
+    assert execute_outcome.phase is OntServiceConfigurationPhase.verified
+    assert reconcile_calls[-1]["readback_only"] is True
+    # The reconcile lifecycle owner decides sync_status; this call proves the
+    # verification path went THROUGH ``reconcile_ont`` rather than assigning
+    # ``OntUnit.sync_status`` itself.
+    assert "lifecycle_binding" in reconcile_calls[-1]
+
+    # The original failed operation is preserved untouched — compared
+    # against plain values captured before the verify call, not the same
+    # identity-mapped ORM instance mutated in place.
+    db_session.expire_all()
+    original = db_session.get(NetworkOperation, failed_operation_id)
+    assert original.status is NetworkOperationStatus.failed
+    assert original.status == original_status
+    assert original.completed_at == original_completed_at
+    assert original.error == original_error
+    assert original.output_payload == original_output_payload
+
+
+def test_verify_residual_drift_reports_failed_not_verified(db_session, monkeypatch):
+    ont, assignment, head, revision, operation = _verify_setup(
+        db_session,
+        suffix="mismatch-ssid",
+        section=OntConfigurationSection.wifi,
+        desired_change_evidence={"wifi.ssid": "Auto Computer"},
+    )
+    ont_id, head_id, revision_number = ont.id, head.id, revision.revision
+    failed_operation_id = operation.id
+    db_session.commit()
+
+    outcome = verify_ont_service_configuration_readback(
+        db_session,
+        _verify_command(
+            ont_id=ont_id,
+            head_id=head_id,
+            revision_number=revision_number,
+            failed_operation_id=failed_operation_id,
+            idempotency_key="verify-ssid-mismatch",
+        ),
+    )
+    new_operation_id = outcome.operation_id
+
+    from app.services.network.reconcile import ReconcileFailure, ReconcileFailureReason
+
+    def reconciled(*_args, **kwargs):
+        return SimpleNamespace(
+            success=False,
+            sync_status="out_of_sync",
+            drift_after=(SimpleNamespace(field="wifi_ssid"),),
+            failure=ReconcileFailure(
+                reason=ReconcileFailureReason.VERIFICATION_MISMATCH,
+                message="SSID still does not match.",
+                evidence={},
+            ),
+        )
+
+    monkeypatch.setattr("app.services.network.reconcile.core.reconcile_ont", reconciled)
+
+    execute_outcome = execute_ont_service_configuration(
+        db_session,
+        ExecuteOntServiceConfigurationCommand(
+            context=CommandContext.system(
+                actor="test:worker",
+                scope="network:ont:execute",
+                reason="test readback verification execution",
+                command_id=uuid.uuid4(),
+                correlation_id=new_operation_id,
+                idempotency_key="verify-ssid-mismatch-execute",
+            ),
+            ont_unit_id=ont_id,
+            operation_id=new_operation_id,
+            configuration_head_id=head_id,
+            revision=revision_number,
+            force_readback_only=True,
+        ),
+    )
+
+    assert execute_outcome.phase is OntServiceConfigurationPhase.failed
+
+
+def test_verify_readback_pending_reports_failed_without_apply_redispatch(
+    db_session, monkeypatch
+):
+    """Required-fix regression test: a readback-only verification that gets
+    ``readback_pending`` evidence must NOT auto re-dispatch
+    ``ont_service_config_apply_v1`` (the shared dispatch key parsing that
+    only keeps that hop readback-only is exactly the "flag deep in shared
+    code" shape this feature was built to avoid depending on) and must not
+    let a later ``BLOCKED_OUT_OF_SYNC`` refusal overwrite this diagnosis.
+    """
+    ont, assignment, head, revision, operation = _verify_setup(
+        db_session,
+        suffix="readback-pending",
+        section=OntConfigurationSection.wifi,
+        desired_change_evidence={"wifi.ssid": "Auto Computer"},
+    )
+    ont_id, head_id, revision_number = ont.id, head.id, revision.revision
+    failed_operation_id = operation.id
+    db_session.commit()
+
+    outcome = verify_ont_service_configuration_readback(
+        db_session,
+        _verify_command(
+            ont_id=ont_id,
+            head_id=head_id,
+            revision_number=revision_number,
+            failed_operation_id=failed_operation_id,
+            idempotency_key="verify-readback-pending",
+        ),
+    )
+    new_operation_id = outcome.operation_id
+
+    from app.services.network.reconcile import ReconcileFailure, ReconcileFailureReason
+
+    def reconciled(*_args, **kwargs):
+        return SimpleNamespace(
+            success=False,
+            sync_status="out_of_sync",
+            drift_after=(SimpleNamespace(field="wifi_ssid"),),
+            failure=ReconcileFailure(
+                reason=ReconcileFailureReason.VERIFICATION_MISMATCH,
+                message="Current revision is still awaiting device readback.",
+                evidence={"readback_pending": True, "drift_fields": ["acs:wifi_ssid"]},
+            ),
+        )
+
+    monkeypatch.setattr("app.services.network.reconcile.core.reconcile_ont", reconciled)
+
+    execute_outcome = execute_ont_service_configuration(
+        db_session,
+        ExecuteOntServiceConfigurationCommand(
+            context=CommandContext.system(
+                actor="test:worker",
+                scope="network:ont:execute",
+                reason="test readback verification execution",
+                command_id=uuid.uuid4(),
+                correlation_id=new_operation_id,
+                idempotency_key="verify-readback-pending-execute",
+            ),
+            ont_unit_id=ont_id,
+            operation_id=new_operation_id,
+            configuration_head_id=head_id,
+            revision=revision_number,
+            force_readback_only=True,
+        ),
+    )
+
+    assert execute_outcome.phase is OntServiceConfigurationPhase.failed
+    assert "still_unverified" in execute_outcome.message
+    refreshed_head = db_session.get(OntServiceConfigurationHead, head_id)
+    assert refreshed_head.failure_code == "verification_mismatch"
+    # No new dispatch was staged for this operation — no ``verify:1`` hop
+    # onto ``ont_service_config_apply_v1``.
+    dispatch_keys = db_session.scalars(
+        select(NetworkOperationDispatch.dispatch_key).where(
+            NetworkOperationDispatch.operation_id == new_operation_id
+        )
+    ).all()
+    assert all(not key.startswith("verify:") for key in dispatch_keys)
+
+
+def test_verify_write_only_password_reports_delivered_unverified(
+    db_session, monkeypatch
+):
+    ont, assignment, head, revision, operation = _verify_setup(
+        db_session,
+        suffix="wifi-password",
+        section=OntConfigurationSection.wifi,
+        desired_change_evidence={
+            "wifi.ssid": "Auto Computer",
+            "wifi.password": "changed",
+        },
+    )
+    ont_id, head_id, revision_number = ont.id, head.id, revision.revision
+    failed_operation_id = operation.id
+    db_session.commit()
+
+    outcome = verify_ont_service_configuration_readback(
+        db_session,
+        _verify_command(
+            ont_id=ont_id,
+            head_id=head_id,
+            revision_number=revision_number,
+            failed_operation_id=failed_operation_id,
+            idempotency_key="verify-password",
+        ),
+    )
+    new_operation_id = outcome.operation_id
+
+    def reconciled(*_args, **kwargs):
+        return SimpleNamespace(
+            success=True,
+            sync_status="synced",
+            drift_after=(),
+            failure=None,
+        )
+
+    monkeypatch.setattr("app.services.network.reconcile.core.reconcile_ont", reconciled)
+
+    execute_outcome = execute_ont_service_configuration(
+        db_session,
+        ExecuteOntServiceConfigurationCommand(
+            context=CommandContext.system(
+                actor="test:worker",
+                scope="network:ont:execute",
+                reason="test readback verification execution",
+                command_id=uuid.uuid4(),
+                correlation_id=new_operation_id,
+                idempotency_key="verify-password-execute",
+            ),
+            ont_unit_id=ont_id,
+            operation_id=new_operation_id,
+            configuration_head_id=head_id,
+            revision=revision_number,
+            force_readback_only=True,
+        ),
+    )
+
+    assert execute_outcome.phase is OntServiceConfigurationPhase.delivered_unverified
+    refreshed_head = db_session.get(OntServiceConfigurationHead, head_id)
+    assert refreshed_head.failure_code == "wifi_password_write_only_unverifiable"

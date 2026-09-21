@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.field_vendor import FieldVendor, FieldVendorUser
@@ -87,6 +88,40 @@ class PersonPartyProfileUpdate:
     primary_email: str | None
     primary_phone: str | None
     communication_routed_through_reseller: bool
+
+
+class CustomerPartyProfileField(enum.StrEnum):
+    name = "name"
+    address = "address"
+    email = "email"
+    phone = "phone"
+    organization = "organization"
+    city_region = "city_region"
+    country = "country"
+    date_of_birth = "date_of_birth"
+    gender = "gender"
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerPartyProfileUpdate:
+    """Typed canonical Party patch from an approved Customer coordinator."""
+
+    party_id: UUID
+    display_name: str
+    first_name: str
+    last_name: str
+    address_line1: str | None
+    address_line2: str | None
+    city: str | None
+    region: str | None
+    country_code: str | None
+    date_of_birth: str | None
+    gender: str
+    organization: str | None
+    primary_email: str | None
+    primary_phone: str | None
+    source: str
+    submitted_fields: frozenset[CustomerPartyProfileField]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1503,6 +1538,59 @@ def update_person_profile(db: Session, command: PersonPartyProfileUpdate) -> Par
     return party
 
 
+def update_customer_profile(db: Session, command: CustomerPartyProfileUpdate) -> Party:
+    """Stage Customer profile facts on its canonical Person or Organization Party."""
+
+    canonical_party = (
+        db.query(Party)
+        .filter(Party.id == command.party_id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if canonical_party is None:
+        raise PartyInvariantError(f"Party '{command.party_id}' was not found")
+    if canonical_party.status not in {
+        PartyIdentityStatus.active.value,
+        PartyIdentityStatus.quarantined.value,
+    }:
+        raise PartyInvariantError("The Customer Party is not editable")
+    metadata = (
+        dict(canonical_party.metadata_)
+        if isinstance(canonical_party.metadata_, dict)
+        else {}
+    )
+    fields = command.submitted_fields
+    if CustomerPartyProfileField.name in fields:
+        canonical_party.display_name = _required_text(
+            command.display_name, "display_name"
+        )
+        metadata["first_name"] = command.first_name
+        metadata["last_name"] = command.last_name
+    if CustomerPartyProfileField.address in fields:
+        metadata["address_line1"] = command.address_line1
+        metadata["address_line2"] = command.address_line2
+    if CustomerPartyProfileField.city_region in fields:
+        metadata["city"] = command.city
+    if CustomerPartyProfileField.country in fields:
+        metadata["country_code"] = command.country_code
+    if CustomerPartyProfileField.date_of_birth in fields:
+        metadata["date_of_birth"] = command.date_of_birth
+    if CustomerPartyProfileField.gender in fields:
+        metadata["gender"] = command.gender
+    if CustomerPartyProfileField.organization in fields:
+        metadata["organization"] = command.organization
+    if CustomerPartyProfileField.email in fields:
+        metadata["primary_email"] = command.primary_email
+    if CustomerPartyProfileField.phone in fields:
+        metadata["primary_phone"] = command.primary_phone
+    metadata["profile_version"] = 1
+    metadata["identity_managed_by"] = "sub"
+    metadata["last_profile_source"] = _required_text(command.source, "source")
+    canonical_party.metadata_ = metadata
+    db.flush()
+    return canonical_party
+
+
 def reconcile_contact_points(
     db: Session, command: PartyContactPointSet
 ) -> tuple[PartyContactPoint, ...]:
@@ -1645,3 +1733,27 @@ def add_external_reference(
     db.add(reference)
     db.flush()
     return reference
+
+
+def external_reference_party_id(
+    db: Session,
+    *,
+    source_system: str,
+    entity_type: str,
+    external_id: str,
+) -> UUID | None:
+    """Resolve one external identity to its canonical Party."""
+
+    return db.execute(
+        select(PartyExternalReference.party_id)
+        .where(
+            PartyExternalReference.source_system
+            == _required_text(source_system, "source_system").lower(),
+            PartyExternalReference.entity_type
+            == _required_text(entity_type, "entity_type").lower(),
+            PartyExternalReference.external_id
+            == _required_text(external_id, "external_id"),
+            PartyExternalReference.is_active.is_(True),
+        )
+        .with_for_update()
+    ).scalar_one_or_none()

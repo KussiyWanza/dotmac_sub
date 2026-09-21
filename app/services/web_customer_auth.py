@@ -413,6 +413,7 @@ def customer_login_submit(
             db.query(UserCredential)
             .filter(func.lower(UserCredential.username) == normalized_username.lower())
             .filter(UserCredential.provider == AuthProvider.local)
+            .filter(UserCredential.subscriber_id.is_not(None))
             .first()
         )
         if local_credential:

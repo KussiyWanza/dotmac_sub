@@ -7,8 +7,11 @@ admin-only routes (secret management, API-key minting, etc.). These tests pin
 the staff gate in place.
 """
 
+from unittest.mock import MagicMock
+
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
 
 from app.models.subscriber import UserType
 from app.models.system_user import SystemUser
@@ -18,6 +21,14 @@ from app.web.auth.dependencies import require_admin_web_auth, require_web_auth
 
 def _router_dependency_calls(router):
     return [getattr(dep, "dependency", None) for dep in router.dependencies]
+
+
+def _request() -> Request:
+    return Request({"type": "http", "method": "GET", "path": "/admin"})
+
+
+def _require(auth):
+    return require_admin_web_auth(request=_request(), auth=auth, db=MagicMock())
 
 
 def test_admin_router_uses_staff_gate_not_bare_auth():
@@ -34,13 +45,13 @@ def test_admin_router_has_session_refresh_probe():
 
 def test_staff_gate_rejects_subscriber():
     with pytest.raises(HTTPException) as exc:
-        require_admin_web_auth({"principal_type": "subscriber", "principal_id": "p"})
+        _require({"principal_type": "subscriber", "principal_id": "p"})
     assert exc.value.status_code == 403
 
 
 def test_staff_gate_rejects_missing_principal_type():
     with pytest.raises(HTTPException) as exc:
-        require_admin_web_auth({"principal_id": "p"})
+        _require({"principal_id": "p"})
     assert exc.value.status_code == 403
 
 
@@ -56,7 +67,7 @@ def test_staff_gate_allows_system_user():
             is_active=True,
         ),
     }
-    assert require_admin_web_auth(auth) is auth
+    assert _require(auth) is auth
 
 
 @pytest.mark.parametrize(
@@ -75,5 +86,5 @@ def test_staff_gate_rejects_non_staff_system_user(user_type: UserType):
         ),
     }
     with pytest.raises(HTTPException) as exc:
-        require_admin_web_auth(auth)
+        _require(auth)
     assert exc.value.status_code == 403

@@ -50,8 +50,8 @@
     {
         "current": true,
         "key": "dotmac.erp",
-        "manifest_digest": "b7859536aa6da9a2aa97975f0f5595c3f5ea7b8611c6d46d62c5ab48cfac0d66",
-        "version": "1.3.0"
+        "manifest_digest": "331fbfa42ed260fa7470ee0f17667921ba51091d55683bc617f31113f06ceaaa",
+        "version": "1.4.0"
     },
     {
         "current": true,
@@ -88,6 +88,12 @@
         "key": "whatsapp",
         "manifest_digest": "4f83cbba8ecb8e986de90c6e3ba424fbac9ec1e966671fb534fd98a9c35d4a32",
         "version": "1.0.0"
+    },
+    {
+        "current": false,
+        "key": "dotmac.erp",
+        "manifest_digest": "b7859536aa6da9a2aa97975f0f5595c3f5ea7b8611c6d46d62c5ab48cfac0d66",
+        "version": "1.3.0"
     },
     {
         "current": false,

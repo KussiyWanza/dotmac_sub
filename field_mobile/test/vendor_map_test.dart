@@ -66,7 +66,12 @@ void main() {
         overrides: [
           apiClientProvider.overrideWithValue(client),
           locationSourceProvider.overrideWithValue(
-            FakeLocation((latitude: 6.6, longitude: 3.35)),
+            FakeLocation((
+              latitude: 6.6,
+              longitude: 3.35,
+              accuracy: 5.0,
+              timestamp: DateTime.utc(2026, 6, 1, 8),
+            )),
           ),
         ],
       );

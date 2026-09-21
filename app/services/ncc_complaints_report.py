@@ -2,7 +2,7 @@
 
 Re-homed from CRM for the CRM exit. The record shape, cleaners and reference
 vocabulary are shared with :mod:`app.services.ncc_workbook`, so the JSON the
-pack renders and the XLSX the officer files always agree.
+pack renders and the CSV the officer files always agree.
 
 Four deliberate divergences from CRM's implementation, each removing a value
 we could not honestly source:
@@ -195,7 +195,7 @@ def paginate_report(
 
 # NCC files complaints as Resolved or Pending. Michael's call (2026-07-17):
 # Closed is the one native status for a resolved complaint. The filing label
-# remains "Resolved" because that is the NCC workbook's external vocabulary.
+# remains "Resolved" because that is the NCC filing vocabulary.
 _RESOLVED_STATUSES = frozenset({"closed"})
 # Not complaints: a canceled ticket was withdrawn, a merged one is counted
 # under the ticket it merged into. Filing either would double-count or invent.

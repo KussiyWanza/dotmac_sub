@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import hashlib
 import logging
-import os
 import secrets
 import string
 import warnings
@@ -41,7 +39,7 @@ from app.models.auth import (
     Session as AuthSession,
 )
 from app.models.catalog import AccessCredential
-from app.models.domain_settings import DomainSetting, SettingDomain
+from app.models.domain_settings import SettingDomain
 from app.models.rbac import (
     Permission,
     Role,
@@ -54,11 +52,19 @@ from app.models.subscriber import ResellerUser, Subscriber, SubscriberStatus, Us
 from app.models.system_user import SystemUser
 from app.request_meta import client_ip
 from app.schemas.auth_flow import LoginResponse, LogoutResponse, TokenResponse
-from app.services import auth_cache, staff_party_authentication, team_inbox_assignment
+from app.services import (
+    auth_cache,
+    auth_session_refresh,
+    auth_token_signing,
+    staff_party_authentication,
+    team_inbox_assignment,
+)
 from app.services import radius_auth as radius_auth_service
 from app.services.capability_recipient import resolve_capability_recipient
 from app.services.common import coerce_uuid
 from app.services.credential_crypto import decrypt_credential, encrypt_credential
+from app.services.db_session_adapter import db_session_adapter
+from app.services.owner_commands import CommandContext
 from app.services.response import ListResponseMixin
 from app.services.secrets import resolve_secret
 from app.services.settings_spec import resolve_value
@@ -90,20 +96,11 @@ def is_admin_portal_principal(principal_type: str, principal: object | None) -> 
 
 
 def _env_value(name: str) -> str | None:
-    value = os.getenv(name)
-    if value is None or value == "":
-        return None
-    return value
+    return auth_token_signing.env_value(name)
 
 
 def _env_int(name: str) -> int | None:
-    raw = _env_value(name)
-    if raw is None:
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None
+    return auth_token_signing.env_int(name)
 
 
 def _now() -> datetime:
@@ -153,11 +150,7 @@ def duration_label(seconds: int) -> str:
 
 
 def _truncate_user_agent(value: str | None, max_len: int = 512) -> str | None:
-    if not value:
-        return value
-    if len(value) <= max_len:
-        return value
-    return value[:max_len]
+    return auth_session_refresh.normalize_user_agent(value, max_len)
 
 
 def _clean_device_id(value: str | None, max_len: int = 64) -> str | None:
@@ -173,22 +166,7 @@ def _clean_device_id(value: str | None, max_len: int = 64) -> str | None:
 
 
 def _setting_value(db: Session | None, key: str) -> str | None:
-    if db is None:
-        return None
-    setting = (
-        db.query(DomainSetting)
-        .filter(DomainSetting.domain == SettingDomain.auth)
-        .filter(DomainSetting.key == key)
-        .filter(DomainSetting.is_active.is_(True))
-        .first()
-    )
-    if not setting:
-        return None
-    if setting.value_text:
-        return cast(str, setting.value_text)
-    if setting.value_json is not None:
-        return str(setting.value_json)
-    return None
+    return auth_token_signing.setting_value(db, key)
 
 
 def _jwt_secret(db: Session | None) -> str:
@@ -204,27 +182,20 @@ def _jwt_secret(db: Session | None) -> str:
     Environment first, preserving the precedence this function already had.
     """
 
-    secret = resolve_secret(_env_value("JWT_SECRET")) or held_secret("jwt_secret")
-    if not secret:
-        raise HTTPException(status_code=500, detail="JWT secret not configured")
-    return secret
+    try:
+        return auth_token_signing.jwt_secret(db)
+    except auth_token_signing.TokenSigningConfigurationError as exc:
+        raise HTTPException(
+            status_code=500, detail="JWT secret not configured"
+        ) from exc
 
 
 def _jwt_algorithm(db: Session | None) -> str:
-    return _env_value("JWT_ALGORITHM") or _setting_value(db, "jwt_algorithm") or "HS256"
+    return auth_token_signing.jwt_algorithm(db)
 
 
 def _access_ttl_minutes(db: Session | None) -> int:
-    env_value = _env_int("JWT_ACCESS_TTL_MINUTES")
-    if env_value is not None:
-        return env_value
-    value = _setting_value(db, "jwt_access_ttl_minutes")
-    if value is not None:
-        try:
-            return int(value)
-        except ValueError:
-            return 15
-    return 15
+    return auth_token_signing.access_ttl_minutes(db)
 
 
 def _refresh_ttl_days(db: Session | None) -> int:
@@ -356,7 +327,7 @@ def _fernet(db: Session | None) -> Fernet:
 
 
 def _hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return auth_session_refresh.hash_refresh_token(token)
 
 
 def principal_from_session(session: AuthSession) -> tuple[str, str]:
@@ -431,16 +402,14 @@ def _issue_access_token(
         principal_type = principal_type_or_session_id
         resolved_session_id = session_id
 
-    return _encode_access_token(
+    return auth_token_signing.issue_access_token(
+        db,
         principal_id=principal_id,
         principal_type=principal_type,
         session_id=resolved_session_id,
+        issued_at=_now(),
         roles=roles,
         permissions=permissions,
-        issued_at=_now(),
-        ttl_minutes=_access_ttl_minutes(db),
-        secret=_jwt_secret(db),
-        algorithm=_jwt_algorithm(db),
     )
 
 
@@ -458,20 +427,17 @@ def _encode_access_token(
 ) -> str:
     """Encode an access token from immutable values, with no persistence reads."""
 
-    payload = {
-        "sub": principal_id,
-        "principal_id": principal_id,
-        "principal_type": principal_type,
-        "session_id": session_id,
-        "typ": "access",
-        "iat": int(issued_at.timestamp()),
-        "exp": int((issued_at + timedelta(minutes=ttl_minutes)).timestamp()),
-    }
-    if roles:
-        payload["roles"] = roles
-    if permissions:
-        payload["scopes"] = permissions
-    return _jwt_encode_token(payload, secret, algorithm)
+    return auth_token_signing.encode_access_token(
+        principal_id=principal_id,
+        principal_type=principal_type,
+        session_id=session_id,
+        issued_at=issued_at,
+        ttl_minutes=ttl_minutes,
+        secret=secret,
+        algorithm=algorithm,
+        roles=roles,
+        permissions=permissions,
+    )
 
 
 def issue_impersonation_access_token(
@@ -1137,28 +1103,33 @@ class AuthFlow(ListResponseMixin):
     @staticmethod
     def _response_with_refresh_cookie(
         db: Session | None,
-        payload: dict,
+        payload: dict | TokenResponse,
         model_cls,
         status_code: int = status.HTTP_200_OK,
     ) -> Response:
         settings = AuthFlow.refresh_cookie_settings(db)
-        body_payload = {**payload, "refresh_token": None}  # nosec
+        payload_values = (
+            payload.model_dump() if isinstance(payload, TokenResponse) else payload
+        )
+        body_payload = {**payload_values, "refresh_token": None}  # nosec
         body_content = model_cls(**body_payload).model_dump_json()
         response = Response(
             content=body_content,
             status_code=status_code,
             media_type="application/json",
         )
-        response.set_cookie(
-            key=settings["key"],
-            value=payload["refresh_token"],
-            httponly=settings["httponly"],
-            secure=settings["secure"],
-            samesite=settings["samesite"],
-            domain=settings["domain"],
-            path=settings["path"],
-            max_age=settings["max_age"],
-        )
+        refresh_token = payload_values.get("refresh_token")
+        if isinstance(refresh_token, str) and refresh_token:
+            response.set_cookie(
+                key=settings["key"],
+                value=refresh_token,
+                httponly=settings["httponly"],
+                secure=settings["secure"],
+                samesite=settings["samesite"],
+                domain=settings["domain"],
+                path=settings["path"],
+                max_age=settings["max_age"],
+            )
         return response
 
     @staticmethod
@@ -1731,82 +1702,60 @@ class AuthFlow(ListResponseMixin):
         )
 
     @staticmethod
-    def refresh(db: Session, refresh_token: str, request: Request):
-        token_hash = _hash_token(refresh_token)
-        session = (
-            db.query(AuthSession)
-            .filter(AuthSession.token_hash == token_hash)
-            .filter(AuthSession.status == SessionStatus.active)
-            .filter(AuthSession.revoked_at.is_(None))
-            .first()
+    def refresh(db: Session, refresh_token: str, request: Request) -> TokenResponse:
+        """Adapt an HTTP refresh request to the canonical session owner."""
+
+        supplied_hash = _hash_token(refresh_token)
+        command = auth_session_refresh.RefreshSessionCommand(
+            context=CommandContext.system(
+                actor="client:authentication-session",
+                scope="authentication:session",
+                reason="Renew an authentication session",
+                idempotency_key=f"refresh:{supplied_hash}",
+            ),
+            refresh_token=refresh_token,
+            client_ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            device_id=_clean_device_id(request.headers.get("x-device-id")),
         )
-        if not session:
-            reused = (
-                db.query(AuthSession)
-                .filter(AuthSession.previous_token_hash == token_hash)
-                .filter(AuthSession.status == SessionStatus.active)
-                .filter(AuthSession.revoked_at.is_(None))
-                .first()
+        db_session_adapter.release_read_transaction(db)
+        try:
+            outcome = auth_session_refresh.renew_authentication_session(
+                db=db,
+                command=command,
             )
-            if reused:
-                reused.status = SessionStatus.revoked
-                reused.revoked_at = _now()
-                db.commit()
+        except auth_session_refresh.RefreshSessionError as exc:
+            if exc.code == f"{auth_session_refresh.OWNER}.signing_unavailable":
                 raise HTTPException(
-                    status_code=401,
-                    detail="Refresh token reuse detected",
-                )
-            raise HTTPException(status_code=401, detail="Invalid refresh token")
-        expires_at = _as_utc(session.expires_at)
-        if expires_at and expires_at <= _now():
-            session.status = SessionStatus.expired
-            db.commit()
-            raise HTTPException(status_code=401, detail="Refresh token expired")
-
-        principal_type, principal_id = principal_from_session(session)
-        if principal_type == "system_user":
-            # Resolve identity BEFORE rotating the refresh token. A projection
-            # refusal is an authorization failure and must leave the session
-            # byte-for-byte unchanged rather than consuming the caller's token.
-            try:
-                principal = staff_party_authentication.resolve_staff_session_principal(
-                    db,
-                    party_id=session.party_id,
-                    system_user_id=session.system_user_id,
-                    reference=str(session.id),
-                )
-            except staff_party_authentication.StaffProjectionError as exc:
-                logger.error(
-                    "Staff refresh refused: %s (subject=%s)",
-                    exc.refusal.value,
-                    exc.credential_id,
-                )
-                raise HTTPException(
-                    status_code=401,
-                    detail="Invalid refresh token",
+                    status_code=503,
+                    detail="Authentication service unavailable",
                 ) from exc
-            principal_id = str(principal.id)
+            if exc.code == f"{auth_session_refresh.OWNER}.staff_projection_refused":
+                logger.error("Staff refresh refused: %s", exc.code)
+            raise HTTPException(status_code=401, detail=exc.message) from exc
 
-        new_refresh = secrets.token_urlsafe(48)
-        session.previous_token_hash = session.token_hash
-        session.token_hash = _hash_token(new_refresh)
-        session.token_rotated_at = _now()
-        session.last_seen_at = _now()
-        if request.client:
-            session.ip_address = request.client.host
-        session.user_agent = _truncate_user_agent(request.headers.get("user-agent"))
-        db.commit()
-        access_token = _issue_access_token(
-            db, principal_id, principal_type, str(session.id)
+        if outcome.disposition is auth_session_refresh.RefreshDisposition.EXPIRED:
+            raise HTTPException(status_code=401, detail="Refresh token expired")
+        if outcome.disposition is auth_session_refresh.RefreshDisposition.REUSE_REVOKED:
+            raise HTTPException(status_code=401, detail="Refresh token reuse detected")
+
+        if not outcome.access_token:
+            raise RuntimeError("Accepted session renewal did not issue access")
+        return TokenResponse(
+            access_token=outcome.access_token,
+            refresh_token=outcome.refresh_token,
         )
-        return {"access_token": access_token, "refresh_token": new_refresh}
 
     @staticmethod
     def refresh_response(db: Session, refresh_token: str | None, request: Request):
-        resolved = AuthFlow.resolve_refresh_token(request, refresh_token, db)
+        resolved = AuthFlow.resolve_refresh_token(request, refresh_token, None)
         if not resolved:
             raise HTTPException(status_code=401, detail="Missing refresh token")
-        result = AuthFlow.refresh(db, resolved, request)
+        result = AuthFlow.refresh(
+            db=db,
+            refresh_token=resolved,
+            request=request,
+        )
         if wants_refresh_in_body(request):
             return result
         return AuthFlow._response_with_refresh_cookie(

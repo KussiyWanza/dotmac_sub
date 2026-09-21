@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class MetaSocialChannel(StrEnum):
@@ -15,17 +16,55 @@ class MetaSocialChannel(StrEnum):
     instagram_dm = "instagram_dm"
 
 
+class MetaMessageAttachmentType(StrEnum):
+    """Provider media types accepted by the Meta messaging transport."""
+
+    image = "image"
+    audio = "audio"
+    video = "video"
+    file = "file"
+
+
+class MetaDirectMessageAttachment(BaseModel):
+    """One private Inbox asset materialized for provider upload."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    asset_id: UUID
+    attachment_type: MetaMessageAttachmentType
+    filename: str = Field(min_length=1, max_length=255)
+    content_type: str = Field(min_length=1, max_length=160)
+    content: bytes = Field(min_length=1, max_length=10 * 1024 * 1024, repr=False)
+
+
 class MetaDirectMessageCommand(BaseModel):
-    """One account-scoped reply requested by the Team Inbox delivery worker."""
+    """One account-scoped text or media leg requested by the delivery worker."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     channel: MetaSocialChannel
     provider_account_id: str = Field(min_length=1, max_length=120)
     recipient_id: str = Field(min_length=1, max_length=180)
-    body: str = Field(min_length=1, max_length=10_000)
+    body: str | None = Field(default=None, max_length=10_000)
+    attachment: MetaDirectMessageAttachment | None = None
     correlation_id: str = Field(min_length=1, max_length=160)
     preview: bool = False
+
+    @model_validator(mode="after")
+    def validate_message_content(self) -> MetaDirectMessageCommand:
+        has_body = bool(str(self.body or "").strip())
+        has_attachment = self.attachment is not None
+        if has_body == has_attachment:
+            raise ValueError("provide exactly one of body or attachment")
+        if (
+            self.channel is MetaSocialChannel.instagram_dm
+            and self.attachment is not None
+            and self.attachment.attachment_type is MetaMessageAttachmentType.file
+        ):
+            raise ValueError(
+                "Instagram direct messages do not support file attachments"
+            )
+        return self
 
 
 class MetaDirectMessageOutcome(BaseModel):
@@ -36,6 +75,7 @@ class MetaDirectMessageOutcome(BaseModel):
     accepted: bool
     operation_status: str = Field(min_length=1, max_length=80)
     provider_message_id: str | None = Field(default=None, max_length=500)
+    provider_attachment_id: str | None = Field(default=None, max_length=500)
     provider_recipient_id: str | None = Field(default=None, max_length=180)
     error_code: str | None = Field(default=None, max_length=120)
 

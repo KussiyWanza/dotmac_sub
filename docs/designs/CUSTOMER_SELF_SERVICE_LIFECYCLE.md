@@ -197,6 +197,9 @@ Completed in this slice:
   readback through the shared configuration lifecycle. The service page and
   Wi-Fi status endpoint read the newest Wi-Fi revision on the exact active
   assignment and display queued, applying, readback, verified, or failed state.
+  If more than one active assignment matches the same subscriber/subscription,
+  the read fails closed as `device_assignment_ambiguous`; the portal withholds
+  the Wi-Fi operation instead of selecting a device or returning HTTP 500.
 - Superseded customer device-command wrappers and their duplicate cooldown and
   validation decisions are retired; web routes, API, and mobile enter the
   canonical scoped owner directly.

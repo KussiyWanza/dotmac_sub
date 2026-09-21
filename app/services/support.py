@@ -1357,6 +1357,7 @@ class Tickets:
         status: str | None = None,
         ticket_type: str | None = None,
         region: str | None = None,
+        service_team_id: str | None = None,
         assigned_to_person_id: str | None = None,
         assigned_to_audience: TicketAudienceScope | None = None,
         project_manager_person_id: str | None = None,
@@ -1378,6 +1379,7 @@ class Tickets:
             status=status,
             ticket_type=ticket_type,
             region=region,
+            service_team_id=service_team_id,
             assigned_to_person_id=assigned_to_person_id,
             project_manager_person_id=project_manager_person_id,
             site_coordinator_person_id=site_coordinator_person_id,
@@ -3330,6 +3332,7 @@ class Tickets:
         status: str | None = None,
         ticket_type: str | None = None,
         region: str | None = None,
+        service_team_id: str | None = None,
         assigned_to_person_id: str | None = None,
         assigned_to_audience: TicketAudienceScope | None = None,
         project_manager_person_id: str | None = None,
@@ -3381,6 +3384,8 @@ class Tickets:
             query = query.filter(
                 func.lower(func.trim(Ticket.region)) == normalized_region
             )
+        if service_team_id:
+            query = query.filter(Ticket.service_team_id == service_team_id)
         if priority:
             query = query.filter(Ticket.priority == str(priority).strip())
         if channel:
@@ -3451,6 +3456,7 @@ class Tickets:
         status: str | None = None,
         ticket_type: str | None = None,
         region: str | None = None,
+        service_team_id: str | None = None,
         assigned_to_person_id: str | None = None,
         assigned_to_audience: TicketAudienceScope | None = None,
         project_manager_person_id: str | None = None,
@@ -3472,6 +3478,7 @@ class Tickets:
                 status=status,
                 ticket_type=ticket_type,
                 region=region,
+                service_team_id=service_team_id,
                 assigned_to_person_id=assigned_to_person_id,
                 assigned_to_audience=assigned_to_audience,
                 project_manager_person_id=project_manager_person_id,
@@ -3495,6 +3502,7 @@ class Tickets:
         status: str | None = None,
         ticket_type: str | None = None,
         region: str | None = None,
+        service_team_id: str | None = None,
         assigned_to_person_id: str | None = None,
         assigned_to_audience: TicketAudienceScope | None = None,
         project_manager_person_id: str | None = None,
@@ -3517,6 +3525,7 @@ class Tickets:
             status=status,
             ticket_type=ticket_type,
             region=region,
+            service_team_id=service_team_id,
             assigned_to_person_id=assigned_to_person_id,
             assigned_to_audience=assigned_to_audience,
             project_manager_person_id=project_manager_person_id,

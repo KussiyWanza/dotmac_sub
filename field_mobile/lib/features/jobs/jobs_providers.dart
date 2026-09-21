@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/offline/database.dart';
+import '../../core/offline/sync_service.dart';
 import '../auth/auth_state.dart';
 import '../execution/execution_controller.dart';
 import 'job_models.dart';
@@ -96,12 +97,42 @@ class JobsRepository {
           .get('/api/v1/field/jobs/$jobId');
       final data = (response.data as Map).cast<String, dynamic>();
       await sync.cacheJobDetail(jobId, data);
-      return JobDetail.fromJson(data);
+      return _withOfflineNotes(
+        JobDetail.fromJson(data),
+        await sync.offlineNotesForJob(jobId),
+      );
     } on DioException {
       final cached = await sync.readCachedDetail(jobId);
       if (cached == null) rethrow;
-      return JobDetail.fromJson(cached);
+      return _withOfflineNotes(
+        JobDetail.fromJson(cached),
+        await sync.offlineNotesForJob(jobId),
+      );
     }
+  }
+
+  JobDetail _withOfflineNotes(
+    JobDetail detail,
+    List<OfflineNoteProjection> offline,
+  ) {
+    final serverRefs = detail.notes.map((note) => note.clientRef).toSet();
+    final local = [
+      for (final note in offline)
+        if (!serverRefs.contains(note.clientRef))
+          JobNote(
+            id: note.clientRef,
+            clientRef: note.clientRef,
+            body: note.body,
+            isInternal: note.isInternal,
+            authorName: 'You',
+            createdAt: note.createdAt,
+            deliveryState: note.state == MutationDeliveryState.failed
+                ? JobNoteDeliveryState.failed
+                : JobNoteDeliveryState.queued,
+            deliveryError: note.error,
+          ),
+    ];
+    return detail.withNotes([...local, ...detail.notes]);
   }
 
   Future<List<JobDestination>> fetchDestinations(String jobId) async {

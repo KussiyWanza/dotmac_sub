@@ -115,7 +115,9 @@ def acquire_reconcile_lock(
                 else None,
             },
         )
-        ont.sync_status = OntSyncStatus.out_of_sync
+        from app.services.network.ont_status import set_sync_status
+
+        set_sync_status(ont, OntSyncStatus.out_of_sync, reason="crashed_prior_detected")
         ont.last_error = (
             "Prior reconcile started at "
             f"{prior_started.isoformat() if prior_started else 'unknown'} "

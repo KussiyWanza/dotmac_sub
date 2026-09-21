@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -34,16 +35,18 @@ from app.schemas.team_inbox import (
     InboxConversationTimelineRead,
 )
 from app.services import (
-    support as support_service,
-)
-from app.services import (
+    ai_conversation_ownership,
     team_inbox_assignment,
+    team_inbox_commands,
     team_inbox_contact_links,
     team_inbox_filters,
     team_inbox_outbound,
     team_inbox_read,
     ticket_validation,
     ticket_work_order_handoff,
+)
+from app.services import (
+    support as support_service,
 )
 from app.services.auth_dependencies import (
     require_permission,
@@ -109,6 +112,7 @@ def list_tickets(
     ticket_type: str | None = Query(default=None),
     priority: str | None = Query(default=None),
     channel: str | None = Query(default=None),
+    service_team_id: str | None = Query(default=None),
     assigned_to_person_id: str | None = Query(default=None),
     created_by_person_id: str | None = Query(default=None),
     project_manager_person_id: str | None = Query(default=None),
@@ -136,6 +140,7 @@ def list_tickets(
         ticket_type=ticket_type,
         priority=priority,
         channel=channel,
+        service_team_id=(service_team_id if isinstance(service_team_id, str) else None),
         assigned_to_person_id=assigned_to_person_id,
         created_by_person_id=created_by_person_id,
         project_manager_person_id=project_manager_person_id,
@@ -360,15 +365,21 @@ def escalate_inbox_conversation(
 ):
     actor_id = _actor_id(auth)
     finish_read_transaction(db)
-    result = team_inbox_assignment.escalate_conversation_committed(
-        db,
-        conversation_id=conversation_id,
-        service_team_id=payload.service_team_id,
-        assigned_person_id=payload.assigned_person_id,
-        auto_assign=payload.auto_assign,
-        assigned_by_person_id=actor_id,
-        reason=payload.reason,
-    )
+    try:
+        result = team_inbox_assignment.escalate_conversation_committed(
+            db,
+            conversation_id=conversation_id,
+            service_team_id=payload.service_team_id,
+            assigned_person_id=payload.assigned_person_id,
+            auto_assign=payload.auto_assign,
+            assigned_by_person_id=actor_id,
+            reason=payload.reason,
+        )
+    except ai_conversation_ownership.AiConversationOwnedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": exc.code, "message": exc.message, "details": exc.details},
+        ) from exc
     if result.kind == "conversation_not_found":
         raise HTTPException(status_code=404, detail=result.reason)
     if result.kind == "conversation_resolved":
@@ -398,6 +409,7 @@ def escalate_inbox_conversation(
     dependencies=[Depends(require_permission("support:ticket:read"))],
 )
 def list_inbox_conversations(
+    view: Literal["all", "ai_intake", "queue", "history"] = Query(default="all"),
     search: str | None = Query(default=None),
     status: str | None = Query(default=None),
     channel_type: str | None = Query(default=None),
@@ -419,6 +431,11 @@ def list_inbox_conversations(
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
+    normalized_view = (
+        view
+        if isinstance(view, str) and view in {"all", "ai_intake", "queue", "history"}
+        else "all"
+    )
     clean_contact_resolution_status = (
         contact_resolution_status.strip()
         if isinstance(contact_resolution_status, str)
@@ -452,6 +469,12 @@ def list_inbox_conversations(
         priority_at_most=clean_priority_at_most,
         muted=clean_muted,
         snoozed=clean_snoozed,
+        ownership_cohort={
+            "all": ai_conversation_ownership.ConversationOwnershipCohort.actionable,
+            "ai_intake": ai_conversation_ownership.ConversationOwnershipCohort.ai_intake,
+            "queue": ai_conversation_ownership.ConversationOwnershipCohort.queue,
+            "history": ai_conversation_ownership.ConversationOwnershipCohort.history,
+        }[normalized_view],
         limit=limit,
         offset=offset,
     )
@@ -493,17 +516,23 @@ def reply_to_inbox_conversation(
     db: Session = Depends(get_db),
 ):
     finish_read_transaction(db)
-    result = team_inbox_outbound.send_inbox_reply_for_conversation_committed(
-        db,
-        conversation_id=conversation_id,
-        payload=team_inbox_outbound.InboxReplyPayload(
-            body_html=payload.body_html,
-            body_text=payload.body_text,
-            subject=payload.subject,
-            to_email=payload.to_email,
-            sent_by_person_id=_actor_id(auth),
-        ),
-    )
+    try:
+        result = team_inbox_outbound.send_inbox_reply_for_conversation_committed(
+            db,
+            conversation_id=conversation_id,
+            payload=team_inbox_outbound.InboxReplyPayload(
+                body_html=payload.body_html,
+                body_text=payload.body_text,
+                subject=payload.subject,
+                to_email=payload.to_email,
+                sent_by_person_id=_actor_id(auth),
+            ),
+        )
+    except ai_conversation_ownership.AiConversationOwnedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": exc.code, "message": exc.message, "details": exc.details},
+        ) from exc
     if result.kind == "conversation_not_found":
         raise HTTPException(status_code=404, detail=result.reason)
     if result.kind == "invalid_conversation":
@@ -552,27 +581,71 @@ def link_inbox_conversation_contact(
 ):
     finish_read_transaction(db)
     try:
-        result = team_inbox_contact_links.link_conversation_contact_by_id_committed(
-            db,
-            conversation_id=conversation_id,
-            subscriber_id=payload.subscriber_id,
-            reseller_id=payload.reseller_id,
-            linked_by_person_id=_actor_id(auth),
-            note=payload.note,
+        if bool(payload.subscriber_id) == bool(payload.reseller_id):
+            raise team_inbox_contact_links.ContactLinkError(
+                "Provide exactly one Customer or reseller."
+            )
+        target_id = payload.subscriber_id or payload.reseller_id
+        assert target_id is not None
+        target = team_inbox_contact_links.ContactLinkTarget(
+            target_type=(
+                team_inbox_contact_links.ContactLinkTargetType.subscriber
+                if payload.subscriber_id is not None
+                else team_inbox_contact_links.ContactLinkTargetType.reseller
+            ),
+            target_id=target_id,
         )
-    except team_inbox_contact_links.ConversationContactLinkError as exc:
+        actor_person_id = coerce_uuid(_actor_id(auth))
+        context = CommandContext.system(
+            actor=(
+                f"person:{actor_person_id}"
+                if actor_person_id is not None
+                else "system:support-api"
+            ),
+            scope="team-inbox:contact-link",
+            reason="apply reviewed Team Inbox contact association",
+        )
+        result = team_inbox_commands.link_contact(
+            db,
+            team_inbox_commands.LinkContactCommand(
+                context=context,
+                conversation_id=conversation_id,
+                target=target,
+                actor_person_id=actor_person_id,
+                note=payload.note,
+            ),
+        )
+    except (
+        team_inbox_contact_links.ConversationContactLinkError,
+        team_inbox_commands.ConversationNotFoundError,
+    ) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except team_inbox_contact_links.ContactLinkError as exc:
+    except (
+        team_inbox_contact_links.ContactLinkError,
+        team_inbox_commands.InboxCommandError,
+    ) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return InboxConversationContactLinkRead(
         conversation_id=conversation_id,
         contact_link_id=result.contact_link_id,
         channel_type=result.channel_type,
         normalized_contact=result.normalized_contact,
-        subscriber_id=result.subscriber_id,
-        reseller_id=result.reseller_id,
-        previous_link_ids_deactivated=result.previous_link_ids_deactivated,
+        subscriber_id=(
+            result.target.target_id
+            if result.target.target_type
+            is team_inbox_contact_links.ContactLinkTargetType.subscriber
+            else None
+        ),
+        reseller_id=(
+            result.target.target_id
+            if result.target.target_type
+            is team_inbox_contact_links.ContactLinkTargetType.reseller
+            else None
+        ),
+        previous_link_ids_deactivated=list(result.previous_link_ids_deactivated),
         repaired_conversation_ids=result.repaired_conversation_ids,
+        disposition=result.disposition.value,
+        replayed=result.replayed,
     )
 
 

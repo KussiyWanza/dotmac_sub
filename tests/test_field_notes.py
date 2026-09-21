@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.field import router
@@ -15,8 +15,14 @@ from app.models.subscriber import Subscriber, UserType
 from app.models.system_user import SystemUser
 from app.models.work_order import WorkOrder
 from app.services.auth_dependencies import require_user_auth
+from app.services.db_session_adapter import db_session_adapter
 from app.services.field.jobs import field_jobs
-from app.services.field.notes import field_notes
+from app.services.field.note_commands import (
+    CreateFieldWorkOrderNote,
+    FieldNoteCommandError,
+    create_field_work_order_note,
+)
+from app.services.owner_commands import CommandContext
 
 
 def _user(db_session, name: str = "Note") -> SystemUser:
@@ -86,6 +92,40 @@ def _work_order(db_session, subscriber: Subscriber, **overrides) -> WorkOrder:
     return row
 
 
+def _create_note(
+    db_session,
+    user: SystemUser,
+    work_order_id: str,
+    *,
+    body: str,
+    is_internal: bool = True,
+    attachment_ids: tuple = (),
+    request_id=None,
+):
+    client_ref = request_id or uuid4()
+    command = CreateFieldWorkOrderNote(
+        context=CommandContext.system(
+            actor=f"user:{user.id}",
+            scope="field:work_order_notes:write",
+            reason="test_field_note_creation",
+            command_id=client_ref,
+            correlation_id=client_ref,
+            idempotency_key=str(client_ref),
+        ),
+        requester_system_user_id=user.id,
+        work_order_public_id=work_order_id,
+        request_id=client_ref,
+        body=body,
+        is_internal=is_internal,
+        attachment_ids=attachment_ids,
+    )
+    db_session_adapter.release_read_transaction(db_session)
+    return create_field_work_order_note(
+        db_session,
+        command,
+    )
+
+
 def test_create_field_note_and_surface_in_job_detail(db_session):
     user = _user(db_session)
     _profile(db_session, user)
@@ -93,17 +133,18 @@ def test_create_field_note_and_surface_in_job_detail(db_session):
     work_order = _work_order(db_session, subscriber, crm_work_order_id="wo-note-detail")
     db_session.commit()
 
-    note = field_notes.create(
+    note = _create_note(
         db_session,
-        _auth(user),
+        user,
         "wo-note-detail",
         body="  Confirmed access with customer.  ",
         is_internal=False,
     )
 
-    assert note["body"] == "Confirmed access with customer."
-    assert note["author_name"] == "Note Tech"
-    assert note["is_internal"] is False
+    assert note.body == "Confirmed access with customer."
+    assert note.author_name == "Note Tech"
+    assert note.is_internal is False
+    assert note.replayed is False
     stored = db_session.query(FieldWorkOrderNote).one()
     assert stored.work_order_mirror_id == work_order.id
 
@@ -126,15 +167,15 @@ def test_field_note_does_not_leak_unassigned_jobs(db_session):
     )
     db_session.commit()
 
-    with pytest.raises(HTTPException) as exc:
-        field_notes.create(
+    with pytest.raises(FieldNoteCommandError) as exc:
+        _create_note(
             db_session,
-            _auth(user),
+            user,
             "wo-hidden-note",
             body="Should not work",
         )
 
-    assert exc.value.status_code == 404
+    assert exc.value.code == "operations.field_notes.work_order_not_found"
 
 
 def test_note_rejects_unknown_attachment_ids(db_session):
@@ -144,17 +185,16 @@ def test_note_rejects_unknown_attachment_ids(db_session):
     _work_order(db_session, subscriber, crm_work_order_id="wo-note-attachments")
     db_session.commit()
 
-    with pytest.raises(HTTPException) as exc:
-        field_notes.create(
+    with pytest.raises(FieldNoteCommandError) as exc:
+        _create_note(
             db_session,
-            _auth(user),
+            user,
             "wo-note-attachments",
             body="Photo attached",
-            attachment_ids=[str(uuid4())],
+            attachment_ids=(uuid4(),),
         )
 
-    assert exc.value.status_code == 404
-    assert exc.value.detail == "Attachment not found"
+    assert exc.value.code == "operations.field_notes.attachment_not_found"
 
 
 def test_field_note_api(db_session):
@@ -177,3 +217,40 @@ def test_field_note_api(db_session):
     assert resp.status_code == 201
     assert resp.json()["body"] == "Customer asked for a morning visit"
     assert resp.json()["author_name"] == "Note Tech"
+    assert resp.json()["client_ref"]
+
+
+def test_field_note_api_replays_same_client_reference_and_rejects_drift(db_session):
+    user = _user(db_session)
+    _profile(db_session, user)
+    subscriber = _subscriber(db_session)
+    _work_order(db_session, subscriber, crm_work_order_id="wo-note-retry")
+    db_session.commit()
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[require_user_auth] = lambda: _auth(user)
+    client = TestClient(app)
+    client_ref = str(uuid4())
+    payload = {
+        "body": "Retry-safe internal note",
+        "is_internal": True,
+        "client_ref": client_ref,
+    }
+
+    first = client.post("/api/v1/field/jobs/wo-note-retry/notes", json=payload)
+    replay = client.post("/api/v1/field/jobs/wo-note-retry/notes", json=payload)
+    conflict = client.post(
+        "/api/v1/field/jobs/wo-note-retry/notes",
+        json={**payload, "body": "Changed after retry"},
+    )
+
+    assert first.status_code == 201
+    assert replay.status_code == 201
+    assert replay.json()["id"] == first.json()["id"]
+    assert db_session.query(FieldWorkOrderNote).count() == 1
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == (
+        "operations.field_notes.idempotency_conflict"
+    )

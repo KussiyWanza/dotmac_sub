@@ -1,4 +1,10 @@
 {% extends "base.html" %}
+{% from "components/ui/workflow_help.html" import workflow_help_control %}
+{% if admin_workflow_guidance_for_path is defined and request is defined and request and request.url %}
+{% set workflow_guide = admin_workflow_guidance_for_path(request.url.path) %}
+{% else %}
+{% set workflow_guide = none %}
+{% endif %}
 
 {% block body %}
 <style>
@@ -862,21 +868,15 @@
             </div>
             <div class="relative z-10 mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 {% block content_container_class %}{% endblock %}">
                 {% block page_header %}{% endblock %}
-                {% if admin_workflow_guidance_for_path is defined and request is defined and request and request.url %}
-                {% set workflow_guide = admin_workflow_guidance_for_path(request.url.path) %}
-                {% else %}
-                {% set workflow_guide = none %}
-                {% endif %}
-                {% if workflow_guide and request.url.path != '/admin/help' %}
-                <details class="mb-6 rounded-xl border border-teal-200 bg-teal-50 p-4 text-sm text-teal-950 dark:border-teal-900 dark:bg-teal-950/30 dark:text-teal-100">
-                    <summary class="cursor-pointer font-semibold">How this works: {{ workflow_guide.title }}</summary>
-                    <p class="mt-2">{{ workflow_guide.purpose }}</p>
-                    <ol class="mt-3 list-decimal space-y-1 pl-5">{% for step in workflow_guide.steps %}<li>{{ step }}</li>{% endfor %}</ol>
-                    <a class="mt-3 inline-block font-medium underline" href="/admin/help?q={{ workflow_guide.title|urlencode }}">Open full help</a>
-                </details>
-                {% endif %}
                 {% block content %}{% endblock %}
             </div>
+            {% endblock %}
+            {% block workflow_guidance %}
+            {% if workflow_guide and request.url.path != '/admin/help' %}
+            <div class="hidden" data-admin-workflow-help-staging>
+                {{ workflow_help_control(workflow_guide, container_class="inline-flex") }}
+            </div>
+            {% endif %}
             {% endblock %}
         </main>
     </div>
@@ -889,11 +889,13 @@
 <script src="/static/js/admin-attendance-reminder.js"></script>
 {% endif %}
 <script src="/static/js/session-refresh.js"></script>
+<script src="/static/js/admin-workflow-help.js?v=20260910a"></script>
 <script>
     if (typeof initSessionRefresh === 'function') {
         initSessionRefresh({
-            refreshUrl: "/admin/session/refresh",
-            loginUrl: "/auth/login"
+            refreshUrl: "/auth/session/refresh",
+            loginUrl: "/auth/login",
+            expiresAt: {{ (request.state.auth|default({})).get('access_expires_at', 0) }}
         });
     }
 </script>

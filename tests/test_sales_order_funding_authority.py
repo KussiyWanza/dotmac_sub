@@ -1,9 +1,9 @@
 """An operator cannot manufacture funding on a sales order.
 
-``sales_order.funding_satisfied`` is the event that creates subscriptions and
-provisioning orders. It is staged on the pending/partial -> paid edge, so
+``sales_order.funding_satisfied`` is the event that records the funded finance
+gate. It is staged on the pending/partial -> paid edge, so
 anything that can write ``payment_status``, ``amount_paid`` or ``paid_at`` can
-create a service contract without money ever arriving.
+manufacture a funded commercial state without money ever arriving.
 
 The funding gate in ``app/services/sales_order_funding.py`` exists to stop
 exactly that, and a generic sales-order edit used to route around it: the admin
@@ -128,12 +128,11 @@ def test_operator_update_cannot_assert_coverage(db_session, forged):
     assert _funding_events(db_session, order_id) == []
 
 
-def test_forged_paid_update_creates_no_subscription_and_no_provisioning(db_session):
+def test_forged_paid_update_creates_no_funding_event(db_session):
     """The consequence, not just the field: no funding event is ever staged.
 
-    ``funding_satisfied`` is what the lifecycle projection consumes to create
-    the subscription and the provisioning order, so proving the event is absent
-    proves neither consequence can follow.
+    Proving ``funding_satisfied`` is absent proves the finance projection cannot
+    accept a fabricated paid state.
     """
     subscriber = _make_subscriber(db_session)
     order = _unfunded_order(db_session, subscriber)
@@ -183,6 +182,89 @@ def test_operator_create_cannot_open_an_already_paid_order(db_session):
     assert exc.value.status_code == 422
     assert "payment_status" in exc.value.detail
     db_session.rollback()
+
+
+def test_operator_create_cannot_assert_paid_lifecycle_status(db_session):
+    subscriber = _make_subscriber(db_session)
+
+    with pytest.raises(HTTPException) as exc:
+        sales_order_service.sales_orders.create(
+            db_session,
+            SalesOrderCreate(
+                subscriber_id=subscriber.id,
+                status=SalesOrderStatus.paid,
+                subtotal=Decimal("500.00"),
+                total=Decimal("500.00"),
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert "paid" in exc.value.detail
+
+
+def test_receipted_order_commercial_terms_are_immutable(db_session):
+    subscriber = _make_subscriber(db_session)
+    order = _unfunded_order(db_session, subscriber)
+    order.payment_status = SalesOrderPaymentStatus.partial.value
+    order.amount_paid = Decimal("250.00")
+    order.balance_due = Decimal("750.00")
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        sales_order_service.sales_orders.update(
+            db_session,
+            str(order.id),
+            SalesOrderUpdate(total=Decimal("1250.00")),
+        )
+
+    assert exc.value.status_code == 409
+    assert "immutable commercial document" in exc.value.detail
+
+
+def test_legacy_paid_label_cannot_be_edited_or_deleted_while_unsettled(db_session):
+    subscriber = _make_subscriber(db_session)
+    order = _unfunded_order(db_session, subscriber)
+    order.status = SalesOrderStatus.paid.value
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as update_exc:
+        sales_order_service.sales_orders.update(
+            db_session,
+            str(order.id),
+            SalesOrderUpdate(total=Decimal("1250.00")),
+        )
+    with pytest.raises(HTTPException) as delete_exc:
+        sales_order_service.sales_orders.delete(db_session, str(order.id))
+
+    assert update_exc.value.status_code == 409
+    assert delete_exc.value.status_code == 409
+    db_session.expire_all()
+    persisted = db_session.get(SalesOrder, order.id)
+    assert persisted.is_active is True
+    assert persisted.payment_status == SalesOrderPaymentStatus.pending.value
+
+
+@pytest.mark.parametrize(
+    "status",
+    [SalesOrderStatus.paid, SalesOrderStatus.fulfilled],
+)
+def test_operator_update_cannot_assert_evidence_controlled_status(db_session, status):
+    subscriber = _make_subscriber(db_session)
+    order = _unfunded_order(db_session, subscriber)
+
+    with pytest.raises(HTTPException) as exc:
+        sales_order_service.sales_orders.update(
+            db_session,
+            str(order.id),
+            SalesOrderUpdate(status=status),
+        )
+
+    assert exc.value.status_code == 422
+    assert status.value in exc.value.detail
+    db_session.expire_all()
+    persisted = db_session.get(SalesOrder, order.id)
+    assert persisted.status == SalesOrderStatus.confirmed.value
+    assert _funding_events(db_session, order.id) == []
 
 
 def test_a_default_pending_create_is_not_treated_as_an_assertion(db_session):

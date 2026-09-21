@@ -55,7 +55,7 @@ def test_inbox_definition_declares_its_capabilities():
         assert key in definition.filterable_keys
 
 
-def test_historical_search_and_all_view_use_lazy_pagination_counts(
+def test_search_and_history_view_use_lazy_pagination_counts(
     db_session,
     monkeypatch,
 ):
@@ -73,8 +73,9 @@ def test_historical_search_and_all_view_use_lazy_pagination_counts(
     monkeypatch.setattr(team_inbox_read, "list_conversations", capture_count_mode)
     requests = (
         team_inbox_projection.InboxQueueRequest(search="router"),
-        team_inbox_projection.InboxQueueRequest(view="all"),
+        team_inbox_projection.InboxQueueRequest(view="history"),
         team_inbox_projection.InboxQueueRequest(status="resolved"),
+        team_inbox_projection.InboxQueueRequest(view="all"),
         team_inbox_projection.InboxQueueRequest(status="open"),
         team_inbox_projection.InboxQueueRequest(),
     )
@@ -88,7 +89,7 @@ def test_historical_search_and_all_view_use_lazy_pagination_counts(
             ),
         )
 
-    assert exact_count_requests == [False, False, False, True, True]
+    assert exact_count_requests == [False, False, False, True, True, True]
 
 
 def test_projection_default_order_is_newest_activity_first(db_session):
@@ -124,7 +125,7 @@ def test_order_by_last_message_at_ignores_priority(db_session):
     assert [row.id for row in result.items] == [str(a.id), str(b.id)]
 
 
-def test_default_queue_is_active_while_all_view_includes_resolved(db_session):
+def test_default_and_all_are_actionable_while_history_includes_resolved(db_session):
     now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
     open_conversation = _conv(
         db_session, priority=1, last_message_at=now, thread="open"
@@ -151,6 +152,9 @@ def test_default_queue_is_active_while_all_view_includes_resolved(db_session):
     all_queue = team_inbox_projection.build_queue_projection(
         db_session, team_inbox_projection.InboxQueueRequest(view="all")
     )
+    history_queue = team_inbox_projection.build_queue_projection(
+        db_session, team_inbox_projection.InboxQueueRequest(view="history")
+    )
     active_queue = team_inbox_projection.build_queue_projection(
         db_session,
         team_inbox_projection.InboxQueueRequest(open_only=True),
@@ -158,7 +162,8 @@ def test_default_queue_is_active_while_all_view_includes_resolved(db_session):
     done_queue = team_inbox_projection.build_queue_projection(
         db_session,
         team_inbox_projection.InboxQueueRequest(
-            status=InboxConversationStatus.resolved.value
+            view="history",
+            status=InboxConversationStatus.resolved.value,
         ),
     )
     open_queue = team_inbox_projection.build_queue_projection(
@@ -179,6 +184,10 @@ def test_default_queue_is_active_while_all_view_includes_resolved(db_session):
         str(pending_conversation.id),
     }
     assert {row.id for row in all_queue.rows} == {
+        str(open_conversation.id),
+        str(pending_conversation.id),
+    }
+    assert {row.id for row in history_queue.rows} == {
         str(open_conversation.id),
         str(pending_conversation.id),
         str(resolved_conversation.id),
@@ -211,7 +220,7 @@ def test_explicit_open_only_still_excludes_resolved_history(db_session):
     assert [row.id for row in result.rows] == [str(active.id)]
 
 
-def test_search_spans_resolved_history_unless_lifecycle_scope_is_explicit(
+def test_search_stays_actionable_unless_history_scope_is_explicit(
     db_session,
 ):
     now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
@@ -226,6 +235,13 @@ def test_search_spans_resolved_history_unless_lifecycle_scope_is_explicit(
 
     history_search = team_inbox_projection.build_queue_projection(
         db_session,
+        team_inbox_projection.InboxQueueRequest(
+            search="historic-router",
+            view="history",
+        ),
+    )
+    default_search = team_inbox_projection.build_queue_projection(
+        db_session,
         team_inbox_projection.InboxQueueRequest(search="historic-router"),
     )
     active_search = team_inbox_projection.build_queue_projection(
@@ -239,6 +255,7 @@ def test_search_spans_resolved_history_unless_lifecycle_scope_is_explicit(
         db_session,
         team_inbox_projection.InboxQueueRequest(
             search="historic-router",
+            view="history",
             status=InboxConversationStatus.resolved.value,
         ),
     )
@@ -249,13 +266,13 @@ def test_search_spans_resolved_history_unless_lifecycle_scope_is_explicit(
     )
 
     assert [row.id for row in history_search.rows] == [str(resolved.id)]
+    assert default_search.rows == ()
     assert active_search.rows == ()
     assert [row.id for row in resolved_search.rows] == [str(resolved.id)]
-    assert realtime_row.row is not None
-    assert realtime_row.row.id == str(resolved.id)
+    assert realtime_row.row is None
 
 
-def test_all_email_and_team_filters_compose_over_active_and_resolved_rows(
+def test_history_email_and_team_filters_compose_over_active_and_resolved_rows(
     db_session,
 ):
     now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
@@ -295,7 +312,7 @@ def test_all_email_and_team_filters_compose_over_active_and_resolved_rows(
     result = team_inbox_projection.build_queue_projection(
         db_session,
         team_inbox_projection.InboxQueueRequest(
-            view="all",
+            view="history",
             channel_type="email",
             service_team_ids=(str(team.id),),
         ),
@@ -307,7 +324,7 @@ def test_all_email_and_team_filters_compose_over_active_and_resolved_rows(
     ]
 
 
-def test_resolved_realtime_row_remains_under_all_and_leaves_active(db_session):
+def test_resolved_realtime_row_remains_under_history_and_leaves_actionable(db_session):
     now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
     resolved = _conv(
         db_session,
@@ -318,6 +335,11 @@ def test_resolved_realtime_row_remains_under_all_and_leaves_active(db_session):
     )
     db_session.commit()
 
+    history_row = team_inbox_projection.get_queue_row_projection(
+        db_session,
+        conversation_id=resolved.id,
+        request=team_inbox_projection.InboxQueueRequest(view="history"),
+    )
     all_row = team_inbox_projection.get_queue_row_projection(
         db_session,
         conversation_id=resolved.id,
@@ -334,8 +356,9 @@ def test_resolved_realtime_row_remains_under_all_and_leaves_active(db_session):
         request=team_inbox_projection.InboxQueueRequest(open_only=True),
     )
 
-    assert all_row.row is not None
-    assert all_row.row.id == str(resolved.id)
+    assert history_row.row is not None
+    assert history_row.row.id == str(resolved.id)
+    assert all_row.row is None
     assert default_row.row is None
     assert active_row.row is None
 

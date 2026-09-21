@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 from urllib.parse import urlparse
@@ -39,6 +40,52 @@ from app.services.integrations.runtime_execution import (
 from app.validators.forms import parse_uuid
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationOperationalEvidence:
+    """Bounded runtime facts for one installed integration."""
+
+    last_result: str
+    observed_at: datetime | None
+    calls: int
+    failed: int
+    last_run_status: str | None
+    needs_attention: bool
+
+    def to_template_data(self) -> dict[str, object]:
+        """Serialize at the web-template adapter boundary."""
+        return {
+            "last_result": self.last_result,
+            "observed_at": self.observed_at,
+            "calls": self.calls,
+            "failed": self.failed,
+            "last_run_status": self.last_run_status,
+            "needs_attention": self.needs_attention,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class InstalledIntegrationProjection:
+    """Typed installation state plus separately sourced runtime evidence."""
+
+    installation: IntegrationInstallation
+    title: str
+    root: str
+    integration_type: str
+    operational_evidence: IntegrationOperationalEvidence
+    manage_url: str
+
+    def to_template_data(self) -> dict[str, object]:
+        """Serialize at the web-template adapter boundary."""
+        return {
+            "installation": self.installation,
+            "title": self.title,
+            "root": self.root,
+            "integration_type": self.integration_type,
+            "operational_evidence": self.operational_evidence.to_template_data(),
+            "manage_url": self.manage_url,
+        }
 
 
 def _parse_json(value: str | None, field: str) -> dict | None:
@@ -431,7 +478,7 @@ def _delivery_stats_by_installation(
 def _installation_evidence(
     last_run: tuple[str, datetime | None] | None,
     delivery_stats: tuple[int, int] | None,
-) -> dict[str, object]:
+) -> IntegrationOperationalEvidence:
     """Explain runtime evidence without collapsing it into a health label."""
     calls, failed = delivery_stats or (0, 0)
     last_status = last_run[0] if last_run else None
@@ -443,23 +490,20 @@ def _installation_evidence(
         result = f"{calls} delivery attempt(s) recorded; {failed} require attention."
     else:
         result = "No completed job or delivery evidence has been recorded."
-    return {
-        "last_result": result,
-        "observed_at": last_run[1] if last_run else None,
-        "calls": calls,
-        "failed": failed,
-        "last_run_status": last_status,
-        "needs_attention": bool(last_status == "failed" or failed),
-    }
+    return IntegrationOperationalEvidence(
+        last_result=result,
+        observed_at=last_run[1] if last_run else None,
+        calls=calls,
+        failed=failed,
+        last_run_status=last_status,
+        needs_attention=bool(last_status == "failed" or failed),
+    )
 
 
-def build_installed_integrations_data(db: Session) -> dict[str, object]:
-    paystack_operational_check = operational_checks_service.paystack_payment_check(
-        db
-    ).to_dict()
-    crm_operational_check = operational_checks_service.crm_operational_check(
-        db
-    ).to_dict()
+def installed_integration_projections(
+    db: Session,
+) -> tuple[InstalledIntegrationProjection, ...]:
+    """Return the typed installation/evidence projection for UI consumers."""
     installed = (
         db.query(IntegrationInstallation)
         .filter(
@@ -472,30 +516,43 @@ def build_installed_integrations_data(db: Session) -> dict[str, object]:
         .all()
     )
     installation_ids = [installation.id for installation in installed]
-    installation_names = {
-        str(installation.id): installation.name for installation in installed
-    }
     last_runs = _latest_run_by_installation(db, installation_ids)
     delivery_stats = _delivery_stats_by_installation(db, installation_ids)
-    rows: list[dict[str, object]] = []
+    projections: list[InstalledIntegrationProjection] = []
     for installation in installed:
         definition = integration_registry.require_connector_definition(
             installation.connector_key
         )
-        evidence = _installation_evidence(
-            last_runs.get(str(installation.id)),
-            delivery_stats.get(str(installation.id)),
+        projections.append(
+            InstalledIntegrationProjection(
+                installation=installation,
+                title=definition.name,
+                root="integrations",
+                integration_type=definition.connector_type,
+                operational_evidence=_installation_evidence(
+                    last_runs.get(str(installation.id)),
+                    delivery_stats.get(str(installation.id)),
+                ),
+                manage_url=_installation_manage_url(installation),
+            )
         )
-        rows.append(
-            {
-                "installation": installation,
-                "title": definition.name,
-                "root": "integrations",
-                "integration_type": definition.connector_type,
-                "operational_evidence": evidence,
-                "manage_url": _installation_manage_url(installation),
-            }
-        )
+    return tuple(projections)
+
+
+def build_installed_integrations_data(db: Session) -> dict[str, object]:
+    paystack_operational_check = operational_checks_service.paystack_payment_check(
+        db
+    ).to_dict()
+    crm_operational_check = operational_checks_service.crm_operational_check(
+        db
+    ).to_dict()
+    projections = installed_integration_projections(db)
+    installed = [projection.installation for projection in projections]
+    installation_ids = [installation.id for installation in installed]
+    installation_names = {
+        str(installation.id): installation.name for installation in installed
+    }
+    rows = [projection.to_template_data() for projection in projections]
 
     activities: list[dict[str, object]] = []
     if installation_ids:

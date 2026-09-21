@@ -105,6 +105,13 @@ def test_ticket_sla_report_summary_aggregates_breakdowns(db_session):
     assert by_team[str(team.id)]["total"] == 2
     assert by_team[str(team.id)]["breached"] == 1
     assert by_team[str(team.id)]["label"] == "SLA Team"
+    by_region = {item["key"]: item for item in summary["by_region"]}
+    assert by_region["unassigned_region"]["total"] == 2
+    assert by_region["unassigned_region"]["breached"] == 1
+    assert by_region["unassigned_region"]["breach_rate"] == 0.5
+    assert summary["total_tickets"] == 2
+    assert summary["total_breached_tickets"] == 1
+    assert summary["ticket_breach_rate"] == 0.5
     by_assignee = {item["key"]: item for item in summary["by_assignee"]}
     assert by_assignee[str(assignee.id)]["total"] == 2
     assert by_assignee[str(assignee.id)]["breached"] == 1

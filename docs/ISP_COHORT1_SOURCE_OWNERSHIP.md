@@ -175,11 +175,11 @@ already-baselined files looks like an ordinary shrink-and-grow pair.
 
 | Family | Files | Write sites |
 |---|---|---|
-| `service` | 18 | 64 |
+| `service` | 19 | 86 |
 | `web_presenter` | 5 | 13 |
 | `cli_script` | 6 | 14 |
 | `migration` | 6 | 8 |
-| **total** | **35** | **99** |
+| **total** | **36** | **121** |
 
 `api_route`, `webhook_handler`, `web_route`, `task_worker`, `scheduled_job`,
 `event_handler`, `websocket`, `importer`, `poller`, `app_module` and
@@ -209,7 +209,7 @@ inventory now answers them separately.
 |---|---|
 | `PARALLEL_WRITER` | 18 |
 | `NO_AUTHORITY` | 13 |
-| `DECLARED_OWNER` | 7 |
+| `DECLARED_OWNER` | 8 |
 | `SCHEMA_LINEAGE` | 6 |
 | `PROJECTION_WRITER` | 2 |
 | `UNDETERMINED` | 0 |
@@ -218,7 +218,7 @@ inventory now answers them separately.
 
 | `BoundaryRole` | Files |
 |---|---|
-| `PERSISTS` | 35 |
+| `PERSISTS` | 36 |
 | `DELEGATES` | 8 |
 | `READS` | 2 |
 | `TRANSPORTS` | 1 |
@@ -229,7 +229,7 @@ inventory now answers them separately.
 
 | `Reachability` | Files |
 |---|---|
-| `INTERNAL_ONLY` | 22 |
+| `INTERNAL_ONLY` | 23 |
 | `ONLINE_REQUEST` | 9 |
 | `APPLIED_ONCE` | 6 |
 | `OPERATOR_COMMAND` | 4 |
@@ -245,7 +245,7 @@ authorities; `NO_AUTHORITY` appears with five different boundary roles;
 `INTERNAL_ONLY` appears with four different authorities. If that ever
 collapses, the axes should be merged rather than kept apart for appearances.
 
-Of the 35 writing surfaces, **27 can write production again**. The other eight
+Of the 36 writing surfaces, **28 can write production again**. The other eight
 cannot: two touch only disposable databases and six are applied migrations
 Alembic will not re-run. All eight stay in the ratchet, because a *new* one is
 exactly what the guard should catch; none counts as something a cutover has to
@@ -261,7 +261,7 @@ it meant — and there is no second place to edit, so the two cannot disagree.
 |---|---|
 | `LEGACY_PARALLEL_WRITER` | 26 |
 | `AUTHORIZED_ADAPTER` | 8 |
-| `AUTHORITATIVE_WRITER` | 7 |
+| `AUTHORITATIVE_WRITER` | 8 |
 | `DERIVED_PROJECTION` | 2 |
 | `READ_ONLY_CONSUMER` | 2 |
 | `TRANSPORT` | 1 |
@@ -288,7 +288,7 @@ in another application.
 | `Disposition` | Files | Meaning |
 |---|---|---|
 | `ROUTE_THROUGH_OWNER_FIRST` | 14 | Must stop bypassing its declared owner *before* the cohort can be shadowed |
-| `RETIRE_AFTER_CUTOVER` | 13 | Displaced by the target; must reach zero for `ctl-isp-009` |
+| `RETIRE_AFTER_CUTOVER` | 14 | Displaced by the target; must reach zero for `ctl-isp-009` |
 | `REPOINT_TO_TARGET_API` | 11 | Reads or forwards a cohort fact; after the switch it must reach the target through a versioned contract |
 | `HISTORICAL_NO_ACTION` | 6 | An applied migration; nothing to retire |
 | `NON_PRODUCTION_NO_ACTION` | 2 | Writes only disposable databases |
@@ -301,8 +301,8 @@ meaning "nothing happens" would be the one anybody reached for to avoid
 deciding.
 
 **Every counted writer has an individual disposition; the readers take a
-declared default.** 386 files reference cohort state and 46 are inventoried
-here. Assigning an individual disposition to the other 342 would be fabrication
+declared default.** 401 files reference cohort state and 47 are inventoried
+here. Assigning an individual disposition to the other 356 would be fabrication
 at scale — the reference census is a bounded reach, not an impact analysis, and
 many of those files only mention a model in a type hint.
 
@@ -350,7 +350,8 @@ account rows belong to cohort 1.
 
 | Path | Owner | Writes |
 |---|---|---|
-| `app/services/party.py` | `party.registry` | 19 |
+| `app/services/party.py` | `party.registry` | 21 |
+| `app/services/customer_canonical_profile_patch.py` | `customer.canonical_profile_patch` | 20 |
 | `app/services/subscriber.py` | `customer.accounts` | 14 |
 | `app/services/gis_sync.py` | `gis.spatial_sync` | 3 |
 | `app/services/web_customer_actions.py` | `customer.profile_commands` | 7 |
@@ -382,7 +383,7 @@ Twenty-six files write a cohort fact some other owner is declared to own.
 **Eighteen of them can do it again**, and that eighteen is the set `ctl-isp-009`
 must ratchet to zero; the remaining eight are listed for completeness and
 marked non-production. Fourteen now carry `ROUTE_THROUGH_OWNER_FIRST` and
-thirteen `RETIRE_AFTER_CUTOVER`, following the 2026-08-21 decisions.
+fourteen `RETIRE_AFTER_CUTOVER`, following the 2026-08-21 decisions.
 
 | Path | Bypasses | Entity |
 |---|---|---|
@@ -451,19 +452,19 @@ which is what `db.commit()` in a route means here.
 ## Reader reach and downstream consequences
 
 Writers are the set a cutover has to displace. Readers are the set it has to
-not surprise, and they are an order of magnitude larger: **386 files** name a
+not surprise, and they are an order of magnitude larger: **401 files** name a
 cohort-1 model or table somewhere in their body — measured by
-`scripts/architecture/isp_cohort_writers.py --json`, on the commit that
-introduced this document.
+`python -m scripts.architecture.isp_cohort_writers` on this consolidation
+commit.
 
 | Family | Files referencing cohort state |
 |---|---|
-| `service` | 213 |
+| `service` | 222 |
 | `web_presenter` | 48 |
-| `migration` | 45 |
-| `cli_script` | 43 |
-| `app_module` | 20 |
-| `web_route` | 9 |
+| `migration` | 46 |
+| `cli_script` | 46 |
+| `app_module` | 21 |
+| `web_route` | 10 |
 | `event_handler` | 3 |
 | `api_route` | 3 |
 | `task_worker` | 2 |

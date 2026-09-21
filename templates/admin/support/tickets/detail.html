@@ -1,6 +1,7 @@
 {% extends "layouts/admin.html" %}
 {% from "components/ui/macros.html" import ambient_background, action_button, detail_header, icon_ticket, icon_edit, icon_warning, icon_clock, icon_filter, icon_link %}
 {% from "admin/support/tickets/_components.html" import support_card, ticket_status_badge, ticket_priority_badge, attachment_chip %}
+{% from "components/field_notes.html" import field_note_list %}
 {% block title %}Ticket {{ ticket.number or ticket.id }}{% endblock %}
 
 {% block content %}
@@ -139,6 +140,12 @@
             <p class="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-slate-600 dark:bg-slate-700/30 dark:text-slate-300">{{ issue_work_order_action.reason }}</p>
             {% endif %}
             {% endcall %}
+
+            {% if show_field_notes %}
+            {% call support_card(title='Field Notes (' ~ field_note_total ~ ')', subtitle='Delivered technician notes from work orders issued directly from this ticket.') %}
+            {{ field_note_list(field_notes, total=field_note_total, show_work_order=true, empty_message='No delivered field notes have been recorded for this ticket.') }}
+            {% endcall %}
+            {% endif %}
 
             {% if can(request, 'operations:material_request:read') %}
             {% include "admin/material_requests/_context_panel.html" %}

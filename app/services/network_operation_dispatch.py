@@ -72,6 +72,7 @@ class NetworkOperationCommand(StrEnum):
     olt_firmware_upgrade_v1 = "olt_firmware_upgrade.v1"
     ont_desired_reconcile_v1 = "ont_desired_reconcile.v1"
     ont_service_config_apply_v1 = "ont_service_config_apply.v1"
+    ont_service_config_verify_v1 = "ont_service_config_verify.v1"
     cpe_tr069_command_v1 = "cpe_tr069_command.v1"
 
 
@@ -401,6 +402,38 @@ def _ont_service_config_invocation(
     )
 
 
+def _ont_service_config_verify_invocation(
+    operation: NetworkOperation,
+    _dispatch_key: str,
+) -> DispatchInvocation:
+    """Build the readback-only verification invocation.
+
+    Deliberately forwards no attempt-count or repair-mode payload field at
+    all: nothing in the dispatched command can select a write path. The
+    worker task fixes its own readback flag unconditionally, independent of
+    anything staged here.
+    """
+    ont_id = _payload_matches_target(operation, "ont_id")
+    head_id = _required_payload_id(operation, "configuration_head_id")
+    revision = (operation.input_payload or {}).get("configuration_revision")
+    try:
+        parsed_revision = int(str(revision))
+    except (TypeError, ValueError) as exc:
+        raise NetworkOperationDispatchError(
+            "invalid_operation_payload",
+            "ONT service configuration verification payload has an invalid revision.",
+        ) from exc
+    if parsed_revision < 1:
+        raise NetworkOperationDispatchError(
+            "invalid_operation_payload",
+            "ONT service configuration verification revision must be positive.",
+        )
+    return DispatchInvocation(
+        args=[ont_id, str(operation.id), head_id, parsed_revision],
+        kwargs={},
+    )
+
+
 def _cpe_tr069_invocation(
     operation: NetworkOperation,
     _dispatch_key: str,
@@ -502,6 +535,12 @@ _COMMAND_SPECS: dict[NetworkOperationCommand, _CommandSpec] = {
         operation_type=NetworkOperationType.ont_service_config,
         target_types=frozenset({NetworkOperationTargetType.ont}),
         invocation=_ont_service_config_invocation,
+    ),
+    NetworkOperationCommand.ont_service_config_verify_v1: _CommandSpec(
+        task_name="app.tasks.ont_service_configuration.verify_readback",
+        operation_type=NetworkOperationType.ont_service_config,
+        target_types=frozenset({NetworkOperationTargetType.ont}),
+        invocation=_ont_service_config_verify_invocation,
     ),
     NetworkOperationCommand.cpe_tr069_command_v1: _CommandSpec(
         task_name="app.tasks.tr069.execute_network_operation_job",

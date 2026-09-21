@@ -15,10 +15,11 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.ext.mutable import MutableDict
+from sqlalchemy.ext.mutable import MutableDict, MutableList
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -44,6 +45,13 @@ class InboxConversationStatus(enum.Enum):
     pending = "pending"
     snoozed = "snoozed"
     resolved = "resolved"
+
+
+class InboxCompletionOverrideGrantState(enum.Enum):
+    pending = "pending"
+    consumed = "consumed"
+    superseded = "superseded"
+    expired = "expired"
 
 
 class InboxMessageDirection(enum.Enum):
@@ -298,10 +306,45 @@ class InboxAutomationRule(Base):
     )
 
 
+class InboxCustomerCompletionPolicyVersion(Base):
+    """Immutable Customer-only resolution-completion policy snapshot source."""
+
+    __tablename__ = "inbox_customer_completion_policy_versions"
+    __table_args__ = (
+        UniqueConstraint("version", name="uq_inbox_customer_completion_policy_version"),
+        CheckConstraint(
+            "version > 0", name="ck_inbox_customer_completion_policy_version_positive"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    required_fields: Mapped[list[str]] = mapped_column(
+        MutableList.as_mutable(JSON()), nullable=False
+    )
+    created_by_person_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    decision_source: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+
+@event.listens_for(InboxCustomerCompletionPolicyVersion, "before_update")
+@event.listens_for(InboxCustomerCompletionPolicyVersion, "before_delete")
+def _deny_customer_completion_policy_mutation(*_args: object) -> None:
+    raise ValueError("Inbox Customer completion policy versions are immutable")
+
+
 class InboxConversation(Base):
     __tablename__ = "inbox_conversations"
     __table_args__ = (
         Index("ix_inbox_conversations_subscriber", "subscriber_id"),
+        Index(
+            "ix_inbox_conversations_customer_completion_policy",
+            "customer_completion_policy_version_id",
+        ),
         Index(
             "ix_inbox_conversations_continued_from",
             "continued_from_conversation_id",
@@ -330,6 +373,17 @@ class InboxConversation(Base):
     )
     subscriber_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("subscribers.id")
+    )
+    customer_completion_policy_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("inbox_customer_completion_policy_versions.id", ondelete="RESTRICT"),
+    )
+    # Written EXACTLY ONCE, by alembic/versions/602_inbox_completion_legacy_override.py's
+    # upgrade(), stamped with a single captured now() reused for every backfilled row.
+    # No application code may ever assign this column outside that migration --
+    # enforced by tests/architecture/test_inbox_completion_override_boundary.py.
+    completion_gate_precutover_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
     )
     primary_service_team_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("service_teams.id")
@@ -382,6 +436,126 @@ class InboxConversation(Base):
         back_populates="conversation",
         cascade="all, delete-orphan",
     )
+
+
+class InboxCustomerCompletionCutover(Base):
+    """One frozen census/cutover record per legacy-marker backfill run.
+
+    Written exactly once, in the same migration transaction that stamps
+    ``InboxConversation.completion_gate_precutover_at`` -- see
+    ``alembic/versions/602_inbox_completion_legacy_override.py``.
+    """
+
+    __tablename__ = "inbox_customer_completion_cutovers"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    policy_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("inbox_customer_completion_policy_versions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    cutover_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    marked_conversation_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    marked_subscriber_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class InboxCompletionOverrideGrant(Base):
+    """A narrowly-scoped, audited, single-use legacy completion-gate override.
+
+    Eligibility (``InboxConversation.completion_gate_precutover_at IS NOT
+    NULL``) is never authorization. A grant row is issued by
+    ``communications.team_inbox_completion_override`` only after an operator
+    reviews the exact live gap on one conversation, and it is burned at most
+    once, atomically, inside the same resolution transaction that consumes
+    it -- see ``app/services/team_inbox_completion_override.py``.
+    """
+
+    __tablename__ = "inbox_completion_override_grants"
+    __table_args__ = (
+        Index(
+            "uq_inbox_completion_override_grants_pending",
+            "conversation_id",
+            unique=True,
+            sqlite_where=text("state = 'pending'"),
+            postgresql_where=text("state = 'pending'"),
+        ),
+        UniqueConstraint(
+            "conversation_id",
+            "grant_idempotency_key",
+            name="uq_inbox_completion_override_grants_idempotency",
+        ),
+        CheckConstraint(
+            "(state = 'consumed') = (consumed_at IS NOT NULL)",
+            name="ck_inbox_completion_override_grants_consumed_at",
+        ),
+        CheckConstraint(
+            "(consumed_at IS NULL) = (consumed_transition_event_id IS NULL)",
+            name="ck_inbox_completion_override_grants_consumed_event",
+        ),
+        CheckConstraint(
+            "expires_at > granted_at",
+            name="ck_inbox_completion_override_grants_expiry_after_grant",
+        ),
+        Index(
+            "ix_inbox_completion_override_grants_conversation",
+            "conversation_id",
+            "granted_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("inbox_conversations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscriber_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    policy_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("inbox_customer_completion_policy_versions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    missing_fields: Mapped[list[str]] = mapped_column(JSON(), nullable=False)
+    canonical_values_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(80), nullable=False)
+    reason_text: Mapped[str] = mapped_column(Text, nullable=False)
+    granted_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    # The real staff principal whose granted `support:inbox:completion_override`
+    # role authorized this issuance. `granted_by` above stays a free-text
+    # audit label; this is the only identifier with actual RBAC meaning.
+    granted_by_system_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True)
+    )
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    grant_idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    grant_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    state: Mapped[str] = mapped_column(
+        String(20),
+        default=InboxCompletionOverrideGrantState.pending.value,
+        nullable=False,
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    consumed_by: Mapped[str | None] = mapped_column(String(255))
+    consumed_transition_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("inbox_status_transition_events.id", ondelete="RESTRICT"),
+    )
+    consumed_resolution_reason: Mapped[str | None] = mapped_column(String(80))
 
 
 class InboxConversationLeadLink(Base):
@@ -712,6 +886,7 @@ class InboxParticipantRelationship(enum.Enum):
 
     customer = "customer"
     contact = "contact"
+    representative = "representative"
     third_party = "third_party"
     unknown = "unknown"
 
@@ -1356,7 +1531,12 @@ class InboxConversationAssignment(Base):
 
 
 class InboxConversationQueueEntry(Base):
-    """Durable FIFO admission and settlement evidence for a conversation."""
+    """Durable FIFO admission and settlement evidence for a conversation.
+
+    ``queue_position`` is the persisted admission sequence retained for schema
+    compatibility.  Customer-visible position is a live rank derived from the
+    active rows in this team and is never read from that column directly.
+    """
 
     __tablename__ = "inbox_conversation_queue_entries"
     __table_args__ = (
@@ -1365,10 +1545,21 @@ class InboxConversationQueueEntry(Base):
             "service_team_id", "queue_position", name="uq_inbox_queue_team_position"
         ),
         CheckConstraint("queue_position > 0", name="ck_inbox_queue_position_positive"),
+        CheckConstraint(
+            "admission_generation > 0",
+            name="ck_inbox_queue_admission_generation_positive",
+        ),
         Index(
             "ix_inbox_queue_team_status_position",
             "service_team_id",
             "status",
+            "queue_position",
+        ),
+        Index(
+            "ix_inbox_queue_team_fifo",
+            "service_team_id",
+            "status",
+            "entered_at",
             "queue_position",
         ),
     )
@@ -1385,6 +1576,9 @@ class InboxConversationQueueEntry(Base):
         UUID(as_uuid=True), ForeignKey("service_teams.id"), nullable=False
     )
     queue_position: Mapped[int] = mapped_column(Integer, nullable=False)
+    admission_generation: Mapped[int] = mapped_column(
+        Integer, default=1, nullable=False
+    )
     status: Mapped[str] = mapped_column(
         String(24), default=InboxQueueEntryStatus.queued.value, nullable=False
     )
@@ -1392,6 +1586,11 @@ class InboxConversationQueueEntry(Base):
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_notified_position: Mapped[int | None] = mapped_column(Integer)
+    last_position_notified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     metadata_: Mapped[dict | None] = mapped_column(
         "metadata", MutableDict.as_mutable(JSON())
     )
@@ -1407,6 +1606,16 @@ class InboxConversationQueueEntry(Base):
 
     conversation = relationship("InboxConversation")
     service_team = relationship("ServiceTeam")
+
+    @property
+    def admission_sequence(self) -> int:
+        """Explicit domain name for the legacy ``queue_position`` column."""
+
+        return self.queue_position
+
+    @admission_sequence.setter
+    def admission_sequence(self, value: int) -> None:
+        self.queue_position = value
 
 
 class InboxTeamRoundRobinCursor(Base):
@@ -1450,6 +1659,10 @@ class InboxQueueNotification(Base):
     __tablename__ = "inbox_queue_notifications"
     __table_args__ = (
         UniqueConstraint("dedupe_key", name="uq_inbox_queue_notification_dedupe"),
+        CheckConstraint(
+            "admission_generation > 0",
+            name="ck_inbox_queue_notification_generation_positive",
+        ),
         Index("ix_inbox_queue_notifications_entry", "queue_entry_id", "sent_at"),
         Index("ix_inbox_queue_notifications_due", "status", "next_due_at"),
     )
@@ -1468,12 +1681,16 @@ class InboxQueueNotification(Base):
         nullable=False,
     )
     notification_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    admission_generation: Mapped[int] = mapped_column(
+        Integer, default=1, nullable=False
+    )
     queue_position: Mapped[int | None] = mapped_column(Integer)
     outbound_message_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     status: Mapped[str] = mapped_column(String(40), nullable=False)
     dedupe_key: Mapped[str] = mapped_column(String(255), nullable=False)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     next_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    suppression_reason: Mapped[str | None] = mapped_column(String(80))
     metadata_: Mapped[dict | None] = mapped_column(
         "metadata", MutableDict.as_mutable(JSON())
     )

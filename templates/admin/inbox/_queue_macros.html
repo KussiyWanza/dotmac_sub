@@ -78,12 +78,13 @@
          data-conversation-id="{{ row.id }}"
          data-conversation-unread="{{ 'true' if row.is_unread else 'false' }}">
     <div class="flex items-start gap-3 px-4 py-3.5">
-        <label class="flex h-11 w-4 shrink-0 cursor-pointer items-center justify-center" @click.stop>
+        <label class="flex h-11 w-4 shrink-0 items-center justify-center {% if row.ai_owned %}cursor-not-allowed opacity-40{% else %}cursor-pointer{% endif %}" @click.stop>
             <span class="sr-only">Select conversation with {{ contact_name }}</span>
             <input type="checkbox"
                    name="conversation_ids"
                    value="{{ row.id }}"
                    form="inbox-bulk-form"
+                   {% if row.ai_owned %}disabled title="Take over the conversation before using bulk actions"{% endif %}
                    @change="toggleSelection('{{ row.id }}', $event.target.checked)"
                    class="h-4 w-4 rounded border-slate-300 text-amber-600 focus:ring-amber-500">
         </label>
@@ -105,7 +106,7 @@
         </button>
 
         <a href="{{ conversation_url }}"
-           hx-get="/admin/inbox/{{ row.id }}?view=20260827a"
+           hx-get="/admin/inbox/{{ row.id }}?view=20260910b"
            hx-target="#triage-detail"
            hx-swap="innerHTML"
            hx-push-url="{{ conversation_url }}"
@@ -125,6 +126,9 @@
                 {% if row.latest_message_direction == "outbound" %}<span class="text-slate-400 dark:text-slate-500">You: </span>{% endif %}{{ row.latest_message_body or "No message preview" }}
             </p>
             <div class="mt-2 flex min-w-0 flex-wrap items-center gap-1">
+                {% if row.ai_owned %}
+                <span class="rounded-md border border-indigo-200 bg-indigo-50 px-1.5 py-0.5 text-[9px] font-semibold text-indigo-700 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-300">{{ 'Waiting on customer' if row.waiting_for_customer else 'AI handling' }}</span>
+                {% endif %}
                 {% if row.status == "open" %}
                 <span class="rounded-md border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300">Open</span>
                 {% elif row.status == "pending" %}
@@ -142,8 +146,8 @@
                 {% if row.has_ticket %}
                 <span class="rounded-md border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[9px] font-semibold text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300">Sent to ticket</span>
                 {% endif %}
-                {% if row.queue_position %}
-                <span class="rounded-md border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[9px] font-semibold text-violet-700 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-300" title="Queued {{ inbox_ts(row.queued_at) }}">Queue #{{ row.queue_position }}{% if row.estimated_wait_minutes is not none %} · ~{{ row.estimated_wait_minutes }}m{% endif %}</span>
+                {% if row.current_visible_position %}
+                <span class="rounded-md border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[9px] font-semibold text-violet-700 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-300" title="Current visible position; queued {{ inbox_ts(row.queued_at) }}">Position {{ row.current_visible_position }}{% if row.estimated_wait_minutes is not none %} · ~{{ row.estimated_wait_minutes }}m{% endif %}</span>
                 {% endif %}
                 {% if assignee.name or row.primary_service_team_name %}
                 <span class="max-w-28 truncate rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-[9px] font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300" title="{{ assignee.name or row.primary_service_team_name }}">{{ assignee.name or row.primary_service_team_name }}</span>

@@ -144,6 +144,7 @@ def _write_production_authorization(
         image_digest=digest,
         product_manifest_digest=ProductManifestDigest("sha256:" + "b" * 64),
         build_run_id=WorkflowRunId(101),
+        evidence_run_id=WorkflowRunId(101),
         source_ci_conclusion=EvidenceConclusion.SUCCESS,
     )
     write_production_authorization(

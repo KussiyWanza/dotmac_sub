@@ -143,13 +143,19 @@ class Tr181WanParameterPaths:
 
 @dataclass(frozen=True)
 class Tr069WifiParameterPaths:
-    """Resolved model-specific CWMP paths for the managed WiFi instance."""
+    """Resolved model-specific CWMP paths for the managed WiFi instance.
+
+    When ``additional_psk_paths`` is non-empty, ``psk_path`` and every
+    additional entry are fixed capability-pack targets and are not retargeted
+    to whichever readable WLAN instance the ACS reader selected.
+    """
 
     enabled: str
     ssid: str
     psk_path: str
     channel: str
     security_mode: str
+    additional_psk_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -187,7 +193,14 @@ class OntDesiredState:
     # OLT binding
     olt_id: str
     fsp: str
-    olt_ont_id: int
+    # ``None`` means "unknown" — genuinely unresolved, e.g. an unparseable
+    # ``external_id``. ``0`` is a legitimate real Huawei ONT-ID, so it must
+    # never stand in for "unknown" (see ``adapters.desired_from_ont_unit`` and
+    # the OLT_IDENTITY_UNRESOLVED wait reason in ``planner.py``). A reader
+    # that finds this ONT's serial registered somewhere on the OLT but cannot
+    # confirm it sits at this exact ``fsp``/``olt_ont_id`` reports
+    # OLT_IDENTITY_MISMATCH instead of substituting the coordinates it found.
+    olt_ont_id: int | None
     line_profile_id: int
     service_profile_id: int
     description: str
@@ -307,9 +320,37 @@ class OltObservedFields:
     olt_mgmt_vlan: int | None
     olt_line_profile_id: int | None
     olt_service_profile_id: int | None
-    # Each service-port entry: {index, vlan, gem, state}. Tuple to keep frozen.
-    olt_service_ports: tuple[dict[str, Any], ...]
+    # Each service-port entry: {index, vlan_id, ont_id, gem_index, flow_type,
+    # flow_para, state, fsp, tag_transform}. Tuple to keep frozen.
+    #
+    # ``None`` is distinct from ``()``: ``None`` means the enumeration itself
+    # failed (SSH error/exception) and the OLT's real port set is UNKNOWN —
+    # never "confirmed zero". Conflating the two let a transient read failure
+    # look like "no ports observed", which planned a CREATE for an index that
+    # already had a port (and planned NO delete for anything, since an empty
+    # list also protects every stale port). ``()`` means the read succeeded
+    # and genuinely found none.
+    olt_service_ports: tuple[dict[str, Any], ...] | None
     olt_tr069_profile_id: int | None = None
+    # Whether this pass's reader could prove the observation it collected is
+    # really of the STORED (``desired.fsp``/``desired.olt_ont_id``) target:
+    #
+    # * ``"bound"``      — either no registration was found by serial (a
+    #   fresh, never-authorized ONT — nothing to mismatch), or one was found
+    #   and its fsp+onu_id match the stored target exactly. Every OLT field
+    #   above is a genuine observation of the ONT the desired state names.
+    # * ``"mismatch"``   — a registration WAS found by serial, but at a
+    #   different fsp/onu_id than the stored target. The reader refuses to
+    #   read/write against either the stored (unproven) or the found
+    #   (unrequested) coordinates; every OLT field above is a placeholder.
+    # * ``"unresolved"`` — the stored target itself is incomplete
+    #   (``olt_ont_id is None`` or ``fsp`` is empty), so there is nothing to
+    #   compare a found registration against.
+    #
+    # The planner never emits an OLT action while this is anything but
+    # ``"bound"`` — see ``ReconcileFailureReason.OLT_IDENTITY_MISMATCH`` /
+    # ``OLT_IDENTITY_UNRESOLVED``.
+    olt_identity_status: Literal["bound", "mismatch", "unresolved"] = "bound"
 
 
 @dataclass(frozen=True)
@@ -467,6 +508,16 @@ class ReconcileFailureReason:
     not device faults — the sweeper retries and they clear on their own once the
     CPE informs. Neither is ever "resolved" by inventing a device identifier.
 
+    ``SERVICE_PORT_INDEX_UNALLOCATED`` is the symmetric OLT-side precondition:
+    the planner withheld every ``OltDeleteServicePort`` action for this ONT
+    because neither the mgmt nor the WAN service-port index has been
+    allocated (both are ``None``) and every currently observed service port
+    would otherwise have been planned for deletion, with nothing left
+    standing and nothing to recreate them at. Other OLT/ACS actions in the
+    same plan may still have been applied — only the service-port deletes
+    were withheld. It clears once an owner allocates a real index for at
+    least one of the two slots.
+
     Apply-time failures (``OLT_WRITE_REJECTED``, ``ACS_WRITE_FAULTED``,
     ``ACS_CR_FAILED``, ``VERIFICATION_MISMATCH``) imply zero or more actions
     were applied before the failure; the ``ReconcileResult.actions_applied``
@@ -476,9 +527,25 @@ class ReconcileFailureReason:
     # Preflight / reachability — no writes attempted
     OLT_UNREACHABLE = "olt_unreachable"
     ACS_UNREACHABLE = "acs_unreachable"
+    # The OLT replied, but the reply could not be trusted as an observation
+    # (rejected command, parameter error, unparseable body). Distinct from
+    # ``OLT_UNREACHABLE`` (couldn't contact the device at all) only in the
+    # operator-facing message; both refuse before planning rather than
+    # substituting a confident "absent" for an unknown state.
+    OLT_OBSERVATION_UNAVAILABLE = "olt_observation_unavailable"
     ONT_OFFLINE = "ont_offline"
     ONT_NOT_INFORMING = "ont_not_informing"
     ACS_IDENTITY_UNRESOLVED = "acs_identity_unresolved"
+    # The desired state names no physical target at all (``olt_ont_id`` is
+    # ``None`` or ``fsp`` is empty) — there is nothing to authorize or modify
+    # until an owner supplies a real f/s/p + ONT-ID.
+    OLT_IDENTITY_UNRESOLVED = "olt_identity_unresolved"
+    # The OLT reports this ONT's serial registered at a DIFFERENT fsp/onu_id
+    # than the stored desired-state target. Writing against either the stored
+    # (unproven) or the found (unrequested) coordinates risks reconfiguring
+    # the wrong physical port — refuse both and surface it for repair.
+    OLT_IDENTITY_MISMATCH = "olt_identity_mismatch"
+    SERVICE_PORT_INDEX_UNALLOCATED = "service_port_index_unallocated"
     BLOCKED_OUT_OF_SYNC = "blocked_out_of_sync"
     INVALID_CHANGE = "invalid_change"
 

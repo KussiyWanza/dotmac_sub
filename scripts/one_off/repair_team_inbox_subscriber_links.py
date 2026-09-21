@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.db import SessionLocal
 from app.models.team_inbox import InboxConversation
 from app.services import team_inbox_channel_receive, team_inbox_contact_links
+from app.services.owner_commands import CommandContext
 
 FINAL_CONFIRMATION = "APPLY_TEAM_INBOX_SUBSCRIBER_LINK_REPAIR"
 
@@ -142,12 +143,26 @@ def apply_plan(
         db.rollback()
         result = team_inbox_contact_links.link_conversation_contact_by_id_committed(
             db,
-            conversation_id=item.conversation_id,
-            subscriber_id=item.subscriber_id,
-            linked_by_person_id=actor_person_id,
-            note=(
-                f"Approved historical Subscriber-link repair "
-                f"{approval_reference.strip()}: {reason.strip()}"
+            team_inbox_contact_links.LinkConversationContactCommand(
+                context=CommandContext.system(
+                    actor=f"person:{actor_person_id}",
+                    scope="team-inbox:reviewed-contact-repair",
+                    reason=reason.strip(),
+                    idempotency_key=(
+                        f"{plan.digest}:{item.conversation_id}:{item.subscriber_id}"
+                    ),
+                ),
+                conversation_id=item.conversation_id,
+                target=team_inbox_contact_links.ContactLinkTarget(
+                    team_inbox_contact_links.ContactLinkTargetType.subscriber,
+                    item.subscriber_id,
+                ),
+                actor_person_id=actor_person_id,
+                source=team_inbox_contact_links.ContactLinkSource.reviewed_repair,
+                note=(
+                    f"Approved historical Subscriber-link repair "
+                    f"{approval_reference.strip()}: {reason.strip()}"
+                ),
             ),
         )
         repaired.append(item.conversation_id)

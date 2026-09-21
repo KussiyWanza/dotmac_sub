@@ -101,6 +101,7 @@ _WRITE_TIER_VERBS = frozenset(
         "manage",
         "membership",
         "mirror",
+        "pay",
         "push_config",
         "redrive",
         "retire",
@@ -265,7 +266,26 @@ _READ_TIER_ARTEFACT_WRITES: dict[str, str] = {
     ),
 }
 
-_ALLOWLIST: dict[str, str] = {**_POST_SHAPED_READS, **_READ_TIER_ARTEFACT_WRITES}
+# ── Allowlist 3: explicitly governed read-authorized mutations ───────────────
+# These routes genuinely change state, but their reviewed product contract
+# deliberately grants the subordinate mutation to every principal authorized to
+# read the exact parent resource. Keep this category separate from POST-shaped
+# reads so the durable write is never misrepresented.
+_READ_AUTHORIZED_MUTATIONS: dict[str, str] = {
+    "POST /admin/dispatch/work-orders/{work_order_id}/expenses": (
+        "Creates a requester-owned claim bound to the exact work order. The "
+        "reviewed work-order expense contract grants this action to every staff "
+        "principal who can read that work order. The command owner rechecks exact "
+        "work-order authorization, current technician assignment, CSRF, category "
+        "rules, receipts, and idempotency before writing."
+    ),
+}
+
+_ALLOWLIST: dict[str, str] = {
+    **_POST_SHAPED_READS,
+    **_READ_TIER_ARTEFACT_WRITES,
+    **_READ_AUTHORIZED_MUTATIONS,
+}
 
 
 def _build_full_surface() -> FastAPI:
@@ -359,8 +379,9 @@ def test_every_mutating_route_requires_a_write_tier_permission():
         "These mutating routes are guarded only by read-tier permissions, so a "
         "principal holding nothing but a `:read` grant can change state through "
         "them. Move the route to the write-tier permission its own module "
-        "already uses, or — if the POST is genuinely a read — add it to "
-        "_POST_SHAPED_READS with the reason:\n  " + "\n  ".join(unexpected)
+        "already uses. A reviewed product contract that deliberately permits a "
+        "read-authorized mutation must be added to _READ_AUTHORIZED_MUTATIONS "
+        "with its safety reason:\n  " + "\n  ".join(unexpected)
     )
 
     # The other direction of the ratchet: an allowlisted route that is no longer

@@ -151,6 +151,11 @@ from app.services import billing as billing_service
 from app.services import billing_automation as billing_automation_service
 from app.services import customer_portal_flow_payments as customer_payments
 from app.services import manual_payment_recording as manual_payment_recording_service
+from app.services.application_exception_observability import (
+    PaymentVerificationChannel,
+    PaymentVerificationOutcome,
+    record_payment_verification_outcome,
+)
 from app.services.auth_dependencies import require_permission, require_user_auth
 from app.services.billing import adjustments as account_adjustment_service
 from app.services.customer_context import require_customer_account_id
@@ -2190,7 +2195,17 @@ def verify_payment(
             db, customer, payload.reference, provider=payload.provider
         )
     except ValueError as exc:
+        record_payment_verification_outcome(
+            channel=PaymentVerificationChannel.API,
+            outcome=PaymentVerificationOutcome.BUSINESS_REFUSAL,
+        )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        record_payment_verification_outcome(
+            channel=PaymentVerificationChannel.API,
+            outcome=PaymentVerificationOutcome.UNEXPECTED_FAILURE,
+        )
+        raise
 
     card_saved: bool | None = None
     card_save_message: str | None = None
@@ -2214,6 +2229,10 @@ def verify_payment(
     payment = result["payment"]
     invoice = result.get("invoice")
     raw_status = getattr(payment, "status", "succeeded")
+    record_payment_verification_outcome(
+        channel=PaymentVerificationChannel.API,
+        outcome=PaymentVerificationOutcome.SETTLED,
+    )
     return PaymentVerifyResponse(
         reference=payload.reference,
         payment_id=payment.id,

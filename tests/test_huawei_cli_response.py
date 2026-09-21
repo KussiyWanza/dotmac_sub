@@ -53,6 +53,27 @@ def test_classifies_known_huawei_responses(
     assert response.accepted is False
 
 
+@pytest.mark.parametrize(
+    "output",
+    [
+        "Failure: The IP interface does not exist",
+        "OLT rejected: Failure: The IP interface does not exist.",
+    ],
+)
+def test_missing_ip_interface_has_a_narrow_typed_code(output: str) -> None:
+    response = classify_huawei_cli_response(output)
+
+    assert response.error_code == HuaweiCliErrorCode.IP_INTERFACE_NOT_EXIST
+    assert response.accepted is False
+
+
+def test_unrelated_ip_interface_error_remains_fatal() -> None:
+    response = classify_huawei_cli_response("Failure: The IP interface is invalid")
+
+    assert response.error_code == HuaweiCliErrorCode.UNKNOWN_ERROR
+    assert response.accepted is False
+
+
 def test_success_output_does_not_match_customer_text() -> None:
     output = """
     F/S/P  ONT-ID  Description

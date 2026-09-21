@@ -32,6 +32,12 @@ from app.services import dispatch as dispatch_service
 from app.services import service_address as service_address_service
 from app.services import work_order_views
 from app.services.common import coerce_uuid
+from app.services.field.note_commands import (
+    ListStaffFieldWorkOrderNotes,
+    StaffFieldNoteAccess,
+    WorkOrderFieldNoteScope,
+    list_staff_field_work_order_notes,
+)
 from app.services.field.work_order_status import WORK_ORDER_TERMINAL_VALUES
 from app.services.list_query import ListDefinition, ListFieldDefinition, ListQuery
 from app.services.ui_contracts import Action, Kpi, StateValue
@@ -184,8 +190,12 @@ def _work_order_page_url(
         "active": "1" if active else None,
         "project_task_id": project_task_id,
     }
-    return WORK_ORDERS_LIST_URL + "?" + urlencode(
-        {key: value for key, value in params.items() if value not in (None, "")}
+    return (
+        WORK_ORDERS_LIST_URL
+        + "?"
+        + urlencode(
+            {key: value for key, value in params.items() if value not in (None, "")}
+        )
     )
 
 
@@ -471,13 +481,6 @@ def list_page(
             create_prefill_error = str(exc.detail)
     create_work_order_action = _create_action(error=create_prefill_error)
     total_pages = max(1, ceil(total / list_query.per_page)) if total else 1
-    page_url_values = {
-        "per_page": list_query.per_page,
-        "status": list_query.filter_value("status"),
-        "q": list_query.search,
-        "active": bool(active),
-        "project_task_id": str(task_filter_id) if task_filter_id else None,
-    }
     return {
         "items": items,
         "counts": counts,
@@ -491,12 +494,26 @@ def list_page(
         "total": total,
         "total_pages": total_pages,
         "previous_page_url": (
-            _work_order_page_url(page=list_query.page - 1, **page_url_values)
+            _work_order_page_url(
+                page=list_query.page - 1,
+                per_page=list_query.per_page,
+                status=list_query.filter_value("status"),
+                q=list_query.search,
+                active=bool(active),
+                project_task_id=str(task_filter_id) if task_filter_id else None,
+            )
             if list_query.page > 1
             else None
         ),
         "next_page_url": (
-            _work_order_page_url(page=list_query.page + 1, **page_url_values)
+            _work_order_page_url(
+                page=list_query.page + 1,
+                per_page=list_query.per_page,
+                status=list_query.filter_value("status"),
+                q=list_query.search,
+                active=bool(active),
+                project_task_id=str(task_filter_id) if task_filter_id else None,
+            )
             if list_query.page < total_pages
             else None
         ),
@@ -513,7 +530,12 @@ def list_page(
     }
 
 
-def detail_page(db: Session, public_id: str) -> dict[str, Any]:
+def detail_page(
+    db: Session,
+    public_id: str,
+    *,
+    field_note_access: StaffFieldNoteAccess | None = None,
+) -> dict[str, Any]:
     """Compose one work order from canonical read owners for the admin UI."""
 
     pair = work_order_views.get_work_order_row(db, public_id)
@@ -532,6 +554,17 @@ def detail_page(db: Session, public_id: str) -> dict[str, Any]:
         page=1,
         per_page=100,
     )
+    field_note_page = (
+        list_staff_field_work_order_notes(
+            db,
+            ListStaffFieldWorkOrderNotes(
+                scope=WorkOrderFieldNoteScope(work_order_public_id=row.public_id),
+                access=field_note_access,
+            ),
+        )
+        if field_note_access is not None
+        else None
+    )
     return {
         "work_order": row,
         "subscriber": subscriber,
@@ -549,6 +582,8 @@ def detail_page(db: Session, public_id: str) -> dict[str, Any]:
         "priorities": PRIORITY_OPTIONS,
         "technician_options": _technician_options(db),
         "material_requests": material_requests.items,
+        "field_notes": field_note_page.items if field_note_page else (),
+        "field_note_total": field_note_page.total if field_note_page else 0,
     }
 
 

@@ -13,18 +13,22 @@ from app.models.billing import (
     LedgerEntry,
     LedgerEntryType,
     LedgerSource,
+    Payment,
+    PaymentStatus,
     TaxRate,
 )
 from app.models.billing_contract import BillingRecordAuthority
 from app.models.catalog import BillingMode, Subscription, SubscriptionStatus
 from app.models.customer_subledger import (
     CustomerPostingGroup,
+    CustomerSubledgerOpeningCorrection,
     CustomerSubledgerOpeningPosition,
     PositionEffectKind,
     PostingCommandKind,
 )
 from app.models.prepaid_funding import PrepaidOpeningFundingConsumption
 from app.models.subscriber import Subscriber, SubscriberStatus
+from app.models.system_user import SystemUser
 from app.services import customer_financial_ledger
 from app.services.billing.customer_subledger import resolve_position
 from app.services.billing.shadow_verification import (
@@ -44,9 +48,13 @@ from app.services.billing.shadow_verification import (
 from app.services.billing.subledger_opening import (
     ActivateCustomerSubledgerAuthorityCommand,
     CaptureCustomerSubledgerOpeningsCommand,
+    CorrectCustomerSubledgerOpeningCommand,
     CustomerSubledgerOpeningError,
+    PreviewCustomerSubledgerOpeningCorrectionQuery,
     activate_customer_subledger_authority,
     capture_customer_subledger_opening_positions,
+    correct_customer_subledger_opening_position,
+    preview_customer_subledger_opening_correction,
 )
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_funding_reconstruction import (
@@ -197,11 +205,12 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
     db_session, subscriber_account, subscription, monkeypatch
 ):
     _candidate(db_session, subscriber_account, subscription)
+    funding_position_at = datetime(2026, 3, 16, tzinfo=UTC)
     materialize_test_prepaid_opening_balance(
         db_session,
         subscriber_account.id,
         Decimal("100.00"),
-        position_at=datetime(2026, 3, 16, tzinfo=UTC),
+        position_at=funding_position_at,
     )
 
     provider = _provider(db_session)
@@ -330,6 +339,32 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
             external_id="opening-post-cutover-deposit",
         ),
     )
+    # A late structural projection for a payment already absorbed by the
+    # reviewed opening must not consume a newer payment's reusable credit.
+    pre_boundary_payment = Payment(
+        account_id=subscriber_account.id,
+        amount=Decimal("54437.50"),
+        currency="NGN",
+        status=PaymentStatus.succeeded,
+        paid_at=funding_position_at - timedelta(days=10),
+        created_at=funding_position_at - timedelta(days=1),
+    )
+    db_session.add(pre_boundary_payment)
+    db_session.flush()
+    db_session.add(
+        LedgerEntry(
+            account_id=subscriber_account.id,
+            payment_id=pre_boundary_payment.id,
+            entry_type=LedgerEntryType.debit,
+            source=LedgerSource.other,
+            amount=Decimal("54437.50"),
+            currency="NGN",
+            memo="Late structural consumption for pre-boundary payment",
+            affects_customer_position=False,
+            created_at=cutoff + timedelta(hours=1),
+        )
+    )
+    db_session.flush()
     authoritative_group = (
         db_session.query(CustomerPostingGroup)
         .filter(
@@ -353,6 +388,141 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
         + default_position.prepaid_funding_reserved
         == verified_prepaid_funding_balance(db_session, subscriber_account.id)
     )
+
+    correction_actor = SystemUser(
+        id=uuid4(),
+        first_name="Finance",
+        last_name="Reviewer",
+        display_name="Finance Reviewer",
+        email=f"finance-{uuid4().hex}@example.test",
+        is_active=True,
+    )
+    db_session.add(correction_actor)
+    correction_actor_id = correction_actor.id
+    db_session.commit()
+    correction_query = PreviewCustomerSubledgerOpeningCorrectionQuery(
+        account_id=subscriber_account.id,
+        currency="NGN",
+        corrected_opening_amount=Decimal("3562.50"),
+        reason="Reviewed test correction for an incorrect immutable opening",
+        review_reference="finance-review:pytest-opening-correction",
+    )
+    correction_preview = preview_customer_subledger_opening_correction(
+        db_session, correction_query
+    )
+    assert correction_preview.previous_opening_amount == Decimal("1107.00")
+    assert correction_preview.delta == Decimal("2455.50")
+    db_session.rollback()
+    with pytest.raises(CustomerSubledgerOpeningError) as permission_exc:
+        correct_customer_subledger_opening_position(
+            db_session,
+            CorrectCustomerSubledgerOpeningCommand(
+                context=CommandContext.system(
+                    actor="finance:pytest",
+                    scope="billing:customer_subledger_opening:correct",
+                    reason="pytest denied opening correction",
+                    idempotency_key="opening-correction-denied",
+                ),
+                query=correction_query,
+                expected_preview_fingerprint=correction_preview.preview_fingerprint,
+                permission_granted=False,
+                authorized_system_user_id=correction_actor_id,
+            ),
+        )
+    assert permission_exc.value.code.endswith("permission_denied")
+    assert db_session.query(CustomerSubledgerOpeningCorrection).count() == 0
+    db_session.rollback()
+    correction = correct_customer_subledger_opening_position(
+        db_session,
+        CorrectCustomerSubledgerOpeningCommand(
+            context=CommandContext.system(
+                actor="finance:pytest",
+                scope="billing:customer_subledger_opening:correct",
+                reason="pytest reviewed opening correction",
+                idempotency_key="opening-correction-1",
+            ),
+            query=correction_query,
+            expected_preview_fingerprint=correction_preview.preview_fingerprint,
+            permission_granted=True,
+            authorized_system_user_id=correction_actor_id,
+        ),
+    )
+    assert correction.replayed is False
+    assert correction.corrected_opening_amount == Decimal("3562.50")
+    evidence = db_session.query(CustomerSubledgerOpeningCorrection).one()
+    assert evidence.opening_position_id == opening.id
+    assert Decimal(opening.legacy_position) == Decimal("1107.00")
+    assert verified_prepaid_funding_balance(
+        db_session, subscriber_account.id
+    ) == Decimal("5562.50")
+    corrected_position = resolve_position(
+        db_session,
+        account_id=subscriber_account.id,
+        currency="NGN",
+    )
+    assert corrected_position.unapplied_customer_credit == Decimal("5562.50")
+
+    db_session.commit()
+    correction_replay = correct_customer_subledger_opening_position(
+        db_session,
+        CorrectCustomerSubledgerOpeningCommand(
+            context=CommandContext.system(
+                actor="finance:pytest",
+                scope="billing:customer_subledger_opening:correct",
+                reason="pytest reviewed opening correction",
+                idempotency_key="opening-correction-1",
+            ),
+            query=correction_query,
+            expected_preview_fingerprint=correction_preview.preview_fingerprint,
+            permission_granted=True,
+            authorized_system_user_id=correction_actor_id,
+        ),
+    )
+    assert correction_replay.replayed is True
+    assert correction_replay.correction_id == correction.correction_id
+    assert db_session.query(CustomerSubledgerOpeningCorrection).count() == 1
+
+    # The replacement opening value must also be used when a renewal consumes
+    # more opening funding than the immutable, incorrect value could cover.
+    ensure_test_prepaid_contract(db_session, subscription, Decimal("5000.00"))
+    corrected_subscription_id = subscription.id
+    corrected_period_start = cutoff + timedelta(days=1)
+    corrected_period_end = cutoff + timedelta(days=32)
+    corrected_renewal_preview = preview_prepaid_service_renewal(
+        db_session,
+        subscription_id=corrected_subscription_id,
+        starts_at=corrected_period_start,
+        ends_at=corrected_period_end,
+        amount=Decimal("5000.00"),
+    )
+    assert corrected_renewal_preview.allowed is True
+    assert corrected_renewal_preview.funding_before == Decimal("5562.50")
+    db_session.commit()
+    corrected_renewal = execute_reviewed_prepaid_service_renewal(
+        db_session,
+        ExecuteReviewedPrepaidServiceRenewalCommand(
+            context=_context("operator:pytest", "renew-from-corrected-opening"),
+            subscription_id=corrected_subscription_id,
+            starts_at=corrected_period_start,
+            ends_at=corrected_period_end,
+            amount=Decimal("5000.00"),
+            currency="NGN",
+            expected_preview_fingerprint=corrected_renewal_preview.fingerprint,
+            evidence_ref="finance-review:pytest-corrected-opening-renewal",
+        ),
+    )
+    assert corrected_renewal.renewal.preview.funding_after == Decimal("562.50")
+    corrected_consumption = (
+        db_session.query(PrepaidOpeningFundingConsumption)
+        .filter(PrepaidOpeningFundingConsumption.opening_position_id == opening.id)
+        .one()
+    )
+    assert corrected_consumption.amount == Decimal("3000.00")
+    assert (
+        corrected_consumption.approval_evidence_ref
+        == "finance-review:pytest-opening-correction"
+    )
+    assert corrected_consumption.approval_actor == "finance:pytest"
 
     db_session.commit()
     replay = _capture(db_session, preview, key="opening-capture-1")
@@ -660,7 +830,13 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
     assert invoice.subtotal == Decimal("17500.00")
     assert invoice.tax_total == Decimal("1312.50")
     assert invoice.total == Decimal("18812.50")
-    consumption = db_session.query(PrepaidOpeningFundingConsumption).one()
+    consumption = (
+        db_session.query(PrepaidOpeningFundingConsumption)
+        .filter(
+            PrepaidOpeningFundingConsumption.opening_position_id == migrated_opening.id
+        )
+        .one()
+    )
     assert consumption.baseline_id is None
     assert consumption.opening_position_id == migrated_opening.id
     assert consumption.amount == Decimal("10334.75")

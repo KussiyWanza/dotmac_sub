@@ -419,6 +419,25 @@ def test_reseller_quotes_native_matches_mirror_golden_payload(db_session):
             db_session, str(native_reseller.id)
         )
 
+    # Historical CRM payloads predate local staff review. Compare the additive
+    # fields using the portal schema's fail-closed defaults, while preserving
+    # the strict comparison of every legacy field and reseller account tag.
+    for mirror_item in mirror_out["quotes"]:
+        historical_quote = QuoteItem.model_validate(mirror_item)
+        assert historical_quote.can_pay_deposit is False
+        assert historical_quote.payment_review_status == "pending"
+        mirror_item.update(
+            historical_quote.model_dump(
+                mode="json",
+                include={
+                    "can_pay_deposit",
+                    "payment_review_message",
+                    "payment_review_status",
+                    "payment_reviewed_at",
+                },
+            )
+        )
+
     _assert_same_shape(native_out, mirror_out)
     assert native_out["total"] == 1 and mirror_out["total"] == 1
     item = native_out["quotes"][0]

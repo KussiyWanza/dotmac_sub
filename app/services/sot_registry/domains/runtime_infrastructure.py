@@ -211,6 +211,57 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="runtime.web_worker_readiness",
+            module="app.services.web_worker_readiness",
+            owns=("web-worker route-table readiness",),
+            depends_on=("observability.metrics",),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="web-worker route-table readiness",
+                        role=OwnerRole.POLICY,
+                        input_names=(
+                            "mounted supported route table",
+                            "essential startup preflight",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="mounted supported route table",
+                        owner="runtime.web_worker_readiness",
+                        kind=AuthorityKind.OBSERVATION,
+                        source="FastAPI routes mounted before lifespan yields, including subscriber sync",
+                    ),
+                    AuthorityInput(
+                        name="essential startup preflight",
+                        owner="runtime.web_worker_readiness",
+                        kind=AuthorityKind.OBSERVATION,
+                        source="required schema, secret, encryption, and OIDC checks",
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.NOT_APPLICABLE,
+                    boundary="Startup readiness only changes process-local application state and metrics.",
+                    locking="No application or database lock is acquired.",
+                    idempotency="Repeated lifespan cycles recheck the complete route table before readiness.",
+                    retries="Optional work runs after readiness and never retries route registration.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=(),
+                    mapping_owner="health and server readiness adapters",
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.NATIVE,
+                    new_owner="runtime.web_worker_readiness",
+                    verification="Cold-start route and readiness regression tests.",
+                ),
+                steward="platform runtime",
+                design_refs=("docs/runbooks/WEB_WORKER_READINESS.md",),
+                test_refs=("tests/architecture/test_startup_router_readiness.py",),
+            ),
+        ),
+        SOTService(
             name="runtime.infrastructure_health",
             module="app.services.infrastructure_health",
             owns=(

@@ -58,3 +58,9 @@ Re-run preview immediately before apply; digest drift must stop the operation.
 The operation is additive. A wrong reviewed association must be corrected
 through the existing manual contact-link workflow; do not directly edit the
 conversation table.
+
+Reapplying a route already linked to the selected Subscriber reuses that route
+and repairs only eligible unlinked conversations. Changing the selected
+Subscriber serializes the endpoint, preserves the prior route as inactive, and
+creates one active replacement. A stale-route refusal requires a fresh preview;
+never remove or bypass the active-route unique index.

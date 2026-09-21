@@ -29,12 +29,12 @@ logger = logging.getLogger(__name__)
 
 _VENDOR_SEEDS: list[dict[str, Any]] = [
     # ═══════════════════════════════════════════════════════════════════
-    # Huawei EG Series (Enterprise Grade) - TR-181 / Device
+    # Huawei EG Series (Enterprise Grade)
     # ═══════════════════════════════════════════════════════════════════
     {
         "vendor": "Huawei",
         "model": "EG8145V5",
-        "tr069_root": "Device",
+        "tr069_root": "InternetGatewayDevice",
         "max_wan_services": 1,
         "max_lan_ports": 4,
         "max_ssids": 4,
@@ -42,14 +42,20 @@ _VENDOR_SEEDS: list[dict[str, Any]] = [
         "supports_qinq": False,
         "supports_ipv6": True,
         "supported_features": {"wifi": True, "voip": True, "catv": False},
-        "notes": "Enterprise GPON ONT. 4 ETH, 4 WiFi, 2 VoIP. TR-181.",
+        "notes": (
+            "Enterprise GPON ONT. 4 ETH, dual-band WiFi, 2 VoIP. "
+            "Deployed firmware exposes TR-098; primary 2.4 GHz and 5 GHz "
+            "WLAN instances are 1 and 5."
+        ),
         "parameter_overrides": [
             {
-                "canonical_name": "wifi.psk",
-                "tr069_path": "WiFi.AccessPoint.{i}.Security.KeyPassphrase",
+                "canonical_name": "wifi.psk.additional.1",
+                "tr069_path": (
+                    "LANDevice.1.WLANConfiguration.5.PreSharedKey.1.PreSharedKey"
+                ),
                 "writable": True,
                 "value_type": "string",
-                "notes": "Huawei uses KeyPassphrase path",
+                "notes": "5 GHz primary SSID shares the admitted WiFi password",
             },
         ],
     },

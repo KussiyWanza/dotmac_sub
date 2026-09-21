@@ -32,6 +32,7 @@ from app.schemas.auth import (
     UserCredentialCreate,
     UserCredentialUpdate,
 )
+from app.schemas.auth_flow import TokenResponse
 from app.services import auth as auth_service
 from app.services import auth_flow as auth_flow_service
 from app.services import settings_spec, staff_party_authentication
@@ -784,10 +785,10 @@ def test_web_refresh_issues_session_cookie_via_module_helper(monkeypatch, db_ses
     monkeypatch.setattr(
         web_auth_service.auth_flow_service.auth_flow,
         "refresh",
-        lambda _db, _refresh_token, _request: {
-            "access_token": "access-token",
-            "refresh_token": "rotated-refresh-token",
-        },
+        lambda db, refresh_token, request: TokenResponse(
+            access_token="access-token",
+            refresh_token="rotated-refresh-token",
+        ),
     )
     issue_session = Mock(return_value="web-session-token")
     monkeypatch.setattr(

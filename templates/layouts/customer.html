@@ -535,6 +535,31 @@
     <!-- Main Content with mesh gradient background -->
     <main class="flex-1 mesh-gradient relative">
         <div class="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+            {% if service_location_required is defined and service_location_required and active_page != 'location' %}
+            <div class="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/60 px-4 py-6" role="dialog" aria-modal="true" aria-labelledby="service-location-dialog-title" aria-describedby="service-location-dialog-description">
+                <div class="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl dark:bg-stone-900 sm:p-8">
+                    <div class="flex items-start gap-4">
+                        <div class="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" aria-hidden="true">
+                            <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86l-7.2 12.48A2 2 0 004.82 19h14.36a2 2 0 001.73-2.66l-7.2-12.48a2 2 0 00-3.42 0z"/></svg>
+                        </div>
+                        <div>
+                            <h2 id="service-location-dialog-title" class="text-xl font-bold text-stone-900 dark:text-white">Please update your service location</h2>
+                            <p id="service-location-dialog-description" class="mt-3 text-sm leading-6 text-stone-600 dark:text-stone-300">We need your current service address and exact map location to keep your account and service information accurate.</p>
+                        </div>
+                    </div>
+                    <a href="/portal/location" class="mt-7 inline-flex w-full items-center justify-center rounded-xl bg-amber-600 px-4 py-3 text-sm font-semibold text-white hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 dark:focus:ring-offset-stone-900">Update service location</a>
+                </div>
+            </div>
+            {% endif %}
+            {% if profile_biodata_required is defined and profile_biodata_required and not (service_location_required is defined and service_location_required) and active_page != 'profile' %}
+            <div class="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/60 px-4 py-6" role="dialog" aria-modal="true" aria-labelledby="profile-biodata-dialog-title" aria-describedby="profile-biodata-dialog-description">
+                <div class="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl dark:bg-stone-900 sm:p-8">
+                    <h2 id="profile-biodata-dialog-title" class="text-xl font-bold text-stone-900 dark:text-white">Your biodata is incomplete</h2>
+                    <p id="profile-biodata-dialog-description" class="mt-3 text-sm leading-6 text-stone-600 dark:text-stone-300">Please complete your date of birth, gender, and 11-digit NIN so we can keep your customer records accurate.</p>
+                    <a href="/portal/profile" class="mt-7 inline-flex w-full items-center justify-center rounded-xl bg-amber-600 px-4 py-3 text-sm font-semibold text-white hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 dark:focus:ring-offset-stone-900">Complete biodata</a>
+                </div>
+            </div>
+            {% endif %}
             {% if restricted is defined and restricted and active_page != 'dashboard' %}
             <div class="mb-6 rounded-xl border border-rose-200 bg-rose-50 p-4 dark:border-rose-800 dark:bg-rose-900/20">
                 <div class="flex items-center gap-3">

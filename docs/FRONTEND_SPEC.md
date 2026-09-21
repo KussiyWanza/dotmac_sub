@@ -277,6 +277,7 @@ def dashboard_stats(request: Request, db: Session = Depends(get_db)):
 |-------|----------|---------|
 | `{% block breadcrumbs %}` | Top nav bar, left | Navigation path |
 | `{% block page_header %}` | Above content | Title, subtitle, icon, action buttons |
+| `{% block workflow_guidance %}` | Beside the main page title | Contextual workflow help attached by the shared Admin layout |
 | `{% block content %}` | Main area | Page-specific content |
 | `{% block content_container_class %}` | Wrapper | Override container classes |
 
@@ -286,6 +287,8 @@ def dashboard_stats(request: Request, db: Session = Depends(get_db)):
 - **Global search** — Cmd+K keyboard shortcut
 - **Notification dropdown** — Unread count badge, loads via HTMX
 - **Mobile responsive** — Hamburger menu, sidebar collapses
+
+- **Contextual workflow help** — Circular help control with a centered, keyboard-contained modal when the route has registered guidance
 
 ### Required Context (auto-injected by middleware)
 ```python

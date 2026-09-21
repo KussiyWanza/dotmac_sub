@@ -35,13 +35,49 @@ jobs:
     environment: production
     timeout-minutes: 20
     steps:
+      # This job mutates GHCR (moves the production version/latest aliases)
+      # after a human approval, so it must never be attempted a second time
+      # under the same run: a rerun after a partial failure would re-enter the
+      # approval gate and re-execute the alias move rather than restaging a
+      # fresh, re-verifiable candidate. Mirrors the same refusal already
+      # enforced by infrastructure-reconcile-apply.yml and
+      # legacy-image-pin-bootstrap-apply.yml's `apply` jobs.
+      - name: Refuse a rerun of this approval-gated promotion
+        uses: actions/github-script@v7
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        with:
+          script: |
+            if (process.env.RUN_ATTEMPT !== "1") {
+              core.setFailed(
+                "Promotion reruns are not admissible: a partial failure after " +
+                "production approval must be re-dispatched as a new run from " +
+                "candidate build forward, not rerun in place."
+              );
+            }
+
       # The checkout is the AUTHORIZATION identity: protected `main`, whose
       # checked-in workflow and verifier code perform this authorization. It is
       # deliberately NOT the artifact being released.
+      #
+      # Pinned to github.sha, not `ref: main` (found 2026-09-09, confirmed live
+      # in production): this job carries a job-level `environment: production`
+      # approval gate, so every step in it -- including this checkout -- runs
+      # AFTER the human approval, not before. `ref: main` used to re-resolve at
+      # that later point, so a merge landing on main during the approval wait
+      # silently rebound this checkout, and therefore authorization_main_sha
+      # below, to a commit nobody had actually approved. production-deploy.yml
+      # compares against this run's `head_sha`, frozen at dispatch time, so the
+      # two values could diverge -- production-deploy.yml only caught it one
+      # stage later, after this job had already mutated GHCR aliases.
+      # `github.sha` is the exact protected-main commit this run was
+      # dispatched against, so pinning to it keeps this checkout from moving
+      # out from under the approval and matches what production-deploy.yml
+      # independently checks.
       - name: Checkout current protected main
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Resolve authorizing main and the staged release separately
@@ -60,6 +96,19 @@ jobs:
             exit 1
           }
           authorization_main_sha="$(git rev-parse HEAD)"
+
+          # Canary against the pin above (`ref: ${{ github.sha }}`) ever being
+          # silently reverted back to a moving ref like `ref: main`. This
+          # detects the checkout's `ref:` no longer matching `github.sha` --
+          # it cannot detect `github.sha` itself being wrong, since the
+          # checkout is configured FROM github.sha. That is the regression
+          # worth catching; it fails loudly and closed here, before any side
+          # effect, rather than confusingly downstream in
+          # production-deploy.yml's verify step.
+          test "$authorization_main_sha" = "$GITHUB_SHA" || {
+            echo "Refusing production authorization: the authorizing checkout ($authorization_main_sha) is not the dispatched commit ($GITHUB_SHA)." >&2
+            exit 1
+          }
 
           # Reachability, not identity. The staged commit must still be on the
           # protected branch -- not reverted, not orphaned, not from a fork --
@@ -188,10 +237,15 @@ jobs:
             exit 1
           }
           mkdir -p "$RUNNER_TEMP/production-authorization"
+          # candidate_build_run_id is the run whose release-candidate-evidence
+          # artifact was just downloaded above -- i.e. the run that wrote it.
+          # That is the document's evidence_run_id, never its build_run_id,
+          # which may legitimately name an earlier resumed build whose image
+          # this evidence document was re-derived from.
           python -m scripts.release_candidate_evidence authorize-production \
             --candidate "$RUNNER_TEMP/candidate/candidate.json" \
             --staging "${acceptance_files[0]}" \
-            --expected-build-run-id "${{ inputs.candidate_build_run_id }}" \
+            --expected-evidence-run-id "${{ inputs.candidate_build_run_id }}" \
             --expected-staging-deployment-id "${{ inputs.staging_deployment_run_id }}" \
             --authorization-run-id "$AUTHORIZATION_RUN_ID" \
             --authorization-main-revision "$AUTHORIZATION_MAIN_SHA" \
@@ -200,6 +254,30 @@ jobs:
             --source-revision-is-ancestor \
             --output "$RUNNER_TEMP/production-authorization/authorization.json" \
             --github-output "$GITHUB_OUTPUT"
+
+      - name: Re-prove staged reachability after the approval window
+        env:
+          STAGED_SHA: ${{ steps.release.outputs.sha }}
+          AUTHORIZATION_MAIN_SHA: ${{ steps.release.outputs.authorization_main_sha }}
+        run: |
+          set -euo pipefail
+          # The checkout above is pinned to the dispatch-time commit, so it
+          # cannot see whatever happened to main during the human approval
+          # wait. Re-fetch live and re-check reachability -- not equality,
+          # same reasoning as the ancestry check above -- immediately before
+          # the first step that mutates GHCR, so a rewrite/force-push that
+          # dropped the staged commit off protected main entirely (branch
+          # protection should already prevent this; this is defense in depth)
+          # is caught before any side effect.
+          git fetch --no-tags origin main
+          current_main_sha="$(git rev-parse FETCH_HEAD)"
+          git merge-base --is-ancestor "$STAGED_SHA" "$current_main_sha" || {
+            echo "Refusing production authorization: $STAGED_SHA is no longer an ancestor of main's current tip ($current_main_sha)." >&2
+            exit 1
+          }
+          if [ "$current_main_sha" != "$AUTHORIZATION_MAIN_SHA" ]; then
+            echo "::notice title=main advanced during the approval window::main moved from $AUTHORIZATION_MAIN_SHA (dispatch time) to $current_main_sha while this run waited for production approval; $STAGED_SHA remains reachable from both, so promotion continues."
+          fi
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
@@ -227,14 +305,48 @@ jobs:
           source_ref="${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}"
           version_ref="${REGISTRY}/${IMAGE_NAME}:${version}"
           latest_ref="${REGISTRY}/${IMAGE_NAME}:latest"
-          existing="$(docker buildx imagetools inspect "$version_ref" --format '{{json .Manifest}}' 2>/dev/null || true)"
+          # A bare `2>/dev/null || true` here would treat EVERY inspect
+          # failure -- a transient registry/auth error just as much as a
+          # genuine "this version tag doesn't exist yet" -- identically as
+          # "doesn't exist", which then re-points an already-published
+          # version tag at a different digest on nothing more than a blip.
+          # The post-create verification loop below can't catch that
+          # specific failure mode: after the overwrite, the alias legitimately
+          # matches the new digest. So distinguish the two like
+          # release-candidate.yml's "Inspect existing candidate tag" step
+          # does (#3061): a definite negative resolves on the first attempt,
+          # anything ambiguous is retried a bounded number of times and then
+          # fails closed rather than proceeding as if the tag doesn't exist.
+          existing_digest=""
+          attempt=1
+          max_attempts=3
+          while true; do
+            if version_manifest_json="$(docker buildx imagetools inspect "$version_ref" --format '{{json .Manifest}}' 2>"$RUNNER_TEMP/inspect-version-tag.err")"; then
+              existing_digest="$(jq -r '.digest' <<<"$version_manifest_json")"
+              break
+            fi
+            version_tag_error="$(cat "$RUNNER_TEMP/inspect-version-tag.err")"
+            # Same definite-negative shapes as release-candidate.yml's
+            # tag-existence check, reused rather than re-derived so the two
+            # never drift apart.
+            if grep -qiE 'manifest unknown|no such manifest|^error: .*: not found$' <<<"$version_tag_error"; then
+              existing_digest=""
+              break
+            fi
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "Cannot safely determine whether $version_ref already exists; refusing to guess and possibly re-point an already-published version tag." >&2
+              printf '%s\n' "$version_tag_error" >&2
+              exit 1
+            fi
+            sleep "$((attempt * 3))"
+            attempt=$((attempt + 1))
+          done
           alias_args=(--tag "$latest_ref")
-          if [ -n "$existing" ]; then
-            existing_digest="$(jq -r '.digest' <<<"$existing")"
+          if [ -n "$existing_digest" ]; then
             if [ "$existing_digest" = "$IMAGE_DIGEST" ]; then
               alias_args+=(--tag "$version_ref")
             else
-              echo "::warning title=Version alias not moved::$version_ref already points to $existing_digest; production authorization remains bound to $IMAGE_DIGEST."
+              echo "::notice title=Version alias preserved::$version_ref already points to $existing_digest; leaving it unchanged and advancing only 'latest' to the authorized digest $IMAGE_DIGEST."
             fi
           else
             alias_args+=(--tag "$version_ref")

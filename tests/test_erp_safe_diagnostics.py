@@ -19,7 +19,12 @@ from app.services.integrations.backoffice_contracts import (
     ERP_OPERATIONAL_SYNC_CAPABILITY,
 )
 from app.services.integrations.connectors.dotmac_erp import DotmacErpRunner
-from app.services.integrations.diagnostics import safe_diagnostic
+from app.services.integrations.diagnostics import (
+    diagnostic_evidence,
+    parse_diagnostic_evidence,
+    safe_diagnostic,
+    safe_diagnostic_summary,
+)
 from app.services.integrations.runtime import (
     OperationEnvelope,
     OperationStatus,
@@ -51,6 +56,40 @@ def test_safe_error_shapes_never_copy_provider_text(body):
     assert diagnostic.code == "permission_denied"
     assert "private-token" not in diagnostic.model_dump_json()
     assert "customer-secret" not in diagnostic.model_dump_json()
+
+
+def test_persisted_diagnostic_summary_uses_allowlisted_message():
+    request_id = uuid4()
+    evidence = diagnostic_evidence(
+        safe_diagnostic(status=422).model_copy(update={"request_id": request_id})
+    )
+    evidence["message"] = "private provider validation detail"
+
+    diagnostic = parse_diagnostic_evidence(evidence)
+
+    assert diagnostic is not None
+    summary = safe_diagnostic_summary(diagnostic)
+    assert "ERP rejected request validation" in summary
+    assert "code=validation_error" in summary
+    assert "status=422" in summary
+    assert f"request_id={request_id}" in summary
+    assert "private provider validation detail" not in summary
+
+
+def test_expense_validation_code_is_preserved_without_provider_message():
+    diagnostic = safe_diagnostic(
+        status=422,
+        body={
+            "detail": {
+                "code": "expense_destination_expired",
+                "message": "private destination evidence",
+            }
+        },
+    )
+
+    assert diagnostic.code == "expense_destination_expired"
+    assert "verify it again" in safe_diagnostic_summary(diagnostic)
+    assert "private destination evidence" not in diagnostic.model_dump_json()
 
 
 @pytest.mark.parametrize(

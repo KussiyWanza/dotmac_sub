@@ -46,7 +46,8 @@ from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 from app.services.file_storage import build_content_disposition
 from app.services.owner_commands import CommandContext
-from app.services.sales import quote_delivery, quote_documents
+from app.services.sales import quote_delivery, quote_documents, quote_payment_review
+from app.services.sales import service as sales_service
 
 router = APIRouter(prefix="/sales", tags=["web-admin-sales"])
 templates = Jinja2Templates(directory="templates")
@@ -859,7 +860,7 @@ def pipeline_create(
             status_code=303,
         )
     except (DomainError, ValidationError, ValueError) as exc:
-        db.rollback()
+        db_session_adapter.discard_failed_transaction(db)
         error = _error_detail(exc)
 
     context = _ctx(request, db, "sales-pipelines")
@@ -928,7 +929,7 @@ def pipeline_update(
         )
         return _pipeline_settings_redirect("pipeline_updated")
     except (ValidationError, ValueError) as exc:
-        db.rollback()
+        db_session_adapter.discard_failed_transaction(db)
         error = _error_detail(exc)
 
     context = _ctx(request, db, "sales-pipelines")
@@ -1240,6 +1241,23 @@ def quote_new(
 
 
 @router.get(
+    "/quotes/leads/search",
+    dependencies=[Depends(require_permission("crm:quote:write"))],
+)
+def quote_lead_search(q: str = Query(min_length=2), db: Session = Depends(get_db)):
+    """Server-backed eligible Lead picker projection for Quote authoring."""
+
+    return JSONResponse(
+        jsonable_encoder(
+            sales_service.leads.search_for_quote(
+                db,
+                sales_service.QuoteLeadSearchQuery(term=q, limit=20),
+            )
+        )
+    )
+
+
+@router.get(
     "/quotes/customers/search",
     dependencies=[Depends(require_permission("crm:quote:write"))],
 )
@@ -1247,7 +1265,9 @@ def quote_customer_search(q: str = Query(min_length=2), db: Session = Depends(ge
     """Server-backed customer picker projection for Quote authoring."""
     return JSONResponse(
         jsonable_encoder(
-            customer_search_service.search_response(db, q, limit=20, reviewed_only=True)
+            customer_search_service.search_response(
+                db, q, limit=20, reviewed_only=False
+            )
         )
     )
 
@@ -1448,6 +1468,56 @@ def quote_send_email(
     )
 
 
+@router.post(
+    "/quotes/{quote_id}/payment-review",
+    dependencies=[Depends(require_permission("sales:quote:review"))],
+)
+def quote_payment_review_submit(
+    request: Request,
+    quote_id: UUID,
+    request_id: UUID = Form(...),
+    expected_revision: int = Form(..., ge=0),
+    decision: str = Form(...),
+    reason: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    """Approve or reject the exact Quote snapshot before customer payment."""
+
+    try:
+        selected_decision = quote_payment_review.QuotePaymentReviewDecision(decision)
+        actor_id = UUID(_quote_actor_system_user_id(request))
+        db_session_adapter.release_read_transaction(db)
+        outcome = quote_payment_review.review_quote_payment(
+            db,
+            quote_payment_review.ReviewQuotePaymentCommand(
+                context=_quote_command_context(
+                    request,
+                    str(quote_id),
+                    action="payment-review",
+                    command_id=request_id,
+                ),
+                quote_id=quote_id,
+                reviewer_system_user_id=actor_id,
+                expected_revision=expected_revision,
+                decision=selected_decision,
+                reason=reason,
+            ),
+        )
+    except (DomainError, ValueError) as exc:
+        context = _ctx(request, db, "sales-quotes")
+        context.update(
+            web_sales_service.build_quote_detail_context(db, quote_id=str(quote_id))
+        )
+        context["error"] = _error_detail(exc)
+        return templates.TemplateResponse(
+            "admin/sales/quotes/detail.html", context, status_code=400
+        )
+    return RedirectResponse(
+        url=(f"/admin/sales/quotes/{quote_id}?notice=payment_{outcome.status.value}"),
+        status_code=303,
+    )
+
+
 @router.get(
     "/quotes/{quote_id}/edit",
     response_class=HTMLResponse,
@@ -1479,6 +1549,7 @@ def quote_update(
     region: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
+    response_status = 400
     fields = {
         "lead_id": lead_id,
         "status": status,
@@ -1499,8 +1570,17 @@ def quote_update(
             **fields,
         )
         return RedirectResponse(url=f"/admin/sales/quotes/{quote_id}", status_code=303)
+    except HTTPException as exc:
+        if (
+            exc.status_code != 409
+            or _error_detail(exc) != "Save the quote changes first, then accept it."
+        ):
+            raise
+        db_session_adapter.discard_failed_transaction(db)
+        error = _error_detail(exc)
+        response_status = 409
     except (DomainError, ValidationError, ValueError) as exc:
-        db.rollback()
+        db_session_adapter.discard_failed_transaction(db)
         error = _error_detail(exc)
 
     context = _ctx(request, db, "sales-quotes")
@@ -1511,7 +1591,7 @@ def quote_update(
     )
     context["error"] = error
     return templates.TemplateResponse(
-        "admin/sales/quotes/form.html", context, status_code=400
+        "admin/sales/quotes/form.html", context, status_code=response_status
     )
 
 
@@ -1537,7 +1617,7 @@ def quote_line_item_add(
             context=_quote_command_context(request, quote_id, action="line-add"),
         )
     except (DomainError, ValidationError, ValueError) as exc:
-        db.rollback()
+        db_session_adapter.discard_failed_transaction(db)
         context = _ctx(request, db, "sales-quotes")
         context.update(
             web_sales_service.build_quote_detail_context(db, quote_id=quote_id)
@@ -1654,7 +1734,7 @@ def quote_set_status(
     except (DomainError, ValidationError, ValueError) as exc:
         # Sending or accepting a quote with no line items is refused by the
         # sales service. Surface that to the operator instead of 500ing.
-        db.rollback()
+        db_session_adapter.discard_failed_transaction(db)
         context = _ctx(request, db, "sales-quotes")
         context.update(
             web_sales_service.build_quote_detail_context(db, quote_id=quote_id)
@@ -1675,11 +1755,22 @@ def quote_delete(
     quote_id: str,
     db: Session = Depends(get_db),
 ):
-    web_sales_service.deactivate_quote(
-        db,
-        quote_id,
-        context=_quote_command_context(request, quote_id, action="deactivate"),
-    )
+    try:
+        web_sales_service.deactivate_quote(
+            db,
+            quote_id,
+            context=_quote_command_context(request, quote_id, action="deactivate"),
+        )
+    except (DomainError, ValidationError, ValueError) as exc:
+        db_session_adapter.discard_failed_transaction(db)
+        context = _ctx(request, db, "sales-quotes")
+        context.update(
+            web_sales_service.build_quote_detail_context(db, quote_id=quote_id)
+        )
+        context["error"] = _error_detail(exc)
+        return templates.TemplateResponse(
+            "admin/sales/quotes/detail.html", context, status_code=400
+        )
     return RedirectResponse(url="/admin/sales/quotes", status_code=303)
 
 

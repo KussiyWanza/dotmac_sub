@@ -12,7 +12,11 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.system_user import SystemUser
-from app.services import service_team_lifecycle, staff_provisioning
+from app.services import (
+    nextcloud_talk_staff,
+    service_team_lifecycle,
+    staff_provisioning,
+)
 from app.services.auth_dependencies import require_permission
 from app.services.common import coerce_uuid
 from app.services.domain_errors import DomainError
@@ -36,6 +40,9 @@ class StaffAccountCreate(BaseModel):
     role: str = Field(default="staff", min_length=1, max_length=80)
     roles: list[RoleName] | None = Field(default=None, min_length=1, max_length=20)
     send_invite: bool = True
+    existing_account_policy: staff_provisioning.ExistingStaffAccountPolicy = (
+        staff_provisioning.ExistingStaffAccountPolicy.reconcile
+    )
 
 
 class StaffAccountRolesUpdate(BaseModel):
@@ -79,6 +86,22 @@ class StaffAccountErpDepartmentRead(BaseModel):
     replayed: bool
 
 
+class StaffAccountNextcloudTalkUpdate(BaseModel):
+    nextcloud_user_id: str = Field(min_length=1, max_length=255)
+
+
+class StaffAccountNextcloudTalkRead(BaseModel):
+    user_id: UUID
+    integration_installation_id: UUID
+    nextcloud_user_id: str
+    is_active: bool
+
+
+class StaffAccountNextcloudTalkDisableRead(BaseModel):
+    user_id: UUID
+    disabled_mappings: int
+
+
 def _actor(auth: dict) -> str:
     principal_id = str(auth.get("principal_id") or "").strip()
     if not principal_id:
@@ -109,6 +132,7 @@ def _domain_error(exc: DomainError) -> HTTPException:
     if (
         exc.code.endswith(".unknown_roles")
         or exc.code.endswith(".invalid_command")
+        or exc.code.endswith(".invalid_mapping")
         or exc.code
         in {
             "service_team_invalid",
@@ -130,6 +154,8 @@ def _domain_error(exc: DomainError) -> HTTPException:
         or exc.code == "service_team_erp_employee_identity_conflict"
     ):
         status_code = 409
+    elif exc.code.endswith(".binding_unavailable"):
+        status_code = 503
     else:
         status_code = 500
     return HTTPException(
@@ -199,11 +225,96 @@ def create_staff_account(
                 last_name=payload.last_name,
                 role_names=desired_roles,
                 send_invite=payload.send_invite,
+                existing_account_policy=payload.existing_account_policy,
             ),
         )
     except DomainError as exc:
         raise _domain_error(exc) from exc
     return _from_outcome(result)
+
+
+@router.put(
+    "/{user_id}/nextcloud-talk",
+    response_model=StaffAccountNextcloudTalkRead,
+)
+def set_staff_nextcloud_talk_mapping(
+    user_id: str,
+    payload: StaffAccountNextcloudTalkUpdate,
+    auth: dict = Depends(require_permission(nextcloud_talk_staff.COMMAND_SCOPE)),
+    db: Session = Depends(get_db),
+    idempotency_key: IdempotencyKey = None,
+) -> StaffAccountNextcloudTalkRead:
+    """Bind one active ERP staff account to its provisioned Nextcloud identity."""
+
+    try:
+        normalized_user_id = coerce_uuid(user_id)
+        nextcloud_user_id = nextcloud_talk_staff.NextcloudUserId.parse(
+            payload.nextcloud_user_id
+        )
+        outcome = nextcloud_talk_staff.execute_set_default_staff_account_mapping(
+            db,
+            nextcloud_talk_staff.SetDefaultStaffAccountMappingCommand(
+                context=_context(
+                    auth,
+                    reason="ERP workforce Nextcloud Talk mapping reconciliation",
+                    idempotency_key=(
+                        idempotency_key
+                        or f"staff-talk:{normalized_user_id}:{nextcloud_user_id.normalized}"
+                    ),
+                    scope=nextcloud_talk_staff.COMMAND_SCOPE,
+                ),
+                system_user_id=normalized_user_id,
+                nextcloud_user_id=nextcloud_user_id,
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Staff account not found") from exc
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    return StaffAccountNextcloudTalkRead(
+        user_id=outcome.system_user_id,
+        integration_installation_id=outcome.integration_installation_id,
+        nextcloud_user_id=outcome.nextcloud_user_id.value,
+        is_active=outcome.is_active,
+    )
+
+
+@router.post(
+    "/{user_id}/nextcloud-talk/disable",
+    response_model=StaffAccountNextcloudTalkDisableRead,
+)
+def disable_staff_nextcloud_talk_mapping(
+    user_id: str,
+    auth: dict = Depends(require_permission(nextcloud_talk_staff.COMMAND_SCOPE)),
+    db: Session = Depends(get_db),
+    idempotency_key: IdempotencyKey = None,
+) -> StaffAccountNextcloudTalkDisableRead:
+    """Disable all Talk delivery mappings for an ERP-deactivated staff account."""
+
+    try:
+        normalized_user_id = coerce_uuid(user_id)
+        outcome = nextcloud_talk_staff.execute_disable_all_staff_account_mappings(
+            db,
+            nextcloud_talk_staff.DisableAllStaffAccountMappingsCommand(
+                context=_context(
+                    auth,
+                    reason="ERP workforce Nextcloud Talk mapping deactivation",
+                    idempotency_key=(
+                        idempotency_key or f"staff-talk-disable:{normalized_user_id}"
+                    ),
+                    scope=nextcloud_talk_staff.COMMAND_SCOPE,
+                ),
+                system_user_id=normalized_user_id,
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Staff account not found") from exc
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    return StaffAccountNextcloudTalkDisableRead(
+        user_id=outcome.system_user_id,
+        disabled_mappings=outcome.disabled_mappings,
+    )
 
 
 @router.put("/{user_id}/erp-department", response_model=StaffAccountErpDepartmentRead)

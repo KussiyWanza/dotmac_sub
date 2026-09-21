@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -61,6 +62,15 @@ class InboxConversationContactLinkRead(BaseModel):
     reseller_id: UUID | None = None
     previous_link_ids_deactivated: list[UUID] = Field(default_factory=list)
     repaired_conversation_ids: tuple[UUID, ...] = ()
+    disposition: str
+    replayed: bool
+
+
+class InboxCustomerLinkOptionRead(BaseModel):
+    id: UUID
+    label: str
+    type: Literal["subscriber"] = "subscriber"
+    source: Literal["suggested", "search"]
 
 
 class InboxTimelineTeamRead(BaseModel):
@@ -141,5 +151,10 @@ class InboxConversationListItemRead(BaseModel):
     contact_resolution_status: str | None = None
     latest_delivery_status: str | None = None
     active_assigned_person_id: UUID | None = None
+    ai_owned: bool = False
+    control_owner: str = "human"
+    ai_session_id: UUID | None = None
+    ai_session_state: str | None = None
+    waiting_for_customer: bool = False
     needs_response: bool
     team_count: int

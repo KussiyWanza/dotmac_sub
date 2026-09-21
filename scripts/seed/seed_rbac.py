@@ -34,6 +34,7 @@ ADMIN_ONLY_PERMISSION_KEYS = {
     "provisioning:service_change_reconcile",
     "network:write",
     "rbac:assign",
+    "communications:nextcloud_talk_staff:manage",
     "rbac:permissions:delete",
     "rbac:permissions:read",
     "rbac:permissions:write",
@@ -74,6 +75,10 @@ DEFAULT_PERMISSIONS = [
     (
         "communications:customer:send",
         "Send customer notifications to selected customer scopes",
+    ),
+    (
+        "communications:nextcloud_talk_staff:manage",
+        "Manage ERP staff-to-Nextcloud Talk identity mappings",
     ),
     ("system:db_admin", "Perform restricted database administration"),
     ("system:settings:read", "View system settings"),
@@ -119,6 +124,11 @@ DEFAULT_PERMISSIONS = [
     (
         "billing:reconciliation:write",
         "Confirm reviewed billing reconciliation corrections",
+    ),
+    (
+        "billing:prepaid_reconciliation:repair",
+        "Repair one exact already-paid prepaid invoice's identity and coverage "
+        "after reviewed evidence",
     ),
     # Billing - Credit Notes
     ("billing:extension:read", "View service extensions"),
@@ -267,6 +277,7 @@ DEFAULT_PERMISSIONS = [
     # Operations - Field Expense Requests
     ("operations:expense_request:read", "View field expense requests"),
     ("operations:expense_request:write", "Approve or reject field expense requests"),
+    ("operations:expense_request:pay", "Initiate approved expense reimbursements"),
     ("operations:asset_custody:read", "View asset custody records"),
     ("operations:asset_custody:write", "Manage asset custody records"),
     ("operations:dispatch:read", "View dispatch work orders and maps"),
@@ -290,6 +301,10 @@ DEFAULT_PERMISSIONS = [
         "region, or assignment",
     ),
     ("support:inbox:self_assign", "Assign inbox conversations to yourself"),
+    (
+        "support:inbox:completion_override",
+        "Grant a one-transition legacy customer-completion resolution override",
+    ),
     ("support:automation:read", "View ticket automation rules"),
     ("support:automation:write", "Manage ticket automation rules"),
     ("support:inbox_ai:read", "Use manager AI for Team Inbox insight"),
@@ -321,6 +336,7 @@ DEFAULT_PERMISSIONS = [
     ("crm:quote:read", "View quotes"),
     ("crm:quote:write", "Manage quotes"),
     ("crm:quote:send", "Send quotes to customers"),
+    ("sales:quote:review", "Approve or reject quotes for customer payment"),
     ("crm:sales_order:read", "View sales orders"),
     ("crm:sales_order:write", "Manage sales orders"),
     # Deliberately NOT covered by :write. Deciding not to pursue an order is a
@@ -497,6 +513,7 @@ ROLE_PERMISSIONS = {
         "operations:service_team:retire",
         "operations:expense_request:read",
         "operations:expense_request:write",
+        "operations:expense_request:pay",
         "operations:material_request:read",
         "operations:material_request:write",
         "reports:network:read",

@@ -132,6 +132,36 @@ def test_set_wifi_ssid_failure_surfaces_reason(db_session, ont, monkeypatch):
     assert result.data["failure_reason"] == ReconcileFailureReason.ACS_WRITE_FAULTED
 
 
+def test_set_wifi_ssid_passes_explicit_timeout_sec(db_session, ont, monkeypatch):
+    captured: dict = {}
+
+    def _fake_reconcile(db, ont_unit_id, *, proposed_change, mode, **kwargs):
+        captured["kwargs"] = kwargs
+        return _stub_result(True)
+
+    monkeypatch.setattr("app.services.network.reconcile.reconcile_ont", _fake_reconcile)
+
+    set_wifi_ssid(db_session, str(ont.id), "NEW_SSID", timeout_sec=180)
+
+    assert captured["kwargs"].get("timeout_sec") == 180
+
+
+def test_set_wifi_ssid_omits_timeout_sec_when_not_supplied(
+    db_session, ont, monkeypatch
+):
+    captured: dict = {}
+
+    def _fake_reconcile(db, ont_unit_id, *, proposed_change, mode, **kwargs):
+        captured["kwargs"] = kwargs
+        return _stub_result(True)
+
+    monkeypatch.setattr("app.services.network.reconcile.reconcile_ont", _fake_reconcile)
+
+    set_wifi_ssid(db_session, str(ont.id), "NEW_SSID")
+
+    assert "timeout_sec" not in captured["kwargs"]
+
+
 # ── set_pppoe_credentials ──────────────────────────────────────────────────
 
 
@@ -195,6 +225,39 @@ def test_set_pppoe_uses_non_default_instance_index(db_session, ont, monkeypatch)
         db_session, str(ont.id), username="u", password="p", instance_index=2
     )
     assert captured["pc"]["wan_pppoe_instance_index"] == 2
+
+
+def test_set_pppoe_passes_explicit_timeout_sec(db_session, ont, monkeypatch):
+    """An operator-supplied ``timeout_sec`` must reach ``reconcile_ont`` so a
+    slow OLT shelf can be given a longer apply/idle-in-transaction budget
+    than the 60s default."""
+    captured: dict = {}
+
+    def _fake_reconcile(db, ont_unit_id, *, proposed_change, mode, **kwargs):
+        captured["kwargs"] = kwargs
+        return _stub_result(True)
+
+    monkeypatch.setattr("app.services.network.reconcile.reconcile_ont", _fake_reconcile)
+
+    set_pppoe_credentials(
+        db_session, str(ont.id), username="u", password="p", timeout_sec=180
+    )
+    assert captured["kwargs"].get("timeout_sec") == 180
+
+
+def test_set_pppoe_omits_timeout_sec_when_not_supplied(db_session, ont, monkeypatch):
+    """No explicit override means ``reconcile_ont`` keeps using its own
+    default (60s) — this change must not alter default behavior."""
+    captured: dict = {}
+
+    def _fake_reconcile(db, ont_unit_id, *, proposed_change, mode, **kwargs):
+        captured["kwargs"] = kwargs
+        return _stub_result(True)
+
+    monkeypatch.setattr("app.services.network.reconcile.reconcile_ont", _fake_reconcile)
+
+    set_pppoe_credentials(db_session, str(ont.id), username="u", password="p")
+    assert "timeout_sec" not in captured["kwargs"]
 
 
 def test_set_pppoe_failure_surfaces_actionable_on_cr_failed(

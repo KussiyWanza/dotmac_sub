@@ -589,7 +589,13 @@ def test_flutterwave_successful_charge_settles_invoice(db_session, subscriber):
 
 
 def test_flutterwave_failed_charge_completed_moves_no_money(db_session, subscriber):
-    """charge.completed carries both outcomes; a failed one must not settle."""
+    """charge.completed carries both outcomes; a failed one must not settle.
+
+    This is the benign twin of the terminal-state guard below: a declined
+    charge for which no payment ever existed (and none was ever expected)
+    has an empty consequence by design. The guard must not treat this the
+    same as an unmatched refund/reversal that silently lost money.
+    """
     _make_provider(
         db_session,
         provider_type=PaymentProviderType.flutterwave,
@@ -612,6 +618,62 @@ def test_flutterwave_failed_charge_completed_moves_no_money(db_session, subscrib
     assert db_session.query(Payment).filter_by(external_id="881002").count() == 0
     db_session.refresh(invoice)
     assert invoice.balance_due == Decimal("2500.00")
+    receipt = (
+        db_session.query(IntegrationInbox)
+        .filter_by(provider_event_id="flutterwave-charge.completed-881002")
+        .one()
+    )
+    assert receipt.state == "processed"
+    # A failed attempt now gets its own independently-persisted receipt (see
+    # the Flutterwave attempt-scoped identity fix); it must still carry the
+    # `tx_ref` so the failed attempt can be correlated back to its checkout.
+    assert receipt.consequence_json.get("status") == "ok"
+    event = (
+        db_session.query(PaymentProviderEvent)
+        .filter_by(idempotency_key="flutterwave-charge.completed-881002")
+        .one()
+    )
+    assert event.provider_reference == "DMAC-WH-6"
+
+
+def test_unmatched_refund_event_does_not_return_200_with_empty_consequence(
+    db_session,
+):
+    """A recognized refund/reversal observation with no matching payment must
+    not be silently accepted as processed (Defect C/the terminal-state guard).
+
+    ``charge.refunded`` is already recognized by the provider-event status map
+    today (independent of PR2's Paystack vocabulary work); it is used here
+    purely to exercise the provider-agnostic guard with existing vocabulary.
+    """
+    _make_provider(db_session)
+    body = json.dumps(
+        {
+            "event": "charge.refunded",
+            "data": {
+                "id": "990099",
+                "reference": "DMAC-WH-REFUND-1",
+                "amount": 0,
+                "currency": "NGN",
+                "status": "success",
+            },
+        }
+    ).encode()
+
+    response = _post_paystack(db_session, body)
+
+    assert response.status_code == 500
+    assert (
+        db_session.query(PaymentProviderEvent).filter_by(external_id="990099").count()
+        == 0
+    )
+    receipt = (
+        db_session.query(IntegrationInbox)
+        .filter_by(provider_event_id="paystack-DMAC-WH-REFUND-1")
+        .one()
+    )
+    assert receipt.state == "retryable"
+    assert receipt.error_code == "payment_provider_event_unresolved"
 
 
 def test_paystack_signature_actually_verified(db_session, monkeypatch):

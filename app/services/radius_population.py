@@ -100,6 +100,33 @@ def _increment_result_count(
     result[key] = _result_count(result, key) + amount
 
 
+def _captive_reject_work_item(
+    login: str, status: SubscriptionStatus
+) -> RadiusProjectionWorkItem:
+    """Build the reject fallback for a captive login with no usable credential.
+
+    A captive projection walls the login into the portal VLAN but still
+    needs a working password to authenticate there at all -- an unusable
+    credential means no captive projection can be built at all. Falling
+    back to ``preserve_usernames`` here would leave whatever RADIUS row
+    already exists (possibly a fully permissive one) untouched instead of
+    walling the login off, so this follows the SAME pattern the hard-reject
+    branch above already uses: a complete, self-sufficient RADIUS
+    projection that needs no customer password, rather than a novel
+    mechanism or preservation of stale state.
+    """
+    return RadiusProjectionWorkItem(
+        username=login,
+        cleartext_password="",
+        check_attrs=(),
+        reply_attrs=(),
+        blocked=True,
+        status=status,
+        mode="reject",
+        profile_group=None,
+    )
+
+
 def _captive_redirect_allowed(subscriber: object | None) -> bool:
     """Compatibility adapter to the canonical captive eligibility owner."""
     if subscriber is None:
@@ -629,6 +656,7 @@ def populate(
         "blocked_users_written": 0,
         "captive_ineligible_optins": 0,
         "skipped_ambiguous_ipv4_ledger": 0,
+        "captive_downgraded_to_reject": 0,
     }
 
     enc_key = get_encryption_key()
@@ -946,12 +974,30 @@ def populate(
             if cred is None:
                 _increment_result_count(stats, "skipped_no_credential")
                 unbuildable_usernames.add(login)
-                preserve_usernames.add(login)
+                if captive:
+                    logger.warning(
+                        "captive-mode login %s downgraded to reject: %s",
+                        login,
+                        "no_credential",
+                    )
+                    _increment_result_count(stats, "captive_downgraded_to_reject")
+                    by_login[login] = _captive_reject_work_item(login, sub.status)
+                else:
+                    preserve_usernames.add(login)
                 continue
             if not cred.secret_hash:
                 _increment_result_count(stats, "skipped_no_password")
                 unbuildable_usernames.add(login)
-                preserve_usernames.add(login)
+                if captive:
+                    logger.warning(
+                        "captive-mode login %s downgraded to reject: %s",
+                        login,
+                        "no_secret_hash",
+                    )
+                    _increment_result_count(stats, "captive_downgraded_to_reject")
+                    by_login[login] = _captive_reject_work_item(login, sub.status)
+                else:
+                    preserve_usernames.add(login)
                 continue
             try:
                 cleartext = decrypt_credential_with_key(cred.secret_hash, enc_key)
@@ -959,12 +1005,30 @@ def populate(
                 logger.warning("decrypt failed for %s: %s", login, exc)
                 _increment_result_count(stats, "skipped_decrypt_failed")
                 unbuildable_usernames.add(login)
-                preserve_usernames.add(login)
+                if captive:
+                    logger.warning(
+                        "captive-mode login %s downgraded to reject: %s",
+                        login,
+                        "decrypt_failed",
+                    )
+                    _increment_result_count(stats, "captive_downgraded_to_reject")
+                    by_login[login] = _captive_reject_work_item(login, sub.status)
+                else:
+                    preserve_usernames.add(login)
                 continue
             if not cleartext:
                 _increment_result_count(stats, "skipped_no_password")
                 unbuildable_usernames.add(login)
-                preserve_usernames.add(login)
+                if captive:
+                    logger.warning(
+                        "captive-mode login %s downgraded to reject: %s",
+                        login,
+                        "empty_password",
+                    )
+                    _increment_result_count(stats, "captive_downgraded_to_reject")
+                    by_login[login] = _captive_reject_work_item(login, sub.status)
+                else:
+                    preserve_usernames.add(login)
                 continue
 
             sub_blocked = projection.blocked
@@ -986,17 +1050,40 @@ def populate(
                             legacy_ipv4_candidates_by_subscriber.get(sub.subscriber_id)
                         )
                 if ambiguous_addresses:
-                    logger.error(
-                        "ambiguous active IPv4 ledger for login %s (subscription "
-                        "%s): %s. Preserving the existing RADIUS rows; the "
-                        "assignment owner must adjudicate.",
-                        login,
-                        sub.id,
-                        ", ".join(ambiguous_addresses),
-                    )
                     _increment_result_count(stats, "skipped_ambiguous_ipv4_ledger")
                     unbuildable_usernames.add(login)
-                    preserve_usernames.add(login)
+                    if captive:
+                        # A captive projection still needs a routable Framed-IP
+                        # to be a real walled-garden session -- an ambiguous
+                        # ledger here is exactly as unusable to captive as an
+                        # undecryptable credential is, so it gets the SAME
+                        # fail-closed treatment (see `_captive_reject_work_item`)
+                        # instead of `preserve_usernames`. Non-captive (active)
+                        # logins keep the documented ownership-refusal
+                        # preserve-and-report behavior below unchanged.
+                        logger.error(
+                            "ambiguous active IPv4 ledger for captive-mode "
+                            "login %s (subscription %s): %s. Downgrading to "
+                            "reject rather than preserving a possibly "
+                            "permissive existing row; the assignment owner "
+                            "must adjudicate.",
+                            login,
+                            sub.id,
+                            ", ".join(ambiguous_addresses),
+                        )
+                        _increment_result_count(stats, "captive_downgraded_to_reject")
+                        by_login[login] = _captive_reject_work_item(login, sub.status)
+                    else:
+                        logger.error(
+                            "ambiguous active IPv4 ledger for login %s "
+                            "(subscription %s): %s. Preserving the existing "
+                            "RADIUS rows; the assignment owner must "
+                            "adjudicate.",
+                            login,
+                            sub.id,
+                            ", ".join(ambiguous_addresses),
+                        )
+                        preserve_usernames.add(login)
                     continue
             delegated_ipv6 = pd_by_subscription.get(sub.id)
             if (

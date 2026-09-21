@@ -18,11 +18,12 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.models.customer_subledger import (
     CustomerSubledgerAuthorityCutover,
+    CustomerSubledgerOpeningCorrection,
     CustomerSubledgerOpeningPosition,
 )
 from app.models.prepaid_funding import (
@@ -957,6 +958,21 @@ def verified_prepaid_funding_balances(
         if subledger_authority_active
         else {}
     )
+    opening_correction_totals: dict[UUID, Decimal] = {}
+    if subledger_openings:
+        for opening_id, delta in db.execute(
+            select(
+                CustomerSubledgerOpeningCorrection.opening_position_id,
+                func.sum(CustomerSubledgerOpeningCorrection.delta),
+            )
+            .where(
+                CustomerSubledgerOpeningCorrection.opening_position_id.in_(
+                    tuple(opening.id for opening in subledger_openings.values())
+                )
+            )
+            .group_by(CustomerSubledgerOpeningCorrection.opening_position_id)
+        ):
+            opening_correction_totals[opening_id] = round_money(Decimal(delta))
     accounts = {
         account.id: account
         for account in db.scalars(
@@ -976,7 +992,10 @@ def verified_prepaid_funding_balances(
         subledger_opening = subledger_openings.get(account_id)
         baseline = baselines.get(account_id)
         if subledger_opening is not None:
-            opening_amount = round_money(Decimal(subledger_opening.legacy_position))
+            opening_amount = round_money(
+                Decimal(subledger_opening.legacy_position)
+                + opening_correction_totals.get(subledger_opening.id, Decimal("0"))
+            )
             position_at = _stored_utc(subledger_opening.occurred_at)
         elif baseline is None:
             created_at = accounts[account_id].created_at

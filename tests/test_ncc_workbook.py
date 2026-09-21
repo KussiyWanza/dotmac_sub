@@ -1,9 +1,9 @@
-"""NCC complaints-return workbook: OOXML structure, filename, validation.
+"""NCC complaints-return artifact: CSV filing plus workbook validation.
 
-The workbook is what a compliance officer files, so the tests care about the
-two things they rely on: that the file opens (valid zip, expected parts, the
-hidden Lookups sheet the validation formulas point at) and that the
-VALIDATION STATUS column tells the truth about a row.
+The CSV is what a compliance officer files. The retained workbook checks still
+prove the validation shell opens (valid zip, expected parts, the hidden Lookups
+sheet the validation formulas point at) and that the VALIDATION STATUS column
+tells the truth about a row.
 
 Excel itself is not in the loop — we introspect the package with zipfile.
 """
@@ -14,8 +14,6 @@ import io
 import re
 import zipfile
 from datetime import UTC, datetime
-
-import pytest
 
 from app.services import ncc_workbook
 
@@ -206,20 +204,24 @@ def test_empty_record_set_still_builds():
 # ── filename ─────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(
-    ("day", "expected_week"),
-    [(1, 1), (7, 1), (8, 2), (17, 3), (28, 4), (31, 5)],
-)
-def test_export_filename_week_matches_ncc_submission_format(day, expected_week):
-    name = ncc_workbook.export_filename(datetime(2026, 7, day, tzinfo=UTC))
-    assert name == f"Dotmac_Week{expected_week}_202607.xlsx"
-    assert re.fullmatch(r"[A-Za-z]+_Week\d_\d{6}\.xlsx", name)
+def test_export_filename_week_matches_ncc_submission_format():
+    name = ncc_workbook.export_filename(datetime(2026, 9, 6, tzinfo=UTC))
+    assert name == "36_2026_COMPLAINTS_DOTMAC.csv"
+    assert re.fullmatch(r"\d{2}_\d{4}_COMPLAINTS_DOTMAC\.csv", name)
+
+
+def test_export_filename_for_window_uses_inclusive_reporting_end():
+    name = ncc_workbook.export_filename_for_window(
+        start=datetime(2026, 8, 31, tzinfo=UTC),
+        end=datetime(2026, 9, 7, tzinfo=UTC),
+    )
+    assert name == "36_2026_COMPLAINTS_DOTMAC.csv"
 
 
 def test_export_filename_assumes_utc_for_naive_input():
     assert (
-        ncc_workbook.export_filename(datetime(2026, 7, 17))
-        == "Dotmac_Week3_202607.xlsx"
+        ncc_workbook.export_filename(datetime(2026, 9, 6))
+        == "36_2026_COMPLAINTS_DOTMAC.csv"
     )
 
 
@@ -390,6 +392,17 @@ def test_template_export_rows_uses_the_validated_template_headers():
     assert rows[0]["created_date_time *"] == "01/07/2026 09:00:00"
     assert rows[0]["Ticket_ID *"] == "DOTMAC-20260701-1234"
     assert "_status_variant" not in rows[0]
+
+
+def test_build_csv_emits_one_provider_file_with_template_headers():
+    rows = ncc_workbook.template_export_rows([_valid_record()])
+    content = ncc_workbook.build_csv(rows, list(ncc_workbook.TEMPLATE_COLUMNS))
+
+    text = content.decode("utf-8")
+    assert text.splitlines()[0] == ",".join(ncc_workbook.TEMPLATE_COLUMNS)
+    assert "2348031234567" in text
+    assert "DOTMAC-20260701-1234" in text
+    assert content[:4] != b"PK\x03\x04"
 
 
 def test_column_widths_are_wider_for_long_text_columns():

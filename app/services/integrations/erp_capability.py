@@ -7,6 +7,7 @@ connector can implement the same contracts without changing Sub domain callers.
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
@@ -15,12 +16,22 @@ from sqlalchemy.orm import Session
 from app.schemas.erp_staff_access_webhook import ErpStaffAccessProjectionPage
 from app.services.backoffice import ExpenseCategoryView
 from app.services.dotmac_erp.client import DotMacERPError, DotMacERPTransientError
+from app.services.dotmac_erp.expense_form_contracts import (
+    ExpenseApproverOption,
+    ExpenseBankOption,
+    ExpenseDestinationMode,
+    ExpenseProfileDestination,
+    InspectExpenseDestination,
+    VerifiedExpenseDestination,
+    VerifyExpenseDestination,
+)
 from app.services.dotmac_erp.operational_contracts import (
     ErpOperationalSyncCommand,
     ErpOperationalSyncOutcome,
 )
 from app.services.integrations import installations
 from app.services.integrations.backoffice_contracts import (
+    ERP_EXPENSE_FORM_CAPABILITY,
     ERP_INVENTORY_CAPABILITY,
     ERP_OPERATIONAL_SYNC_CAPABILITY,
     ERP_OUTBOX_CAPABILITY,
@@ -29,11 +40,36 @@ from app.services.integrations.backoffice_contracts import (
     ERP_STATUS_CAPABILITY,
     WORKFORCE_ATTENDANCE_PUNCH_CAPABILITY,
     WORKFORCE_ATTENDANCE_READ_CAPABILITY,
+    ErpExpenseApprovalCommand,
+    ErpExpenseClaimDraftCommand,
+    ErpExpenseClaimDraftOutcome,
+    ErpExpenseClaimTransitionOutcome,
+    ErpExpensePaymentCommand,
+    ErpExpensePaymentOutcome,
+    ErpExpenseReceiptUploadCommand,
+    ErpExpenseReceiptUploadOutcome,
+    ErpExpenseRejectionCommand,
+    ErpExpenseSubmissionCommand,
 )
 from app.services.integrations.runtime import OperationStatus, OperationTrigger
 from app.services.integrations.runtime_execution import (
     build_execution_context,
     make_operation_executor,
+)
+
+# Provider-neutral error names exposed to domain callers. The facade keeps the
+# historical concrete exception identities for existing transport consumers.
+ErpCapabilityError = DotMacERPError
+ErpCapabilityTransientError = DotMacERPTransientError
+
+__all__ = (
+    "ErpCapabilityError",
+    "ErpCapabilityTransientError",
+    "ExpenseApproverOption",
+    "ExpenseBankOption",
+    "ExpenseDestinationMode",
+    "InspectExpenseDestination",
+    "VerifyExpenseDestination",
 )
 
 
@@ -158,6 +194,127 @@ class ErpCapabilityClient:
             correlation_id=f"erp-invoice-attachment:{key}",
         )
 
+    def create_expense_claim_draft(
+        self,
+        command: ErpExpenseClaimDraftCommand,
+        *,
+        idempotency_key: str,
+    ) -> ErpExpenseClaimDraftOutcome:
+        response = self._execute(
+            ERP_OUTBOX_CAPABILITY,
+            "create_expense_claim_draft",
+            {
+                "payload": command.model_dump(mode="json", exclude_none=True),
+                "idempotency_key": idempotency_key,
+            },
+            trigger=OperationTrigger.scheduled,
+            correlation_id=f"erp-expense-draft:{idempotency_key}",
+        )
+        return ErpExpenseClaimDraftOutcome.model_validate(response)
+
+    def upload_expense_receipt(
+        self,
+        command: ErpExpenseReceiptUploadCommand,
+    ) -> ErpExpenseReceiptUploadOutcome:
+        response = self._execute(
+            ERP_OUTBOX_CAPABILITY,
+            "upload_expense_receipt",
+            {
+                "source_claim_id": str(command.source_claim_id),
+                "item_id": str(command.item_id),
+                "payload": command.model_dump(
+                    mode="json",
+                    exclude={"source_claim_id", "item_id"},
+                ),
+                "idempotency_key": command.idempotency_key,
+            },
+            trigger=OperationTrigger.scheduled,
+            correlation_id=f"erp-expense-receipt:{command.idempotency_key}",
+        )
+        return ErpExpenseReceiptUploadOutcome.model_validate(response)
+
+    def submit_expense_claim(
+        self,
+        command: ErpExpenseSubmissionCommand,
+        *,
+        idempotency_key: str,
+    ) -> ErpExpenseClaimTransitionOutcome:
+        response = self._execute(
+            ERP_OUTBOX_CAPABILITY,
+            "submit_expense_claim",
+            {
+                "source_claim_id": str(command.source_claim_id),
+                "payload": {},
+                "idempotency_key": idempotency_key,
+            },
+            trigger=OperationTrigger.scheduled,
+            correlation_id=f"erp-expense-submit:{idempotency_key}",
+        )
+        return ErpExpenseClaimTransitionOutcome.model_validate(response)
+
+    def approve_expense_claim(
+        self,
+        command: ErpExpenseApprovalCommand,
+        *,
+        idempotency_key: str,
+    ) -> ErpExpenseClaimTransitionOutcome:
+        response = self._execute(
+            ERP_OUTBOX_CAPABILITY,
+            "approve_expense_claim",
+            {
+                "source_claim_id": str(command.source_claim_id),
+                "payload": command.model_dump(
+                    mode="json", exclude={"source_claim_id"}, exclude_none=True
+                ),
+                "idempotency_key": idempotency_key,
+            },
+            trigger=OperationTrigger.scheduled,
+            correlation_id=f"erp-expense-approve:{idempotency_key}",
+        )
+        return ErpExpenseClaimTransitionOutcome.model_validate(response)
+
+    def reject_expense_claim(
+        self,
+        command: ErpExpenseRejectionCommand,
+        *,
+        idempotency_key: str,
+    ) -> ErpExpenseClaimTransitionOutcome:
+        response = self._execute(
+            ERP_OUTBOX_CAPABILITY,
+            "reject_expense_claim",
+            {
+                "source_claim_id": str(command.source_claim_id),
+                "payload": command.model_dump(
+                    mode="json", exclude={"source_claim_id"}, exclude_none=True
+                ),
+                "idempotency_key": idempotency_key,
+            },
+            trigger=OperationTrigger.scheduled,
+            correlation_id=f"erp-expense-reject:{idempotency_key}",
+        )
+        return ErpExpenseClaimTransitionOutcome.model_validate(response)
+
+    def initiate_expense_payment(
+        self,
+        command: ErpExpensePaymentCommand,
+        *,
+        idempotency_key: str,
+    ) -> ErpExpensePaymentOutcome:
+        response = self._execute(
+            ERP_OUTBOX_CAPABILITY,
+            "initiate_expense_payment",
+            {
+                "source_claim_id": str(command.source_claim_id),
+                "payload": command.model_dump(
+                    mode="json", exclude={"source_claim_id"}, exclude_none=True
+                ),
+                "idempotency_key": idempotency_key,
+            },
+            trigger=OperationTrigger.scheduled,
+            correlation_id=f"erp-expense-payment:{idempotency_key}",
+        )
+        return ErpExpensePaymentOutcome.model_validate(response)
+
     def list_inventory(self, **params) -> dict:
         return self._execute(
             ERP_INVENTORY_CAPABILITY,
@@ -213,6 +370,69 @@ class ErpCapabilityClient:
             raise DotMacERPError("ERP expense categories response is invalid")
         return tuple(_expense_category(item) for item in items)
 
+    def get_expense_approvers(
+        self, *, requested_by_email: str
+    ) -> tuple[ExpenseApproverOption, ...]:
+        output = self._execute(
+            ERP_EXPENSE_FORM_CAPABILITY,
+            "list_expense_approvers",
+            {"requested_by_email": requested_by_email},
+            trigger=OperationTrigger.interactive,
+            correlation_id="erp-expenses:approvers",
+        )
+        return tuple(
+            ExpenseApproverOption.model_validate(item)
+            for item in output.get("items") or []
+        )
+
+    def get_expense_banks(self) -> tuple[ExpenseBankOption, ...]:
+        output = self._execute(
+            ERP_EXPENSE_FORM_CAPABILITY,
+            "list_expense_banks",
+            {},
+            trigger=OperationTrigger.interactive,
+            correlation_id="erp-expenses:banks",
+        )
+        return tuple(
+            ExpenseBankOption.model_validate(item) for item in output.get("items") or []
+        )
+
+    def get_expense_profile_destination(
+        self, *, requested_by_email: str
+    ) -> ExpenseProfileDestination:
+        output = self._execute(
+            ERP_EXPENSE_FORM_CAPABILITY,
+            "get_expense_profile_destination",
+            {"requested_by_email": requested_by_email},
+            trigger=OperationTrigger.interactive,
+            correlation_id="erp-expenses:profile-destination",
+        )
+        return ExpenseProfileDestination.model_validate(output)
+
+    def verify_expense_destination(
+        self, command: VerifyExpenseDestination
+    ) -> VerifiedExpenseDestination:
+        output = self._execute(
+            ERP_EXPENSE_FORM_CAPABILITY,
+            "verify_expense_destination",
+            {"payload": command.model_dump(mode="json", exclude_none=True)},
+            trigger=OperationTrigger.interactive,
+            correlation_id=f"erp-expenses:verify:{command.source_claim_id}",
+        )
+        return VerifiedExpenseDestination.model_validate(output)
+
+    def inspect_expense_destination(
+        self, command: InspectExpenseDestination
+    ) -> VerifiedExpenseDestination:
+        output = self._execute(
+            ERP_EXPENSE_FORM_CAPABILITY,
+            "inspect_expense_destination",
+            {"payload": command.model_dump(mode="json")},
+            trigger=OperationTrigger.interactive,
+            correlation_id=f"erp-expenses:inspect:{command.source_claim_id}",
+        )
+        return VerifiedExpenseDestination.model_validate(output)
+
     def list_available_serials(self, **params) -> dict:
         return self._execute(
             ERP_INVENTORY_CAPABILITY,
@@ -256,12 +476,16 @@ class ErpCapabilityClient:
         self,
         *,
         entity: Literal["leave_restriction", "account_status"],
+        updated_after: datetime | None = None,
         limit: int = 500,
     ) -> ErpStaffAccessProjectionPage:
+        params: dict[str, object] = {"entity": entity, "limit": limit}
+        if updated_after is not None:
+            params["updated_after"] = updated_after.isoformat()
         response = self._execute(
             ERP_STAFF_ACCESS_RECONCILE_CAPABILITY,
             "read_staff_access_projection",
-            {"entity": entity, "limit": limit},
+            params,
             trigger=OperationTrigger.reconcile,
             correlation_id=f"erp-staff-access:{entity}",
         )

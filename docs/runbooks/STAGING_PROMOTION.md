@@ -34,9 +34,31 @@ What was removed is the merge, not the proof.
    The build also derives `/app/product-manifest.json` from the image's exact
    `SUB_ASSEMBLY` and `VERSION`. The OCI digest therefore binds the canonical
    manifest bytes. The workflow pulls that exact digest, verifies the embedded
-   document inside the image, and publishes `candidate.json` schema v2 plus
+   document inside the image, and publishes `candidate.json` schema v3 plus
    `product-manifest.json`; the typed candidate record carries the manifest's
    `product_manifest_digest`.
+
+   **If a `candidate-<sha>` tag already exists for this commit** (most often
+   because an earlier run for the same SHA built and pushed successfully but
+   then failed a later step, such as the post-push digest-visibility check),
+   the workflow does not refuse to run again and it does not rebuild. It reads
+   the existing image's own provenance labels
+   (`org.opencontainers.image.revision`, `io.dotmac.release.source-tree`,
+   `io.dotmac.release.build-run`), looks for a prior `candidate.json` from an
+   earlier successful run of this same workflow for this same commit, and:
+   - if the labels agree with this commit and any prior evidence found agrees
+     with the registry digest, it **reuses** the existing image: no rebuild, no
+     re-push, but the candidate evidence is still re-derived from the image
+     itself and re-uploaded under the CURRENT run (this run's artifact is what
+     `Deploy main to staging` actually downloads, so evidence must exist under
+     this run's ID even when nothing was rebuilt);
+   - if the labels disagree with this commit, are unreadable, or a prior
+     evidence document disagrees with the registry digest, it **fails closed**
+     naming the exact disagreement — never silently rebuilds over a
+     conflicting tag, and never permanently blocks the commit either.
+   Every field in the re-derived evidence document except which run wrote it
+   is recoverable from the immutable image; a resume needs no state carried
+   over from the failed run.
 5. Let `Deploy main to staging` deploy that exact digest, then complete staging
    acceptance against `http://10.120.121.20:8001`. **That acceptance covers
    application behaviour only — it does not exercise network equipment.** See
@@ -71,10 +93,34 @@ production promotion still authorizes and deploys the immutable digest; the
 existing semver tag is not moved when it already points at an older digest, and
 only `latest` is advanced to the authorized production digest.
 
-Schema-v1 release evidence predates the product-manifest identity and is not
-accepted by the schema-v2 readers. Do not combine evidence from the two schema
-versions or retrofit a manifest onto an old candidate: select the current green
-`main` SHA and build a new candidate once.
+Schema-v1 release evidence predates the product-manifest identity, and
+schema-v2 evidence predates the `build_run_id`/`evidence_run_id` split; neither
+is accepted by the current schema-v3 readers. Do not combine evidence across
+schema versions or retrofit a manifest onto an old candidate: select the
+current green `main` SHA and build a new candidate once.
+
+**Schema v3's two run-id fields are separate identities, never
+interchangeable:**
+
+- `build_run_id` — the run that BUILT the image. Baked into the image itself
+  as the `io.dotmac.release.build-run` label, and never rewritten. This is
+  what `Deploy main to staging` compares against the deployed container's own
+  label.
+- `evidence_run_id` — the run that wrote/uploaded THIS `candidate.json`
+  document. On a fresh build the two are equal. On a resumed run that reuses a
+  previously published image (see above), they diverge: the image (and
+  `build_run_id`) still name the original build, while `evidence_run_id` names
+  the resume run whose artifact was actually downloaded. This is what a
+  downstream workflow's "does this artifact match the run I just downloaded
+  it from" check compares against.
+
+The v1-to-v2 migration conflated these into one `build_run_id` field, which
+worked only because build and evidence always happened in the same run. A
+production incident on 2026-09-09 — a successful build whose post-push
+digest-visibility check then failed on a transient GHCR propagation delay —
+showed that a resume needs to write evidence under a different run than the
+one that built the image, and the single overloaded field could not carry
+both meanings at once.
 
 ## Release Freeze
 
@@ -84,16 +130,30 @@ freeze is intentionally narrow: feature branch pushes, pull request creation,
 and pull request updates continue, but no pull request should merge into `main`
 while `Build release candidate once`, `Deploy main to staging`,
 `Promote staged digest for production`, or `Deploy authorized digest to
-production` is queued or running.
+production` is queued, running, or awaiting approval.
 
 This freeze carries more weight on a single trunk than it did with a `dev` hop:
 `main` is now both the branch people merge into and the branch a candidate is
 selected from, so an unfrozen merge moves the release base directly. The
 `Release Freeze Gate` workflow is the required pull-request check that enforces
 this boundary on `main`. It reads active GitHub Actions runs and fails
-only when one of those release-control workflows is queued or in progress. It
-does not inspect open pull requests and does not reinterpret the selected
-candidate; the candidate SHA and OCI digest remain the deployment authority.
+only when one of those release-control workflows is queued, in progress, or
+awaiting approval. It does not inspect open pull requests and does not
+reinterpret the selected candidate; the candidate SHA and OCI digest remain
+the deployment authority.
+
+**Known limitation, not an oversight.** The gate's result is cached at a pull
+request's head SHA and is only re-evaluated when that PR's own branch moves --
+not when a release enters its approval wait after the check already reported
+green. While a promotion or deploy is sitting in its production approval-wait
+window, avoid merging other pull requests even if the freeze gate still shows
+green on them. Real merge-time enforcement would need a GitHub merge queue,
+which this repository cannot currently enable safely (see the header comment
+in `release-freeze-gate.yml`). What actually protects production if this
+discipline lapses is `release-promotion.yml`'s authorization pinning
+(`ref: ${{ github.sha }}`, not `ref: main`) and its post-approval reachability
+re-proof against main's live tip -- confirmed live in production 2026-09-09,
+these close the window this freeze gate cannot.
 
 ### One-time workflow bootstrap
 
@@ -154,6 +214,13 @@ release.
 | Feature or fix into `main` | Squash |
 | Rolling version bump into `main` | Squash |
 | `integration/**` or `consolidate/**` batch into `main` | Merge commit |
+
+A rolling version bump changes `pyproject.toml`, which is the complete source
+of the `dependency-manifest` Kernel composition observation. The version bump
+generator therefore refreshes both dependency-manifest digests in
+`docs/kernel-runtime-composition.json` in the same generated commit. A digest
+mismatch is a failed generation, not a lint exception; do not disable or skip
+the composition-observation check to merge a bump.
 
 A batch branch keeps a merge commit because its individual commits carry the
 migration sequence that `migration_sequence_gate.py` reads; squashing a batch
@@ -282,16 +349,21 @@ The candidate workflow requires the exact main SHA to have green CI and Mobile
 CI, refuses to overwrite an existing `candidate-<full-sha>` bootstrap tag,
 builds only on a GitHub-hosted runner, and uploads
 `release-candidate-evidence`. That typed document binds the source commit, Git
-tree, OCI digest, source-CI conclusion, and build run ID.
+tree, OCI digest, source-CI conclusion, `build_run_id`, and `evidence_run_id`.
 Open pull requests, including rolling version-bump pull requests,
 are not candidate authority once that immutable evidence exists.
 
-The staging workflow downloads evidence only from its triggering run,
-independently recomputes the candidate tree, waits for the exact source checks,
-rejects stale or mismatched evidence, verifies that Celery Beat is absent, and
-verifies the private `10.120.121.20:8001` binding. It invokes
+The staging workflow downloads evidence only from its triggering run and
+verifies the document's `evidence_run_id` against that same triggering run —
+never `build_run_id`, which may legitimately name an earlier resumed build. It
+independently recomputes the candidate tree, waits for the exact source
+checks, rejects stale or mismatched evidence, verifies that Celery Beat is
+absent, and verifies the private `10.120.121.20:8001` binding. It invokes
 `scripts/deploy_staging.sh` with the digest and verifies the running image
-reference plus revision, source-tree, and build-run labels. After successful
+reference plus revision, source-tree, and build-run labels — the deployed
+container's `io.dotmac.release.build-run` label is compared against
+`build_run_id`, the run that produced the image, not the run that deployed it.
+After successful
 health checks, a GitHub-hosted job uploads `staging-acceptance-<source-sha>` for
 the same commit, tree, and digest. The deployment owner independently repeats
 the GitHub API decision for the image's full OCI revision before any database
@@ -310,8 +382,12 @@ are both recorded on `main` — the dispatched candidate because that is the
 branch it is dispatched against, and the staging run because a `workflow_run`
 is always attributed to the default branch where the workflow executes.
 Production promotion validates those transport branches independently from the
-typed staging acceptance, which binds the exact candidate revision, tree,
-digest, and build run.
+typed staging acceptance, which binds the exact candidate revision, tree, and
+digest. It downloads the candidate evidence artifact from the supplied
+candidate-build run ID and checks that run against the document's
+`evidence_run_id`; `build_run_id` continues to flow unchanged into the
+production authorization document, identifying only which run built the
+deployed image.
 
 `Deploy authorized digest to production` remains fail-closed until the
 repository variable `PRODUCTION_DEPLOY_ENABLED` is exactly `true`. The

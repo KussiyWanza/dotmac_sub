@@ -102,7 +102,13 @@ def test_refresher_projects_reconciled_erp_observation_idempotently(db_session):
     )
     db_session.refresh(invoice)
 
-    assert first == {"processed": 1, "observed": 1, "changed": 1, "errors": []}
+    assert first == {
+        "processed": 1,
+        "observed": 1,
+        "changed": 1,
+        "skipped_not_owned": 0,
+        "errors": [],
+    }
     assert invoice.payment_status == "partially_paid"
     assert invoice.payment_total_amount == Decimal("100000.000000")
     assert invoice.payment_amount_paid == Decimal("40000.000000")
@@ -115,7 +121,13 @@ def test_refresher_projects_reconciled_erp_observation_idempotently(db_session):
         client=client,  # type: ignore[arg-type]
         observed_at=observed_at,
     )
-    assert second == {"processed": 1, "observed": 1, "changed": 0, "errors": []}
+    assert second == {
+        "processed": 1,
+        "observed": 1,
+        "changed": 0,
+        "skipped_not_owned": 0,
+        "errors": [],
+    }
     assert client.calls == [str(invoice.id), str(invoice.id)]
 
 

@@ -496,6 +496,15 @@ class AddressUpdate(BaseModel):
     is_primary: bool | None = None
 
 
+class CustomerServiceLocationUpdate(AddressBase):
+    """Typed direct-edit contract for a customer service address and pin."""
+
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    actor_id: UUID | None = None
+    actor_name: str | None = Field(default=None, max_length=160)
+
+
 class AddressRead(AddressBase):
     model_config = ConfigDict(from_attributes=True)
 

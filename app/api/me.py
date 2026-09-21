@@ -166,7 +166,10 @@ from app.services.bandwidth import (
     bandwidth_samples,
     with_subscriber_directions,
 )
-from app.services.customer_context import require_customer_account_id
+from app.services.customer_context import (
+    require_customer_account_id,
+    resolve_customer_context,
+)
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 from app.services.events.handlers.owner_session import owner_session
@@ -496,7 +499,9 @@ def reboot_my_subscription_device(
     """Reboot the exact device currently assigned to the caller's service."""
     from app.services.customer_device_commands import (
         CustomerDeviceCommandError,
+        CustomerDeviceCommandKind,
         reboot_subscription_device,
+        record_device_command_refusal,
     )
 
     try:
@@ -507,6 +512,12 @@ def reboot_my_subscription_device(
             actor_id=str(principal.get("id") or _subscriber_id(principal)),
         )
     except CustomerDeviceCommandError as exc:
+        record_device_command_refusal(
+            kind=CustomerDeviceCommandKind.reboot,
+            code=exc.code,
+            correlation_id=str(subscription_id),
+            details=exc.details,
+        )
         status_code = 404 if exc.code == "subscription_not_found" else 409
         raise HTTPException(
             status_code=status_code,
@@ -528,11 +539,13 @@ def update_my_subscription_wifi(
     """Update Wi-Fi on the exact device assigned to the caller's service."""
     from app.services.customer_device_commands import (
         CustomerDeviceCommandError,
+        CustomerDeviceCommandKind,
+        record_device_command_refusal,
         update_subscription_wifi,
     )
 
+    command_id = uuid4()
     try:
-        command_id = uuid4()
         with owner_session(db) as owner_db:
             return update_subscription_wifi(
                 owner_db,
@@ -552,6 +565,16 @@ def update_my_subscription_wifi(
                 password=payload.password,
             )
     except CustomerDeviceCommandError as exc:
+        # Recorded here, outside the owner-command transaction
+        # ``update_subscription_wifi``/``configure_customer_wifi`` already
+        # rolled back on this exception -- see
+        # ``record_device_command_refusal``'s docstring.
+        record_device_command_refusal(
+            kind=CustomerDeviceCommandKind.wifi_update,
+            code=exc.code,
+            correlation_id=str(command_id),
+            details=exc.details,
+        )
         status_code = 404 if exc.code == "subscription_not_found" else 409
         raise HTTPException(
             status_code=status_code,
@@ -1325,46 +1348,61 @@ def my_quote_request(
     "/quotes/{quote_id}/deposit/initiate", response_model=QuoteDepositInitiateResponse
 )
 def my_quote_deposit_initiate(
-    quote_id: str,
+    quote_id: UUID,
     payload: QuoteDepositInitiateRequest,
     db: Session = Depends(get_db),
     principal: dict = Depends(require_user_auth),
 ):
     """Start paying a quote's installation deposit. Raises a deposit invoice and
-    returns a checkout intent via the customer's existing pay flow (any provider)."""
-    subscriber_id = _subscriber_id(principal)
+    returns a Paystack checkout intent through the protected typed payment flow."""
     customer = _customer(db, principal)
-    return quote_deposits.initiate_deposit(
-        db,
-        customer,
-        subscriber_id,
-        quote_id,
-        provider=payload.provider,
-        redirect_url=payload.redirect_url,
-    )
+    try:
+        outcome = quote_deposits.initiate_quote_deposit(
+            db,
+            resolve_customer_context(db, customer),
+            quote_deposits.InitiateQuoteDepositCommand(
+                quote_id=quote_id,
+                idempotency_key=payload.idempotency_key,
+                redirect_url=payload.redirect_url or "dotmac://success",
+            ),
+        )
+    except quote_deposits.QuoteDepositError as exc:
+        raise HTTPException(status_code=409, detail=exc.message) from exc
+    return outcome.to_response()
 
 
 @router.post(
     "/quotes/{quote_id}/deposit/verify", response_model=QuoteDepositVerifyResponse
 )
 def my_quote_deposit_verify(
-    quote_id: str,
+    quote_id: UUID,
     payload: QuoteDepositVerifyRequest,
     db: Session = Depends(get_db),
     principal: dict = Depends(require_user_auth),
 ):
-    """Verify the deposit payment; on full settlement the quote is accepted in the
-    CRM (which triggers the sales order + install project)."""
-    subscriber_id = _subscriber_id(principal)
+    """Verify the scoped Paystack deposit; full settlement accepts the Quote and
+    triggers the existing sales-order and installation-project flow."""
     customer = _customer(db, principal)
-    return quote_deposits.verify_deposit(
-        db,
-        customer,
-        subscriber_id,
-        quote_id,
-        reference=payload.reference,
-        provider=payload.provider,
+    customer_context = resolve_customer_context(db, customer)
+    try:
+        outcome = quote_deposits.verify_quote_deposit(
+            db,
+            customer_context,
+            quote_deposits.VerifyQuoteDepositCommand(
+                quote_id=quote_id,
+                reference=payload.reference,
+            ),
+        )
+    except quote_deposits.QuoteDepositError as exc:
+        raise HTTPException(status_code=409, detail=exc.message) from exc
+    quote = selfserve_service.selfserve_quotes.get_for_subscriber(
+        db, customer_context.require_account_id(), str(quote_id)
     )
+    return {
+        "paid": outcome.paid,
+        "reference": outcome.reference,
+        "quote": selfserve_service.build_portal_quote_payload(db, quote),
+    }
 
 
 @router.post("/referrals", response_model=ReferAFriendResponse, status_code=201)

@@ -153,7 +153,9 @@ def retire_ont_reconcile_projection_for_inventory(
         )
         or ont.sync_status is not OntSyncStatus.synced
     )
-    ont.sync_status = OntSyncStatus.synced
+    from app.services.network.ont_status import set_sync_status
+
+    set_sync_status(ont, OntSyncStatus.synced, reason="inventory_projection_retired")
     ont.last_error = None
     ont.last_reconciled_at = None
     ont.last_reconcile_started_at = None

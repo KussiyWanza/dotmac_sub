@@ -325,6 +325,13 @@ covered or unresolved services. Restoration releases a prepaid lock only when
 all due service is fundable or the exact locked subscription is currently
 covered.
 
+The scheduled prepaid sweep acquires each candidate account with a non-blocking
+row lock. A concurrently owned account is deferred and re-evaluated from
+authoritative facts on the next run; it is never treated as a safe no-action
+result and it does not make the whole sweep wait for PostgreSQL's lock timeout.
+The sweep publishes the bounded `lock_deferred` signal, and persistent deferral
+is a database-pressure alert requiring correlation with the blocking owner.
+
 ### Postpaid
 
 Postpaid dunning:
@@ -413,6 +420,70 @@ credentials. Hard reject therefore remains buildable when a password is
 missing or undecryptable. Active or captive access that cannot be built is
 reported as `unbuildable` and its existing external row is preserved; a scoped
 repair cannot delete a paying customer's only working row and report success.
+
+### Non-RADIUS connectivity enforcement
+
+Everything above assumes `Subscription.login` exists. A subscription with
+`login IS NULL` never enters RADIUS population or reject-state projection
+(`radius_population.py`, `radius_projection_planner.py` both filter
+`Subscription.login.isnot(None)`), so it has no way to be reached by the
+RADIUS reject/CoA path described above. Its only possible enforcement is
+`enforcement.apply_subscription_address_list_block` — the MikroTik
+address-list backup — which itself needs either an open
+`RadiusAccountingSession` or a populated `provisioning_nas_device_id` to know
+which NAS to block on. A subscription with none of `login`,
+`provisioning_nas_device_id`, or an open accounting session has **no
+enforceable NAS identity at all**: neither mechanism can act, and this is now
+logged as `address_list_block_unenforceable` (see that function's docstring)
+rather than silently returning 0.
+
+**That backup does not currently run for this exact cohort, event-driven.**
+`radius.reconcile_subscription_connectivity` returns disposition
+`missing_login` for any subscription in `ACTIVE_STATUSES | BLOCKED_STATUSES`
+with no login; `SubscriptionConnectivityOutcome.ok` is `True` only for
+disposition `projected`. `events.handlers.enforcement._enforce_subscription_block`
+only enqueues `enforcement_scheduled.cleanup_subscription_block_sessions` —
+the task that calls `apply_subscription_address_list_block` — when
+`projection_ready` (`result.ok`) is `True`; otherwise it raises
+`_raise_incomplete` and the task is never enqueued. For a non-RADIUS
+subscription this condition is never satisfied, so the one path that could
+reach it today is gated shut precisely for this cohort. The only other
+current caller of `apply_subscription_address_list_block` is
+`cleanup_subscription_on_suspend`, which (see that function's docstring) has
+no caller in `app/` at all. **In today's code, a `subscription_suspended`/
+`disabled`/`expired` event never results in an address-list block attempt
+for a `login IS NULL` subscription** — the new
+`address_list_block_unenforceable` warning is correct and will fire if this
+function is ever reached for such a subscription (e.g. a direct/administrative
+call, or a future fix to the gap below), but the event-driven path does not
+reach it today, so do not assume the warning alone gives ongoing coverage of
+this cohort.
+
+**Owner, going forward:** `enforcement.apply_subscription_address_list_block`
+is the intended enforcement action for this population once reachable;
+`connection_type_provisioning.resolve_connection_type`/
+`build_nas_provisioning_commands` own translating that block into NAS-specific
+commands once a `provisioning_nas_device_id` exists. Neither owns *acquiring*
+that NAS identity — that is a provisioning/data-completeness precondition,
+not a network-enforcement decision, and belongs wherever a non-PPPoE
+subscription is first provisioned (the same place that should be setting
+`provisioning_nas_device_id` today and currently is not, for a known cohort
+inherited from the retired Splynx billing system — see
+`517_retire_splynx_staging_schema.py`; `splynx_service_id`/`router_id` are
+carried display fields only, not FKs into `nas_devices`/`RouterInventory`,
+and identify no current NAS). Fixing that acquisition gap for the existing
+cohort is a data investigation/backfill task, not a code change to this
+module — do not invent a second enforcement path or a guess-based NAS
+assignment to work around a missing identity.
+
+**Open follow-up, not done here:** whether `_enforce_subscription_block`
+should also enqueue `cleanup_subscription_block_sessions` on disposition
+`missing_login` specifically (so the address-list-block fallback runs even
+though the RADIUS projection correctly stays gated) is a real option, but is
+deliberately left for a reviewed follow-up rather than made here — it changes
+live event-handling behavior for the whole non-RADIUS cohort, not just
+logging, and deserves its own scoped change and test rather than riding along
+with a gap-investigation task.
 
 ## Account and RADIUS convergence
 

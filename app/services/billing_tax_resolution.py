@@ -76,6 +76,20 @@ def resolve_default_tax_application(db: Session) -> TaxApplication:
     return TaxApplication(str(raw).strip().lower())
 
 
+def resolve_active_tax_rate_id_for_percent(
+    db: Session, rate_percent: Decimal
+) -> UUID | None:
+    """Resolve one unambiguous active TaxRate for a recorded percentage."""
+
+    expected = Decimal(str(rate_percent)).quantize(Decimal("0.0001"))
+    matches = [
+        rate.id
+        for rate in db.scalars(select(TaxRate).where(TaxRate.is_active.is_(True))).all()
+        if Decimal(rate.rate or 0).quantize(Decimal("0.0001")) == expected
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _matching_catalog_tax_rate_id(
     rates: Sequence[TaxRate],
     vat_percent: Decimal | None,
@@ -230,6 +244,7 @@ def resolve_subscription_tax(
 __all__ = [
     "BillingTaxResolution",
     "BillingTaxSource",
+    "resolve_active_tax_rate_id_for_percent",
     "resolve_default_tax_application",
     "resolve_default_tax_rate_id",
     "resolve_subscription_tax",

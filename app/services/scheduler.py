@@ -34,6 +34,7 @@ PERMANENT_LIFECYCLE_TASKS = frozenset(
         "app.tasks.events.dispatch_pending_events",
         "app.tasks.events.retry_failed_events",
         "app.tasks.events.mark_stale_processing_events",
+        "app.tasks.integration_inbox.reclaim_stale_claims",
         "app.tasks.radius.run_enforcement_reconciler",
         "app.tasks.radius.reconcile_active_sessions",
         "app.tasks.radius_population.sync_device_login",

@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import cast
 
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
@@ -40,7 +39,7 @@ from app.services.audit_helpers import (
     resolve_actor_display_names,
 )
 from app.services.redis_client import redis_health_check
-from app.services.web_integrations import build_installed_integrations_data
+from app.services.web_integrations import installed_integration_projections
 from app.services.web_system_secrets import build_secrets_index_context
 
 logger = logging.getLogger(__name__)
@@ -400,40 +399,39 @@ def _secret_entries() -> list[dict[str, object]]:
 
 def _integration_entries(db: Session) -> list[dict[str, object]]:
     try:
-        rows = cast(
-            list[dict[str, object]],
-            build_installed_integrations_data(db).get("integrations", []),
-        )
+        rows = installed_integration_projections(db)
     except Exception:
         logger.warning("Control plane integration inspection failed", exc_info=True)
-        rows = []
+        rows = ()
     entries = []
     for row in rows:
-        installation = cast(IntegrationInstallation, row["installation"])
-        stats = cast(dict[str, object], row.get("health_stats") or {})
-        last_run_at = stats.get("last_run_at")
+        installation = row.installation
+        evidence = row.operational_evidence
+        evidence_summary = (
+            f"Attention required: {evidence.last_result}"
+            if evidence.needs_attention
+            else evidence.last_result
+        )
         entries.append(
             _entry(
                 key=f"installation:{installation.id}",
-                label=str(row.get("title") or installation.name),
+                label=row.title or installation.name,
                 value=(
                     f"{installation.state.title()}; "
-                    f"{installation.connector_key} / {installation.connector_version}"
+                    f"{installation.connector_key} / {installation.connector_version}; "
+                    f"{evidence_summary}"
                 ),
-                source="integration_installations database",
+                source=(
+                    "integration_installations database plus bounded integration "
+                    "run/delivery observations"
+                ),
                 precedence=(
                     "manifest pin → current config revision → enabled capability binding"
                 ),
-                scope=str(row.get("root") or "integrations"),
-                health=(
-                    "disabled"
-                    if installation.state != "enabled"
-                    else str(row["health"])
-                ),
-                last_change=last_run_at or installation.updated_at,
-                detail_url=str(
-                    row.get("manage_url") or "/admin/integrations/installed"
-                ),
+                scope=row.root,
+                health=("disabled" if installation.state != "enabled" else "unknown"),
+                last_change=evidence.observed_at or installation.updated_at,
+                detail_url=row.manage_url,
             )
         )
     return entries
@@ -592,7 +590,7 @@ def build_control_plane_context(db: Session) -> dict[str, object]:
         (
             "integrations",
             "Integrations",
-            "Connector state and health derived from runs and deliveries.",
+            "Installation state and bounded runtime evidence; no aggregate health claim.",
             _integration_entries(db),
         ),
         (

@@ -19,11 +19,15 @@ from fastapi import HTTPException
 from app.models.billing import Invoice, InvoiceStatus, Payment, PaymentProviderType
 from app.models.party import Party
 from app.models.project import ProjectTemplate
-from app.models.sales import Quote, SalesOrder
+from app.models.rbac import Role, SystemUserRole
+from app.models.sales import Quote, QuotePaymentReviewDecision, SalesOrder
 from app.models.subscriber import Subscriber
+from app.models.system_user import SystemUser
 from app.services import quote_deposits
+from app.services.db_session_adapter import db_session_adapter
+from app.services.owner_commands import CommandContext
 from app.services.payment_routing import GatewayOption
-from app.services.sales import selfserve
+from app.services.sales import quote_payment_review, selfserve
 from app.services.subscriber import _default_reseller_id
 
 _FAP = SimpleNamespace(id=uuid.uuid4(), name="NAP-041")
@@ -95,6 +99,44 @@ def test_quote_lifecycle_native(db_session):
     payload = selfserve.build_portal_quote_payload(db_session, quote)
     deposit = Decimal(payload["deposit_amount"])
     assert deposit > 0
+    assert payload["payment_review_status"] == "pending"
+    assert payload["can_pay_deposit"] is False
+
+    reviewer = SystemUser(
+        first_name="Flow",
+        last_name="Reviewer",
+        email=f"flow-reviewer-{uuid.uuid4().hex[:8]}@example.com",
+        is_active=True,
+    )
+    db_session.add(reviewer)
+    admin_role = db_session.query(Role).filter(Role.name == "admin").one_or_none()
+    if admin_role is None:
+        admin_role = Role(name="admin", description="Administrator", is_active=True)
+        db_session.add(admin_role)
+    db_session.flush()
+    db_session.add(SystemUserRole(system_user_id=reviewer.id, role_id=admin_role.id))
+    db_session.commit()
+    review_id = uuid.uuid4()
+    review_command = quote_payment_review.ReviewQuotePaymentCommand(
+        context=CommandContext.system(
+            actor=str(reviewer.id),
+            scope="sales:quote:review",
+            reason="Integration Quote payment review",
+            command_id=review_id,
+            idempotency_key=f"quote-payment-review:{quote.id}:{review_id}",
+        ),
+        quote_id=quote.id,
+        reviewer_system_user_id=reviewer.id,
+        expected_revision=0,
+        decision=QuotePaymentReviewDecision.approve,
+    )
+    db_session_adapter.release_read_transaction(db_session)
+    quote_payment_review.review_quote_payment(db_session, review_command)
+    db_session.refresh(quote)
+    assert (
+        selfserve.build_portal_quote_payload(db_session, quote)["can_pay_deposit"]
+        is True
+    )
 
     # Resolve the browser-safe page before the protected POST. This typed read
     # owns eligibility and amount resolution and must not create ledger state.

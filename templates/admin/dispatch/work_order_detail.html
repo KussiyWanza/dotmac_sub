@@ -1,5 +1,6 @@
 {% extends "layouts/admin.html" %}
 {% from "components/ui/macros.html" import ambient_background, detail_header, card, status_badge, status_presentation_badge %}
+{% from "components/field_notes.html" import field_note_list %}
 {% block title %}{{ work_order.public_id }} - Work Order{% endblock %}
 {% macro dt_value(value) %}{% if value %}{{ value.strftime('%Y-%m-%dT%H:%M') }}{% endif %}{% endmacro %}
 {% block content %}
@@ -21,6 +22,10 @@
 {% if work_order.address %}<div class="mt-5 border-t pt-4"><p class="text-xs font-semibold uppercase text-slate-500">Site</p><p class="mt-1">{{ work_order.address }}</p></div>{% endif %}
 {% if work_order.description %}<div class="mt-5 border-t pt-4"><p class="text-xs font-semibold uppercase text-slate-500">Description</p><p class="mt-1 whitespace-pre-wrap text-sm">{{ work_order.description }}</p></div>{% endif %}
 {% endcall %}
+{% call card('Work order notes', color='amber') %}
+<p class="mb-4 text-sm text-slate-500">Delivered notes recorded by the assigned technician in the field app.</p>
+{{ field_note_list(field_notes, total=field_note_total) }}
+{% endcall %}
 {% call card('Linked context', color='emerald') %}<div class="grid gap-3 sm:grid-cols-2">
 {% if origin_ticket %}<a href="/admin/support/tickets/{{ origin_ticket.id }}" class="rounded-xl border border-amber-200 p-4 hover:bg-amber-50"><span class="block text-xs font-semibold uppercase text-amber-700">Ticket</span><strong>{{ origin_ticket.number or origin_ticket.id }}</strong><span class="mt-1 block text-sm text-slate-500">{{ origin_ticket.title }}</span></a>{% endif %}
 {% if project %}<a href="/admin/projects/{{ project.id }}" class="rounded-xl border border-emerald-200 p-4 hover:bg-emerald-50"><span class="block text-xs font-semibold uppercase text-emerald-700">Project</span><strong>{{ project_label }}</strong></a>{% endif %}
@@ -29,7 +34,7 @@
 </div>{% endcall %}
 {% if can(request, 'operations:dispatch:write') %}{% call card('Edit planning details', color='slate') %}
 <form method="post" action="/admin/dispatch/work-orders/{{ work_order.public_id }}" class="grid gap-4 sm:grid-cols-2">{% include "components/forms/csrf_input.html" %}
-<label class="sm:col-span-2 text-sm font-semibold">Title<input name="title" value="{{ work_order.title }}" required maxlength="200" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"></label>
+<label class="sm:col-span-2 text-sm font-semibold">Title <span class="text-rose-600" aria-hidden="true">*</span><input name="title" value="{{ work_order.title }}" required maxlength="200" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"></label>
 <label class="text-sm font-semibold">Priority<select name="priority" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900">{% for option in priorities %}<option value="{{ option }}" {% if work_order.priority == option %}selected{% endif %}>{{ option|title }}</option>{% endfor %}</select></label>
 <label class="text-sm font-semibold">Site<input name="address" value="{{ work_order.address or '' }}" maxlength="255" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"></label>
 <label class="text-sm font-semibold">Scheduled start<input type="datetime-local" name="scheduled_start" value="{{ dt_value(work_order.scheduled_start) }}" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"></label>
@@ -43,17 +48,18 @@
 {% endcall %}
 {% call card('Expense claims', color='emerald') %}
 <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-<div><p class="text-sm text-slate-600 dark:text-slate-300">Create a reimbursable expense for this exact work order. Approval and payment remain in ERP.</p><p class="mt-1 text-xs text-slate-500">Only claims you created are shown here.</p></div>
-{% if action_permitted(request, expense_panel.create_action) %}<a href="#new-expense-claim" class="shrink-0 rounded-xl bg-emerald-600 px-3 py-2 text-center text-sm font-semibold text-white hover:bg-emerald-700">New Expense Claim</a>{% endif %}
+<div><p class="text-sm text-slate-600 dark:text-slate-300">Create a reimbursable expense for this exact work order. Manager approval releases it to ERP for reimbursement.</p><p class="mt-1 text-xs text-slate-500">Only claims you created are shown here.</p></div>
+{% if action_permitted(request, expense_panel.create_action) %}<button type="button" aria-controls="new-expense-claim" aria-expanded="{{ 'true' if expense_panel.form_open else 'false' }}" data-open-expense-form class="shrink-0 rounded-xl bg-emerald-600 px-3 py-2 text-center text-sm font-semibold text-white hover:bg-emerald-700">New Expense Claim</button>{% else %}<button type="button" disabled aria-disabled="true" aria-controls="new-expense-claim" aria-expanded="false" aria-describedby="expense-creation-unavailable" class="shrink-0 cursor-not-allowed rounded-xl bg-slate-200 px-3 py-2 text-center text-sm font-semibold text-slate-600 dark:bg-slate-700 dark:text-slate-300">New Expense Claim</button>{% endif %}
 </div>
 {% if expense_panel.claims %}<div class="space-y-3">{% for claim in expense_panel.claims %}
 <article class="rounded-xl border border-slate-200 p-4 dark:border-slate-700">
 <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><h3 class="font-semibold text-slate-900 dark:text-white">{{ claim.purpose }}</h3><p class="mt-1 text-sm text-slate-500">{{ claim.expense_date | app_datetime('%d %b %Y', 'Date unavailable') }} · {{ claim.currency }} {{ '%.2f'|format(claim.total_amount) }}</p></div>{{ status_presentation_badge(claim.status, size='sm') }}</div>
-<dl class="mt-3 grid gap-2 text-sm sm:grid-cols-2"><div><dt class="font-semibold text-slate-500">ERP delivery</dt><dd>{{ claim.delivery_label }}</dd></div><div><dt class="font-semibold text-slate-500">ERP claim</dt><dd>{{ claim.erp_claim_number or 'Not assigned' }}{% if claim.erp_claim_status %} · {{ claim.erp_claim_status|replace('_', ' ')|title }}{% endif %}</dd></div></dl>
+<dl class="mt-3 grid gap-2 text-sm sm:grid-cols-2"><div><dt class="font-semibold text-slate-500">ERP delivery</dt><dd>{{ claim.delivery_label }}{% if claim.delivery_detail %}<span class="mt-1 block text-xs text-slate-500">{{ claim.delivery_detail }}</span>{% endif %}</dd></div><div><dt class="font-semibold text-slate-500">ERP claim</dt><dd>{{ claim.erp_claim_number or 'Not assigned' }}{% if claim.erp_claim_status %} · {{ claim.erp_claim_status|replace('_', ' ')|title }}{% endif %}</dd></div></dl>
 {% if claim.rejection_reason %}<p class="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-200"><strong>Rejected:</strong> {{ claim.rejection_reason }}</p>{% endif %}
 </article>
 {% endfor %}</div>{% else %}<p class="rounded-xl bg-slate-50 p-4 text-sm text-slate-500 dark:bg-slate-800/50">You have not created an expense claim for this work order.</p>{% endif %}
-{% if expense_panel.category_message %}<p class="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{{ expense_panel.category_message }}</p>{% endif %}
+{% if not action_permitted(request, expense_panel.create_action) %}<p id="expense-creation-unavailable" class="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{{ expense_panel.create_action.reason or 'Expense creation is unavailable.' }}</p>{% endif %}
+{% if expense_panel.category_message and expense_panel.category_message != expense_panel.create_action.reason %}<p class="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{{ expense_panel.category_message }}</p>{% endif %}
 {% if action_permitted(request, expense_panel.create_action) %}
 <details id="new-expense-claim" class="mt-5 rounded-xl border border-emerald-200 bg-emerald-50/40 p-4 dark:border-emerald-800 dark:bg-emerald-950/20" {% if expense_panel.form_open %}open{% endif %}>
 <summary class="cursor-pointer font-semibold text-emerald-800 dark:text-emerald-200">New Expense Claim</summary>
@@ -61,12 +67,23 @@
 <input type="hidden" name="client_ref" value="{{ expense_panel.form.request_id }}">
 {% if expense_panel.error_for('form') %}<p class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800" role="alert">{{ expense_panel.error_for('form') }}</p>{% endif %}
 <div class="grid gap-4 sm:grid-cols-2">
-<label class="text-sm font-semibold">Purpose <span class="text-rose-600" aria-hidden="true">*</span><input name="purpose" value="{{ expense_panel.form.purpose }}" required maxlength="500" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900" aria-describedby="expense-purpose-error">{% if expense_panel.error_for('purpose') %}<span id="expense-purpose-error" class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('purpose') }}</span>{% endif %}</label>
+<label class="text-sm font-semibold">Purpose <span class="text-rose-600" aria-hidden="true">*</span><input name="purpose" value="{{ expense_panel.form.purpose }}" required maxlength="500" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900" aria-describedby="expense-purpose-error" data-expense-purpose>{% if expense_panel.error_for('purpose') %}<span id="expense-purpose-error" class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('purpose') }}</span>{% endif %}</label>
 <label class="text-sm font-semibold">Expense date <span class="text-rose-600" aria-hidden="true">*</span><input type="date" name="expense_date" value="{{ expense_panel.form.expense_date }}" required class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900">{% if expense_panel.error_for('expense_date') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('expense_date') }}</span>{% endif %}</label>
 <label class="text-sm font-semibold">Currency <span class="text-rose-600" aria-hidden="true">*</span><input name="currency" value="{{ expense_panel.form.currency }}" required minlength="3" maxlength="3" autocomplete="off" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 uppercase dark:bg-slate-900">{% if expense_panel.error_for('currency') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('currency') }}</span>{% endif %}</label>
 <label class="text-sm font-semibold sm:col-span-2">Notes<textarea name="notes" maxlength="2000" rows="2" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900">{{ expense_panel.form.notes }}</textarea>{% if expense_panel.error_for('notes') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('notes') }}</span>{% endif %}</label>
 </div>
-<div><div class="flex flex-wrap items-center justify-between gap-3"><div><h3 class="font-semibold">Expense items</h3><p class="text-xs text-slate-500">Add at least one item. Category limits and receipt rules come from ERP.</p></div><button type="button" class="rounded-lg border border-emerald-300 px-3 py-2 text-sm font-semibold text-emerald-800 dark:text-emerald-200" data-add-expense-line>Add item</button></div>
+<fieldset class="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900"><legend class="px-1 font-semibold">Approval and payment destination</legend>
+<div class="grid gap-4 sm:grid-cols-2">
+<label class="text-sm font-semibold sm:col-span-2">Expense approver <span class="text-rose-600" aria-hidden="true">*</span><select name="selected_approver_id" required class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"><option value="">Select approver</option>{% for approver in expense_panel.approvers %}<option value="{{ approver.erp_employee_id }}" {% if expense_panel.form.selected_approver_id == approver.erp_employee_id|string %}selected{% endif %}>{{ approver.display_name }} · {{ approver.email }}</option>{% endfor %}</select>{% if expense_panel.error_for('selected_approver_id') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('selected_approver_id') }}</span>{% endif %}</label>
+<div class="sm:col-span-2 space-y-2"><p class="text-sm font-semibold">Payment destination <span class="text-rose-600" aria-hidden="true">*</span></p>
+<label class="flex items-start gap-2 rounded-lg border border-slate-200 p-3"><input type="radio" name="payment_destination_mode" value="erp_profile" {% if expense_panel.form.payment_destination_mode == 'erp_profile' and expense_panel.profile_destination.available %}checked{% endif %} {% if not expense_panel.profile_destination.available %}disabled{% endif %} data-destination-mode><span><strong>Use ERP profile</strong>{% if expense_panel.profile_destination.available %}<span class="block text-xs text-slate-500">{{ expense_panel.profile_destination.beneficiary_name }} · {{ expense_panel.profile_destination.bank_name }} · {{ expense_panel.profile_destination.masked_account_number }}</span>{% else %}<span class="block text-xs text-amber-700">ERP bank profile is incomplete.</span>{% endif %}</span></label>
+<label class="flex items-start gap-2 rounded-lg border border-slate-200 p-3"><input type="radio" name="payment_destination_mode" value="expense_override" {% if expense_panel.form.payment_destination_mode == 'expense_override' or not expense_panel.profile_destination.available %}checked{% endif %} data-destination-mode><span><strong>Use different details for this expense</strong><span class="block text-xs text-slate-500">This does not change the technician's ERP profile.</span></span></label>{% if expense_panel.error_for('payment_destination_mode') %}<span class="text-xs text-rose-700">{{ expense_panel.error_for('payment_destination_mode') }}</span>{% endif %}</div>
+<div class="contents" data-destination-override>
+<label class="text-sm font-semibold">Bank <span class="text-rose-600">*</span><select name="bank_code" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"><option value="">Select bank</option>{% for bank in expense_panel.banks %}<option value="{{ bank.bank_code }}" {% if expense_panel.form.bank_code == bank.bank_code %}selected{% endif %}>{{ bank.bank_name }}</option>{% endfor %}</select>{% if expense_panel.error_for('bank_code') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('bank_code') }}</span>{% endif %}</label>
+<label class="text-sm font-semibold">Account number <span class="text-rose-600">*</span><input name="account_number" inputmode="numeric" autocomplete="off" minlength="6" maxlength="30" value="" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900">{% if expense_panel.error_for('account_number') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('account_number') }}</span>{% endif %}</label>
+<label class="text-sm font-semibold sm:col-span-2">Beneficiary name <span class="text-rose-600">*</span><input name="beneficiary_name" maxlength="150" value="{{ expense_panel.form.beneficiary_name }}" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900">{% if expense_panel.error_for('beneficiary_name') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('beneficiary_name') }}</span>{% endif %}</label>
+</div></div></fieldset>
+<div><div class="flex flex-wrap items-center justify-between gap-3"><div><h3 class="font-semibold">Expense items</h3><p class="text-xs text-slate-500">Add at least one item. Category limits and receipt rules come from ERP. When a receipt is required, provide either a receipt URL or an uploaded file.</p></div><button type="button" class="rounded-lg border border-emerald-300 px-3 py-2 text-sm font-semibold text-emerald-800 dark:text-emerald-200" data-add-expense-line>Add item</button></div>
 {% if expense_panel.error_for('lines') %}<p class="mt-2 text-sm text-rose-700" role="alert">{{ expense_panel.error_for('lines') }}</p>{% endif %}
 <div class="mt-3 space-y-3" data-expense-lines>{% for line in expense_panel.form.lines %}
 <fieldset class="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900" data-expense-line><legend class="px-1 text-sm font-semibold">Item <span data-line-number>{{ loop.index }}</span></legend><input type="hidden" name="line_key" value="{{ line.key }}">
@@ -76,8 +93,7 @@
 <label class="text-sm font-semibold md:col-span-2">Description <span class="text-rose-600" aria-hidden="true">*</span><input name="description_{{ line.key }}" value="{{ line.description }}" required maxlength="500" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900">{% if expense_panel.error_for('line.' ~ line.key ~ '.description') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('line.' ~ line.key ~ '.description') }}</span>{% endif %}</label>
 <label class="text-sm font-semibold">Line date <span class="font-normal text-slate-500">(optional)</span><input type="date" name="line_date_{{ line.key }}" value="{{ line.expense_date }}" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900">{% if expense_panel.error_for('line.' ~ line.key ~ '.expense_date') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('line.' ~ line.key ~ '.expense_date') }}</span>{% endif %}</label>
 <label class="text-sm font-semibold">Vendor <span class="font-normal text-slate-500">(optional)</span><input name="vendor_{{ line.key }}" value="{{ line.vendor_name }}" list="expense-vendors" maxlength="200" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900">{% if expense_panel.error_for('line.' ~ line.key ~ '.vendor_name') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('line.' ~ line.key ~ '.vendor_name') }}</span>{% endif %}</label>
-<label class="text-sm font-semibold">Receipt URL <span class="font-normal text-slate-500">(optional)</span><input type="url" name="receipt_url_{{ line.key }}" value="{{ line.receipt_url }}" maxlength="500" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900">{% if expense_panel.error_for('line.' ~ line.key ~ '.receipt_url') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('line.' ~ line.key ~ '.receipt_url') }}</span>{% endif %}</label>
-<label class="text-sm font-semibold">Upload receipt <span class="font-normal text-slate-500">(optional)</span><input type="file" name="receipt_file_{{ line.key }}" accept="image/*,application/pdf" class="mt-1 block w-full text-sm" data-receipt-file>{% if expense_panel.error_for('line.' ~ line.key ~ '.receipt') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('line.' ~ line.key ~ '.receipt') }}</span>{% endif %}</label>
+<div class="md:col-span-2" data-receipt-evidence><p class="text-sm font-semibold">Receipt <span class="text-rose-600" aria-hidden="true" data-receipt-required-marker hidden>*</span> <span class="font-normal text-slate-500" data-receipt-requirement aria-live="polite">(optional)</span></p><p id="receipt-guidance-{{ line.key }}" class="mt-1 text-xs text-slate-500">Provide either a receipt URL or an uploaded file.</p><div class="mt-2 grid gap-4 md:grid-cols-2"><label class="text-sm font-semibold">Receipt URL<input type="url" name="receipt_url_{{ line.key }}" value="{{ line.receipt_url }}" maxlength="500" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900" data-receipt-url aria-describedby="receipt-guidance-{{ line.key }}">{% if expense_panel.error_for('line.' ~ line.key ~ '.receipt_url') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('line.' ~ line.key ~ '.receipt_url') }}</span>{% endif %}</label><label class="text-sm font-semibold">Upload receipt<input type="file" name="receipt_file_{{ line.key }}" accept="image/*,application/pdf" class="mt-1 block w-full text-sm" data-receipt-file aria-describedby="receipt-guidance-{{ line.key }}"></label></div>{% if expense_panel.error_for('line.' ~ line.key ~ '.receipt') %}<span class="mt-1 block text-xs text-rose-700" role="alert">{{ expense_panel.error_for('line.' ~ line.key ~ '.receipt') }}</span>{% endif %}</div>
 <label class="text-sm font-semibold md:col-span-2">Line notes <span class="font-normal text-slate-500">(optional)</span><textarea name="line_notes_{{ line.key }}" maxlength="2000" rows="2" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900">{{ line.notes }}</textarea>{% if expense_panel.error_for('line.' ~ line.key ~ '.notes') %}<span class="mt-1 block text-xs text-rose-700">{{ expense_panel.error_for('line.' ~ line.key ~ '.notes') }}</span>{% endif %}</label>
 </div><div class="mt-3 flex justify-end"><button type="button" class="text-sm font-semibold text-rose-700 disabled:cursor-not-allowed disabled:opacity-40" data-remove-expense-line>Remove item</button></div></fieldset>
 {% endfor %}</div></div>
@@ -89,13 +105,12 @@
 <legend class="px-1 text-sm font-semibold">Item <span data-line-number></span></legend>
 <input type="hidden" name="line_key" value="__KEY__">
 <div class="grid gap-4 md:grid-cols-2">
-<label class="text-sm font-semibold">Category <span class="text-rose-600">*</span><select name="category_code___KEY__" required class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900" data-expense-category data-form-consumer="client"><option value="">Select category</option>{% for category in expense_panel.categories %}<option value="{{ category.category_code }}" data-requires-receipt="{{ 'true' if category.requires_receipt else 'false' }}" data-max-amount="{{ category.max_amount_per_claim or '' }}">{{ category.category_name }}{% if category.requires_receipt %} · receipt required{% endif %}{% if category.max_amount_per_claim %} · max {{ category.max_amount_per_claim }}{% endif %}</option>{% endfor %}</select><span class="mt-1 block text-xs text-slate-500" data-category-help></span></label>
-<label class="text-sm font-semibold">Amount <span class="text-rose-600">*</span><input type="number" min="0.01" step="0.01" name="amount___KEY__" required class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-right dark:bg-slate-900" data-expense-amount data-form-consumer="client"></label>
-<label class="text-sm font-semibold md:col-span-2">Description <span class="text-rose-600">*</span><input name="description___KEY__" required maxlength="500" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900" data-form-consumer="client"></label>
+<label class="text-sm font-semibold">Category <span class="text-rose-600" aria-hidden="true">*</span><select name="category_code___KEY__" required class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900" data-expense-category data-form-consumer="client"><option value="">Select category</option>{% for category in expense_panel.categories %}<option value="{{ category.category_code }}" data-requires-receipt="{{ 'true' if category.requires_receipt else 'false' }}" data-max-amount="{{ category.max_amount_per_claim or '' }}">{{ category.category_name }}{% if category.requires_receipt %} · receipt required{% endif %}{% if category.max_amount_per_claim %} · max {{ category.max_amount_per_claim }}{% endif %}</option>{% endfor %}</select><span class="mt-1 block text-xs text-slate-500" data-category-help></span></label>
+<label class="text-sm font-semibold">Amount <span class="text-rose-600" aria-hidden="true">*</span><input type="number" min="0.01" step="0.01" name="amount___KEY__" required class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-right dark:bg-slate-900" data-expense-amount data-form-consumer="client"></label>
+<label class="text-sm font-semibold md:col-span-2">Description <span class="text-rose-600" aria-hidden="true">*</span><input name="description___KEY__" required maxlength="500" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900" data-form-consumer="client"></label>
 <label class="text-sm font-semibold">Line date <span class="font-normal text-slate-500">(optional)</span><input type="date" name="line_date___KEY__" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900" data-form-consumer="client"></label>
 <label class="text-sm font-semibold">Vendor <span class="font-normal text-slate-500">(optional)</span><input name="vendor___KEY__" list="expense-vendors" maxlength="200" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900" data-form-consumer="client"></label>
-<label class="text-sm font-semibold">Receipt URL <span class="font-normal text-slate-500">(optional)</span><input type="url" name="receipt_url___KEY__" maxlength="500" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900" data-form-consumer="client"></label>
-<label class="text-sm font-semibold">Upload receipt <span class="font-normal text-slate-500">(optional)</span><input type="file" name="receipt_file___KEY__" accept="image/*,application/pdf" class="mt-1 block w-full text-sm" data-receipt-file data-form-consumer="client"></label>
+<div class="md:col-span-2" data-receipt-evidence><p class="text-sm font-semibold">Receipt <span class="text-rose-600" aria-hidden="true" data-receipt-required-marker hidden>*</span> <span class="font-normal text-slate-500" data-receipt-requirement aria-live="polite">(optional)</span></p><p id="receipt-guidance-__KEY__" class="mt-1 text-xs text-slate-500">Provide either a receipt URL or an uploaded file.</p><div class="mt-2 grid gap-4 md:grid-cols-2"><label class="text-sm font-semibold">Receipt URL<input type="url" name="receipt_url___KEY__" maxlength="500" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900" data-receipt-url data-form-consumer="client" aria-describedby="receipt-guidance-__KEY__"></label><label class="text-sm font-semibold">Upload receipt<input type="file" name="receipt_file___KEY__" accept="image/*,application/pdf" class="mt-1 block w-full text-sm" data-receipt-file data-form-consumer="client" aria-describedby="receipt-guidance-__KEY__"></label></div></div>
 <label class="text-sm font-semibold md:col-span-2">Line notes <span class="font-normal text-slate-500">(optional)</span><textarea name="line_notes___KEY__" maxlength="2000" rows="2" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900" data-form-consumer="client"></textarea></label>
 </div>
 <div class="mt-3 flex justify-end"><button type="button" class="text-sm font-semibold text-rose-700" data-remove-expense-line>Remove item</button></div>
@@ -106,11 +121,12 @@
 </div><aside class="space-y-6 xl:col-span-4">{% call card('Dispatch technician', color='cyan') %}
 <p class="mb-4 text-sm text-slate-500">Creation defines the work scope. Assignment is the next dispatch decision.</p>
 {% if action_permitted(request, queue_action) %}<form method="post" action="/admin/dispatch/work-orders/{{ work_order.public_id }}/queue" class="space-y-3">{% include "components/forms/csrf_input.html" %}
-<label class="block text-sm font-semibold">Technician<select name="assigned_technician_id" required class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"><option value="">Select technician</option>{% for option in technician_options %}<option value="{{ option.id }}">{{ option.label }}</option>{% endfor %}</select></label>
+<label class="block text-sm font-semibold">Technician <span class="text-rose-600" aria-hidden="true">*</span><select name="assigned_technician_id" required class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"><option value="">Select technician</option>{% for option in technician_options %}<option value="{{ option.id }}">{{ option.label }}</option>{% endfor %}</select></label>
 <input type="hidden" name="status" value="assigned"><label class="block text-sm font-semibold">Reason<input name="reason" maxlength="2000" placeholder="Dispatch context" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"></label>
 <button class="w-full rounded-xl bg-cyan-600 px-4 py-2.5 text-sm font-semibold text-white">Assign technician</button></form>
 {% elif can(request, queue_action.permission) %}<p class="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">{{ queue_action.reason }}</p>{% endif %}
 {% endcall %}</aside></div></div>
+<script src="/static/js/work-order-expense-form.js"></script>
 <script>
 (() => {
   const form = document.querySelector('[data-expense-form]');
@@ -122,6 +138,13 @@
   const currency = form.querySelector('[name="currency"]');
   const currencyLabel = form.querySelector('[data-expense-currency]');
   const submit = form.querySelector('[data-expense-submit]');
+  const destinationModes = [...form.querySelectorAll('[data-destination-mode]')];
+  const destinationOverride = form.querySelector('[data-destination-override]');
+  const refreshDestination = () => {
+    const override = form.querySelector('[name="payment_destination_mode"]:checked')?.value === 'expense_override';
+    destinationOverride.hidden = !override;
+    destinationOverride.querySelectorAll('input, select').forEach(input => { input.required = override; input.disabled = !override; });
+  };
   const refresh = () => {
     const rows = [...lines.querySelectorAll('[data-expense-line]')];
     let sum = 0;
@@ -135,8 +158,15 @@
       const option = select.options[select.selectedIndex];
       const max = option ? option.dataset.maxAmount : '';
       amount.max = max || '';
-      const receipt = row.querySelector('[data-receipt-file]');
-      if (receipt) receipt.required = Boolean(option && option.dataset.requiresReceipt === 'true' && !row.querySelector('[name^="receipt_url_"]').value);
+      const requiresReceipt = Boolean(option && option.value && option.dataset.requiresReceipt === 'true');
+      const receiptUrl = row.querySelector('[data-receipt-url]');
+      const receiptFile = row.querySelector('[data-receipt-file]');
+      const receiptMarker = row.querySelector('[data-receipt-required-marker]');
+      const receiptRequirement = row.querySelector('[data-receipt-requirement]');
+      const hasReceipt = Boolean(receiptUrl.value.trim() || receiptFile.files?.length);
+      receiptMarker.hidden = !requiresReceipt;
+      receiptRequirement.textContent = requiresReceipt ? '(required — choose one)' : '(optional)';
+      receiptUrl.setCustomValidity(requiresReceipt && !hasReceipt ? 'Provide a receipt URL or upload a file for this category.' : '');
       const help = row.querySelector('[data-category-help]');
       help.textContent = !option || !option.value ? '' : [option.dataset.requiresReceipt === 'true' ? 'Receipt required' : 'Receipt optional', max ? `Maximum per claim: ${max}` : 'No category maximum'].join(' · ');
     });
@@ -157,8 +187,9 @@
   lines.addEventListener('input', refresh);
   lines.addEventListener('change', refresh);
   currency.addEventListener('input', refresh);
+  destinationModes.forEach(input => input.addEventListener('change', refreshDestination));
   form.addEventListener('submit', () => { if (form.checkValidity()) { submit.disabled = true; submit.textContent = 'Submitting…'; } });
-  refresh();
+  refreshDestination(); refresh();
 })();
 </script>
 {% endblock %}

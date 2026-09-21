@@ -5,6 +5,19 @@ from types import SimpleNamespace
 from app import celery_app as celery_app_module
 
 
+def test_worker_logging_signal_installs_structured_formatter(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        celery_app_module,
+        "configure_logging",
+        lambda: calls.append("configured"),
+    )
+
+    celery_app_module._configure_worker_logging()
+
+    assert calls == ["configured"]
+
+
 def test_task_extra_includes_request_context():
     task = SimpleNamespace(
         name="app.tasks.billing.run_invoice_cycle",

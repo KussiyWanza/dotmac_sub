@@ -22,8 +22,10 @@ from app.models.notification import (
     NotificationStatus,
 )
 from app.services import (
+    ai_conversation_ownership,
     communication_attachments,
     communication_eligibility,
+    team_inbox_commands,
     team_inbox_media,
     team_inbox_receive,
     team_inbox_reply_window,
@@ -42,6 +44,13 @@ from app.services.ephemeral_communication_actions import (
 from app.services.integrations import whatsapp_capability as whatsapp_service
 from app.services.nextcloud_talk_staff import deliver_due_staff_talk_notifications
 from app.services.observability import record_notification_queue_result
+from app.services.operational_logging import (
+    OperationalEventName,
+    OperationalLogEvent,
+    OperationalOutcome,
+    log_operational_event,
+)
+from app.services.owner_commands import CommandContext
 from app.services.settings_spec import resolve_value
 from app.services.whatsapp_notification_templates import provider_template_from_template
 
@@ -634,9 +643,57 @@ def _deliver_notification_queue_stats(
         record_delivery_outcome(db, notification)
         db.commit()
 
+        delivery_metadata = dict(notification.metadata_ or {})
+        if ai_conversation_ownership.is_ai_outbound_intent(delivery_metadata):
+            db_session_adapter.release_read_transaction(db)
+            suppression = team_inbox_commands.suppress_ai_outbound_without_ownership(
+                db,
+                team_inbox_commands.SuppressAiOutboundCommand(
+                    context=CommandContext.system(
+                        actor="service:notification-delivery-worker",
+                        scope="team-inbox:ai-outbound-revalidation",
+                        reason="revalidate AI ownership immediately before delivery",
+                        idempotency_key=f"ai-outbound-delivery:{candidate_id}",
+                    ),
+                    notification_id=candidate_id,
+                ),
+            )
+            if suppression.suppressed:
+                suppressed += 1
+                continue
+
+        # Queue notices are uniquely vulnerable to becoming stale between
+        # intent creation and provider dispatch.  This preflight deliberately
+        # holds the conversation/queue locks through the provider call: either
+        # delivery observes a still-current queue lifecycle first, or an
+        # assignment/terminal transition commits first and suppresses it.
+        from app.services import team_inbox_queue_notifications
+
+        queue_preflight = (
+            team_inbox_queue_notifications.preflight_queue_notification_delivery(
+                db, notification=notification, record_suppression=False
+            )
+        )
+        if queue_preflight.applies and not queue_preflight.allowed:
+            settlement_command = (
+                team_inbox_queue_notifications.SettleRejectedQueueDeliveryCommand(
+                    context=CommandContext.system(
+                        actor="notification-queue-worker",
+                        scope="team-inbox:queue-delivery",
+                        reason="Revalidate rejected queue delivery before suppression",
+                    ),
+                    notification_id=candidate_id,
+                )
+            )
+            db_session_adapter.release_read_transaction(db)
+            settlement = team_inbox_queue_notifications.settle_rejected_queue_delivery(
+                db, command=settlement_command
+            )
+            suppressed += int(settlement.suppressed)
+            continue
+
         subject = notification.subject or "Notification"
         body = notification.body or ""
-        delivery_metadata = dict(notification.metadata_ or {})
         raw_inbox_attachment_ids = delivery_metadata.get("inbox_attachment_ids")
         inbox_attachment_ids = (
             [str(value) for value in raw_inbox_attachment_ids if isinstance(value, str)]
@@ -928,16 +985,71 @@ def _deliver_notification_queue_stats(
                 from app.models.team_inbox import InboxMessage
                 from app.services.integrations import meta_social_capability
                 from app.services.integrations.meta_social_contracts import (
+                    MetaDirectMessageAttachment,
                     MetaDirectMessageCommand,
+                    MetaMessageAttachmentType,
                     MetaSocialChannel,
                 )
+                from app.services.team_inbox_outbound import (
+                    MetaDeliveryLegRecordCommand,
+                    record_meta_delivery_leg_acceptance,
+                )
 
+                meta_notification_id = notification.id
+                meta_recipient = notification.recipient
                 account_id = str(
                     delivery_metadata.get("provider_account_id") or ""
                 ).strip()
+                meta_channel = (
+                    MetaSocialChannel.facebook_messenger
+                    if notification.channel == NotificationChannel.facebook_messenger
+                    else MetaSocialChannel.instagram_dm
+                )
+                resolved_inbox_attachments = (
+                    team_inbox_media.resolve_delivery_attachments(
+                        db, tuple(inbox_attachment_ids)
+                    )
+                    if inbox_attachment_ids
+                    else ()
+                )
+                leg_codes = [
+                    f"attachment:{attachment.asset_id}"
+                    for attachment in resolved_inbox_attachments
+                ]
+                if body:
+                    leg_codes.append("text")
+                completed_legs = {
+                    str(row.response_code): str(row.provider_message_id)
+                    for row in (
+                        db.query(NotificationDelivery)
+                        .filter(
+                            NotificationDelivery.notification_id == meta_notification_id
+                        )
+                        .filter(NotificationDelivery.is_active.is_(True))
+                        .filter(NotificationDelivery.provider == "meta")
+                        .filter(NotificationDelivery.status == DeliveryStatus.delivered)
+                        .filter(NotificationDelivery.response_code.in_(leg_codes))
+                        .all()
+                    )
+                    if row.response_code and row.provider_message_id
+                }
+                meta_provider_messages: list[str] = []
+                raw_provider_attachment_ids = delivery_metadata.get(
+                    "meta_provider_attachment_ids"
+                )
+                provider_attachment_ids = {
+                    str(key): str(value)
+                    for key, value in (
+                        raw_provider_attachment_ids.items()
+                        if isinstance(raw_provider_attachment_ids, dict)
+                        else ()
+                    )
+                    if isinstance(key, str) and isinstance(value, str)
+                }
                 provider_message_id = ""
                 provider_error = "meta_direct_message_failed"
                 meta_provider_failure: _ProviderFailure | None = None
+                success = True
                 try:
                     preflight_failure = _preflight_team_inbox_meta_window(
                         db, notification=notification, body=body
@@ -946,46 +1058,175 @@ def _deliver_notification_queue_stats(
                         meta_provider_failure = preflight_failure
                         notification.retry_count = max_retries - 1
                         raise ValueError(preflight_failure.code)
-                    if not account_id or not notification.recipient:
+                    if not account_id or not meta_recipient:
                         meta_provider_failure = _safe_provider_failure(
                             channel=notification.channel,
                             error_code="meta_direct_message_context_missing",
                         )
                         raise ValueError("meta_direct_message_context_missing")
-                    outcome = meta_social_capability.send_direct_message(
-                        db,
-                        MetaDirectMessageCommand(
-                            channel=(
-                                MetaSocialChannel.facebook_messenger
-                                if notification.channel
-                                == NotificationChannel.facebook_messenger
-                                else MetaSocialChannel.instagram_dm
-                            ),
-                            provider_account_id=account_id,
-                            recipient_id=notification.recipient,
-                            body=body,
-                            correlation_id=(
-                                f"notification:{notification.id}:"
-                                f"attempt:{notification.retry_count}"
-                            ),
-                        ),
-                    )
-                    provider_message_id = outcome.provider_message_id or ""
-                    success = outcome.accepted and bool(provider_message_id)
-                    if not success:
-                        provider_error = (
-                            outcome.error_code or "meta_direct_message_not_accepted"
-                        )
+                    if len(resolved_inbox_attachments) != len(inbox_attachment_ids):
                         meta_provider_failure = _safe_provider_failure(
                             channel=notification.channel,
-                            error_code=provider_error,
-                            detail=outcome.operation_status,
+                            error_code="meta_attachment_unavailable",
                         )
-                        if (
-                            outcome.operation_status == "rejected"
-                            or not meta_provider_failure.retryable
+                        notification.retry_count = max_retries - 1
+                        raise ValueError("meta_attachment_unavailable")
+                    if not body and not resolved_inbox_attachments:
+                        meta_provider_failure = _safe_provider_failure(
+                            channel=notification.channel,
+                            error_code="meta_direct_message_content_missing",
+                        )
+                        notification.retry_count = max_retries - 1
+                        raise ValueError("meta_direct_message_content_missing")
+                    for attachment in resolved_inbox_attachments:
+                        leg_code = f"attachment:{attachment.asset_id}"
+                        if leg_code in completed_legs:
+                            meta_provider_messages.append(completed_legs[leg_code])
+                            continue
+                        attachment_type = {
+                            "image": MetaMessageAttachmentType.image,
+                            "audio": MetaMessageAttachmentType.audio,
+                            "video": MetaMessageAttachmentType.video,
+                            "document": MetaMessageAttachmentType.file,
+                        }.get(attachment.asset_type)
+                        if attachment_type is None or (
+                            meta_channel is MetaSocialChannel.instagram_dm
+                            and attachment_type is MetaMessageAttachmentType.file
                         ):
+                            meta_provider_failure = _safe_provider_failure(
+                                channel=notification.channel,
+                                error_code="meta_attachment_type_unsupported",
+                            )
                             notification.retry_count = max_retries - 1
+                            raise ValueError("meta_attachment_type_unsupported")
+                        outcome = meta_social_capability.send_direct_message(
+                            db,
+                            MetaDirectMessageCommand(
+                                channel=meta_channel,
+                                provider_account_id=account_id,
+                                recipient_id=meta_recipient,
+                                attachment=MetaDirectMessageAttachment(
+                                    asset_id=attachment.asset_id,
+                                    attachment_type=attachment_type,
+                                    filename=attachment.filename,
+                                    content_type=attachment.content_type,
+                                    content=attachment.content,
+                                ),
+                                correlation_id=(
+                                    f"notification:{meta_notification_id}:"
+                                    f"attachment:{attachment.asset_id}"
+                                ),
+                            ),
+                        )
+                        provider_message_id = outcome.provider_message_id or ""
+                        success = outcome.accepted and bool(provider_message_id)
+                        if not success:
+                            provider_error = (
+                                outcome.error_code or "meta_direct_message_not_accepted"
+                            )
+                            meta_provider_failure = _safe_provider_failure(
+                                channel=notification.channel,
+                                error_code=provider_error,
+                                detail=outcome.operation_status,
+                            )
+                            if (
+                                outcome.operation_status == "rejected"
+                                or not meta_provider_failure.retryable
+                            ):
+                                notification.retry_count = max_retries - 1
+                            break
+                        meta_provider_messages.append(provider_message_id)
+                        if outcome.provider_attachment_id:
+                            provider_attachment_ids[str(attachment.asset_id)] = (
+                                outcome.provider_attachment_id
+                            )
+                        # Provider I/O and capability resolution can leave a
+                        # read transaction open. Release it before entering the
+                        # registered owner command for this durable record.
+                        db_session_adapter.release_read_transaction(db)
+                        record_meta_delivery_leg_acceptance(
+                            db,
+                            command=MetaDeliveryLegRecordCommand(
+                                notification_id=meta_notification_id,
+                                provider_message_id=provider_message_id,
+                                response_code=leg_code,
+                                response_body="Meta attachment message accepted",
+                                attachment_asset_id=attachment.asset_id
+                                if outcome.provider_attachment_id
+                                else None,
+                                provider_attachment_id=outcome.provider_attachment_id,
+                            ),
+                            context=CommandContext.system(
+                                actor="system:notification-delivery-worker",
+                                scope="team-inbox:meta-delivery-leg",
+                                reason="record accepted Meta attachment delivery",
+                                idempotency_key=(
+                                    f"notification:{meta_notification_id}:{leg_code}"
+                                ),
+                            ),
+                        )
+
+                    if success and body:
+                        if "text" in completed_legs:
+                            provider_message_id = completed_legs["text"]
+                            meta_provider_messages.append(provider_message_id)
+                        else:
+                            outcome = meta_social_capability.send_direct_message(
+                                db,
+                                MetaDirectMessageCommand(
+                                    channel=meta_channel,
+                                    provider_account_id=account_id,
+                                    recipient_id=meta_recipient,
+                                    body=body,
+                                    correlation_id=(
+                                        f"notification:{meta_notification_id}:text"
+                                    ),
+                                ),
+                            )
+                            provider_message_id = outcome.provider_message_id or ""
+                            success = outcome.accepted and bool(provider_message_id)
+                            if not success:
+                                provider_error = (
+                                    outcome.error_code
+                                    or "meta_direct_message_not_accepted"
+                                )
+                                meta_provider_failure = _safe_provider_failure(
+                                    channel=notification.channel,
+                                    error_code=provider_error,
+                                    detail=outcome.operation_status,
+                                )
+                                if (
+                                    outcome.operation_status == "rejected"
+                                    or not meta_provider_failure.retryable
+                                ):
+                                    notification.retry_count = max_retries - 1
+                            else:
+                                meta_provider_messages.append(provider_message_id)
+                                if resolved_inbox_attachments:
+                                    db_session_adapter.release_read_transaction(db)
+                                    record_meta_delivery_leg_acceptance(
+                                        db,
+                                        command=MetaDeliveryLegRecordCommand(
+                                            notification_id=meta_notification_id,
+                                            provider_message_id=provider_message_id,
+                                            response_code="text",
+                                            response_body=(
+                                                "Meta text message accepted"
+                                            ),
+                                        ),
+                                        context=CommandContext.system(
+                                            actor=(
+                                                "system:notification-delivery-worker"
+                                            ),
+                                            scope="team-inbox:meta-delivery-leg",
+                                            reason=(
+                                                "record accepted Meta text delivery"
+                                            ),
+                                            idempotency_key=(
+                                                f"notification:{meta_notification_id}:text"
+                                            ),
+                                        ),
+                                    )
                 except ValueError:
                     success = False
                     notification.retry_count = max_retries - 1
@@ -1012,9 +1253,13 @@ def _deliver_notification_queue_stats(
                 notification.last_error = None if success else provider_error
                 db.add(
                     NotificationDelivery(
-                        notification_id=notification.id,
+                        notification_id=meta_notification_id,
                         provider="meta",
-                        provider_message_id=provider_message_id or None,
+                        provider_message_id=(
+                            provider_message_id
+                            if provider_message_id and not resolved_inbox_attachments
+                            else None
+                        ),
                         status=(
                             DeliveryStatus.delivered
                             if success
@@ -1032,16 +1277,25 @@ def _deliver_notification_queue_stats(
                         ),
                     )
                 )
-                if success:
+                if success and meta_provider_messages:
                     message = (
                         db.query(InboxMessage)
-                        .filter(InboxMessage.notification_id == notification.id)
+                        .filter(InboxMessage.notification_id == meta_notification_id)
                         .one_or_none()
                     )
                     if message is not None:
-                        message.external_message_id = provider_message_id
+                        message.external_message_id = meta_provider_messages[-1]
                         message_metadata = dict(message.metadata_ or {})
-                        message_metadata["provider_message_id"] = provider_message_id
+                        message_metadata["provider_message_ids"] = (
+                            meta_provider_messages
+                        )
+                        message_metadata["provider_message_id"] = (
+                            meta_provider_messages[-1]
+                        )
+                        if provider_attachment_ids:
+                            message_metadata["provider_attachment_ids"] = (
+                                provider_attachment_ids
+                            )
                         message.metadata_ = message_metadata
             elif notification.channel in {
                 NotificationChannel.facebook_comment,
@@ -1355,14 +1609,24 @@ def deliver_notification_queue() -> dict[str, int]:
             result=result,
             started=started,
         )
-        logger.info(
-            "Notification queue processed: delivered=%d, retried=%d, failed=%d, "
-            "expired=%d, rate_limited=%d",
-            result["delivered"],
-            result["retried"],
-            result["failed"],
-            result["expired"],
-            result["rate_limited"],
+        log_operational_event(
+            logger,
+            OperationalLogEvent(
+                name=OperationalEventName.NOTIFICATION_QUEUE_PROCESSED,
+                outcome=(
+                    OperationalOutcome.COMPLETED_WITH_RETRIES
+                    if result["retried"] > 0
+                    else OperationalOutcome.COMPLETED
+                ),
+                component="notifications",
+                counters={
+                    "delivered": result["delivered"],
+                    "retried": result["retried"],
+                    "failed": result["failed"],
+                    "expired": result["expired"],
+                    "rate_limited": result["rate_limited"],
+                },
+            ),
         )
         return result
 

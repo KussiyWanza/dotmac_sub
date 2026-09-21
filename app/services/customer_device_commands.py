@@ -7,6 +7,8 @@ owner. This adapter presents their lifecycle through one typed customer outcome.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -14,6 +16,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app import metrics
 from app.models.catalog import Subscription, SubscriptionStatus
 from app.models.domain_settings import SettingDomain
 from app.models.network import OntAssignment, OntUnit
@@ -37,6 +40,8 @@ from app.services.network_operations import commit_tracked_action, run_tracked_a
 from app.services.owner_commands import CommandContext
 from app.services.settings_spec import resolve_value
 
+logger = logging.getLogger(__name__)
+
 
 class CustomerDeviceCommandKind(StrEnum):
     reboot = "reboot"
@@ -47,6 +52,7 @@ class CustomerDeviceCommandStatus(StrEnum):
     queued = "queued"
     succeeded = "succeeded"
     waiting = "waiting"
+    needs_verification = "needs_verification"
     failed = "failed"
 
 
@@ -64,15 +70,55 @@ class CustomerDeviceCommandOutcome:
         return self.status in {
             CustomerDeviceCommandStatus.queued,
             CustomerDeviceCommandStatus.succeeded,
+            CustomerDeviceCommandStatus.needs_verification,
         }
 
 
 class CustomerDeviceCommandError(ValueError):
     """Stable, transport-neutral customer command rejection."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.details: dict[str, object] = dict(details or {})
+
+
+def record_device_command_refusal(
+    *,
+    kind: CustomerDeviceCommandKind,
+    code: str,
+    correlation_id: str | None,
+    details: Mapping[str, object] | None = None,
+) -> None:
+    """Durably observe a customer device command refusal.
+
+    The caller MUST invoke this after the refusing call has already returned
+    control past any owner-command transaction (``execute_owner_command``
+    rolls its whole transaction back on any exception, which would erase
+    anything written from inside it) -- never from inside a
+    ``configure_customer_wifi``/``execute_owner_command`` operation callback.
+    This performs only an in-process structured log line and a Prometheus
+    counter increment; a persisted, queryable refusal record is later work.
+    """
+
+    safe_details = dict(details or {})
+    logger.warning(
+        "customer_device_command_refused",
+        extra={
+            "event": "customer_device_command_refused",
+            "command": kind.value,
+            "code": code,
+            "correlation_id": correlation_id,
+            "details": safe_details,
+        },
+    )
+    metrics.record_customer_device_command_refusal(command=kind.value, code=code)
 
 
 def _assigned_ont(
@@ -85,16 +131,28 @@ def _assigned_ont(
         raise CustomerDeviceCommandError(
             "subscription_inactive", "Only active services support device commands"
         )
-    assignment = (
+    assignments = (
         db.query(OntAssignment)
         .filter(
             OntAssignment.subscription_id == subscription.id,
             OntAssignment.subscriber_id == subscriber_id,
             OntAssignment.active.is_(True),
         )
-        .one_or_none()
+        .order_by(OntAssignment.id.asc())
+        .limit(2)
+        .all()
     )
-    if assignment is None or assignment.ont_unit is None:
+    if not assignments:
+        raise CustomerDeviceCommandError(
+            "device_not_assigned", "No active device is linked to this service"
+        )
+    if len(assignments) > 1:
+        raise CustomerDeviceCommandError(
+            "device_assignment_ambiguous",
+            "Multiple active devices are linked to this service; contact support",
+        )
+    assignment = assignments[0]
+    if assignment.ont_unit is None:
         raise CustomerDeviceCommandError(
             "device_not_assigned", "No active device is linked to this service"
         )
@@ -198,6 +256,23 @@ def reboot_subscription_device(
     return outcome
 
 
+# Maps the ONT service-configuration owner's distinct admission-scope domain
+# codes (see ``_load_customer_wifi_admission_scope``) onto this adapter's
+# stable customer-command codes. Deliberately coarser than the domain layer:
+# a customer does not need to know an ONT row disagreed with its assignment
+# vs. was simply missing, but a support agent reading the recorded refusal
+# (``record_device_command_refusal``) sees the original ``domain_code`` and
+# ``domain_details`` untouched.
+_WIFI_ADMISSION_DOMAIN_CODES: dict[str, str] = {
+    "customer_active_assignment_required": "device_not_assigned",
+    "customer_ambiguous_assignment": "device_assignment_ambiguous",
+    "customer_assigned_ont_missing": "device_not_assigned",
+    "customer_assignment_inconsistent": "device_assignment_ambiguous",
+    "customer_subscription_not_found": "subscription_not_found",
+    "customer_device_unsupported": "device_command_unsupported",
+}
+
+
 def update_subscription_wifi(
     db: Session,
     *,
@@ -232,14 +307,13 @@ def update_subscription_wifi(
             ),
         )
     except DomainError as exc:
-        code = (
-            "subscription_not_found"
-            if exc.code.endswith(".customer_subscription_not_found")
-            else "device_command_unsupported"
-            if exc.code.endswith(".customer_device_unsupported")
-            else "wifi_update_rejected"
-        )
-        raise CustomerDeviceCommandError(code, exc.message) from exc
+        suffix = exc.code.rsplit(".", 1)[-1]
+        code = _WIFI_ADMISSION_DOMAIN_CODES.get(suffix, "wifi_update_rejected")
+        raise CustomerDeviceCommandError(
+            code,
+            exc.message,
+            details={"domain_code": exc.code, "domain_details": exc.details},
+        ) from exc
     return CustomerDeviceCommandOutcome(
         command=CustomerDeviceCommandKind.wifi_update,
         status=CustomerDeviceCommandStatus.queued,
@@ -278,7 +352,7 @@ def get_subscription_wifi_status(
             CustomerDeviceCommandStatus.waiting
         ),
         OntServiceConfigurationPhase.delivered_unverified: (
-            CustomerDeviceCommandStatus.succeeded
+            CustomerDeviceCommandStatus.needs_verification
         ),
         OntServiceConfigurationPhase.verified: CustomerDeviceCommandStatus.succeeded,
         OntServiceConfigurationPhase.failed: CustomerDeviceCommandStatus.failed,

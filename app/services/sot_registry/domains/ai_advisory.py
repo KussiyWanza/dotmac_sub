@@ -236,14 +236,16 @@ DOMAIN = DomainSOT(
                 "AI conversational intake configuration lifecycle",
                 "AI conversational intake policy-version lifecycle",
                 "AI conversational intake session lifecycle",
+                "active AI conversation ownership resolution",
                 "AI conversational intake structured operational state",
                 "AI conversational intake LangGraph orchestration",
+                "AI intake inquiry, affect, and acknowledgement policy",
                 "AI intake approved tool catalogue policy",
                 "AI intake customer lookup tool resolver",
                 "AI intake subscriber monitoring tool resolver",
                 "AI generation attempt evidence",
                 "customer-message intake eligibility policy",
-                "bounded customer-message intent classification",
+                "bounded customer-message classification and failure recovery",
                 "bounded customer-response composition",
                 "customer contact-data cleaning eligibility policy",
             ),
@@ -274,14 +276,29 @@ DOMAIN = DomainSOT(
                 "selection. When a pinned policy selects LangGraph, LangGraph "
                 "orchestrates the same bounded state and returns the same "
                 "decision contract; it does not own checkpoints, routing, queueing "
-                "or assignment. Data-cleaning eligibility reads only the exact linked "
+                "or assignment. Inquiry plans own useful-fact priority, required and "
+                "optional facts, allowed tools, skip and escalation conditions, and "
+                "tone requirements. Bounded affect evidence creates a separate "
+                "acknowledgement obligation that response validation enforces without "
+                "owning customer wording. Data-cleaning eligibility reads only the exact linked "
                 "Subscriber and direct residential-customer facts; saving is owned "
                 "by customer.profile_commands. The existing gateway separately "
                 "composes customer wording for a backend-approved next action; a "
                 "typed validator rejects invented facts, unsafe promises, repeated "
                 "questions, and internal terminology. Customer inactivity remains "
-                "awaiting_customer until long-term expiry and never requests human "
-                "assignment by itself."
+                "awaiting_customer for the configured ten-minute hold, then requests "
+                "normal human routing through assignment or FIFO queue admission. "
+                "An invalid, unavailable, or unaccepted "
+                "classifier result is a typed classification_unavailable condition: "
+                "known DeepSeek null-for-default output is normalized into the "
+                "existing strict schema while other violations remain rejected; "
+                "sanitized validation structure is durable evidence. Deterministic "
+                "facts and human-request precedence are preserved, greeting-only "
+                "turns wait naturally, and fact-driven technical paths use the "
+                "adaptive planner. The engine uses the existing bounded clarification budget before an "
+                "explicit classifier_unavailable_after_retries handoff. The "
+                "unsupported_or_troubleshooting_exhausted reason requires an accepted "
+                "classification and genuinely unavailable support options."
             ),
             contract=ServiceContract(
                 concerns=(
@@ -313,6 +330,11 @@ DOMAIN = DomainSOT(
                         canonical_writer="ai.intake",
                     ),
                     ConcernContract(
+                        name="active AI conversation ownership resolution",
+                        role=OwnerRole.RESOLVER,
+                        input_names=("active AI intake session state",),
+                    ),
+                    ConcernContract(
                         name="AI conversational intake structured operational state",
                         role=OwnerRole.AUTHORITATIVE_RECORD,
                         input_names=(
@@ -332,6 +354,14 @@ DOMAIN = DomainSOT(
                             "bounded redacted inbound message projection",
                             "support-relevant subscriber identity",
                             "approved monitoring projection",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="AI intake inquiry, affect, and acknowledgement policy",
+                        role=OwnerRole.POLICY,
+                        input_names=(
+                            "active AI intake policy version",
+                            "bounded redacted inbound message projection",
                         ),
                     ),
                     ConcernContract(
@@ -377,7 +407,10 @@ DOMAIN = DomainSOT(
                         ),
                     ),
                     ConcernContract(
-                        name="bounded customer-message intent classification",
+                        name=(
+                            "bounded customer-message classification and failure "
+                            "recovery"
+                        ),
                         role=OwnerRole.RESOLVER,
                         input_names=(
                             "enabled matching AI intake configuration",
@@ -392,6 +425,7 @@ DOMAIN = DomainSOT(
                             "active AI intake policy version",
                             "bounded redacted inbound message projection",
                             "approved conversational next action",
+                            "bounded acknowledgement obligation",
                             "observed provider response composition",
                         ),
                     ),
@@ -424,6 +458,16 @@ DOMAIN = DomainSOT(
                         owner="ai.intake",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source="Most-specific AiIntakeConfig for provider/account/channel scope.",
+                    ),
+                    AuthorityInput(
+                        name="active AI intake session state",
+                        owner="ai.intake",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "The unique AiIntakeSession for the conversation whose "
+                            "completed_at is null; conversation metadata is only a "
+                            "repairable projection."
+                        ),
                     ),
                     AuthorityInput(
                         name="active AI intake policy version",
@@ -489,6 +533,15 @@ DOMAIN = DomainSOT(
                         ),
                     ),
                     AuthorityInput(
+                        name="bounded acknowledgement obligation",
+                        owner="ai.intake",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "Typed moderate/high frustration obligation derived from "
+                            "bounded message and conversation evidence."
+                        ),
+                    ),
+                    AuthorityInput(
                         name="observed provider response composition",
                         owner="external:llm_provider",
                         kind=AuthorityKind.EXTERNAL_OBSERVATION,
@@ -523,7 +576,11 @@ DOMAIN = DomainSOT(
                         "Clarification delivery uses an inbound-message-derived communication-intent "
                         "dedupe key."
                     ),
-                    retries="No synchronous retry beyond ai.gateway's configured fallback provider.",
+                    retries=(
+                        "No synchronous retry beyond ai.gateway's configured fallback "
+                        "provider. Classifier recovery occurs only on a later customer "
+                        "turn and reuses the configured clarification-turn limit."
+                    ),
                 ),
                 errors=ErrorContract(
                     domain_codes=(
@@ -531,12 +588,15 @@ DOMAIN = DomainSOT(
                         "ai.intake.invalid_configuration",
                         "ai.intake.invalid_model_output",
                         "ai.intake.gateway_unavailable",
+                        "ai.intake.classifier_invalid_output",
+                        "ai.intake.classifier_unavailable",
+                        "ai.intake.classifier_unavailable_after_retries",
                     ),
                     mapping_owner="Team Inbox processing and AI operations API adapters",
                     fail_closed_on=(
                         "invalid or missing configuration",
-                        "invalid provider output",
-                        "provider unavailability",
+                        "invalid provider output (bounded clarification only)",
+                        "provider unavailability (bounded clarification only)",
                     ),
                 ),
                 events=EventContract(
@@ -886,7 +946,7 @@ DOMAIN = DomainSOT(
                 transaction=TransactionContract(
                     mode=TransactionMode.OWNER_MANAGED,
                     boundary="Session processing enters execute_owner_command once and delegates Inbox consequences to Team Inbox owners.",
-                    locking="Ready sessions are selected with row locks and skip_locked; human takeover, customer reply, and long-term wait-expiry races are rechecked before consequences.",
+                    locking="Ready sessions are selected with row locks and skip_locked; human takeover, customer reply, and minute-based customer-wait handoff races are rechecked before consequences.",
                     idempotency="Session/message/generation, welcome, wait-expiry, and outbound dedupe keys suppress duplicate webhook and worker execution.",
                     retries="Beat reruns pick up incomplete sessions; failed sessions are recorded and safely escalated.",
                 ),

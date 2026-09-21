@@ -28,7 +28,7 @@ from typing import Any, TypedDict
 from uuid import UUID, uuid4
 
 from sqlalchemy import case, func, or_
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from app.models.catalog import RegionZone
 from app.models.field_material import FieldInventoryItem
@@ -37,7 +37,6 @@ from app.models.party import (
     Party,
     PartyContactPoint,
     PartyContactPointType,
-    PartyIdentityStatus,
 )
 from app.models.project import ProjectType
 from app.models.sales import (
@@ -90,8 +89,10 @@ from app.services.sales import (
     quote_authoring,
     quote_delivery,
     quote_documents,
+    quote_payment_review,
 )
 from app.services.sales.selfserve import compute_feasibility
+from app.services.sales.service import QuoteLeadSearchMatch
 from app.services.sales_orders import _resolve_project_for_sales_order
 from app.services.team_inbox_projection import list_agent_options
 from app.timezone import APP_TIMEZONE
@@ -288,14 +289,6 @@ PIPELINE_SETTINGS_NOTICES: dict[str, tuple[str, str]] = {
     "operation_failed": ("Operation failed. Please try again.", "error"),
 }
 
-_OPEN_LEAD_STATUSES = {
-    LeadStatus.new.value,
-    LeadStatus.contacted.value,
-    LeadStatus.qualified.value,
-    LeadStatus.proposal.value,
-    LeadStatus.negotiation.value,
-}
-
 
 def _as_bool(value: str | None) -> bool:
     if value is None:
@@ -383,6 +376,16 @@ def quote_status_values() -> list[str]:
 
 def sales_order_status_values() -> list[str]:
     return [status.value for status in SalesOrderStatus]
+
+
+def operator_sales_order_status_values() -> list[str]:
+    """Statuses an ordinary sales edit may assert without external evidence."""
+
+    return [
+        SalesOrderStatus.draft.value,
+        SalesOrderStatus.confirmed.value,
+        SalesOrderStatus.cancelled.value,
+    ]
 
 
 def sales_order_payment_status_values() -> list[str]:
@@ -2291,37 +2294,6 @@ def creatable_quote_status_values() -> list[str]:
     return [QuoteStatus.draft.value, QuoteStatus.sent.value]
 
 
-def _quote_lead_options(db: Session) -> list[dict[str, str]]:
-    leads = (
-        db.query(Lead)
-        .options(selectinload(Lead.party))
-        .filter(
-            Lead.is_active.is_(True),
-            Lead.status.in_(_OPEN_LEAD_STATUSES),
-            Lead.party_id.is_not(None),
-        )
-        .order_by(Lead.created_at.desc(), Lead.id.asc())
-        .limit(500)
-        .all()
-    )
-    options: list[dict[str, str]] = []
-    for lead in leads:
-        party = lead.party
-        if party is None or party.status not in {
-            PartyIdentityStatus.active.value,
-            PartyIdentityStatus.quarantined.value,
-        }:
-            continue
-        lead_number = str(lead.id).split("-", 1)[0].upper()
-        title = (lead.title or "").strip() or f"Lead {lead_number}"
-        person_name = (party.display_name or "").strip()
-        label = f"{lead_number} — {title}"
-        if person_name and person_name.casefold() != title.casefold():
-            label = f"{label} — {person_name}"
-        options.append({"id": str(lead.id), "label": label})
-    return options
-
-
 def _quote_tax_rate_options(
     db: Session,
 ) -> tuple[list[dict[str, str]], tuple[str, ...]]:
@@ -2405,7 +2377,6 @@ def _quote_suggestions(db: Session) -> list[dict[str, str]]:
 def _quote_form_options(db: Session) -> dict[str, Any]:
     tax_rates, warnings = _quote_tax_rate_options(db)
     return {
-        "leads": _quote_lead_options(db),
         "tax_rates": tax_rates,
         "suggestions": _quote_suggestions(db),
         "project_types": [
@@ -2425,9 +2396,15 @@ def build_quote_new_context(
 ) -> dict[str, Any]:
     normalized_lead_id = (lead_id or "").strip()
     options = _quote_form_options(db)
-    lead_options: list[dict[str, str]] = options["leads"]
-    lead_ids = {item["id"] for item in lead_options}
-    selected_lead_id = normalized_lead_id if normalized_lead_id in lead_ids else ""
+    selected_lead: QuoteLeadSearchMatch | None = None
+    if normalized_lead_id:
+        try:
+            selected_lead = sales_service.leads.quote_match(
+                db, UUID(normalized_lead_id)
+            )
+        except ValueError:
+            selected_lead = None
+    selected_lead_id = str(selected_lead.id) if selected_lead is not None else ""
     context: dict[str, Any] = {
         "quote_form": _quote_form_fields(
             lead_id=selected_lead_id,
@@ -2440,6 +2417,8 @@ def build_quote_new_context(
         "action_url": "/admin/sales/quotes",
         "error": None,
         "is_editing": False,
+        "selected_lead": selected_lead,
+        "selected_customer": None,
         "discount_applied_date": datetime.now(APP_TIMEZONE).date().isoformat(),
     }
     context.update(options)
@@ -2448,6 +2427,19 @@ def build_quote_new_context(
 
 def build_quote_edit_context(db: Session, *, quote_id: str) -> dict[str, Any]:
     quote = sales_service.quotes.get(db, quote_id)
+    selected_lead = (
+        sales_service.leads.quote_match(db, quote.lead_id)
+        if quote.lead_id is not None
+        else None
+    )
+    selected_customer = None
+    if quote.lead_id is None and quote.subscriber_id is not None:
+        subscriber = db.get(Subscriber, quote.subscriber_id)
+        if subscriber is not None:
+            selected_customer = {
+                "id": str(subscriber.id),
+                "label": subscriber.display_name or subscriber.full_name,
+            }
     meta = quote.metadata_ if isinstance(quote.metadata_, dict) else {}
     raw_install = meta.get("install")
     install: dict[str, Any] = raw_install if isinstance(raw_install, dict) else {}
@@ -2456,6 +2448,11 @@ def build_quote_edit_context(db: Session, *, quote_id: str) -> dict[str, Any]:
         "quote_form": _quote_form_fields(
             subscriber_id=str(quote.subscriber_id) if quote.subscriber_id else None,
             lead_id=str(quote.lead_id) if quote.lead_id else None,
+            customer_id=(
+                str(quote.subscriber_id)
+                if quote.lead_id is None and quote.subscriber_id is not None
+                else None
+            ),
             status=quote.status,
             currency=quote.currency,
             tax_rate=str(quote.tax_rate) if quote.tax_rate is not None else None,
@@ -2493,6 +2490,8 @@ def build_quote_edit_context(db: Session, *, quote_id: str) -> dict[str, Any]:
         "action_url": f"/admin/sales/quotes/{quote_id}/edit",
         "error": None,
         "is_editing": True,
+        "selected_lead": selected_lead,
+        "selected_customer": selected_customer,
     }
     context["quote_form"]["initial_subtotal"] = str(quote.subtotal)
     context.update(_quote_form_options(db))
@@ -2509,16 +2508,17 @@ def build_quote_form_error_context(
     editing = mode == "update"
     options = _quote_form_options(db)
     submitted_lead_id = str(fields.get("lead_id") or "").strip()
-    lead_options: list[dict[str, str]] = options["leads"]
-    if submitted_lead_id and submitted_lead_id not in {
-        item["id"] for item in lead_options
-    }:
-        lead_options.append(
-            {
+    selected_lead: QuoteLeadSearchMatch | dict[str, str] | None = None
+    if submitted_lead_id:
+        try:
+            selected_lead = sales_service.leads.quote_match(db, UUID(submitted_lead_id))
+        except ValueError:
+            selected_lead = None
+        if selected_lead is None:
+            selected_lead = {
                 "id": submitted_lead_id,
                 "label": "Unavailable Lead (selection cannot be used)",
             }
-        )
     submitted_customer_id = str(fields.get("customer_id") or "").strip()
     if submitted_customer_id:
         try:
@@ -2541,6 +2541,8 @@ def build_quote_form_error_context(
             f"/admin/sales/quotes/{quote_id}/edit" if editing else "/admin/sales/quotes"
         ),
         "is_editing": editing,
+        "selected_lead": selected_lead,
+        "selected_customer": options.get("selected_customer"),
         "discount_applied_date": datetime.now(APP_TIMEZONE).date().isoformat(),
     }
     context.update(options)
@@ -2703,7 +2705,7 @@ def create_quote_from_form(
         context=CommandContext.system(
             actor=str(actor_id),
             scope="crm:quote:write",
-            reason="Author Lead-backed Quote from the admin form",
+            reason="Author Lead- or customer-backed Quote from the admin form",
             idempotency_key=f"quote-authoring:{quote_id}",
         ),
         quote_id=quote_id,
@@ -3110,6 +3112,24 @@ def build_quote_detail_context(db: Session, *, quote_id: str) -> dict[str, Any]:
             discount_actor.display_name
             or f"{discount_actor.first_name} {discount_actor.last_name}".strip()
         )
+    payment_review = quote_payment_review.resolve_payment_review(quote)
+    review_reason: str | None = None
+    if not quote.is_active:
+        review_reason = "This Quote is inactive."
+    elif quote.subscriber_id is None:
+        review_reason = "Link a Customer before reviewing payment."
+    elif quote.status not in {QuoteStatus.draft.value, QuoteStatus.sent.value}:
+        review_reason = "Only Draft or Sent Quotes can be reviewed for payment."
+    elif payment_review.approval_current:
+        review_reason = "This exact Quote is already approved for payment."
+    reviewer = quote.payment_reviewed_by
+    reviewer_label = None
+    if reviewer is not None:
+        reviewer_label = (
+            reviewer.display_name
+            or f"{reviewer.first_name} {reviewer.last_name}".strip()
+            or reviewer.email
+        )
 
     return {
         "quote": quote,
@@ -3133,6 +3153,13 @@ def build_quote_detail_context(db: Session, *, quote_id: str) -> dict[str, Any]:
             {"value": QuoteDiscountType.fixed_amount.value, "label": "Fixed Amount"},
         ],
         "discount_actor_label": discount_actor_label,
+        "payment_review": payment_review,
+        "payment_reviewer_label": reviewer_label,
+        "payment_review_action": {
+            "allowed": review_reason is None,
+            "reason": review_reason,
+            "request_id": str(uuid4()),
+        },
         "discount_action": {
             "allowed": discount_change_reason is None,
             "reason": discount_change_reason,
@@ -3588,7 +3615,7 @@ def build_sales_order_form_context(
         "agents": sales_agent_options(db),
         "offers": web_catalog_subscriptions.active_offer_options(db),
         "inventory_items": inventory_items,
-        "statuses": sales_order_status_values(),
+        "statuses": operator_sales_order_status_values(),
         "payment_statuses": sales_order_payment_status_values(),
         "lead_sources": list(sales_service.LEAD_SOURCE_OPTIONS),
         "project_types": [item.value for item in ProjectType],
@@ -3705,17 +3732,19 @@ def save_manual_sales_order(
         order = sales_orders_service.sales_orders.get(db, sales_order_id)
         metadata = dict(order.metadata_) if isinstance(order.metadata_, dict) else {}
         metadata["project_type"] = project_type
-        update_payload = SalesOrderUpdate(
-            subscriber_id=coerce_uuid(subscriber_id),
-            owner_agent_id=agent_id,
-            source=(source or "").strip() or None,
-            status=SalesOrderStatus(status),
-            subtotal=totals.subtotal,
-            tax_total=totals.tax_total,
-            total=totals.total,
-            notes=(notes or "").strip() or None,
-            metadata_=metadata,
-        )
+        update_data: dict[str, Any] = {
+            "subscriber_id": coerce_uuid(subscriber_id),
+            "owner_agent_id": agent_id,
+            "source": (source or "").strip() or None,
+            "subtotal": totals.subtotal,
+            "tax_total": totals.tax_total,
+            "total": totals.total,
+            "notes": (notes or "").strip() or None,
+            "metadata_": metadata,
+        }
+        if status:
+            update_data["status"] = SalesOrderStatus(status)
+        update_payload = SalesOrderUpdate(**update_data)
         order = sales_orders_service.sales_orders.update(
             db, sales_order_id, update_payload
         )
@@ -3743,7 +3772,7 @@ def save_manual_sales_order(
         subscriber_id=coerce_uuid(subscriber_id),
         owner_agent_id=agent_id,
         source=(source or "").strip() or None,
-        status=SalesOrderStatus(status),
+        status=SalesOrderStatus(status or SalesOrderStatus.draft.value),
         subtotal=totals.subtotal,
         tax_total=totals.tax_total,
         total=totals.total,

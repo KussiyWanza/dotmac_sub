@@ -3,7 +3,7 @@
 {% set active_assignments = timeline.assignments | selectattr('is_active') | list %}
 {% set assign_to_me_team_options = service_team_options | default(()) %}
 {% set assign_to_me = namespace(can=false, needs_team_select=false, team_id="") %}
-{% if actor_person_id and can(request, 'support:inbox:self_assign') %}
+{% if actor_person_id and can(request, 'support:inbox:self_assign') and action_eligibility.can_assign %}
     {% if timeline.primary_service_team_id %}
         {% set assign_to_me.can = true %}
         {% set assign_to_me.team_id = timeline.primary_service_team_id %}
@@ -40,6 +40,11 @@
                 <div class="flex min-w-0 items-center gap-2">
                     <h2 class="truncate font-display text-sm font-semibold text-slate-950 dark:text-white">{{ timeline.subject or timeline.contact_address or "Conversation" }}</h2>
                     {{ status_badge(timeline.status | replace('_',' ') | title, timeline.status, size="sm", show_icon=False) }}
+                    {% if action_eligibility.control_owner == 'ai' %}
+                    <span class="shrink-0 rounded-md border border-indigo-200 bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-300">
+                        {{ 'Waiting on customer' if action_eligibility.waiting_for_customer else 'AI handling' }}
+                    </span>
+                    {% endif %}
                     {% if reply_window and reply_window.status == 'expired' %}
                     <span class="shrink-0 rounded-md border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300" title="Provider free-form reply window is closed">Expired</span>
                     {% elif reply_window and reply_window.status == 'unavailable' %}
@@ -50,13 +55,29 @@
                     <span class="truncate" title="{{ timeline.contact_name }}">{{ timeline.contact_name }}</span>
                     <span aria-hidden="true">·</span>
                     <span>{{ timeline.channel_type | replace('_',' ') | title }}</span>
-                    {% if timeline.queue_position %}<span class="rounded bg-violet-50 px-1.5 py-0.5 font-semibold text-violet-700 dark:bg-violet-500/10 dark:text-violet-300">Queue #{{ timeline.queue_position }}{% if timeline.estimated_wait_minutes is not none %} · ~{{ timeline.estimated_wait_minutes }}m{% endif %}</span>{% endif %}
+                    {% if timeline.current_visible_position %}<span class="rounded bg-violet-50 px-1.5 py-0.5 font-semibold text-violet-700 dark:bg-violet-500/10 dark:text-violet-300" title="Current visible queue position">Position {{ timeline.current_visible_position }}{% if timeline.estimated_wait_minutes is not none %} · ~{{ timeline.estimated_wait_minutes }}m{% endif %}</span>{% endif %}
                     <span x-show="presenceText" x-cloak aria-hidden="true">·</span>
                     <span x-show="presenceText" x-cloak x-text="presenceText" class="truncate font-medium text-amber-700 dark:text-amber-300"></span>
                 </div>
             </div>
 
-            {% if assign_to_me.can %}
+            {% if action_eligibility.can_take_over %}
+            <form method="post" action="/admin/inbox/{{ timeline.id }}/take-over" class="hidden items-center gap-2 lg:flex" onsubmit="return confirm('Take over this conversation from AI Intake? AI replies for this session will stop and the conversation will be assigned to you.')">
+                {% include "components/forms/csrf_input.html" %}
+                <input type="hidden" name="expected_ai_session_id" value="{{ action_eligibility.ai_session_id }}">
+                <input type="hidden" name="expected_ai_session_state" value="{{ action_eligibility.ai_session_state }}">
+                <input type="hidden" name="idempotency_key" value="takeover:{{ timeline.id }}:{{ action_eligibility.ai_session_id }}">
+                {% if action_eligibility.takeover_needs_team_select %}
+                <select name="service_team_id" required aria-label="Service team for conversation takeover" class="h-10 max-w-44 rounded-lg border-slate-300 text-xs font-semibold text-slate-700 focus:border-indigo-500 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
+                    <option value="">Choose a team</option>
+                    {% for team in action_eligibility.takeover_team_options %}<option value="{{ team.id }}">{{ team.name }}</option>{% endfor %}
+                </select>
+                {% else %}
+                <input type="hidden" name="service_team_id" value="{{ action_eligibility.takeover_team_id }}">
+                {% endif %}
+                <button type="submit" class="min-h-10 rounded-lg bg-indigo-600 px-3 text-xs font-semibold text-white hover:bg-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">Take Over Conversation</button>
+            </form>
+            {% elif assign_to_me.can %}
             <form method="post" action="/admin/inbox/{{ timeline.id }}/assign-to-me" class="hidden lg:block">
                 {% include "components/forms/csrf_input.html" %}
                 {% if assign_to_me.needs_team_select %}
@@ -70,16 +91,19 @@
             </form>
             {% endif %}
 
+            {% if action_eligibility.can_change_status %}
             <div class="relative" x-data="{ open: false }">
                 <button type="button" @click="open = !open" @click.outside="open = false" class="inline-flex min-h-10 items-center gap-1 rounded-lg border border-slate-300 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800" :aria-expanded="open.toString()">Status<svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg></button>
                 <div x-show="open" x-cloak class="absolute right-0 z-30 mt-2 w-40 rounded-lg border border-slate-200 bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-slate-900" role="menu">
                     {% for item in ['open', 'pending', 'snoozed', 'resolved'] %}
                     <form method="post" action="/admin/inbox/{{ timeline.id }}/status">
-                        {% include "components/forms/csrf_input.html" %}<input type="hidden" name="status_value" value="{{ item }}"><button type="submit" class="min-h-10 w-full rounded-md px-3 text-left text-xs font-medium capitalize hover:bg-amber-50 dark:hover:bg-slate-800" role="menuitem">{{ item }}</button></form>
+                        {% include "components/forms/csrf_input.html" %}<input type="hidden" name="status_value" value="{{ item }}"><button type="submit" {% if item == 'resolved' and resolution_readiness and not resolution_readiness.can_agent_resolve %}disabled title="Complete the required Customer information before resolving"{% endif %} class="min-h-10 w-full rounded-md px-3 text-left text-xs font-medium capitalize hover:bg-amber-50 disabled:cursor-not-allowed disabled:text-slate-400 disabled:hover:bg-transparent dark:hover:bg-slate-800" role="menuitem">{{ item }}{% if item == 'resolved' and resolution_readiness and not resolution_readiness.can_agent_resolve %} · Blocked{% endif %}</button></form>
                     {% endfor %}
                 </div>
             </div>
+            {% endif %}
 
+            {% if action_eligibility.can_change_status %}
             <div class="relative hidden sm:block" x-data="{ open: false }">
                 <button type="button" @click="open = !open" @click.outside="open = false" class="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800" aria-label="Snooze conversation" :aria-expanded="open.toString()">
                     <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 2m6-2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
@@ -112,7 +136,9 @@
                     {% if timeline.priority not in (priority_options | map(attribute='value') | list) %}<option value="{{ timeline.priority }}" selected>Priority {{ timeline.priority }}</option>{% endif %}
                 </select>
             </form>
+            {% endif %}
 
+            {% if action_eligibility.can_run_macro %}
             <div class="relative hidden lg:block" x-data="{ open: false }">
                 <button type="button" @click="open = !open" @click.outside="open = false" class="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800" aria-label="Macros and actions" :aria-expanded="open.toString()">
                     <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
@@ -137,15 +163,17 @@
                     {% endfor %}
                 </div>
             </div>
+            {% endif %}
 
             <div class="relative" x-data="{ open: false, assignOpen: false, transcriptOpen: false, selectedTeam: '{{ timeline.primary_service_team_id or '' }}', selectedAgent: '' }" @keydown.escape="open = false; assignOpen = false; transcriptOpen = false">
                 <button type="button" @click="open = !open" @click.outside="open = false" class="inline-flex h-10 w-10 items-center justify-center rounded-lg text-slate-600 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-300 dark:hover:bg-slate-800" aria-label="More conversation actions" :aria-expanded="open.toString()">•••</button>
                 <div x-show="open" x-cloak class="absolute right-0 z-30 mt-2 w-56 rounded-lg border border-slate-200 bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-slate-900" role="menu">
                     <button type="button" @click="refreshThread('{{ timeline.id }}'); open = false" class="min-h-10 w-full rounded-md px-3 text-left text-xs hover:bg-amber-50 dark:hover:bg-slate-800" role="menuitem">Refresh thread</button>
-                    <form method="post" action="/admin/inbox/{{ timeline.id }}/workflow">
+                    {% if action_eligibility.can_change_status %}<form method="post" action="/admin/inbox/{{ timeline.id }}/workflow">
                         {% include "components/forms/csrf_input.html" %}<input type="hidden" name="is_muted" value="{{ 'false' if timeline.is_muted else 'true' }}"><button type="submit" class="min-h-10 w-full rounded-md px-3 text-left text-xs hover:bg-amber-50 dark:hover:bg-slate-800" role="menuitem">{{ 'Unmute' if timeline.is_muted else 'Mute' }}</button></form>
-                    <button type="button" @click="transcriptOpen = true; open = false" class="min-h-10 w-full rounded-md px-3 text-left text-xs hover:bg-amber-50 dark:hover:bg-slate-800" role="menuitem">Email transcript</button>
-                    <button type="button" @click="assignOpen = true; open = false" class="min-h-10 w-full rounded-md px-3 text-left text-xs hover:bg-amber-50 dark:hover:bg-slate-800" role="menuitem">Escalate to teammate</button>
+                    {% endif %}
+                    {% if action_eligibility.control_owner != 'ai' %}<button type="button" @click="transcriptOpen = true; open = false" class="min-h-10 w-full rounded-md px-3 text-left text-xs hover:bg-amber-50 dark:hover:bg-slate-800" role="menuitem">Email transcript</button>{% endif %}
+                    {% if action_eligibility.can_assign %}<button type="button" @click="assignOpen = true; open = false" class="min-h-10 w-full rounded-md px-3 text-left text-xs hover:bg-amber-50 dark:hover:bg-slate-800" role="menuitem">Escalate to teammate</button>{% endif %}
                 </div>
 
                 <div x-show="transcriptOpen" x-cloak @click.outside="transcriptOpen = false" class="absolute right-0 z-30 mt-2 w-72 rounded-lg border border-slate-200 bg-white p-2 shadow-xl dark:border-slate-700 dark:bg-slate-900">
@@ -185,10 +213,10 @@
                 </div>
             </div>
 
-            <button type="button" @click="openTicketPanel()" class="inbox-create-ticket-action hidden min-h-10 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 lg:inline-flex">
+            {% if action_eligibility.can_create_ticket %}<button type="button" @click="openTicketPanel()" class="inbox-create-ticket-action hidden min-h-10 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 lg:inline-flex">
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14m7-7H5"/></svg>
                 <span>Create ticket</span>
-            </button>
+            </button>{% endif %}
             <button type="button" hx-get="/admin/inbox/{{ timeline.id }}/contact" hx-target="#inbox-contact-content" hx-swap="innerHTML" @click="openContact('{{ timeline.id }}')" class="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800" aria-label="Toggle contact details">
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
             </button>
@@ -211,7 +239,23 @@
     </div>
     {% endif %}
 
+    {% if resolution_readiness and not resolution_readiness.can_agent_resolve %}
+    <div class="border-b border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-950 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+        {% if resolution_readiness.classification.value in ['unresolved', 'ambiguous'] %}
+        <div class="flex flex-wrap items-center justify-between gap-2"><span><strong>Is this a Customer or Lead?</strong> Identify the contact before resolving.</span><button type="button" hx-get="/admin/inbox/{{ timeline.id }}/contact" hx-target="#inbox-contact-content" hx-swap="innerHTML" @click="openContact('{{ timeline.id }}')" class="min-h-9 rounded-lg border border-amber-400 px-3 font-semibold">Identify contact</button></div>
+        {% else %}
+        <div class="flex flex-wrap items-center justify-between gap-2"><span><strong>Customer information incomplete.</strong> {% for field in resolution_readiness.fields if not field.complete %}{{ field.label }}{% if not loop.last %}, {% endif %}{% endfor %} required before Resolve.</span><button type="button" hx-get="/admin/inbox/{{ timeline.id }}/contact" hx-target="#inbox-contact-content" hx-swap="innerHTML" @click="openContact('{{ timeline.id }}')" class="min-h-9 rounded-lg border border-amber-400 px-3 font-semibold">Complete Customer</button></div>
+        {% endif %}
+    </div>
+    {% endif %}
+
     {% include "admin/inbox/_comment_thread.html" %}
+    {% if action_eligibility.control_owner == 'ai' %}
+    <div class="border-b border-indigo-200 bg-indigo-50 px-4 py-2 text-xs text-indigo-900 dark:border-indigo-800 dark:bg-indigo-950/30 dark:text-indigo-100">
+        <strong>{{ 'AI Intake is waiting for the customer.' if action_eligibility.waiting_for_customer else 'AI Intake is handling this conversation.' }}</strong>
+        This thread is read-only until an authorized agent explicitly takes over.
+    </div>
+    {% endif %}
     <div x-show="!commentMode" class="contents">
     <div x-show="newMessagesAvailable" x-cloak class="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center dark:border-amber-800 dark:bg-amber-950/30">
         <button type="button" @click="refreshThread('{{ timeline.id }}')" class="min-h-10 text-xs font-semibold text-amber-800 underline-offset-2 hover:underline dark:text-amber-200">New messages available — refresh safely</button>
@@ -269,8 +313,8 @@
         </div>
 
         <div class="mb-2 flex flex-wrap items-center gap-1.5">
-            <button type="button" @click="mode = 'reply'" :class="mode === 'reply' ? 'bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100' : 'text-slate-500'" class="min-h-10 rounded-lg px-3 text-xs font-semibold">Reply</button>
-            <button type="button" @click="mode = 'note'" :class="mode === 'note' ? 'bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100' : 'text-slate-500'" class="min-h-10 rounded-lg px-3 text-xs font-semibold">Private note</button>
+            {% if action_eligibility.can_reply %}<button type="button" @click="mode = 'reply'" :class="mode === 'reply' ? 'bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100' : 'text-slate-500'" class="min-h-10 rounded-lg px-3 text-xs font-semibold">Reply</button>{% endif %}
+            {% if action_eligibility.can_private_note %}<button type="button" @click="mode = 'note'" :class="mode === 'note' ? 'bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100' : 'text-slate-500'" class="min-h-10 rounded-lg px-3 text-xs font-semibold">Private note</button>{% endif %}
             <div class="ml-auto flex flex-wrap items-center gap-1.5">
                 <button type="button" @click="insertIntroduction()" class="min-h-10 rounded-lg px-2.5 text-xs font-medium text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800">Introduction</button>
                 {% if template_options %}
@@ -475,7 +519,7 @@
         {# Save the current draft into the shared library. Sits outside the reply
            form (forms cannot nest) but inside the composer scope so it can read
            `draft`. #}
-        <div x-show="mode === 'reply' && draft.trim()" x-cloak class="mt-2" x-data="{ saveOpen: false, saveKind: 'macro' }">
+        {% if action_eligibility.can_run_macro %}<div x-show="mode === 'reply' && draft.trim()" x-cloak class="mt-2" x-data="{ saveOpen: false, saveKind: 'macro' }">
             <button type="button" @click="saveOpen = !saveOpen" class="min-h-9 rounded-lg px-2 text-[11px] font-medium text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800" :aria-expanded="saveOpen.toString()">Save this reply for reuse</button>
             <div x-show="saveOpen" x-cloak class="mt-1.5 rounded-lg border border-slate-200 p-2 dark:border-slate-700">
                 <div class="mb-1.5 flex gap-1.5">
@@ -491,16 +535,16 @@
                     <button type="submit" class="min-h-9 shrink-0 rounded-lg border border-slate-300 px-2.5 text-[11px] font-semibold dark:border-slate-700">Save</button>
                 </form>
             </div>
-        </div>
+        </div>{% endif %}
 
-        <form method="post" action="/admin/inbox/{{ timeline.id }}/note" x-show="mode === 'note'" x-cloak @submit="sending = true" class="space-y-2">
+        {% if action_eligibility.can_private_note %}<form method="post" action="/admin/inbox/{{ timeline.id }}/note" x-show="mode === 'note'" x-cloak @submit="sending = true" class="space-y-2">
             {% include "components/forms/csrf_input.html" %}
             <input type="hidden" name="mention_user_ids" data-mention-user-ids value="">
             <div data-mention-selected class="hidden flex-wrap gap-1.5" aria-label="Mentioned colleagues"></div>
             <textarea name="body_text" rows="3" required placeholder="Add a private note. Type @ to mention a colleague. It will never be sent to the customer." data-inbox-note-mentions data-mention-endpoint="/admin/inbox/{{ timeline.id }}/mentionable-users" aria-label="Private note" aria-autocomplete="list" aria-expanded="false" class="w-full rounded-xl border-amber-300 bg-amber-50/60 text-sm focus:border-amber-500 focus:ring-amber-500 dark:border-amber-800 dark:bg-amber-950/20"></textarea>
             <p data-mention-status class="sr-only" role="status" aria-live="polite"></p>
             <div class="flex items-center justify-between"><p class="text-xs font-medium text-amber-800 dark:text-amber-200">Only internal agents can see this note.</p><button type="submit" class="min-h-11 rounded-lg bg-amber-500 px-4 text-sm font-semibold text-white">Save private note</button></div>
-        </form>
+        </form>{% endif %}
     </div>
     </div>
 </section>

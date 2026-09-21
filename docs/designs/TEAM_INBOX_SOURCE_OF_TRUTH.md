@@ -47,10 +47,12 @@ combined Inbox/Support workspace.
 | Inbound provider facts, deduplication, and identity-collision quarantine | `communications.team_inbox_observations` | Commits one normalized provider observation before consequences and durably quarantines conflicting SMTP candidates |
 | Consequence coordination | `communications.team_inbox_processing` | Locks a committed observation and invokes the relevant participants once |
 | Conversation identity and threading | `communications.team_inbox_threads` | Resolves provider message/thread identity and writes conversations/messages |
-| Contact, subscriber, reseller, and reviewed context | `communications.team_inbox_contact_resolution` | Produces explicit matched, ambiguous, suppressed, or unmatched outcomes and owns reviewed links |
+| Contact, subscriber, reseller, and reviewed context | `communications.team_inbox_contact_resolution` | Produces explicit matched, ambiguous, suppressed, or unmatched outcomes, owns reviewed links, and projects bounded lazy Customer link options |
 | Conversation-to-Lead provenance | `communications.conversation_lead_relationships` | Owns the durable, auditable, one-active-Lead-per-conversation relationship |
 | Customer context drawer | `communications.team_inbox_contact_context` | Composes permission-scoped Party, Lead, Ticket, conversation, Project, and Task sections with typed availability |
 | Profile and Lead action resolution | `communications.inbox_lead_actions` | Resolves and coordinates identity-aware actions without owning Party or Lead fields |
+| Customer completion policy | `communications.team_inbox_customer_completion_policy` | Creates immutable Customer-only required-field versions snapshotted by new conversations |
+| Customer resolution readiness and Inbox profile completion | `communications.team_inbox_customer_completion` | Computes the central Customer-only gate and coordinates `customer.canonical_profile_patch` plus `party.registry`; Lead completeness is advisory |
 | Routing, assignment, escalation, and FIFO queue | `communications.team_inbox_routing` | Applies configured team, availability, permission, SLA, durable queue admission, and promotion policy |
 | Inbox automation | `communications.team_inbox_automation` | Matches Inbox-scoped conversation triggers and coordinates ordered assign, auto-assign, and tag actions |
 | Reply reminders | `communications.team_inbox_reply_reminders` | Owns configured first/repeat due times and queues internal agent notifications until a reply settles the schedule |
@@ -63,6 +65,7 @@ combined Inbox/Support workspace.
 | Meta free-form reply window | `communications.team_inbox_reply_window` | Determines WhatsApp, Facebook Messenger, and Instagram DM free-form reply eligibility from qualifying inbound customer message chronology |
 | Provider receipts | `communications.team_inbox_delivery_receipts` | Applies timestamp-monotonic sent/delivered/read/failed projections |
 | Operator mutations | `communications.team_inbox_commands` | Coordinates one typed owner transaction for replies and collaboration actions |
+| AI conversation control | `ai.intake` | Owns active AI-session state; an active session (`completed_at IS NULL`) is authoritative AI ownership and conversation metadata is only a repairable projection |
 | Composer AI polish | `communications.team_inbox_ai_polish` | Coordinates review-only, context-aware polishing of unsent staff drafts through the existing Team Inbox projection and AI generation owner |
 | Visitor chat mutations | `communications.team_inbox_widget` | Owns authenticated portal and anonymous fiber-site widget session, message, read, and satisfaction commands; anonymous identity is exact-match or Party-backed prospect with ambiguity held for review |
 | List/detail/metrics/actions, media, and location presentation | `communications.team_inbox_projection` | Normalizes filters, sort and pagination, computes KPIs, unread and action eligibility, resolves safe inline-image versus download-only media presentation, and maps validated structured coordinates to Google Maps links |
@@ -77,14 +80,16 @@ Campaign materialization remains the flush-only
 `communications.team_inbox_campaigns` participant under the campaign and
 outbound-intent owners.
 
-The Inbox default queue is the operational active cohort and excludes resolved
-conversations. The explicit **All** view (`view=all`) includes every lifecycle
-status, including resolved conversations, for history review. Explicit status
-filters still narrow the queue to one status. A non-empty search without an
-explicit lifecycle filter searches active and resolved history; `open_only`
-and explicit status filters remain authoritative when present. Historical
-search, All, and Resolved cohorts fetch one bounded page plus a next-page probe;
-they do not scan the full cohort merely to render an exact total.
+The Inbox default and explicit **All / Actionable** view (`view=all`) is the
+active, unresolved, human-actionable cohort. It excludes every conversation
+with an authoritative active AI session. **AI Intake** (`view=ai_intake`) shows
+active AI-owned conversations read-only, including `awaiting_customer`.
+**Queue** (`view=queue`) shows only conversations with an active durable FIFO
+queue entry and no active AI ownership. **History** (`view=history`) preserves
+the prior all-lifecycle contract for review and search. Explicit filters narrow
+their selected ownership/lifecycle cohort; they never make an AI-owned row
+human-actionable. Historical cohorts use bounded pagination rather than scanning
+the full result merely to render an exact total.
 
 The stale-conversation policy may resolve an unassigned conversation only when
 its latest non-internal message is a human agent reply older than the configured
@@ -94,14 +99,42 @@ conversation and rechecks assignment and message evidence in the owner
 transaction before applying the audited status transition.
 
 AI customer waiting is not an escalation signal. The AI session owns
-`awaiting_customer`, the wait start, and a separate long-term `expires_at` based
-on `customer_wait_expiry_hours`. Team Inbox maintenance locks only sessions past
-that long-term expiry, rejects races with a newer customer reply or human
-takeover, and closes the inactive session/conversation without creating a note,
-assignment, or FIFO queue entry. Legacy five-minute wait rows are extended onto
-the long-term lifecycle before any consequence. Human routing still occurs only
+`awaiting_customer`, the wait start, and a separate `expires_at` based on
+`customer_wait_handoff_minutes` (10 minutes by default). Team Inbox maintenance
+selects due sessions plus waits carrying a retired hours/expiry marker,
+normalizes those deadlines from their authoritative wait start, and rejects
+races with a newer customer reply or human takeover. At the deadline it records
+a handoff summary, ends AI ownership, and enters the same authoritative routing
+path used by other human work: FIFO order and available capacity decide whether
+an eligible agent is assigned immediately or the conversation receives a durable
+entry in the team's regular FIFO queue. A legacy row with no trustworthy wait
+start receives a fresh 10-minute window before any consequence. Human routing
+also occurs earlier
 for a recorded explicit handoff reason such as a human request, unsupported
 issue, policy boundary, required tool failure, or exhausted troubleshooting.
+
+An active `AiIntakeSession` is the sole authority for AI control; the
+conversation's `ai_handling` metadata is a rebuildable display projection with
+transaction-current freshness and drift whenever it disagrees with the active
+session query. While AI controls the conversation, ordinary human replies,
+notes, assignment, status/workflow changes, ticket creation, macros, bulk
+operations, workqueue claims, report escalation, and generic automation fail
+closed with `communications.team_inbox_commands.ai_owned`. The typed AI handoff
+provenance is the only exception for AI-authorized routing.
+
+`TakeOverConversationCommand` is the only ordinary human transition out of AI
+control. It locks and rechecks the expected conversation/session/state, stops
+the session as `stopped_human_takeover`, clears customer wait, records actor,
+reason, timestamps and prior state, and assigns the authorized active staff
+actor. Explicit takeover deliberately bypasses ordinary assignment membership,
+presence, capacity, FIFO, and existing-owner gates; the selected active service
+team remains required as routing and audit attribution, but it is not an
+operator-eligibility gate. The same transaction suppresses pending AI outbox
+rows and stages projection and realtime effects. Assignment failure rolls the
+whole operation back. A stable idempotency key replays the completed takeover;
+stale session or state evidence returns a conflict. Delivery workers
+independently revalidate the referenced active AI session immediately before
+provider contact and cancel stale queued AI messages after takeover.
 ## Inbound flow and idempotency
 
 1. The adapter verifies the provider signature or SMTP envelope and reduces the
@@ -151,13 +184,47 @@ Otherwise it matches the exact normalized inbound endpoint and, for
 provider-scoped social identifiers, the same provider account scope. Ambiguous
 evidence fails closed as `not_calculated` instead of merging customer records.
 
-An operator-selected Subscriber is carried into the conversation command as an
-explicit identity decision. A reviewed manual contact link also repairs every
+The Existing Customer selector is lazy and has two explicit read modes. Focus
+on an empty field requests at most eight conversation-derived likely matches;
+there is no unrelated recently-updated-Customer fallback. Entering at least two
+characters replaces those suggestions with at most eight active Customers
+matched only from the entered name, email, phone, company/legal name, account
+number, subscriber number, display name, or exact Customer UUID. Requests are
+debounced and stale requests are cancelled. Neither mode writes identity.
+
+An operator-selected Subscriber UUID is carried into the conversation command
+as an explicit reviewed identity decision. When the sender is the Customer, a
+reviewed manual contact link also repairs every
 other active, unlinked conversation with the same normalized channel address;
 it never overwrites a different Subscriber relationship. This makes the
 customer conversation-history projection converge without matching names or
-shared addresses in the browser. Historical rows without reviewed or uniquely
+shared addresses in the browser. Before a reviewed link exists, the server may
+narrow an exact normalized phone match with an exact normalized observed name;
+a name mismatch remains ambiguous. Historical rows without reviewed or uniquely
 resolved contact evidence remain unlinked for explicit reconciliation.
+
+Contact-route writes serialize on the normalized channel endpoint before they
+lock conversation and route rows. Reapplying the same target reuses the active
+route and repairs only missing conversation projections. A reviewed different
+target preserves the prior row as inactive, flushes that deactivation before
+inserting its replacement, and leaves the partial unique index as the final
+one-active-route arbiter. Route evidence that changes during review fails
+closed and requires a fresh drawer.
+
+When the sender represents someone else, the operator instead selects the exact
+conversation participant, a represented existing Customer or Party-backed
+Lead, and a required reason. The contact-resolution owner links a Customer only
+to that conversation; the conversation-to-Lead owner records a selected Lead;
+and the participant owner records `representative`. Neither path creates a
+reusable contact route or performs historical repair, because one
+representative endpoint may legitimately speak for different subjects in
+different conversations.
+
+Agent resolution uses the Customer-only completion gate defined in
+`docs/designs/INBOX_CUSTOMER_COMPLETION_GATE.md`. Customer conversations must
+satisfy their immutable snapshotted policy on canonical Customer/Party facts.
+Lead profile gaps never participate in resolution readiness. Direct, bulk, and
+macro resolution all enter the status owner and consume the same verdict.
 
 The fiber website uses the same boundary through the signed
 `communications.fiber_inquiry.receive.v1` Integration Platform capability.
@@ -196,26 +263,79 @@ default or configured fallback team remains the primary team. The route rows
 are routing policy only; provider credentials and SMTP listener secrets remain
 owned by configuration and secret-management contracts.
 
-When no eligible agent has capacity, routing records one durable queue entry
-with a team-scoped monotonic admission position and entry timestamp. The
-periodic promotion command locks the oldest entries and each target team before
-rechecking live capacity, promotes only the oldest eligible conversation, and
-durably settles invalid or already-assigned entries. The agent projection
-derives current FIFO rank and an estimated wait from that ledger and the live
-capacity snapshot; it never makes a routing decision.
+When no eligible agent has capacity, routing records one durable queue entry.
+`InboxConversationQueueEntry.queue_position` is retained as the team-scoped
+**admission sequence** for schema compatibility; it is durable ordering
+evidence, not a customer-visible position. The **current visible position** is
+the live rank of active `queued` entries for that team ordered by `entered_at
+ASC, queue_position ASC`. The agent and customer projections derive that rank
+from the queue ledger and never expose the admission sequence as a current
+position.
+
+Strict FIFO is serialized by the `ServiceTeam` row. Admission, normal manual
+assignment, automatic assignment and promotion acquire that team lock before
+examining the head. A promotion worker that cannot acquire the team lock skips
+the whole team; it may not use `SKIP LOCKED` to take the team's second entry.
+The recovery sweep selects one head cohort per queued team rather than one
+global row batch, so a full team's backlog cannot hide another team's eligible
+head. Resolution, assignment, cancellation, requeue and team transfer settle
+or start the queue lifecycle transactionally. A conversation cannot remain an
+active member of one team's queue while assigned, resolved, or owned by another
+team.
 
 Automatic assignment uses `inbox_team_round_robin_cursors`, one durable cursor
-per service team. The routing owner locks the team and cursor, builds the
-eligible online candidate list, skips inactive/offline/stale/full agents, advances
-the cursor only inside the assignment transaction, and records routing evidence
-with candidate capacity details. An `online` presence is eligible only when its
-`last_seen_at` evidence is no more than 30 minutes old; missing or stale
-presence fails closed as offline. Manual assignment to a target-team member uses
-the same availability gate. The default capacity is ten active
-conversations per agent unless `InboxAgentPresence.max_concurrent_conversations`
-overrides it. Capacity counts active human assignments on `open`, human-owned
-`pending`, and `snoozed` conversations while ownership remains active. It
-excludes resolved conversations and unassigned AI-pending conversations.
+per service team. FIFO chooses the oldest customer first; round robin then
+chooses the next eligible agent. The routing owner locks the team and cursor,
+builds the eligible online candidate list, skips inactive/offline/stale/full
+agents, serializes the final global capacity decision on the active
+`SystemUser` row, creates the assignment, and only then advances the cursor.
+The per-agent lock is intentionally not team-scoped because one agent may be a
+member of several teams or channels. Normal manual, self, automation, workqueue
+and promotion assignments use the same membership, presence and capacity gate;
+there is no implicit force override and a queued non-head cannot be selected.
+Reply auto-claim preserves a different owner whose effective presence is
+`online`, `away`, or `on_break`. It may atomically replace that assignment only
+when the routing owner locks the prior owner's presence evidence and resolves it
+to `offline`; missing presence and online evidence older than the freshness
+window fail closed to offline. The replacement is recorded as a distinct
+routing reason in the same transaction as the reply and assignment transition.
+
+An `online` presence is eligible only when its `last_seen_at` evidence is no
+more than 30 minutes old; missing or stale presence fails closed as offline.
+The authenticated Inbox workspace sends a best-effort heartbeat when it opens,
+every five minutes while visible, and when a hidden tab becomes visible again.
+The routing owner accepts that heartbeat only for an active `SystemUser`. It
+creates missing online presence and refreshes selected online presence, but
+never overrides an explicit `away`, `on_break`, or `offline` selection. A
+hidden or closed workspace naturally becomes stale after the same 30-minute
+window.
+The default capacity is the `comms.inbox_agent_default_max_concurrent_conversations`
+setting (default `10`, allowed range `1..100`) unless
+`InboxAgentPresence.max_concurrent_conversations` supplies the existing
+per-agent override. Administrators edit the default at **Admin → System →
+Settings → Comms**, field **Default active Inbox conversations per agent**;
+the field states its `1..100` range, identifies `10` as the default rather than
+a maximum, and provides an adjacent save action. The Inbox Manager Dashboard
+links authorized settings operators directly to that control. The canonical
+settings writer invalidates the cache on commit and subsequent assignment
+decisions consume the new value immediately. There is currently no Admin writer
+for the per-agent override. Capacity counts active human
+assignments on `open`, human-owned `pending`, and `snoozed` conversations while
+ownership remains active. It excludes resolved and AI-owned conversations even
+if legacy drift left an assignment projection behind. Default/actionable,
+unassigned, pending-response, needs-response, unread-work, and manager workload
+counts apply the same authoritative exclusion; AI Intake has its own count.
+Explicit takeover is the intentional exception to membership, presence, FIFO,
+capacity, and existing-owner assignment gates. Any active staff actor with both
+takeover permissions may stop AI and acquire the conversation. The routing owner
+still validates an active service team and records current availability as audit
+evidence; bypassed eligibility never becomes the policy for ordinary manual or
+automatic assignment.
+
+Capacity-opening transitions schedule an idempotent promotion task after the
+owning transaction commits. Agent return to eligible online presence,
+resolution, reassignment and requeue therefore prompt promotion; the configured
+60-second periodic sweep remains recovery rather than the sole trigger.
 
 Successful staff session issuance submits one typed, flush-only sign-in command
 to the routing owner in the same transaction. That command sets the signed-in
@@ -227,32 +347,71 @@ reseller sessions do not write agent presence. Operators may still select
 another availability after sign-in; the existing 30-minute freshness and
 assignment-capacity rules are unchanged.
 
-Queue communication is also owned by Team Inbox routing. `inbox_queue_notifications`
-records initial position notices, movement updates, fifteen-minute unchanged
-heartbeats, handoff notices, dedupe keys, delivery outcome and outbound message
-links. Customer-visible queue messages are sent only through Team Inbox
-outbound intents and only for WhatsApp, Facebook Messenger, Instagram DM, and
-the native chat widget.
-Queue messages never invent estimated wait times. Promotion, transfer,
-resolution, cancellation or assignment stops further queue updates.
+Queue communication is also owned by Team Inbox routing.
+`inbox_queue_notifications` records the admission generation, initial notice,
+forward-only position updates, optional heartbeats, handoff notices,
+deterministic dedupe keys, suppression reason, delivery outcome and outbound
+message links. The queue entry durably records `last_notified_position`,
+`last_position_notified_at` and `last_heartbeat_at`. Position keys have the
+shape `queue-position:<entry>:generation:<generation>:<visible-position>`, so
+the same position cannot be recreated through a later time window. Requeue
+increments the admission generation and begins an independent notification
+lifecycle.
+
+The initial notice is sent once. A position update is sent only when the live
+position moves forward; unchanged and worsening positions are suppressed, with
+worsening movement recorded as structured evidence. Heartbeats are disabled by
+the single policy default. When explicitly enabled they use a separate
+non-position template, default to 30 minutes, and are suppressed until that
+period has elapsed since the most recent position notice or heartbeat. Position
+checks default to 10 minutes. Runtime, Admin form and policy fallback use these
+same defaults.
+
+Customer-visible queue messages are sent only through Team Inbox outbound
+intents and only for WhatsApp, Facebook Messenger, Instagram DM, and the native
+chat widget. Queue messages never invent estimated wait times. Promotion,
+transfer, resolution, cancellation or assignment cancels pending intents for
+that admission generation and stops future updates. Immediately before provider
+contact, the notification dispatcher locks and revalidates the authoritative
+conversation, active queue entry, assignment absence, generation, notification
+kind and current visible position. A stale notice is durably suppressed without
+contacting the provider.
 
 ## Outbound flow
 
 An operator reply command accepts one typed `ReplyCommand`, including a typed
 email copy-recipient value object for optional CC and BCC addresses. It performs pure and
-provider-template preparation before acquiring the conversation row, then takes
-a late PostgreSQL `NOWAIT` lock for the bounded database-only write phase. Under
-that lock it rechecks active state and the stable per-conversation idempotency
-key, including normalized copy recipients in the replay fingerprint, then records
-the communication intent, durable notification/outbox row,
-Inbox outbound-attempt projection, attachments, and macro consequence in one
-owner transaction. Exact key retries replay the existing message; changed input
-under the same key fails closed. SQLSTATE `55P03` rolls back completely and maps
-to the retryable `communications.team_inbox_commands.conversation_busy` domain
-error, never to an HTTP 500. Dispatch occurs after commit through the canonical
+provider-template preparation before acquiring assignment locks. The command
+then asks `communications.team_inbox_routing` to atomically preserve or create
+human ownership using the canonical team, agent-capacity, conversation, and
+active-assignment lock order. Active AI ownership is rechecked under that lock
+and fails closed; reply auto-claim is never an implicit AI takeover. An
+unassigned conversation is claimed only by an eligible active team member with
+capacity and, when queued, only at the FIFO head. An existing assignment to the
+same agent is retained. An assignment to a different agent returns
+`communications.team_inbox_commands.assigned_to_other` with that agent's display
+name and sends nothing.
+
+The bounded database-only write phase uses a PostgreSQL `NOWAIT` conversation
+lock and rechecks active state. Its stable per-conversation idempotency key is
+bound to the replying agent and includes normalized copy recipients in the
+replay fingerprint. The transaction records the assignment, communication
+intent, durable notification/outbox row, Inbox outbound-attempt projection,
+attachments, and macro consequence together. Exact key retries by the owning
+agent replay the existing message; changed input or a different agent under the
+same key fails closed. SQLSTATE `55P03` rolls back completely and maps to the
+retryable `communications.team_inbox_commands.conversation_busy` domain error,
+never to an HTTP 500. Dispatch occurs after commit through the canonical
 notification delivery point. SMTP, WhatsApp, and social integrations translate
 the intent and later return normalized receipt observations; they cannot change
-conversation or ticket lifecycle state.
+
+Before any queued AI Intake intent contacts a provider, the delivery worker
+rechecks that the referenced AI session still exists, is incomplete, belongs to
+the same active unresolved conversation, and has not reached
+`stopped_human_takeover`. A failed recheck cancels the notification and marks the
+Inbox attempt with a bounded suppression reason. This second admission check is
+required even when takeover already canceled known queued rows because it closes
+the enqueue/takeover/worker race.
 
 For email, the thread owner derives one stable RFC `Message-ID` from the local
 outbound Inbox message UUID before the intent is staged. It also derives
@@ -281,6 +440,15 @@ Email replies with Inbox attachments resolve those durable Inbox asset IDs only;
 they never reinterpret Inbox display metadata as generic communication
 attachments. The supported email attachment types include PDF, XLSX, and the
 Team Inbox image types PNG, JPEG, GIF, and WebP.
+Facebook Messenger and Instagram DM replies use the same private Inbox asset
+identity and content boundary. The notification worker resolves each asset only
+after the outbound intent commits, then the version-pinned `meta.social`
+capability uploads the bytes to Meta's attachment API and sends the returned
+attachment ID. It never exposes an authenticated Inbox media URL to Meta.
+Instagram permits image, audio, and video assets; document attachments fail
+closed before an intent is staged. Each accepted media leg and the optional
+text leg records its provider message ID durably, and a retry skips those exact
+completed legs rather than sending the customer a duplicate attachment.
 Immediate tasks and sweeps both lock and claim the exact
 eligible outbox row before provider delivery, so concurrent wake-ups are safe
 no-ops rather than duplicate sends. Immediate replies with no operator-supplied
@@ -384,6 +552,8 @@ queue interval, or assignment ending timestamp. See
 | Projection | Inputs | Canonical writer | Repair |
 | --- | --- | --- | --- |
 | Contact link | Conversation route plus reviewed Party/customer facts | contact-resolution owner | Revalidate/reapply a reviewed link, which repairs active unlinked threads on that exact normalized route; use the digest-bound `repair_team_inbox_subscriber_links` operator workflow for existing uniquely resolved routes; ambiguity remains explicit |
+| Represented Customer association | Exact active conversation participant, selected active Customer, authenticated operator, and required review reason | contact-resolution owner with participant-owner classification | Reapply the reviewed command to the same conversation, participant, and Customer; it is idempotent and never widens to another conversation or creates a global contact route |
+| Represented Lead association | Exact active conversation participant, selected active Party-backed Lead, authenticated operator, and required review reason | conversation-to-Lead owner with participant-owner classification | Reapply the reviewed command to the same conversation, participant, and Lead; the active link is idempotent and never creates a Lead or global contact route |
 | Operator unread | Message chronology plus per-person read cursor | operator-state owner | Set-based grouped queries recompute the projection; `rebuild_operator_read_state` removes impossible cross-conversation cursors |
 | Queue metrics and response cohorts | Conversation lifecycle, ordered message chronology, agent reply provenance/delivery, ticket handoff, assignment, and read state | projection query owner | Recompute on every query; no independent flag or counter is authoritative |
 | Performance report cohorts | Conversation lifecycle, ordered message chronology, recorded sender provenance, assignments, team composition, and staff identity in the selected half-open UTC period | `communications.team_inbox_metrics` | Recompute in set-based queries on every request; defaults to the latest 30 days, rejects ranges over 366 days, and exposes the effective period in the typed outcome |

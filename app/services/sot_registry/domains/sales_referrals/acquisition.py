@@ -755,90 +755,25 @@ SERVICES: tuple[SOTService, ...] = (
         ),
     ),
     SOTService(
-        name="sales.customer_quote_linkage",
-        module="app.services.sales.customer_quote_linkage",
-        owns=("customer-to-dedicated-Quote-Lead resolution",),
-        depends_on=("customer.accounts", "party.registry", "sales.lead_lifecycle"),
-        notes=(
-            "The quote authoring coordinator invokes this flush-only participant to "
-            "lock an active reviewed customer, reuse or create its unique system Lead, "
-            "and preserve the existing customer account for later acceptance."
-        ),
-        contract=ServiceContract(
-            concerns=(
-                ConcernContract(
-                    name="customer-to-dedicated-Quote-Lead resolution",
-                    role=OwnerRole.COMMAND_WRITER,
-                    input_names=("canonical customer account state",),
-                    canonical_writer="sales.customer_quote_linkage",
-                ),
-            ),
-            authoritative_inputs=(
-                AuthorityInput(
-                    name="canonical customer account state",
-                    owner="customer.accounts",
-                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                    source="locked active Subscriber and its reviewed active Party binding",
-                ),
-            ),
-            transaction=TransactionContract(
-                mode=TransactionMode.PARTICIPANT,
-                boundary="Called only inside sales.quote_authoring; it locks customer then linkage and flushes without completing a transaction.",
-                locking="Locks the selected Subscriber then its unique customer_quote_lead_links row.",
-                idempotency="The customer primary key and unique Lead key return the same dedicated Lead.",
-                retries="The enclosing authoring command retries the complete transaction after a transient conflict.",
-            ),
-            errors=ErrorContract(
-                domain_codes=(
-                    "sales.customer_quote_linkage.customer_not_found",
-                    "sales.customer_quote_linkage.customer_not_eligible",
-                ),
-                mapping_owner="admin sales Quote form adapter",
-                fail_closed_on=("inactive customer or missing reviewed Party binding",),
-            ),
-            events=EventContract(
-                event_types=("quote.created",),
-                schema_version=1,
-                delivery_owner="events.dispatcher",
-                compatibility=(
-                    "The enclosing quote-authoring coordinator stages quote.created "
-                    "with the resolved Lead and existing Subscriber identifiers."
-                ),
-                replay=(
-                    "The unique customer linkage and enclosing Quote submission "
-                    "fingerprint suppress duplicate linkage and event evidence."
-                ),
-            ),
-            migration=MigrationContract(
-                state=AuthorityMigrationState.NATIVE,
-                new_owner="sales.customer_quote_linkage",
-                verification="Unique linkage and customer-backed Quote acceptance tests.",
-            ),
-            steward="sales operations",
-            design_refs=("docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md",),
-            test_refs=("tests/test_web_sales_quote_authoring.py",),
-        ),
-    ),
-    SOTService(
         name="sales.quote_authoring",
         module="app.services.sales.quote_authoring",
         owns=(
-            "atomic Lead-backed Draft/Sent Quote authoring",
+            "atomic Lead- or customer-backed Draft/Sent Quote authoring",
             "Quote discount lifecycle and append-only history",
         ),
         depends_on=(
             "auth.staff_provisioning",
+            "customer.accounts",
             "events.dispatcher",
             "financial.tax_configuration",
             "observability.audit_log",
             "party.registry",
-            "sales.customer_quote_linkage",
             "sales.lead_lifecycle",
             "sales.service",
             "service_intent.catalog_policy",
         ),
         notes=(
-            "Staff author one Lead-backed Draft or Sent Quote and all of its "
+            "Staff author one Lead- or customer-backed Draft or Sent Quote and all of its "
             "lines plus an optional Quote-level discount under one transaction. "
             "The same owner locks mutable Quotes for discount replacement/removal "
             "and preserves append-only actor/time/value evidence. Initial Accepted "
@@ -849,12 +784,13 @@ SERVICES: tuple[SOTService, ...] = (
         contract=ServiceContract(
             concerns=(
                 ConcernContract(
-                    name="atomic Lead-backed Draft/Sent Quote authoring",
+                    name="atomic Lead- or customer-backed Draft/Sent Quote authoring",
                     role=OwnerRole.APPLICATION_COORDINATOR,
                     input_names=(
                         "Quote authoring command evidence",
                         "canonical staff actor state",
                         "canonical Lead and Party state",
+                        "canonical customer account state",
                         "canonical commercial reference state",
                         "canonical Quote lifecycle state",
                     ),
@@ -875,7 +811,7 @@ SERVICES: tuple[SOTService, ...] = (
                     owner="sales.quote_authoring",
                     kind=AuthorityKind.CONTROL_INPUT,
                     source=(
-                        "typed submission id, Lead, Draft/Sent status, currency, "
+                        "typed submission id, exactly one Lead or Customer, Draft/Sent status, currency, "
                         "tax choice, install location, required Project Type, line values, "
                         "actor, and CommandContext provenance"
                     ),
@@ -901,6 +837,12 @@ SERVICES: tuple[SOTService, ...] = (
                     owner="sales.lead_lifecycle",
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
                     source="locked active open Party-bound Lead",
+                ),
+                AuthorityInput(
+                    name="canonical customer account state",
+                    owner="customer.accounts",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="locked active Subscriber selected directly without Party binding",
                 ),
                 AuthorityInput(
                     name="canonical commercial reference state",
@@ -930,7 +872,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "roll back together"
                 ),
                 locking=(
-                    "Authoring locks actor then Lead; discount mutation locks actor then "
+                    "Authoring locks actor then the selected Lead or Customer; discount mutation locks actor then "
                     "Quote. The supplied UUID, expected revision, and database keys "
                     "arbitrate concurrent submissions."
                 ),
@@ -951,6 +893,8 @@ SERVICES: tuple[SOTService, ...] = (
                     "sales.quote_authoring.active_discount_blocks_line_mutation",
                     "sales.quote_authoring.actor_not_eligible",
                     "sales.quote_authoring.currency_invalid",
+                    "sales.quote_authoring.customer_not_eligible",
+                    "sales.quote_authoring.customer_not_found",
                     "sales.quote_authoring.initial_status_invalid",
                     "sales.quote_authoring.install_pin_incomplete",
                     "sales.quote_authoring.inventory_description_mismatch",
@@ -984,7 +928,7 @@ SERVICES: tuple[SOTService, ...] = (
                 ),
                 mapping_owner="admin sales Quote form adapter",
                 fail_closed_on=(
-                    "inactive or closed Lead/Party state",
+                    "inactive or closed Lead/Party state or inactive Customer account",
                     "inactive actor or commercial reference",
                     "initial Accepted/Rejected/Expired status",
                     "ambiguous or stale line references",
@@ -1016,7 +960,7 @@ SERVICES: tuple[SOTService, ...] = (
                 old_owner="admin web form plus per-row sales.service commits",
                 new_owner="sales.quote_authoring",
                 verification=(
-                    "Lead and Project Type requirements, Draft/Sent restriction, "
+                    "Lead-or-Customer and Project Type requirements, Draft/Sent restriction, "
                     "atomic gross-priced lines, Quote-level discount/history, install "
                     "metadata, exact replay, manifest, and boundary tests."
                 ),
@@ -1025,7 +969,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "session and exposes only Draft/Sent initial states."
                 ),
                 fallback_retirement=(
-                    "The form cannot create an Accepted Quote or Subscriber and no "
+                    "The form cannot create an Accepted Quote, Subscriber, or synthetic Lead and no "
                     "adapter creates initial Quote lines through separate commits."
                 ),
             ),
@@ -1288,17 +1232,170 @@ SERVICES: tuple[SOTService, ...] = (
         ),
     ),
     SOTService(
+        name="sales.quote_payment_review",
+        module="app.services.sales.quote_payment_review",
+        owns=(
+            "request customer Quote payment review",
+            "staff approval of customer Quote payment",
+        ),
+        depends_on=(
+            "auth.permission_gate",
+            "communications.intents",
+            "communications.staff_notifications",
+            "events.dispatcher",
+            "observability.audit_log",
+            "sales.service",
+        ),
+        notes=(
+            "This command owner records the reviewer, decision time, revision, "
+            "and SHA-256 fingerprint of the exact address, feasibility, lines, "
+            "discounts, taxes, total, and deposit policy reviewed by staff. A "
+            "later commercial change makes approval stale without trusting a UI "
+            "flag. It resolves the staff review alert and queues the customer "
+            "decision notification in the same transaction."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="request customer Quote payment review",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=(
+                        "typed payment-review request",
+                        "canonical Quote commercial state",
+                    ),
+                    canonical_writer="sales.quote_payment_review",
+                ),
+                ConcernContract(
+                    name="staff approval of customer Quote payment",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=(
+                        "typed payment-review command",
+                        "canonical Quote commercial state",
+                        "authorized staff reviewer",
+                    ),
+                    canonical_writer="sales.quote_payment_review",
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="typed payment-review request",
+                    owner="sales.quote_payment_review",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "typed Quote id, Subscriber id, and customer command context"
+                    ),
+                ),
+                AuthorityInput(
+                    name="typed payment-review command",
+                    owner="sales.quote_payment_review",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "typed Quote id, expected revision, approve/reject decision, "
+                        "reason, reviewer id, and command context"
+                    ),
+                ),
+                AuthorityInput(
+                    name="canonical Quote commercial state",
+                    owner="sales.service",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "locked Quote, install pin, feasibility, line items, "
+                        "discount, tax, total, expiry, and deposit policy"
+                    ),
+                ),
+                AuthorityInput(
+                    name="authorized staff reviewer",
+                    owner="auth.permission_gate",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source="active SystemUser holding sales:quote:review",
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.OWNER_MANAGED,
+                boundary=(
+                    "request_quote_payment_review or review_quote_payment enters "
+                    "execute_owner_command once; the "
+                    "current Quote decision, append-only review evidence, audit, "
+                    "domain event, staff-alert resolution, and customer notification "
+                    "commit or roll back together"
+                ),
+                locking=(
+                    "The reviewer and Quote are selected FOR UPDATE; expected "
+                    "revision rejects concurrent decisions."
+                ),
+                idempotency=(
+                    "Command UUID plus a canonical command fingerprint replays the "
+                    "same review and rejects changed reuse."
+                ),
+                retries="Equivalent command retries return append-only review evidence.",
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    *owner_command_boundary_error_codes("sales.quote_payment_review"),
+                    "sales.quote_payment_review.already_approved",
+                    "sales.quote_payment_review.command_conflict",
+                    "sales.quote_payment_review.customer_required",
+                    "sales.quote_payment_review.quote_not_found",
+                    "sales.quote_payment_review.quote_status_invalid",
+                    "sales.quote_payment_review.reason_invalid",
+                    "sales.quote_payment_review.reason_required",
+                    "sales.quote_payment_review.review_not_pending",
+                    "sales.quote_payment_review.reviewer_not_authorized",
+                    "sales.quote_payment_review.revision_conflict",
+                ),
+                mapping_owner="admin Quote payment-review adapter",
+                fail_closed_on=(
+                    "missing, inactive, terminal, or customerless Quote",
+                    "inactive or unauthorized reviewer",
+                    "stale expected revision",
+                    "changed idempotency evidence",
+                ),
+            ),
+            events=EventContract(
+                event_types=(
+                    "quote.payment_review_requested",
+                    "quote.payment_approved",
+                    "quote.payment_rejected",
+                ),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility=(
+                    "Version 1 identifies the Quote, Subscriber, reviewer, revision, "
+                    "snapshot fingerprint, and optional reason."
+                ),
+                replay="Command replay does not stage duplicate events.",
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.NATIVE,
+                new_owner="sales.quote_payment_review",
+            ),
+            steward="sales operations",
+            design_refs=(
+                "docs/SOT_RELATIONSHIP_MAP.md",
+                "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                "docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md",
+            ),
+            test_refs=(
+                "tests/test_quote_payment_review.py",
+                "tests/test_customer_quote_payments.py",
+                "mobile/test/quote_model_test.dart",
+            ),
+        ),
+    ),
+    SOTService(
         name="sales.quote_payment_eligibility",
         module="app.services.quote_deposits",
         owns=("authenticated customer Quote payment eligibility and payable amount",),
         depends_on=(
             "financial.invoices",
             "financial.payment_routing",
+            "sales.quote_payment_review",
             "sales.service",
         ),
         notes=(
             "This read owner resolves authorized Subscriber ownership, active "
-            "Draft/Sent state, expiry, paid-deposit evidence, the authoritative "
+            "Draft/Sent state, current staff approval of the exact commercial "
+            "snapshot, expiry, paid-deposit evidence, the authoritative "
             "deposit amount, and Paystack availability. Quote email delivery "
             "consumes the same typed query before presenting the immutable PDF "
             "payment route; GET rendering creates no invoice or payment intent."
@@ -1314,6 +1411,7 @@ SERVICES: tuple[SOTService, ...] = (
                     input_names=(
                         "authorized customer Quote payment scope",
                         "canonical Quote commercial state",
+                        "canonical Quote payment-review state",
                         "canonical Quote deposit settlement state",
                         "installation-backed Paystack availability",
                     ),
@@ -1336,6 +1434,15 @@ SERVICES: tuple[SOTService, ...] = (
                     source=(
                         "active Quote ownership, status, expiry, currency, and "
                         "server-derived deposit policy inputs"
+                    ),
+                ),
+                AuthorityInput(
+                    name="canonical Quote payment-review state",
+                    owner="sales.quote_payment_review",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "current approved review revision and exact Quote snapshot "
+                        "fingerprint"
                     ),
                 ),
                 AuthorityInput(
@@ -1370,6 +1477,7 @@ SERVICES: tuple[SOTService, ...] = (
             errors=ErrorContract(
                 domain_codes=(
                     "sales.quote_deposits.already_paid",
+                    "sales.quote_deposits.approval_required",
                     "sales.quote_deposits.amount_unavailable",
                     "sales.quote_deposits.paystack_unavailable",
                     "sales.quote_deposits.quote_expired",
@@ -1383,6 +1491,7 @@ SERVICES: tuple[SOTService, ...] = (
                 fail_closed_on=(
                     "missing or unauthorized customer portal identity",
                     "inactive, rejected, expired, cancelled, or paid Quote",
+                    "pending, rejected, missing, or stale staff payment approval",
                     "missing positive authoritative deposit amount",
                     "unavailable Paystack capability",
                 ),
@@ -1412,6 +1521,7 @@ SERVICES: tuple[SOTService, ...] = (
         depends_on=(
             "communications.intents",
             "customer.branding",
+            "customer.accounts",
             "events.dispatcher",
             "observability.audit_log",
             "party.registry",
@@ -1420,7 +1530,8 @@ SERVICES: tuple[SOTService, ...] = (
             "sales.service",
         ),
         notes=(
-            "This owner resolves the Quote recipient from Party contact points, "
+            "This owner resolves a Lead-backed Quote from Party contact points or "
+            "a customer-backed Quote from the active Subscriber email, "
             "attaches the exact immutable branded PDF, and submits one durable "
             "communication intent. The notification dispatcher remains transport; "
             "SMTP acceptance is not treated as mailbox proof."
@@ -1434,6 +1545,7 @@ SERVICES: tuple[SOTService, ...] = (
                         "Quote delivery command evidence",
                         "canonical Quote commercial state",
                         "canonical Party recipient state",
+                        "canonical customer account recipient state",
                         "canonical Quote PDF artifact",
                         "canonical Subscriber Quote payment eligibility",
                     ),
@@ -1463,6 +1575,15 @@ SERVICES: tuple[SOTService, ...] = (
                     source=(
                         "primary-first active email contact point reached through "
                         "Quote to Lead to Party"
+                    ),
+                ),
+                AuthorityInput(
+                    name="canonical customer account recipient state",
+                    owner="customer.accounts",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "active Subscriber email selected directly by a "
+                        "customer-backed Quote"
                     ),
                 ),
                 AuthorityInput(
@@ -1729,7 +1850,9 @@ SERVICES: tuple[SOTService, ...] = (
         ),
         notes=(
             "Quote acceptance is the sole sales conversion event. It locks the "
-            "Quote and Lead, creates or replays the exact account, copies the "
+            "Quote and its selected Lead or Customer. Lead-backed Quotes create "
+            "or replay the exact account and mark the Lead Won; customer-backed "
+            "Quotes use the existing active Subscriber directly. Both paths copy the "
             "order and lines, copies the Quote-selected Project Type, assigns its "
             "configured active template and Tasks, creates only policy-enabled "
             "WorkOrders, and stages event and audit evidence under one owner "
@@ -1777,8 +1900,8 @@ SERVICES: tuple[SOTService, ...] = (
                     owner="sales.lead_lifecycle",
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
                     source=(
-                        "locked active Party-bound Lead, immutable Party binding, "
-                        "and any exact accepted account link"
+                        "optional locked active Party-bound Lead, immutable Party "
+                        "binding, and any exact accepted account link"
                     ),
                 ),
                 AuthorityInput(
@@ -1786,7 +1909,7 @@ SERVICES: tuple[SOTService, ...] = (
                     owner="sales.service",
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
                     source=(
-                        "locked active Lead-backed Draft, Sent, or Accepted Quote, "
+                        "locked active Lead- or customer-backed Draft, Sent, or Accepted Quote, "
                         "its required first-class Project Type, and priced line items"
                     ),
                 ),
@@ -1795,8 +1918,9 @@ SERVICES: tuple[SOTService, ...] = (
                     owner="customer.accounts",
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
                     source=(
-                        "exact Lead-attached Subscriber or typed account prepared "
-                        "from the reviewed Party profile"
+                        "exact active Subscriber selected by a customer-backed Quote, "
+                        "Lead-attached Subscriber, or typed account prepared from the "
+                        "reviewed Party profile"
                     ),
                 ),
                 AuthorityInput(
@@ -1815,11 +1939,11 @@ SERVICES: tuple[SOTService, ...] = (
                     "The public accept_quote command enters execute_owner_command "
                     "once on a transaction-free adapter session. Every participant "
                     "uses the supplied session, flushes only, and the coordinator "
-                    "commits or rolls back Quote, Lead, account, order, lines, "
+                    "commits or rolls back Quote, optional Lead/account conversion, order, lines, "
                     "Project, Tasks, WorkOrders, events, and audit together."
                 ),
                 locking=(
-                    "The exact Quote then Lead and Party are selected FOR UPDATE; "
+                    "The exact Quote then selected Lead/Party or Customer is selected FOR UPDATE; "
                     "every Quote and line mutation locks the same parent Quote first; "
                     "SalesOrder and Project unique structural keys arbitrate concurrent "
                     "replays."
@@ -1851,8 +1975,10 @@ SERVICES: tuple[SOTService, ...] = (
                     "sales.quote_acceptance.deposit_evidence_invalid",
                     "sales.quote_acceptance.invalid_command_context",
                     "sales.quote_acceptance.invalid_transition",
+                    "sales.quote_acceptance.customer_not_eligible",
+                    "sales.quote_acceptance.customer_not_found",
+                    "sales.quote_acceptance.lead_not_found",
                     "sales.quote_acceptance.lead_party_required",
-                    "sales.quote_acceptance.lead_required",
                     "sales.quote_acceptance.line_items_required",
                     "sales.quote_acceptance.nested_owner_command",
                     "sales.quote_acceptance.nested_transaction_completion",
@@ -1862,10 +1988,11 @@ SERVICES: tuple[SOTService, ...] = (
                     "sales.quote_acceptance.quote_account_conflict",
                     "sales.quote_acceptance.quote_expired",
                     "sales.quote_acceptance.quote_not_found",
+                    "sales.quote_acceptance.recipient_required",
                 ),
                 mapping_owner="sales Quote API and admin web adapters",
                 fail_closed_on=(
-                    "missing or ambiguous Lead/Party/account evidence",
+                    "missing or ambiguous Lead/Party or Customer account evidence",
                     "non-Draft/Sent transition",
                     "expired Quote at initial acceptance",
                     "deposit evidence reuse with changed reference, amount, or provider",
@@ -1884,7 +2011,7 @@ SERVICES: tuple[SOTService, ...] = (
                 schema_version=1,
                 delivery_owner="events.dispatcher",
                 compatibility=(
-                    "Version 1 carries exact Quote, Lead, Subscriber, SalesOrder, "
+                    "Version 1 carries exact Quote, optional Lead, Subscriber, SalesOrder, "
                     "Project, ProjectTemplate, actor, and currency/value identifiers."
                 ),
                 replay=(
@@ -1909,12 +2036,13 @@ SERVICES: tuple[SOTService, ...] = (
                     "manifest, and architecture-boundary tests."
                 ),
                 cutover_gate=(
-                    "Every Accepted transition delegates to this coordinator and "
-                    "Lead/Quote generic updates cannot create accounts or mark Won."
+                    "Every Accepted transition delegates to this coordinator; only "
+                    "Lead-backed Quotes create accounts or mark a Lead Won."
                 ),
                 fallback_retirement=(
-                    "Lead creation and Quote authoring do not require or create a "
-                    "Subscriber; helper commits and swallowed acceptance events are absent."
+                    "Lead-backed Quote authoring does not create a Subscriber; "
+                    "customer-backed Quote authoring does not create a Lead; helper "
+                    "commits and swallowed acceptance events are absent."
                 ),
             ),
             steward="sales and service delivery",
@@ -1937,6 +2065,7 @@ SERVICES: tuple[SOTService, ...] = (
             "order waiver decision evidence",
         ),
         depends_on=(
+            "financial.billing_tax_resolution",
             "sales.service",
             "sales.lead_lifecycle",
             "sales.fulfillment",
@@ -1948,6 +2077,11 @@ SERVICES: tuple[SOTService, ...] = (
             "(sales_orders.FUNDING_CONTROLLED_FIELDS); only a caller holding "
             "a sales_orders.FundingAuthority can cross the funding edge that "
             "stages sales_order.funding_satisfied. "
+            "Installation invoices ask financial.billing_tax_resolution for the "
+            "single active TaxRate identity that reproduces the order's recorded "
+            "effective tax percentage; the invoice owner snapshots that rate on "
+            "the installation line and derives the gross receivable. Missing or "
+            "ambiguous rate identity blocks issuance rather than understating tax. "
             "An order waiver is a separate decision and NOT a payment: "
             "SalesOrderWaivers in this same module grants and revokes it, "
             "records "
@@ -1964,7 +2098,10 @@ SERVICES: tuple[SOTService, ...] = (
                 ConcernContract(
                     name="sales order lifecycle",
                     role=OwnerRole.AUTHORITATIVE_RECORD,
-                    input_names=("canonical sales order state",),
+                    input_names=(
+                        "canonical sales order state",
+                        "matched active installation tax rate",
+                    ),
                     canonical_writer="sales.orders",
                 ),
                 ConcernContract(
@@ -1985,6 +2122,15 @@ SERVICES: tuple[SOTService, ...] = (
                     source=(
                         "locked SalesOrder identity, lifecycle, currency, and "
                         "commercial terms"
+                    ),
+                ),
+                AuthorityInput(
+                    name="matched active installation tax rate",
+                    owner="financial.billing_tax_resolution",
+                    kind=AuthorityKind.DERIVED_PROJECTION,
+                    source=(
+                        "an unambiguous active TaxRate identity matching the "
+                        "SalesOrder's recorded effective tax percentage"
                     ),
                 ),
                 AuthorityInput(
@@ -2109,7 +2255,10 @@ SERVICES: tuple[SOTService, ...] = (
             "owner commands so each effect commits atomically with its "
             "unique (consumer, event_id) receipt. Funding completion "
             "also stages the structural Phase 1 shadow-contract input; "
-            "it does not write billing records itself."
+            "it does not write billing records itself. Funding records "
+            "payment and installation settlement only: Subscription, "
+            "recurring-invoice, credential, ServiceOrder, add-on and IP "
+            "creation remain explicit staff-owned service setup actions."
         ),
         contract=ServiceContract(
             concerns=(

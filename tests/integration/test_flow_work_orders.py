@@ -20,9 +20,14 @@ from app.models.subscriber import Subscriber, UserType
 from app.models.system_user import SystemUser
 from app.schemas.dispatch import WorkOrderAssignmentQueueCreate, WorkOrderHeaderCreate
 from app.services import dispatch as dispatch_service
-from app.services.field.notes import field_notes
+from app.services.db_session_adapter import db_session_adapter
+from app.services.field.note_commands import (
+    CreateFieldWorkOrderNote,
+    create_field_work_order_note,
+)
 from app.services.field.transitions import field_transitions
 from app.services.field.worklogs import field_worklogs
+from app.services.owner_commands import CommandContext
 from app.services.subscriber import _default_reseller_id
 
 
@@ -154,8 +159,27 @@ def test_work_order_lifecycle_native(db_session):
     assert worklog is not None
     assert worklog.work_order_mirror_id == row.id
 
-    field_notes.create(
-        db_session, _auth(user), row.public_id, body="Splice completed at FDH."
+    note_request_id = uuid4()
+    requester_system_user_id = user.id
+    work_order_public_id = row.public_id
+    db_session_adapter.release_read_transaction(db_session)
+    create_field_work_order_note(
+        db_session,
+        CreateFieldWorkOrderNote(
+            context=CommandContext.system(
+                actor=f"user:{requester_system_user_id}",
+                scope="field:work_order_notes:write",
+                reason="integration_field_note_creation",
+                command_id=note_request_id,
+                correlation_id=note_request_id,
+                idempotency_key=str(note_request_id),
+            ),
+            requester_system_user_id=requester_system_user_id,
+            work_order_public_id=work_order_public_id,
+            request_id=note_request_id,
+            body="Splice completed at FDH.",
+            is_internal=True,
+        ),
     )
     note = (
         db_session.query(FieldWorkOrderNote)

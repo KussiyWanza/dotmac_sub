@@ -81,6 +81,7 @@ class PrepaidRenewalHandler:
                     account_id=account_id,
                     payment_id=payment_id,
                     evidence_ref=f"{event.event_type.value}:{event.event_id}",
+                    event_id=event.event_id,
                 ),
             )
         result = evaluation.renewal

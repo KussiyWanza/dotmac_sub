@@ -24,6 +24,9 @@ DECLARED_ENV_INPUT_OWNERS = {
     "app/config.py",
     "app/monitoring.py",
     "app/services/credential_crypto.py",
+    # Shared JWT signing resolver. Environment values are bootstrap
+    # compatibility inputs; runtime settings remain database-authoritative.
+    "app/services/auth_token_signing.py",
     "app/services/radius_dsn.py",
     "app/services/redis_client.py",
     "app/services/scheduler_config.py",
@@ -42,6 +45,7 @@ DECLARED_RAW_SETTING_OWNERS = {
     # disabled-by-default channels across persisted scoped registries before
     # normal callers resolve the policy through settings_spec.
     "app/services/channel_health_contracts.py",
+    "app/services/auth_token_signing.py",
     "app/services/control_registry.py",
     "app/services/domain_settings.py",
     "app/services/settings_secret_cleanup.py",

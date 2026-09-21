@@ -1,28 +1,29 @@
 {% extends "layouts/customer.html" %}
-
 {% block title %}Service Location - My Account{% endblock %}
-
 {% block content %}
 <div class="space-y-8">
     <div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
             <h1 class="text-3xl font-display font-bold text-stone-900 dark:text-white">Service Location</h1>
-            <p class="mt-1 text-base text-stone-500 dark:text-stone-400">Review the map pin for your account and request a correction when it is wrong.</p>
+            <p class="mt-1 text-base text-stone-500 dark:text-stone-400">Update your service address and exact map pin directly.</p>
         </div>
         <div class="rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-600 shadow-premium dark:border-stone-700 dark:bg-stone-800 dark:text-stone-300">
-            <p class="font-semibold text-stone-900 dark:text-white">Mapped Address</p>
+            <p class="font-semibold text-stone-900 dark:text-white">Current stored address</p>
             <p class="mt-1">{{ location_address_label }}</p>
         </div>
     </div>
-
-    {% if request.query_params.get('submitted') == '1' %}
-    {% set success = "Your location correction was submitted for review." %}
+    {% if request.query_params.get('saved') == '1' %}
+    {% set success = "Your service address and map pin were saved." %}
     {% include "components/feedback/form_success.html" %}
     {% endif %}
-    {% if request.query_params.get('canceled') == '1' %}
-    {% set status = "warning" %}
-    {% set message = "Your pending location correction was canceled." %}
-    {% include "components/feedback/alert.html" %}
+    {% if biodata_required %}
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/60 px-4 py-6" role="dialog" aria-modal="true" aria-labelledby="location-biodata-dialog-title" aria-describedby="location-biodata-dialog-description">
+        <div class="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl dark:bg-stone-900 sm:p-8">
+            <h2 id="location-biodata-dialog-title" class="text-xl font-bold text-stone-900 dark:text-white">Your biodata is incomplete</h2>
+            <p id="location-biodata-dialog-description" class="mt-3 text-sm leading-6 text-stone-600 dark:text-stone-300">Your service location was saved. Please complete your date of birth, gender, and 11-digit NIN before continuing.</p>
+            <a href="/portal/profile?biodata_required=1" class="mt-7 inline-flex w-full items-center justify-center rounded-xl bg-amber-600 px-4 py-3 text-sm font-semibold text-white hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 dark:focus:ring-offset-stone-900">Complete biodata</a>
+        </div>
+    </div>
     {% endif %}
     {% if form_error %}
     {% set error = form_error %}
@@ -32,365 +33,103 @@
     <div class="grid gap-6 xl:grid-cols-[minmax(0,1.6fr)_minmax(20rem,1fr)]">
         <div class="overflow-hidden rounded-3xl border border-stone-200 bg-white shadow-premium dark:border-stone-700 dark:bg-stone-800">
             <div class="border-b border-stone-200 px-6 py-4 dark:border-stone-700">
-                <h2 class="text-lg font-display font-semibold text-stone-900 dark:text-white">Map Pin Review</h2>
-                <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">
-                    {% if current_latitude is not none and current_longitude is not none %}
-                    Drag the marker or tap the map to place the corrected service location.
-                    {% else %}
-                    No approved pin is on file yet. Tap the map once to place your service location before submitting.
-                    {% endif %}
-                </p>
+                <h2 class="text-lg font-display font-semibold text-stone-900 dark:text-white">Exact map pin</h2>
+                <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">Search, use your location, click the map, or drag the pin to the exact installation point.</p>
                 <div class="mt-3 flex gap-2">
                     <div class="relative flex-1">
-                        <input type="text" id="location-address-search" autocomplete="off"
-                               placeholder="Search for a street or area to move the map..."
-                               class="block w-full rounded-xl border-2 border-stone-200 bg-white px-4 py-2.5 text-sm text-stone-900 transition-all focus:border-[var(--color-brand-500)] focus:outline-none focus:ring-4 focus:ring-[var(--color-brand-500)]/10 dark:border-stone-600 dark:bg-stone-700 dark:text-white">
-                        <div id="location-address-results"
-                             class="absolute inset-x-0 top-full z-[1100] mt-1 hidden overflow-hidden rounded-xl border border-stone-200 bg-white shadow-lg dark:border-stone-600 dark:bg-stone-800"></div>
+                        <input type="text" id="location-address-search" autocomplete="off" placeholder="Search for a street or area..." class="block w-full rounded-xl border-2 border-stone-200 bg-white px-4 py-2.5 text-sm text-stone-900 dark:border-stone-600 dark:bg-stone-700 dark:text-white">
+                        <div id="location-address-results" class="absolute inset-x-0 top-full z-[1100] mt-1 hidden overflow-hidden rounded-xl border border-stone-200 bg-white shadow-lg dark:border-stone-600 dark:bg-stone-800"></div>
                     </div>
-                    <button type="button" id="location-use-gps"
-                            class="inline-flex shrink-0 items-center gap-2 rounded-xl border-2 border-stone-200 bg-white px-3 py-2 text-sm font-medium text-stone-700 transition-colors hover:bg-stone-50 dark:border-stone-600 dark:bg-stone-700 dark:text-stone-200 dark:hover:bg-stone-600">
-                        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8a4 4 0 100 8 4 4 0 000-8zm0-6v3m0 14v3M2 12h3m14 0h3"/>
-                        </svg>
-                        <span id="location-use-gps-label">Use my location</span>
-                    </button>
+                    <button type="button" id="location-use-gps" class="inline-flex shrink-0 items-center rounded-xl border-2 border-stone-200 bg-white px-3 py-2 text-sm font-medium text-stone-700 dark:border-stone-600 dark:bg-stone-700 dark:text-stone-200"><span id="location-use-gps-label">Use my location</span></button>
                 </div>
             </div>
             <div id="customer-location-map" class="h-[28rem] w-full"></div>
-            <div id="customer-location-map-fallback" class="hidden border-t border-stone-200 px-6 py-4 text-sm text-amber-800 dark:border-stone-700 dark:text-amber-300">
-                The map could not be loaded right now. Reload this page and try again. If the problem continues, contact support and include your location details.
-            </div>
+            <div id="customer-location-map-fallback" class="hidden border-t border-stone-200 px-6 py-4 text-sm text-amber-800">The map could not be loaded. You can still enter the address, but a pin is required to save.</div>
         </div>
 
-        <div class="space-y-6">
-            <div class="rounded-2xl border border-stone-200 bg-white p-6 shadow-premium dark:border-stone-700 dark:bg-stone-800">
-                <h2 class="text-xl font-display font-semibold text-stone-900 dark:text-white">Current Status</h2>
-                <div class="mt-4 space-y-3 text-sm text-stone-600 dark:text-stone-300">
-                    <div class="rounded-xl bg-stone-50 px-4 py-3 dark:bg-stone-700/40">
-                        <p class="text-xs font-semibold uppercase tracking-wide text-stone-500 dark:text-stone-400">Approved Coordinates</p>
-                        {% if current_latitude is not none and current_longitude is not none %}
-                        <p class="mt-1 font-mono text-stone-900 dark:text-white">{{ '%.6f'|format(current_latitude) }}, {{ '%.6f'|format(current_longitude) }}</p>
-                        {% else %}
-                        <p class="mt-1 text-stone-500 dark:text-stone-400">No approved map pin on file yet.</p>
-                        {% endif %}
-                    </div>
-                    <div class="rounded-xl bg-stone-50 px-4 py-3 dark:bg-stone-700/40">
-                        <p class="text-xs font-semibold uppercase tracking-wide text-stone-500 dark:text-stone-400">Address Record</p>
-                        <p class="mt-1">{{ location_address.address_line1 or 'No address line on file' }}</p>
-                        {% if location_address.city or location_address.region or location_address.postal_code %}
-                        <p class="mt-1 text-stone-500 dark:text-stone-400">
-                            {{ location_address.city or '' }}
-                            {% if location_address.city and location_address.region %}, {% endif %}
-                            {{ location_address.region or '' }}
-                            {% if location_address.postal_code %} {{ location_address.postal_code }}{% endif %}
-                        </p>
-                        {% endif %}
-                    </div>
-                </div>
+        <form method="post" id="service-location-form" class="rounded-2xl border border-stone-200 bg-white p-6 shadow-premium dark:border-stone-700 dark:bg-stone-800 space-y-5">
+            {% include "components/forms/csrf_input.html" %}
+            <div>
+                <h2 class="text-xl font-display font-semibold text-stone-900 dark:text-white">Service address</h2>
+                <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">Your changes are applied directly when you save.</p>
             </div>
-
-            {% if pending_request %}
-            <div class="rounded-2xl border border-amber-200 bg-amber-50 p-6 shadow-premium dark:border-amber-900/40 dark:bg-amber-900/20">
-                <div class="flex items-start justify-between gap-4">
-                    <div>
-                        <h2 class="text-xl font-display font-semibold text-amber-900 dark:text-amber-200">Pending Review</h2>
-                        <p class="mt-1 text-sm text-amber-800 dark:text-amber-300">A correction is already waiting for approval. New submissions are locked until review is complete.</p>
-                    </div>
-                    <span class="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-900/40 dark:text-amber-200">Pending</span>
-                </div>
-                <div class="mt-4 rounded-xl bg-white/70 px-4 py-3 text-sm text-amber-900 dark:bg-stone-900/30 dark:text-amber-100">
-                    <p class="text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">Requested Coordinates</p>
-                    <p class="mt-1 font-mono">{{ '%.6f'|format(pending_request.requested_latitude) }}, {{ '%.6f'|format(pending_request.requested_longitude) }}</p>
-                    {% if pending_request.customer_note %}
-                    <p class="mt-3 text-amber-900 dark:text-amber-100">{{ pending_request.customer_note }}</p>
-                    {% endif %}
-                </div>
-                <form method="post" action="/portal/location-requests/{{ pending_request.id }}/cancel" class="mt-4">
-                    {% include "components/forms/csrf_input.html" %}
-                    <button type="submit" class="inline-flex items-center gap-2 rounded-xl border border-amber-300 bg-white px-4 py-2 text-sm font-semibold text-amber-800 transition-colors hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950/20 dark:text-amber-200 dark:hover:bg-amber-900/30">
-                        Cancel Request
-                    </button>
-                </form>
+            <input type="hidden" name="latitude" id="location-latitude" value="{{ current_latitude if current_latitude is not none else '' }}">
+            <input type="hidden" name="longitude" id="location-longitude" value="{{ current_longitude if current_longitude is not none else '' }}">
+            {% macro field(name, label, value, required=false) %}
+            <div>
+                <label for="{{ name }}" class="block text-sm font-semibold text-stone-700 dark:text-stone-300">{{ label }}{% if required %} <span class="text-rose-600">*</span>{% endif %}</label>
+                <input id="{{ name }}" name="{{ name }}" value="{{ value or '' }}" {% if required %}required{% endif %} class="mt-2 block w-full rounded-xl border-2 border-stone-200 bg-white px-4 py-2.5 text-sm text-stone-900 dark:border-stone-600 dark:bg-stone-700 dark:text-white">
             </div>
-            {% elif has_address_anchor %}
-            <form method="post" class="rounded-2xl border border-stone-200 bg-white p-6 shadow-premium dark:border-stone-700 dark:bg-stone-800 space-y-5">
-                {% include "components/forms/csrf_input.html" %}
-                <div>
-                    <h2 class="text-xl font-display font-semibold text-stone-900 dark:text-white">Submit Correction</h2>
-                    <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">Place the marker where service is actually installed. An admin will review the request before it changes the official record.</p>
-                </div>
-                <input type="hidden" name="latitude" id="location-latitude" value="{{ draft_latitude if draft_latitude is not none else '' }}">
-                <input type="hidden" name="longitude" id="location-longitude" value="{{ draft_longitude if draft_longitude is not none else '' }}">
-                <div class="rounded-xl bg-stone-50 px-4 py-3 dark:bg-stone-700/40">
-                    <p class="text-xs font-semibold uppercase tracking-wide text-stone-500 dark:text-stone-400">Selected Coordinates</p>
-                    <p id="selected-coordinates" class="mt-1 font-mono text-sm text-stone-900 dark:text-white">
-                        {% if draft_latitude is not none and draft_longitude is not none %}
-                        {{ '%.6f'|format(draft_latitude) }}, {{ '%.6f'|format(draft_longitude) }}
-                        {% else %}
-                        Waiting for map selection
-                        {% endif %}
-                    </p>
-                    <p id="selected-address" class="mt-1 text-xs text-stone-500 dark:text-stone-400"></p>
-                </div>
-                <div>
-                    <label for="customer_note" class="block text-sm font-semibold text-stone-700 dark:text-stone-300">What is wrong with the current pin?</label>
-                    <textarea id="customer_note" name="customer_note" rows="4" class="mt-2 block w-full rounded-xl border-2 border-stone-200 bg-white px-4 py-3 text-sm text-stone-900 transition-all focus:border-[var(--color-brand-500)] focus:outline-none focus:ring-4 focus:ring-[var(--color-brand-500)]/10 dark:border-stone-600 dark:bg-stone-700 dark:text-white" placeholder="Example: The pin is on the next street. Our building is behind the transformer near the corner shop.">{{ form_note }}</textarea>
-                </div>
-                <button type="submit" id="submit-location-request" {% if draft_latitude is none or draft_longitude is none %}disabled{% endif %} class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[var(--color-brand-500)] to-[var(--color-brand-600)] px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-[var(--color-brand-500)]/20 transition-all hover:-translate-y-0.5 hover:shadow-xl hover:shadow-[var(--color-brand-500)]/30 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-lg">
-                    Submit For Approval
-                </button>
-            </form>
-            {% else %}
-            <div class="rounded-2xl border border-rose-200 bg-rose-50 p-6 shadow-premium dark:border-rose-900/40 dark:bg-rose-900/20">
-                <h2 class="text-xl font-display font-semibold text-rose-900 dark:text-rose-200">Address Record Needed</h2>
-                <p class="mt-2 text-sm text-rose-800 dark:text-rose-300">We cannot apply a map correction until your account has a service address on file. Contact support first so the address record can be created.</p>
-                <a href="/portal/support/new" class="mt-4 inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700">
-                    Contact Support
-                </a>
+            {% endmacro %}
+            {{ field('address_line1', 'Address line 1', location_address.address_line1, true) }}
+            {{ field('address_line2', 'Address line 2', location_address.address_line2) }}
+            {{ field('city', 'City', location_address.city) }}
+            {{ field('region', 'Region', location_address.region) }}
+            {{ field('lga', 'LGA', location_address.lga) }}
+            <div class="grid gap-4 sm:grid-cols-2">
+                {{ field('postal_code', 'Postal code', location_address.postal_code) }}
+                {{ field('country_code', 'Country code', location_address.country_code or 'NG') }}
             </div>
-            {% endif %}
-
-            <div class="rounded-2xl border border-stone-200 bg-white p-6 shadow-premium dark:border-stone-700 dark:bg-stone-800">
-                <h2 class="text-xl font-display font-semibold text-stone-900 dark:text-white">Request History</h2>
-                {% if request_history %}
-                <div class="mt-4 space-y-3">
-                    {% for item in request_history %}
-                    <div class="rounded-xl border border-stone-200 px-4 py-3 text-sm dark:border-stone-700">
-                        <div class="flex items-center justify-between gap-3">
-                            <p class="font-semibold text-stone-900 dark:text-white">{{ item.status.value | replace('_', ' ') | title }}</p>
-                            <p class="text-xs text-stone-500 dark:text-stone-400">{{ item.created_at | portal_datetime('%Y-%m-%d %H:%M') }}</p>
-                        </div>
-                        <p class="mt-2 font-mono text-stone-700 dark:text-stone-300">{{ '%.6f'|format(item.requested_latitude) }}, {{ '%.6f'|format(item.requested_longitude) }}</p>
-                        {% if item.customer_note %}
-                        <p class="mt-2 text-stone-600 dark:text-stone-300">{{ item.customer_note }}</p>
-                        {% endif %}
-                        {% if item.review_note %}
-                        <p class="mt-2 text-xs text-stone-500 dark:text-stone-400">Review note: {{ item.review_note }}</p>
-                        {% endif %}
-                    </div>
-                    {% endfor %}
-                </div>
-                {% else %}
-                <p class="mt-4 text-sm text-stone-500 dark:text-stone-400">No location correction requests yet.</p>
-                {% endif %}
+            <div class="rounded-xl bg-stone-50 px-4 py-3 dark:bg-stone-700/40">
+                <p class="text-xs font-semibold uppercase tracking-wide text-stone-500 dark:text-stone-400">Selected coordinates</p>
+                <p id="selected-coordinates" class="mt-1 font-mono text-sm text-stone-900 dark:text-white">{% if current_latitude is not none and current_longitude is not none %}{{ '%.6f'|format(current_latitude) }}, {{ '%.6f'|format(current_longitude) }}{% else %}Select a point on the map{% endif %}</p>
             </div>
-        </div>
+            <div class="flex flex-wrap gap-3">
+                <button type="submit" id="submit-location" disabled class="inline-flex items-center rounded-xl bg-gradient-to-r from-[var(--color-brand-500)] to-[var(--color-brand-600)] px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">Save location</button>
+                <button type="button" id="clear-location" class="inline-flex items-center rounded-xl border border-stone-300 bg-white px-5 py-2.5 text-sm font-semibold text-stone-700 dark:border-stone-600 dark:bg-stone-700 dark:text-stone-200">Clear</button>
+            </div>
+        </form>
     </div>
 </div>
-
 <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css" />
 <script src="/static/vendor/leaflet/leaflet.js"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const mapElement = document.getElementById('customer-location-map');
     const fallback = document.getElementById('customer-location-map-fallback');
-    if (!mapElement) return;
-    if (typeof L === 'undefined') {
-        if (fallback) fallback.classList.remove('hidden');
-        return;
-    }
-
-    const center = {{ map_center | tojson }};
-    const currentLat = {{ current_latitude | tojson }};
-    const currentLon = {{ current_longitude | tojson }};
-    const pendingLat = {{ pending_request.requested_latitude | tojson if pending_request else 'null' }};
-    const pendingLon = {{ pending_request.requested_longitude | tojson if pending_request else 'null' }};
-    const canSubmit = {{ can_submit_request | tojson }};
     const latInput = document.getElementById('location-latitude');
     const lonInput = document.getElementById('location-longitude');
     const coordinatesLabel = document.getElementById('selected-coordinates');
-    const submitButton = document.getElementById('submit-location-request');
-
-    let map;
-    try {
-        map = L.map('customer-location-map').setView(center, 16);
-    } catch (mapError) {
-        if (fallback) fallback.classList.remove('hidden');
-        return;
-    }
-    const tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; OpenStreetMap',
-        maxZoom: 20
-    });
-    let tileErrorReported = false;
-    tileLayer.on('tileerror', function() {
-        // Surface a single warning when map tiles can't be reached rather than
-        // leaving the customer staring at a blank grey map.
-        if (!tileErrorReported && fallback) {
-            tileErrorReported = true;
-            fallback.classList.remove('hidden');
-        }
-    });
-    tileLayer.addTo(map);
-
-    if (currentLat !== null && currentLon !== null) {
-        L.circleMarker([currentLat, currentLon], {
-            radius: 9,
-            color: '#2563eb',
-            fillColor: '#3b82f6',
-            fillOpacity: 0.9,
-            weight: 2
-        }).addTo(map).bindPopup('Current approved location');
-    }
-
-    if (pendingLat !== null && pendingLon !== null) {
-        L.circleMarker([pendingLat, pendingLon], {
-            radius: 9,
-            color: '#d97706',
-            fillColor: '#f59e0b',
-            fillOpacity: 0.9,
-            weight: 2
-        }).addTo(map).bindPopup('Pending requested location');
-    }
-
+    const submitButton = document.getElementById('submit-location');
+    const initialLat = {{ current_latitude | tojson }};
+    const initialLon = {{ current_longitude | tojson }};
+    const center = {{ map_center | tojson }};
+    const initialValues = {};
+    ['address_line1','address_line2','city','region','lga','postal_code','country_code'].forEach(function(name) { initialValues[name] = document.getElementById(name).value; });
+    if (!mapElement || typeof L === 'undefined') { if (fallback) fallback.classList.remove('hidden'); return; }
+    const map = L.map('customer-location-map').setView(center, 16);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {attribution: '&copy; OpenStreetMap', maxZoom: 20}).addTo(map);
     let marker = null;
-    const addressLabel = document.getElementById('selected-address');
-    let reverseTimer = null;
-
-    function showResolvedAddress(lat, lon) {
-        if (!addressLabel) return;
-        clearTimeout(reverseTimer);
-        reverseTimer = setTimeout(function() {
-            fetch('/portal/location/reverse-geocode?lat=' + lat + '&lon=' + lon)
-                .then(function(res) { return res.ok ? res.json() : null; })
-                .then(function(data) {
-                    addressLabel.textContent = (data && data.display_name)
-                        ? '≈ ' + data.display_name
-                        : '';
-                })
-                .catch(function() { addressLabel.textContent = ''; });
-        }, 400);
-    }
-
-    function ensureMarker(lat, lon) {
-        if (marker) {
-            marker.setLatLng([lat, lon]);
-            return marker;
-        }
-        marker = L.marker([lat, lon], {draggable: true}).addTo(map);
-        marker.bindPopup('Drag this marker or tap the map to move it').openPopup();
-        marker.on('dragend', function(event) {
-            const position = event.target.getLatLng();
-            updateCoordinates(position.lat, position.lng);
-        });
-        return marker;
-    }
-
     function updateCoordinates(lat, lon) {
-        if (latInput) latInput.value = lat.toFixed(6);
-        if (lonInput) lonInput.value = lon.toFixed(6);
-        if (coordinatesLabel) {
-            coordinatesLabel.textContent = lat.toFixed(6) + ', ' + lon.toFixed(6);
-        }
-        if (submitButton) {
-            submitButton.disabled = false;
-        }
-        showResolvedAddress(lat, lon);
+        latInput.value = lat.toFixed(6); lonInput.value = lon.toFixed(6);
+        coordinatesLabel.textContent = lat.toFixed(6) + ', ' + lon.toFixed(6);
+        submitButton.disabled = false;
     }
-
-    if (canSubmit) {
-        if (latInput && lonInput && latInput.value && lonInput.value) {
-            const initialLat = parseFloat(latInput.value);
-            const initialLon = parseFloat(lonInput.value);
-            ensureMarker(initialLat, initialLon);
-            updateCoordinates(initialLat, initialLon);
-        }
-
-        map.on('click', function(event) {
-            ensureMarker(event.latlng.lat, event.latlng.lng);
-            updateCoordinates(event.latlng.lat, event.latlng.lng);
-        });
+    function placeMarker(lat, lon) {
+        if (!marker) {
+            marker = L.marker([lat, lon], {draggable: true}).addTo(map);
+            marker.bindPopup('Drag this pin to the exact installation point');
+            marker.on('dragend', function(event) { const p = event.target.getLatLng(); updateCoordinates(p.lat, p.lng); });
+        } else { marker.setLatLng([lat, lon]); }
+        updateCoordinates(lat, lon);
     }
-
+    if (initialLat !== null && initialLon !== null) { placeMarker(initialLat, initialLon); }
+    map.on('click', function(event) { placeMarker(event.latlng.lat, event.latlng.lng); });
+    document.getElementById('clear-location').addEventListener('click', function() {
+        Object.keys(initialValues).forEach(function(name) { document.getElementById(name).value = initialValues[name]; });
+        if (initialLat !== null && initialLon !== null) { placeMarker(initialLat, initialLon); map.setView([initialLat, initialLon], 16); }
+        else { if (marker) { map.removeLayer(marker); marker = null; } latInput.value = ''; lonInput.value = ''; coordinatesLabel.textContent = 'Select a point on the map'; submitButton.disabled = true; map.setView(center, 16); }
+    });
     const searchInput = document.getElementById('location-address-search');
     const searchResults = document.getElementById('location-address-results');
     let searchTimer = null;
-
-    function hideSearchResults() {
-        if (!searchResults) return;
-        searchResults.classList.add('hidden');
-        searchResults.replaceChildren();
-    }
-
-    function renderSearchResults(items) {
-        if (!searchResults) return;
-        searchResults.replaceChildren();
-        if (!items.length) {
-            hideSearchResults();
-            return;
-        }
-        items.forEach(function(item) {
-            if (item.latitude === null || item.longitude === null) return;
-            const option = document.createElement('button');
-            option.type = 'button';
-            option.className = 'block w-full px-4 py-2.5 text-left text-sm text-stone-700 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-700';
-            option.textContent = item.display_name || (item.latitude + ', ' + item.longitude);
-            option.addEventListener('click', function() {
-                hideSearchResults();
-                if (searchInput) searchInput.value = item.display_name || '';
-                map.setView([item.latitude, item.longitude], 17);
-                if (canSubmit) {
-                    ensureMarker(item.latitude, item.longitude);
-                    updateCoordinates(item.latitude, item.longitude);
-                }
-            });
-            searchResults.appendChild(option);
-        });
-        searchResults.classList.remove('hidden');
-    }
-
+    function hideResults() { searchResults.classList.add('hidden'); searchResults.replaceChildren(); }
+    searchInput.addEventListener('input', function() {
+        clearTimeout(searchTimer); const query = searchInput.value.trim(); if (query.length < 3) { hideResults(); return; }
+        searchTimer = setTimeout(function() { fetch('/portal/location/geocode-search?q=' + encodeURIComponent(query)).then(function(r) { return r.ok ? r.json() : []; }).then(function(items) { searchResults.replaceChildren(); items.forEach(function(item) { if (item.latitude === null || item.longitude === null) return; const option = document.createElement('button'); option.type = 'button'; option.className = 'block w-full px-4 py-2.5 text-left text-sm hover:bg-stone-100'; option.textContent = item.display_name || (item.latitude + ', ' + item.longitude); option.onclick = function() { hideResults(); map.setView([item.latitude, item.longitude], 17); placeMarker(item.latitude, item.longitude); }; searchResults.appendChild(option); }); searchResults.classList.toggle('hidden', !searchResults.children.length); }).catch(hideResults); }, 350);
+    });
     const gpsButton = document.getElementById('location-use-gps');
-    const gpsLabel = document.getElementById('location-use-gps-label');
-    if (gpsButton) {
-        if (!navigator.geolocation) {
-            gpsButton.classList.add('hidden');
-        } else {
-            gpsButton.addEventListener('click', function() {
-                if (gpsLabel) gpsLabel.textContent = 'Locating...';
-                gpsButton.disabled = true;
-                navigator.geolocation.getCurrentPosition(function(position) {
-                    const lat = position.coords.latitude;
-                    const lon = position.coords.longitude;
-                    map.setView([lat, lon], 17);
-                    if (canSubmit) {
-                        ensureMarker(lat, lon);
-                        updateCoordinates(lat, lon);
-                    }
-                    if (gpsLabel) gpsLabel.textContent = 'Use my location';
-                    gpsButton.disabled = false;
-                }, function() {
-                    if (gpsLabel) gpsLabel.textContent = 'Location unavailable';
-                    setTimeout(function() {
-                        if (gpsLabel) gpsLabel.textContent = 'Use my location';
-                        gpsButton.disabled = false;
-                    }, 2500);
-                }, {enableHighAccuracy: true, timeout: 15000});
-            });
-        }
-    }
-
-    if (searchInput) {
-        searchInput.addEventListener('input', function() {
-            const query = searchInput.value.trim();
-            clearTimeout(searchTimer);
-            if (query.length < 3) {
-                hideSearchResults();
-                return;
-            }
-            searchTimer = setTimeout(function() {
-                fetch('/portal/location/geocode-search?q=' + encodeURIComponent(query))
-                    .then(function(res) { return res.ok ? res.json() : []; })
-                    .then(renderSearchResults)
-                    .catch(hideSearchResults);
-            }, 350);
-        });
-        document.addEventListener('click', function(event) {
-            if (searchResults && !searchResults.contains(event.target) && event.target !== searchInput) {
-                hideSearchResults();
-            }
-        });
-    }
+    gpsButton.addEventListener('click', function() { gpsButton.disabled = true; document.getElementById('location-use-gps-label').textContent = 'Locating...'; navigator.geolocation.getCurrentPosition(function(pos) { map.setView([pos.coords.latitude, pos.coords.longitude], 17); placeMarker(pos.coords.latitude, pos.coords.longitude); gpsButton.disabled = false; document.getElementById('location-use-gps-label').textContent = 'Use my location'; }, function() { gpsButton.disabled = false; document.getElementById('location-use-gps-label').textContent = 'Location unavailable'; }); });
 });
 </script>
 {% endblock %}

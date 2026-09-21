@@ -741,8 +741,8 @@ def test_inbox_escalation_queue_does_not_scroll_horizontally():
 
     assert '<div class="overflow-hidden">' in source
     assert '<table class="w-full table-fixed' in source
-    assert 'min-w-[18rem]' not in source
-    assert 'min-w-[12rem]' not in source
+    assert "min-w-[18rem]" not in source
+    assert "min-w-[12rem]" not in source
     assert 'aria-label="Escalation Queue pages"' in source
     assert 'name="search"' in source
 

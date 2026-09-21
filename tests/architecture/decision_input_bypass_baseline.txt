@@ -6,7 +6,6 @@ env 2 app/observability.py
 env 9 app/poller/mikrotik_poller.py
 env 3 app/services/app_cache.py
 env 2 app/services/auth_cache.py
-env 1 app/services/auth_flow.py
 env 3 app/services/backup_alerts.py
 env 1 app/services/bandwidth_metrics_adapter.py
 env 2 app/services/branding_config.py
@@ -53,7 +52,6 @@ env 3 app/tasks/bandwidth.py
 env 2 app/tasks/tr069.py
 setting 9 app/main.py
 setting 4 app/services/auth.py
-setting 4 app/services/auth_flow.py
 setting 4 app/services/billing_settings.py
 setting 8 app/services/credential_key_rotation.py
 setting 4 app/services/customer_location_requests.py

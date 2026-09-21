@@ -17,7 +17,7 @@ import logging
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -39,7 +39,7 @@ def liveness() -> dict[str, str]:
 
 
 @router.get("/ready")
-def readiness(db: Session = Depends(get_db)) -> dict[str, Any]:
+def readiness(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
     """Readiness probe - can the application handle requests?
 
     Checks that critical dependencies (database) are available.
@@ -47,6 +47,8 @@ def readiness(db: Session = Depends(get_db)) -> dict[str, Any]:
     """
     status = "ready"
     checks: dict[str, Any] = {}
+    if not bool(getattr(request.app.state, "routes_ready", False)):
+        return {"status": "not_ready", "checks": {"routes": {"status": "starting"}}}
 
     # Check database
     try:

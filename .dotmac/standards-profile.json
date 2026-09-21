@@ -135,7 +135,7 @@
         "path": "tests/test_integration_meta_social.py",
         "symbol": "test_typed_facade_returns_sanitized_outcome",
         "category": "outbound_transport",
-        "fingerprint": "fc7bb83c3ed15b6a49fa08d1d7991abaed40008d6704adb24afb268e64d96670"
+        "fingerprint": "358e9784cd774b9cdd9e693c57365fc3842862f6cf7d8653bf3c4fcf53a13959"
       },
       {
         "path": "tests/test_meta_oauth.py",
@@ -147,7 +147,7 @@
         "path": "tests/test_nextcloud_talk_staff_notifications.py",
         "symbol": "<module>",
         "category": "delivery_retry",
-        "fingerprint": "2ad03d19e91abbbd467037d4672ba61b4433b2533ead11b04955f1873b6017af"
+        "fingerprint": "e6a540dee1e6ddfb5448aef0a667aef1f3b7bf54e955fbcd9bd7ae86e2dbd315"
       },
       {
         "path": "tests/test_router_management_connection.py",

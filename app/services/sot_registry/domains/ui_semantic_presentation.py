@@ -111,6 +111,101 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="ui.action_readiness_contracts",
+            module="app.services.action_readiness",
+            owns=(
+                "action readiness state and blocker vocabulary",
+                "blocker owner attribution invariant",
+                "readiness correlation and operation reference contract",
+                "readiness-derived action gating contract",
+            ),
+            depends_on=("ui.action_form_contracts",),
+            notes=(
+                "Transport-neutral, stateless readiness/blocker verdict for a "
+                "gated action. Domain owners still decide eligibility; this "
+                "gives every owner one shape to hand that decision to a "
+                "caller. Explicitly not a workflow engine: nothing here "
+                "decides anything, persists anything, or executes a repair, "
+                "and a blocker's owner must name a real, decision-making "
+                "domain service — never this contract itself."
+            ),
+            contract=ServiceContract(
+                concerns=tuple(
+                    ConcernContract(
+                        name=concern,
+                        role=OwnerRole.POLICY,
+                        input_names=("action readiness contract vocabulary",),
+                    )
+                    for concern in (
+                        "action readiness state and blocker vocabulary",
+                        "blocker owner attribution invariant",
+                        "readiness correlation and operation reference contract",
+                        "readiness-derived action gating contract",
+                    )
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="action readiness contract vocabulary",
+                        owner="ui.action_readiness_contracts",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "ReadinessState, ReadinessImpact, ActionableBlocker, "
+                            "NextAction, ActionCorrelation, and ActionReadiness "
+                            "typed invariants"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.NOT_APPLICABLE,
+                    boundary=(
+                        "Typed readiness value objects validate in memory and "
+                        "never access a database session."
+                    ),
+                    locking="Immutable value objects require no lock.",
+                    idempotency=(
+                        "Construction is deterministic for the same typed inputs."
+                    ),
+                    retries="In-memory construction has no retry side effect.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=(),
+                    mapping_owner="domain owners that construct a readiness verdict",
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.INVENTORIED,
+                    old_owner=(
+                        "ONT provisioning preflight check dicts, "
+                        "PaymentProofReviewEligibility, and per-projection "
+                        "ActionForm.disabled_reason strings"
+                    ),
+                    new_owner="ui.action_readiness_contracts",
+                    verification=(
+                        "Ownership-boundary architecture test and payment-proof "
+                        "equivalence tests proving the shared shape changes no "
+                        "decision."
+                    ),
+                    cutover_gate=(
+                        "A consumer returns ActionReadiness instead of an "
+                        "ad-hoc eligibility shape without changing its "
+                        "underlying decision."
+                    ),
+                    fallback_retirement=(
+                        "Ad-hoc preflight/eligibility dicts are retired once "
+                        "every real consumer renders from ActionReadiness."
+                    ),
+                ),
+                steward="platform UI",
+                design_refs=(
+                    "docs/designs/ACTION_READINESS_CONTRACT.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_action_readiness.py",
+                    "tests/architecture/test_action_readiness_ownership.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="ui.subscription_ipv4_projection",
             module="app.services.subscription_ipv4_projection",
             owns=("exact-subscription current service IPv4 projection",),
@@ -441,6 +536,8 @@ DOMAIN = DomainSOT(
                     "tests/test_operational_evidence_followup.py",
                     "tests/test_web_network_noc.py",
                     "tests/test_integrations_observability.py",
+                    "tests/test_web_control_plane.py",
+                    "tests/architecture/test_integration_platform_boundary.py",
                 ),
             ),
         ),
@@ -1884,7 +1981,8 @@ DOMAIN = DomainSOT(
             owns=("Admin workflow guidance projection",),
             notes=(
                 "One read-only, versioned-in-code projection supplies staff workflow "
-                "explanations. It never decides action eligibility or writes state."
+                "explanations through explicit prefix or segment-template route "
+                "selectors. It never decides action eligibility or writes state."
             ),
             contract=ServiceContract(
                 concerns=(
@@ -1899,14 +1997,14 @@ DOMAIN = DomainSOT(
                         name="Admin workflow guidance registry",
                         owner="ui.admin_workflow_guidance",
                         kind=AuthorityKind.CONTROL_INPUT,
-                        source="Typed WORKFLOW_GUIDANCE entries in app.services.admin_workflow_guidance.",
+                        source="Typed WORKFLOW_GUIDANCE content and route selectors in app.services.admin_workflow_guidance.",
                     ),
                 ),
                 transaction=TransactionContract(
                     mode=TransactionMode.NOT_APPLICABLE,
                     boundary="Immutable in-process guidance projection performs no persistence or external delivery.",
                     locking="Immutable module content requires no lock.",
-                    idempotency="The same path and query produce the same guidance projection.",
+                    idempotency="The same path and query produce the same most-specific guidance projection.",
                     retries="No side effect is performed; callers may safely retry reads.",
                 ),
                 errors=ErrorContract(
@@ -1935,6 +2033,10 @@ DOMAIN = DomainSOT(
         ),
     ),
     entrypoints=(
+        "app.services.action_readiness",
+        "app.services.web_action_readiness",
+        "app.schemas.action_readiness",
+        "templates.components.actions.action_readiness",
         "app.services.customer_network_path",
         "app.services.network_explorer",
         "app.services.network_graph",

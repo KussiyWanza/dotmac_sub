@@ -1176,6 +1176,13 @@ def _external_sync_nas(
             client_ip = _radius_client_ip_for_nas(device)
             if not client_ip:
                 continue
+            if not device.shared_secret:
+                logger.warning(
+                    "Skipping RADIUS NAS sync for %s (%s): no shared secret configured",
+                    device.name,
+                    client_ip,
+                )
+                continue
             # Decrypt the stored credential, then resolve any OpenBao references
             decrypted_secret = _safe_decrypt_credential(
                 device.shared_secret, label=f"NAS {device.name}"
@@ -1184,6 +1191,12 @@ def _external_sync_nas(
                 continue
             secret = resolve_secret(decrypted_secret)
             if not secret:
+                logger.warning(
+                    "Skipping RADIUS NAS sync for %s (%s): configured secret "
+                    "resolved to empty (check the OpenBao reference)",
+                    device.name,
+                    client_ip,
+                )
                 continue
             conn.execute(
                 delete(nas_sql_table).where(nas_sql_table.c.nasname == client_ip)

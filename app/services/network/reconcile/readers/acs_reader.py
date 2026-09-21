@@ -183,10 +183,10 @@ def read_acs_state(
         # The client raises GenieACSError for any non-2xx; treat as
         # unreachable so the precondition layer fast-fails before writes.
         return ReadResult(
-            success=False,
-            unreachable=True,
+            status="unavailable",
             observed=None,
             error=str(exc),
+            transport_unreachable=True,
         )
     except Exception as exc:
         # Defensive: log and report unreachable. We don't want a misshaped
@@ -197,17 +197,16 @@ def read_acs_state(
             extra={"error": str(exc), "serial": desired.serial_number},
         )
         return ReadResult(
-            success=False,
-            unreachable=True,
+            status="unavailable",
             observed=None,
             error=str(exc),
+            transport_unreachable=True,
         )
 
     if not devices:
         # No device matched. That's a clean read; the ONT hasn't informed yet.
         return ReadResult(
-            success=True,
-            unreachable=False,
+            status="absent",
             observed=_absent_fields(),
             error=None,
         )
@@ -241,8 +240,7 @@ def read_acs_state(
         )
 
     return ReadResult(
-        success=True,
-        unreachable=False,
+        status="present",
         observed=observed,
         error=None,
     )

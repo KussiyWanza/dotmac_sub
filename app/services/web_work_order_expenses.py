@@ -21,6 +21,11 @@ from app.models.field_expense import FieldExpenseRequest
 from app.models.system_user import SystemUser
 from app.models.work_order import WorkOrder
 from app.services.domain_errors import DomainError
+from app.services.dotmac_erp.expense_form_contracts import (
+    ExpenseBankOption,
+    ExpenseDestinationMode,
+    ExpenseProfileDestination,
+)
 from app.services.field.expense_categories import (
     ExpenseCategoryQueryError,
     ListExpenseCategories,
@@ -29,9 +34,18 @@ from app.services.field.expense_categories import (
 from app.services.field.expense_requests import (
     ExpenseCategoryRule,
     ExpenseReceiptUploadInput,
+    FieldExpenseRequestError,
     FieldExpenseVendorOption,
+    GetFieldExpenseFormContext,
     ListFieldExpenseVendors,
+    evaluate_expense_work_order_eligibility,
+    get_field_expense_form_context,
     list_expense_vendors,
+)
+from app.services.integrations.diagnostics import (
+    DELIVERY_DIAGNOSTIC_KEY,
+    parse_diagnostic_evidence,
+    safe_diagnostic_summary,
 )
 from app.services.status_presentation import (
     StatusPresentation,
@@ -41,9 +55,11 @@ from app.services.ui_contracts import Action
 
 
 class ExpenseDeliveryState(StrEnum):
+    AWAITING_APPROVAL = "awaiting_approval"
     PENDING = "pending"
     ACCEPTED = "accepted"
     FAILED = "failed"
+    NOT_APPLICABLE = "not_applicable"
     UNAVAILABLE = "unavailable"
 
 
@@ -73,7 +89,20 @@ class WorkOrderExpenseFormInput:
     expense_date: str
     currency: str
     notes: str
+    selected_approver_id: str
+    payment_destination_mode: str
+    bank_code: str
+    account_number: str
+    beneficiary_name: str
     lines: tuple[ExpenseLineFormInput, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ExpenseApproverView:
+    erp_employee_id: UUID
+    system_user_id: UUID
+    display_name: str
+    email: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +127,11 @@ class PreparedWorkOrderExpense:
     notes: str | None
     lines: tuple[PreparedExpenseLine, ...]
     category_rules: tuple[ExpenseCategoryRule, ...]
+    selected_approver: ExpenseApproverView
+    payment_destination_mode: ExpenseDestinationMode
+    bank_code: str | None
+    account_number: str | None
+    beneficiary_name: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +144,7 @@ class WorkOrderExpenseClaimView:
     status: StatusPresentation
     delivery_state: ExpenseDeliveryState
     delivery_label: str
+    delivery_detail: str | None
     erp_claim_number: str | None
     erp_claim_status: str | None
     rejection_reason: str | None
@@ -122,6 +157,9 @@ class WorkOrderExpensePanel:
     claims: tuple[WorkOrderExpenseClaimView, ...]
     categories: tuple[ExpenseCategoryRule, ...]
     vendors: tuple[FieldExpenseVendorOption, ...]
+    approvers: tuple[ExpenseApproverView, ...]
+    banks: tuple[ExpenseBankOption, ...]
+    profile_destination: ExpenseProfileDestination
     create_action: Action
     form: WorkOrderExpenseFormInput
     errors: tuple[ExpenseFieldError, ...]
@@ -159,6 +197,11 @@ def default_expense_form() -> WorkOrderExpenseFormInput:
         expense_date=date.today().isoformat(),
         currency="NGN",
         notes="",
+        selected_approver_id="",
+        payment_destination_mode="erp_profile",
+        bank_code="",
+        account_number="",
+        beneficiary_name="",
         lines=(_empty_line(),),
     )
 
@@ -205,18 +248,46 @@ def build_work_order_expense_panel(
     except ExpenseCategoryQueryError:
         category_message = "Expense categories are temporarily unavailable from ERP."
 
+    approvers: tuple[ExpenseApproverView, ...] = ()
+    banks: tuple[ExpenseBankOption, ...] = ()
+    profile_destination = ExpenseProfileDestination(available=False)
+    try:
+        context = get_field_expense_form_context(
+            db,
+            GetFieldExpenseFormContext(requester_system_user_id=user.id),
+        )
+        banks = context.banks
+        profile_destination = context.profile_destination
+        approvers = tuple(
+            ExpenseApproverView(
+                erp_employee_id=item.erp_employee_id,
+                system_user_id=item.system_user_id,
+                display_name=item.display_name,
+                email=item.email,
+            )
+            for item in context.approvers
+        )
+        if not approvers:
+            category_message = "No ERP expense approver has a matching active Sub user."
+    except FieldExpenseRequestError:
+        category_message = "Expense approvers and payment details are temporarily unavailable from ERP."
+
     vendors = list_expense_vendors(
         db=db,
         query=ListFieldExpenseVendors(limit=100),
     )
     claims = _claim_views(db, work_order=work_order, user=user)
-    action_reason = category_message
+    eligibility = evaluate_expense_work_order_eligibility(
+        db,
+        work_order=work_order,
+    )
+    action_reason = eligibility.reason or category_message
     create_action = Action(
         key="create_work_order_expense",
         label="New Expense Claim",
         allowed=action_reason is None,
         reason=action_reason,
-        permission="operations:dispatch:write",
+        permission="operations:dispatch:read",
     )
     return WorkOrderExpensePanel(
         work_order_id=work_order.id,
@@ -224,6 +295,9 @@ def build_work_order_expense_panel(
         claims=claims,
         categories=categories,
         vendors=vendors,
+        approvers=approvers,
+        banks=banks,
+        profile_destination=profile_destination,
         create_action=create_action,
         form=form or default_expense_form(),
         errors=errors,
@@ -236,6 +310,7 @@ def validate_work_order_expense_form(
     form: WorkOrderExpenseFormInput,
     *,
     category_rules: tuple[ExpenseCategoryRule, ...],
+    approvers: tuple[ExpenseApproverView, ...],
 ) -> PreparedWorkOrderExpense:
     errors: list[ExpenseFieldError] = []
     try:
@@ -262,6 +337,39 @@ def validate_work_order_expense_form(
         errors.append(
             ExpenseFieldError("notes", "Notes must not exceed 2,000 characters.")
         )
+    try:
+        selected_approver_id = UUID(form.selected_approver_id)
+    except ValueError:
+        selected_approver_id = None
+    selected_approver = next(
+        (item for item in approvers if item.erp_employee_id == selected_approver_id),
+        None,
+    )
+    if selected_approver is None:
+        errors.append(
+            ExpenseFieldError("selected_approver_id", "Select an expense approver.")
+        )
+    try:
+        destination_mode = ExpenseDestinationMode(form.payment_destination_mode.strip())
+    except ValueError:
+        destination_mode = ExpenseDestinationMode.ERP_PROFILE
+        errors.append(
+            ExpenseFieldError("payment_destination_mode", "Select payment details.")
+        )
+    bank_code = form.bank_code.strip() or None
+    account_number = form.account_number.strip() or None
+    beneficiary_name = form.beneficiary_name.strip() or None
+    if destination_mode is ExpenseDestinationMode.EXPENSE_OVERRIDE:
+        if not bank_code:
+            errors.append(ExpenseFieldError("bank_code", "Select a bank."))
+        if not account_number or not account_number.isdigit():
+            errors.append(
+                ExpenseFieldError("account_number", "Enter a valid account number.")
+            )
+        if not beneficiary_name:
+            errors.append(
+                ExpenseFieldError("beneficiary_name", "Enter the beneficiary name.")
+            )
     if not form.lines:
         errors.append(ExpenseFieldError("lines", "Add at least one expense item."))
     elif len(form.lines) > 50:
@@ -373,6 +481,7 @@ def validate_work_order_expense_form(
             form=form,
             errors=tuple(errors),
         )
+    assert selected_approver is not None
     return PreparedWorkOrderExpense(
         request_id=request_id,
         purpose=purpose,
@@ -381,6 +490,23 @@ def validate_work_order_expense_form(
         notes=notes,
         lines=tuple(prepared_lines),
         category_rules=category_rules,
+        selected_approver=selected_approver,
+        payment_destination_mode=destination_mode,
+        bank_code=(
+            bank_code
+            if destination_mode is ExpenseDestinationMode.EXPENSE_OVERRIDE
+            else None
+        ),
+        account_number=(
+            account_number
+            if destination_mode is ExpenseDestinationMode.EXPENSE_OVERRIDE
+            else None
+        ),
+        beneficiary_name=(
+            beneficiary_name
+            if destination_mode is ExpenseDestinationMode.EXPENSE_OVERRIDE
+            else None
+        ),
     )
 
 
@@ -402,7 +528,11 @@ def prepare_form_redisplay(
             )
             line = replace(line, receipt_upload=None)
         lines.append(line)
-    return replace(form, lines=tuple(lines)), tuple(redisplay_errors)
+    return replace(
+        form,
+        lines=tuple(lines),
+        account_number="",
+    ), tuple(redisplay_errors)
 
 
 def _claim_views(
@@ -451,6 +581,7 @@ def _claim_views(
             status=field_expense_status_presentation(row.status),
             delivery_state=_delivery_state(row, event_by_request.get(row.id)),
             delivery_label=_delivery_label(row, event_by_request.get(row.id)),
+            delivery_detail=_delivery_detail(event_by_request.get(row.id)),
             erp_claim_number=row.expense_claim_number,
             erp_claim_status=row.expense_claim_status,
             rejection_reason=row.rejection_reason,
@@ -476,6 +607,10 @@ def _delivery_state(
         FieldErpSyncStatus.sent.value,
     }:
         return ExpenseDeliveryState.PENDING
+    if request.status in {"draft", "submitted"}:
+        return ExpenseDeliveryState.AWAITING_APPROVAL
+    if request.status in {"canceled", "rejected"}:
+        return ExpenseDeliveryState.NOT_APPLICABLE
     return ExpenseDeliveryState.UNAVAILABLE
 
 
@@ -486,11 +621,27 @@ def _delivery_label(
     if event and event.status == FieldErpSyncStatus.sent.value:
         return "Delivered; awaiting ERP acceptance"
     return {
+        ExpenseDeliveryState.AWAITING_APPROVAL: "Awaiting manager approval",
         ExpenseDeliveryState.ACCEPTED: "Accepted by ERP",
         ExpenseDeliveryState.FAILED: "ERP synchronization failed",
         ExpenseDeliveryState.PENDING: "Waiting for ERP delivery",
-        ExpenseDeliveryState.UNAVAILABLE: "ERP delivery is not available",
+        ExpenseDeliveryState.NOT_APPLICABLE: "Not sent to ERP",
+        ExpenseDeliveryState.UNAVAILABLE: "ERP delivery evidence is unavailable",
     }[state]
+
+
+def _delivery_detail(event: FieldErpSyncEvent | None) -> str | None:
+    if (
+        event is None
+        or event.status
+        not in {FieldErpSyncStatus.rejected.value, FieldErpSyncStatus.dead.value}
+        or not isinstance(event.erp_response, dict)
+    ):
+        return None
+    diagnostic = parse_diagnostic_evidence(
+        event.erp_response.get(DELIVERY_DIAGNOSTIC_KEY)
+    )
+    return safe_diagnostic_summary(diagnostic) if diagnostic is not None else None
 
 
 def _empty_line() -> ExpenseLineFormInput:

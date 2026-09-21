@@ -238,11 +238,21 @@ _STATUS_BY_EVENT_TYPE = {
     "charge.success": PaymentStatus.succeeded,
     "payment.failed": PaymentStatus.failed,
     "charge.failed": PaymentStatus.failed,
+    # Legacy administrative/reconciliation vocabulary. Paystack itself never
+    # sends these event names (it sends `refund.processed`, below) -- kept
+    # for the separate admin/reconciliation ingest path that already depends
+    # on them; do not delete.
     "payment.refunded": PaymentStatus.refunded,
     "charge.refunded": PaymentStatus.refunded,
     "payment.reversed": PaymentStatus.reversed,
     "charge.reversed": PaymentStatus.reversed,
     "payment.canceled": PaymentStatus.canceled,
+    # Paystack's actual refund vocabulary. The webhook layer
+    # (`payment_webhook_commands._settlement_observation`) already sets
+    # `observed_payment_status` explicitly for this event type; the entry
+    # here is the consistency check `_normalize` runs between the two
+    # (`status_conflict`), not the only source of the mapping.
+    "refund.processed": PaymentStatus.refunded,
 }
 
 _FINANCIAL_EFFECT_BY_EVENT_TYPE = {
@@ -250,6 +260,7 @@ _FINANCIAL_EFFECT_BY_EVENT_TYPE = {
     "charge.refunded": PaymentProviderEventFinancialEffect.refund_confirmed,
     "payment.reversed": PaymentProviderEventFinancialEffect.reversal_confirmed,
     "charge.reversed": PaymentProviderEventFinancialEffect.reversal_confirmed,
+    "refund.processed": PaymentProviderEventFinancialEffect.refund_confirmed,
 }
 
 _SCOPE_BY_SOURCE = {

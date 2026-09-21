@@ -59,7 +59,38 @@ def build_health_data(db) -> dict[str, object]:
         "replication_health": _build_replication_health(db),
         "task_activity": _build_task_activity(db),
         "erp_sync_ownership": _build_erp_sync_ownership(db),
+        "erp_delivered_unlinked": _build_erp_delivered_unlinked(db),
     }
+
+
+def _build_erp_delivered_unlinked(db) -> dict[str, object]:
+    """Surface delivered-but-unlinked ``field_erp_sync_events`` rows per flow.
+
+    A ``sent`` row can never satisfy a status poller gated on "the source
+    entity already has an ERP reference" — that row has no reference BY
+    DEFINITION (see ``dotmac_erp.outbox``'s module docstring). An ``accepted``
+    row can also land here when its same-transaction write-back silently
+    failed. Neither self-heals without an operator noticing, so this makes
+    the count and oldest age visible on the same deploy/health surface as
+    ``erp_sync_ownership`` instead of only inside the outbox table.
+
+    INFORMATIONAL ONLY — not an alert or an SLA. This surface reports the raw
+    per-flow count and oldest age; it does not flag, highlight, or compare
+    against any threshold. Purchase-order/invoice write-backs affect
+    accounts-payable and expense-claim write-backs are payroll-adjacent, so a
+    shared numeric cutoff would be an invented, unowned SLA. Treat this as
+    data for a human to read until a later, separately reviewed change gives
+    each flow its own explicitly owned threshold.
+    """
+    try:
+        from app.services.dotmac_erp.outbox import delivered_unlinked_diagnostics
+
+        flows = delivered_unlinked_diagnostics(db)
+    except Exception as exc:
+        logger.debug("ERP delivered-unlinked surface unavailable", exc_info=True)
+        return {"status": "unknown", "flows": {}, "error": str(exc)[:200]}
+
+    return {"flows": flows}
 
 
 def _build_erp_sync_ownership(db) -> dict[str, object]:

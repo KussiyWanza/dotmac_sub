@@ -1,8 +1,7 @@
 """The three queue filters that were demo-only: AI handling, sent-to-ticket,
 and an activity window.
 
-Each had its data already: `ai_handling` lives in conversation metadata and is
-counted by the projection, and the ticket link landed with
+AI ownership is derived from the active AI Intake session, while the ticket link landed with
 `communications.conversation_ticket_handoff`. Only the filter was missing.
 
 See docs/designs/TEAM_INBOX_ADMIN_UI_PORT.md §5, slice 4.
@@ -16,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from app.models.ai_intake import AiIntakeSession
 from app.models.subscriber import Subscriber
 from app.models.team_inbox import InboxConversation, InboxConversationStatus
 from app.services import conversation_ticket_handoff, team_inbox_read
@@ -41,6 +41,17 @@ def _conversation(
     )
     db_session.add(conversation)
     db_session.flush()
+    if ai:
+        db_session.add(
+            AiIntakeSession(
+                conversation_id=conversation.id,
+                state="collecting_intent",
+                channel_type=conversation.channel_type,
+                provider="test",
+                account_scope="queue-filter-test",
+                metadata_={},
+            )
+        )
     captured = conversation.id
     db_session.commit()
     return captured

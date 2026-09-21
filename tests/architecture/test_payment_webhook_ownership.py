@@ -117,3 +117,84 @@ def test_webhook_adapter_is_transport_only_and_transaction_neutral() -> None:
     assert "_prepare_provider_event_ingest" not in source
     assert "_apply_post_settlement_bookkeeping" not in source
     assert "_settle_typed_account_credit_deposit" not in source
+
+
+def test_paystack_vocabulary_is_named_and_non_vacuous() -> None:
+    """Every Paystack event type the code claims to handle lives in one
+    explicit named set, and an event type outside that set never reaches a
+    path indistinguishable from a real settlement or reversal.
+
+    This is the regression guard for the original bug this PR fixes: Paystack
+    event names the code did not actually recognize were silently treated as
+    a no-op success. A brand-new/unlisted event type must keep doing exactly
+    that (informational no-op) -- never be misread as `charge.success` or a
+    confirmed refund/reversal.
+    """
+
+    from app.services import payment_webhook_commands as owner
+
+    recognized = owner._PAYSTACK_RECOGNIZED_EVENT_TYPES
+    assert recognized == (
+        owner._PAYSTACK_SETTLEMENT_EVENT_TYPES
+        | owner._PAYSTACK_REFUND_EVENT_TYPES
+        | owner._PAYSTACK_DISPUTE_EVENT_TYPES
+    )
+    assert "charge.success" in owner._PAYSTACK_SETTLEMENT_EVENT_TYPES
+    assert recognized >= {
+        "refund.processed",
+        "refund.pending",
+        "refund.processing",
+        "refund.failed",
+        "charge.dispute.create",
+        "charge.dispute.resolve",
+        "charge.dispute.remind",
+    }
+    # Payout events are explicitly out of scope; they must never be admitted
+    # into the customer-charge refund/reversal vocabulary.
+    assert "transfer.reversed" not in recognized
+    assert "transfer.failed" not in recognized
+
+    provider = owner.PaymentWebhookProvider.PAYSTACK
+
+    # A synthetic, never-registered event type must resolve to the same
+    # informational default as an unrecognized type always has -- not to a
+    # settlement or a reversal.
+    unknown = owner._settlement_observation(
+        provider, event_type="charge.some_future_event_type", data={}
+    )
+    assert unknown is None
+
+    # The one money-moving refund event type produces a real observation.
+    settlement = owner._settlement_observation(
+        provider,
+        event_type="refund.processed",
+        data={"amount": 1000, "currency": "NGN"},
+    )
+    assert settlement is not None
+    assert settlement.status.value == "refunded"
+
+    # Every other recognized-but-informational event type must NOT produce a
+    # settlement observation (no money movement), while still being a named,
+    # deliberate member of the vocabulary above (not an accident of a
+    # catch-all).
+    for informational in (
+        "refund.pending",
+        "refund.processing",
+        "refund.failed",
+        "charge.dispute.create",
+        "charge.dispute.remind",
+    ):
+        assert (
+            owner._settlement_observation(provider, event_type=informational, data={})
+            is None
+        )
+
+    # `charge.dispute.resolve` is outcome-dependent and deliberately excluded
+    # from the static event-type maps.
+    from app.services.payment_provider_events import (
+        _FINANCIAL_EFFECT_BY_EVENT_TYPE,
+        _STATUS_BY_EVENT_TYPE,
+    )
+
+    assert "charge.dispute.resolve" not in _STATUS_BY_EVENT_TYPE
+    assert "charge.dispute.resolve" not in _FINANCIAL_EFFECT_BY_EVENT_TYPE

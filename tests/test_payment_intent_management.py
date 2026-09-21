@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.models.billing import TopupIntent
+from app.models.payment_proof import PaymentProof, PaymentProofStatus
 from app.services import payment_intent_management
 from app.services.owner_commands import CommandContext
 from app.services.topup_intents import (
@@ -102,6 +103,163 @@ def test_history_marks_only_unsubmitted_pending_transfer_cancelable(
 
     assert by_id[cancelable.id].can_cancel is True
     assert by_id[linked.id].can_cancel is False
+
+
+def test_history_offers_proof_rejection_for_expired_submitted_transfer(
+    db_session, subscriber
+):
+    intent, _ = _intent(db_session, subscriber.id)
+    proof = PaymentProof(
+        account_id=subscriber.id,
+        submitted_by=subscriber.id,
+        amount=intent.requested_amount,
+        currency=intent.currency,
+        reference=intent.reference,
+        file_path="uploads/payment_proofs/stale-transfer.png",
+        status=PaymentProofStatus.submitted,
+    )
+    db_session.add(proof)
+    db_session.flush()
+    intent.status = "submitted"
+    intent.expires_at = datetime.now(UTC) - timedelta(days=1)
+    intent.metadata_ = {
+        **dict(intent.metadata_ or {}),
+        "payment_proof_id": str(proof.id),
+    }
+    db_session.commit()
+
+    view = payment_intent_management.get_for_account(
+        db_session,
+        account_id=subscriber.id,
+        intent_id=intent.id,
+    )
+
+    assert view is not None
+    assert view.can_cancel is True
+    assert view.cancellation_action is not None
+    assert (
+        view.cancellation_action.kind
+        is payment_intent_management.PaymentIntentCancellationKind.stale_submitted_proof
+    )
+    assert view.cancellation_action.proof_id == proof.id
+    assert view.cancellation_action.label == "Cancel stale intent"
+    assert "no payment was received" in view.cancellation_action.confirmation_message
+
+
+@pytest.mark.parametrize(
+    ("proof_status", "expires_delta"),
+    [
+        (PaymentProofStatus.submitted, timedelta(days=1)),
+        (PaymentProofStatus.verified, timedelta(days=-1)),
+        (PaymentProofStatus.rejected, timedelta(days=-1)),
+    ],
+)
+def test_history_hides_stale_cancel_when_proof_is_not_eligible(
+    db_session,
+    subscriber,
+    proof_status,
+    expires_delta,
+):
+    intent, _ = _intent(db_session, subscriber.id)
+    proof = PaymentProof(
+        account_id=subscriber.id,
+        submitted_by=subscriber.id,
+        amount=intent.requested_amount,
+        currency=intent.currency,
+        reference=intent.reference,
+        file_path="uploads/payment_proofs/guarded-transfer.png",
+        status=proof_status,
+    )
+    db_session.add(proof)
+    db_session.flush()
+    intent.status = "submitted"
+    intent.expires_at = datetime.now(UTC) + expires_delta
+    intent.metadata_ = {
+        **dict(intent.metadata_ or {}),
+        "payment_proof_id": str(proof.id),
+    }
+    db_session.commit()
+
+    view = payment_intent_management.get_for_account(
+        db_session,
+        account_id=subscriber.id,
+        intent_id=intent.id,
+    )
+
+    assert view is not None
+    assert view.can_cancel is False
+    assert view.cancellation_action is None
+
+
+def test_admin_cancel_stale_intent_delegates_to_payment_proof_owner(
+    monkeypatch,
+    db_session,
+    subscriber,
+):
+    from app.web.admin import customers as customer_routes
+
+    intent, _ = _intent(db_session, subscriber.id)
+    proof = PaymentProof(
+        account_id=subscriber.id,
+        submitted_by=subscriber.id,
+        amount=intent.requested_amount,
+        currency=intent.currency,
+        reference=intent.reference,
+        file_path="uploads/payment_proofs/stale-admin-transfer.png",
+        status=PaymentProofStatus.submitted,
+    )
+    db_session.add(proof)
+    db_session.flush()
+    intent.status = "submitted"
+    intent.expires_at = datetime.now(UTC) - timedelta(days=1)
+    intent.metadata_ = {
+        **dict(intent.metadata_ or {}),
+        "payment_proof_id": str(proof.id),
+    }
+    db_session.commit()
+    captured: dict[str, object] = {}
+
+    def _reject_proof(
+        db,
+        proof_id,
+        *,
+        context,
+        verified_by,
+        review_notes,
+    ):
+        captured.update(
+            proof_id=proof_id,
+            context=context,
+            verified_by=verified_by,
+            review_notes=review_notes,
+        )
+        return object()
+
+    monkeypatch.setattr(customer_routes.payment_proofs, "reject_proof", _reject_proof)
+    response = customer_routes.cancel_customer_payment_intent(
+        customer_id=subscriber.id,
+        intent_id=intent.id,
+        reason="No matching transfer on the bank statement",
+        db=db_session,
+        auth={
+            "principal_id": "finance-admin",
+            "principal_type": "system_user",
+            "roles": ["admin"],
+            "scopes": [],
+        },
+    )
+
+    assert response.status_code == 303
+    assert captured["proof_id"] == str(proof.id)
+    assert captured["verified_by"] == "finance-admin"
+    assert captured["review_notes"] == "No matching transfer on the bank statement"
+    context = captured["context"]
+    assert isinstance(context, CommandContext)
+    assert context.scope == customer_routes.payment_proofs.REVIEW_SCOPE
+    assert (
+        context.idempotency_key
+        == f"admin-cancel-stale-payment-intent:{intent.id}:{proof.id}"
+    )
 
 
 def test_history_uses_safe_authoritative_gateway_projection(db_session, subscriber):

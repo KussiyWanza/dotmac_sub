@@ -10,9 +10,30 @@ from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.subscription_engine import SettingValueType
 from app.services.billing_tax_resolution import (
     BillingTaxSource,
+    resolve_active_tax_rate_id_for_percent,
     resolve_subscription_tax,
     resolve_subscription_taxes,
 )
+
+
+def test_percent_lookup_requires_one_unambiguous_active_rate(db_session):
+    active = TaxRate(name="Installation VAT", rate=Decimal("7.5000"))
+    inactive = TaxRate(
+        name="Retired installation VAT",
+        rate=Decimal("7.5000"),
+        is_active=False,
+    )
+    db_session.add_all([active, inactive])
+    db_session.commit()
+
+    assert (
+        resolve_active_tax_rate_id_for_percent(db_session, Decimal("7.5")) == active.id
+    )
+
+    db_session.add(TaxRate(name="Duplicate VAT", rate=Decimal("7.5000")))
+    db_session.commit()
+
+    assert resolve_active_tax_rate_id_for_percent(db_session, Decimal("7.5")) is None
 
 
 def test_customer_exemption_is_the_highest_precedence_tax_fact(

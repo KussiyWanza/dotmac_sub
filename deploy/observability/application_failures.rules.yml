@@ -1,0 +1,35 @@
+# Application failure alerts. These use closed metric labels only; neither a
+# customer identifier nor a payment/provider reference is ever a label.
+groups:
+  - name: application_failures
+    rules:
+      - alert: SubUnhandledApplicationExceptionsSustained
+        expr: sum(increase(application_exceptions_total[15m])) > 5
+        for: 10m
+        labels:
+          severity: warning
+          area: application
+          owner: platform-operations
+        annotations:
+          summary: "Unhandled application exceptions are sustained"
+          description: >
+            More than five unhandled HTTP exceptions were observed in a
+            fifteen-minute window. Group by exception_type and surface before
+            escalating to the owning domain.
+          runbook: "docs/designs/OPERATIONAL_EVIDENCE_AND_RETRY.md"
+
+      - alert: SubPaymentVerificationUnexpectedFailures
+        expr: sum(increase(payment_verification_outcomes_total{outcome="unexpected_failure"}[15m])) > 3
+        for: 10m
+        labels:
+          severity: warning
+          area: billing
+          owner: financial-billing
+        annotations:
+          summary: "Unexpected payment-verification failures are sustained"
+          description: >
+            More than three payment verification attempts ended unexpectedly
+            in fifteen minutes. Check the safe exception fingerprint and
+            provider availability; do not retry or re-credit manually without
+            the canonical payment record.
+          runbook: "docs/designs/OPERATIONAL_EVIDENCE_AND_RETRY.md"

@@ -48,6 +48,9 @@ void main() {
         'deposit_amount': '37500.00',
         'deposit_percent': 50,
         'deposit_paid': false,
+        'payment_review_status': 'approved',
+        'payment_review_message': 'Approved — payment required.',
+        'can_pay_deposit': true,
         'estimate_provisional': false,
         'feasibility': {
           'coverage': 'covered',
@@ -71,8 +74,25 @@ void main() {
       expect(q.id, 'q1');
       expect(q.feasibility.isCovered, isTrue);
       expect(q.canPayDeposit, isTrue);
+      expect(q.statusLabel, 'Approved — payment required');
       expect(q.lineItems.single.description, 'Fiber installation (base)');
       expect(naira(q.depositAmount), '₦37,500');
+    });
+
+    test('pending review shows the estimate but cannot expose payment', () {
+      final q = Quote.fromJson({
+        'id': 'q-review',
+        'status': 'draft',
+        'deposit_amount': '37500.00',
+        'payment_review_status': 'pending',
+        'payment_review_message': 'Your estimate is under staff review.',
+        'can_pay_deposit': false,
+        'feasibility': {'coverage': 'covered'},
+      });
+
+      expect(q.canPayDeposit, isFalse);
+      expect(q.statusLabel, 'Awaiting staff review');
+      expect(q.paymentReviewMessage, contains('under staff review'));
     });
 
     test('accepted quote cannot pay deposit again', () {

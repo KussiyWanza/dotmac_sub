@@ -406,6 +406,60 @@ JobLifecycleReference? _lifecycleReference(dynamic value) {
   return JobLifecycleReference.fromJson(value.cast<String, dynamic>());
 }
 
+enum JobNoteDeliveryState { delivered, queued, failed }
+
+class JobNote {
+  const JobNote({
+    required this.id,
+    required this.body,
+    required this.isInternal,
+    required this.createdAt,
+    this.clientRef,
+    this.authorName,
+    this.deliveryState = JobNoteDeliveryState.delivered,
+    this.deliveryError,
+  });
+
+  final String id;
+  final String? clientRef;
+  final String body;
+  final bool isInternal;
+  final String? authorName;
+  final DateTime createdAt;
+  final JobNoteDeliveryState deliveryState;
+  final String? deliveryError;
+
+  factory JobNote.fromJson(Map<String, dynamic> json) => JobNote(
+    id: json['id']?.toString() ?? json['client_ref']?.toString() ?? '',
+    clientRef: json['client_ref']?.toString(),
+    body: _noteBody(json),
+    isInternal: json['is_internal'] as bool? ?? true,
+    authorName: _noteString(json, const [
+      'author_name',
+      'author',
+      'created_by_name',
+      'created_by',
+    ]),
+    createdAt: _date(json['created_at']) ?? DateTime.now().toUtc(),
+  );
+}
+
+String _noteBody(Map<String, dynamic> note) {
+  for (final key in ['body', 'text', 'comment', 'note']) {
+    final value = note[key];
+    if (value is String && value.trim().isNotEmpty) return value.trim();
+  }
+  return '';
+}
+
+String? _noteString(Map<String, dynamic> note, List<String> keys) {
+  for (final key in keys) {
+    final value = note[key];
+    if (value is String && value.trim().isNotEmpty) return value.trim();
+  }
+  return null;
+}
+
 class JobDetail {
   const JobDetail({
     required this.job,
@@ -434,7 +488,7 @@ class JobDetail {
   final List<JobSiteContact> additionalContacts;
   final List<JobVisitHistoryItem> recentVisits;
   final List<JobOpenTicketItem> openTickets;
-  final List<Map<String, dynamic>> notes;
+  final List<JobNote> notes;
   final List<Map<String, dynamic>> attachments;
   final List<Map<String, dynamic>> materials;
   final List<Map<String, dynamic>> materialRequests;
@@ -477,12 +531,30 @@ class JobDetail {
       JobVisitHistoryItem.fromJson,
     ),
     openTickets: _typedList(json['open_tickets'], JobOpenTicketItem.fromJson),
-    notes: _mapList(json['notes']),
+    notes: _typedList(json['notes'], JobNote.fromJson),
     attachments: _mapList(json['attachments']),
     materials: _mapList(json['materials']),
     materialRequests: _mapList(json['material_requests']),
     worklogs: _mapList(json['worklogs']),
     history: _mapList(json['history']),
+  );
+
+  JobDetail withNotes(List<JobNote> replacement) => JobDetail(
+    job: job,
+    location: location,
+    completionRequirements: completionRequirements,
+    customerExperience: customerExperience,
+    customer: customer,
+    accessNotes: accessNotes,
+    additionalContacts: additionalContacts,
+    recentVisits: recentVisits,
+    openTickets: openTickets,
+    notes: replacement,
+    attachments: attachments,
+    materials: materials,
+    materialRequests: materialRequests,
+    worklogs: worklogs,
+    history: history,
   );
 }
 

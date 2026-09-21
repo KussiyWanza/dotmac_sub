@@ -30,12 +30,14 @@ The enabled `erp.staff_access.reconcile.v1` capability reads both entities from
 ERP's `/api/v1/sync/sub/staff-access/projection` endpoint every 15 minutes. This
 durable interval is the bounded repair path when a service hook is absent,
 delivery is missed, or a deployment starts after a wall-clock run. The task
-refuses a response at the bounded 500-row limit instead of treating a possibly
-truncated page as complete. It maps the typed snapshot into the same owner
-command used by webhook ingress. Monotonic source versions make delivery
-retries idempotent. Each scheduled run has its own idempotency identity, so an
-unchanged ERP snapshot can still repair local drift such as an administratively
-reactivated ERP-inactive account.
+reads each entity in 500-row pages using ERP's ordered `updated_after` cursor.
+It fails closed if that cursor does not advance or an entity exceeds the
+bounded 100-page safety limit, rather than applying a possibly truncated
+snapshot. It maps the complete typed snapshot into the same owner command used
+by webhook ingress. Monotonic source versions make delivery retries idempotent.
+Each scheduled run has its own idempotency identity, so an unchanged ERP
+snapshot can still repair local drift such as an administratively reactivated
+ERP-inactive account.
 
 The shared ERP bootstrap binds every production capability before enabling the
 installation and validates each binding independently. Staff-access validation

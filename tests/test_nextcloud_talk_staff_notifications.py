@@ -25,6 +25,7 @@ from app.services.nextcloud_talk_staff import (
     StaffTalkEventType,
     StageStaffTalkNotification,
 )
+from app.services.owner_commands import CommandContext
 from tests.staff_identity_fixtures import add_bound_staff_user
 
 
@@ -320,6 +321,72 @@ def test_mapping_accepts_exact_nextcloud_user_id_with_internal_spaces(
     assert nextcloud_user_id.normalized == "confidence okaka"
     assert mapping.nextcloud_username == "Confidence Okaka"
     assert mapping.nextcloud_username_normalized == "confidence okaka"
+
+
+def test_erp_default_mapping_command_uses_enabled_binding(db_session) -> None:
+    user, _person = add_bound_staff_user(db_session, email="erp-map@example.test")
+    installation, _binding = _install_talk(db_session)
+    db_session.expire_on_commit = False
+    db_session.commit()
+
+    result = nextcloud_talk_staff.execute_set_default_staff_account_mapping(
+        db_session,
+        nextcloud_talk_staff.SetDefaultStaffAccountMappingCommand(
+            context=CommandContext.system(
+                actor="api_key:erp",
+                scope=nextcloud_talk_staff.COMMAND_SCOPE,
+                reason="test ERP mapping",
+                idempotency_key=f"erp-talk-map:{user.id}",
+            ),
+            system_user_id=user.id,
+            nextcloud_user_id=nextcloud_talk_staff.NextcloudUserId.parse("erp.user"),
+        ),
+    )
+
+    assert result.integration_installation_id == installation.id
+    assert result.nextcloud_user_id.value == "erp.user"
+    assert result.is_active is True
+
+
+def test_erp_disable_all_mappings_invalidates_cached_room(db_session) -> None:
+    user, _person = add_bound_staff_user(db_session, email="erp-off@example.test")
+    installation, _binding = _install_talk(db_session)
+    mapping = nextcloud_talk_staff.set_staff_account_mapping(
+        db_session,
+        system_user_id=user.id,
+        integration_installation_id=installation.id,
+        nextcloud_user_id=nextcloud_talk_staff.NextcloudUserId.parse("erp.off"),
+        actor="test",
+    )
+    room = NextcloudTalkNotificationRoom(
+        system_user_id=user.id,
+        integration_installation_id=installation.id,
+        invite_target="erp.off",
+        room_token="room-before-deactivation",
+    )
+    db_session.add(room)
+    db_session.expire_on_commit = False
+    db_session.commit()
+
+    result = nextcloud_talk_staff.execute_disable_all_staff_account_mappings(
+        db_session,
+        nextcloud_talk_staff.DisableAllStaffAccountMappingsCommand(
+            context=CommandContext.system(
+                actor="api_key:erp",
+                scope=nextcloud_talk_staff.COMMAND_SCOPE,
+                reason="test ERP deactivation",
+                idempotency_key=f"erp-talk-disable:{user.id}",
+            ),
+            system_user_id=user.id,
+        ),
+    )
+
+    db_session.refresh(mapping)
+    db_session.refresh(room)
+    assert result.disabled_mappings == 1
+    assert mapping.is_active is False
+    assert room.invalidated_at is not None
+    assert room.last_failure_code == "staff_account_deactivated"
 
 
 @pytest.mark.parametrize(

@@ -40,11 +40,20 @@ SERVICES: tuple[SOTService, ...] = (
             "SalesOrder.amount_paid remains provenance during shadow. "
             "Coverage is DERIVED, never asserted by an operator: "
             "payment_status, amount_paid and paid_at are refused on the "
-            "generic sales-order edit and on the admin form "
-            "(sales_orders.FUNDING_CONTROLLED_FIELDS), so only a caller "
+            "generic sales-order edit and on the admin form; paid and "
+            "fulfilled lifecycle statuses are likewise evidence-controlled "
+            "and absent from operator status choices "
+            "(sales_orders.FUNDING_CONTROLLED_FIELDS and "
+            "sales_orders.EVIDENCE_CONTROLLED_STATUSES). Once a receipt or "
+            "waiver exists, the order's commercial header and line terms are "
+            "immutable; correction uses Finance evidence instead of rewriting "
+            "the sale. Only a caller "
             "holding a sales_orders.FundingAuthority — recorded settlement, "
             "verified deposit evidence, or this gate — can cross the funding "
             "edge that stages sales_order.funding_satisfied."
+            " The SalesOrder detail action enters Finance's account-scoped "
+            "Record Payment flow with the remaining order balance suggested; "
+            "only the payment preview/confirmation owner records money."
         ),
         contract=ServiceContract(
             concerns=(

@@ -9,6 +9,8 @@ from starlette.requests import Request
 
 from app.models.auth import AuthProvider, UserCredential
 from app.models.catalog import AccessCredential
+from app.models.subscriber import UserType
+from app.models.system_user import SystemUser
 from app.services import customer_portal
 from app.services import web_customer_auth as web_customer_auth_service
 from app.services.auth_flow import AuthFlow, hash_password
@@ -212,6 +214,45 @@ def test_customer_login_allows_pppoe_when_local_credential_password_differs(
     assert response.headers["location"] == "/portal/dashboard"
     assert customer_portal.SESSION_COOKIE_NAME in _response_cookies(response)
     assert local_credential.failed_login_attempts == 0
+
+
+def test_customer_login_ignores_staff_local_credential(db_session, monkeypatch):
+    monkeypatch.setattr(
+        web_customer_auth_service.radius_auth,
+        "authenticate",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("radius unavailable")),
+    )
+    staff = SystemUser(
+        first_name="Portal",
+        last_name="Collision",
+        email="portal-collision@example.com",
+        user_type=UserType.system_user,
+        is_active=True,
+    )
+    db_session.add(staff)
+    db_session.flush()
+    credential = UserCredential(
+        system_user_id=staff.id,
+        provider=AuthProvider.local,
+        username=staff.email,
+        password_hash=hash_password("staff-secret"),
+        is_active=True,
+    )
+    db_session.add(credential)
+    db_session.commit()
+
+    response = web_customer_auth_service.customer_login_submit(
+        _request(),
+        db_session,
+        staff.email,
+        "staff-secret",
+        False,
+        "/portal/dashboard",
+    )
+
+    db_session.refresh(credential)
+    assert response.status_code == 401
+    assert credential.last_login_at is None
 
 
 def test_customer_login_records_local_failure_when_pppoe_fallback_fails(

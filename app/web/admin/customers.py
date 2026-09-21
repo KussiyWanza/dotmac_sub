@@ -31,6 +31,7 @@ from app.services import (
     conversation_lead_relationships,
     customer_portal,
     payment_intent_management,
+    payment_proofs,
     subscriber_party_binding_repair,
 )
 from app.services import customer_network_path as customer_network_path_service
@@ -1120,7 +1121,15 @@ def customer_payment_intents(
             "request": request,
             "customer": customer,
             "intents": payment_intent_management.list_for_account(db, customer_id),
-            "can_cancel": has_permission(auth, db, "billing:payment_intent:cancel"),
+            "cancel_permissions": {
+                "unsubmitted_direct_transfer": has_permission(
+                    auth, db, "billing:payment_intent:cancel"
+                ),
+                "stale_submitted_proof": (
+                    has_permission(auth, db, "billing:payment_intent:cancel")
+                    and has_permission(auth, db, "billing:proof:verify")
+                ),
+            },
             "current_user": get_current_user(request),
             "sidebar_stats": get_sidebar_stats(db),
             "message": request.query_params.get("message"),
@@ -1145,18 +1154,67 @@ def cancel_customer_payment_intent(
             status_code=303,
         )
     try:
-        db_session_adapter.release_read_transaction(db)
-        payment_intent_management.cancel_unsubmitted_direct_transfer(
+        intent = payment_intent_management.get_for_account(
             db,
-            payment_intent_management.CancelPaymentIntentCommand(
-                context=_payment_intent_command_context(
-                    auth, intent_id=intent_id, reason=cleaned_reason
-                ),
-                account_id=customer_id,
-                intent_id=intent_id,
-                source=DirectTransferCancellationSource.admin_customer_billing,
-            ),
+            account_id=customer_id,
+            intent_id=intent_id,
         )
+        action = intent.cancellation_action if intent is not None else None
+        if action is None:
+            raise ValueError("Payment intent can no longer be canceled")
+
+        if (
+            action.kind
+            is payment_intent_management.PaymentIntentCancellationKind.stale_submitted_proof
+        ):
+            if not has_permission(auth, db, "billing:proof:verify"):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Payment proof review permission is required",
+                )
+            if action.proof_id is None:
+                raise ValueError("Linked payment proof is unavailable")
+            context = _payment_intent_command_context(
+                auth,
+                intent_id=intent_id,
+                reason=cleaned_reason,
+            )
+            proof_context = CommandContext(
+                command_id=context.command_id,
+                correlation_id=context.correlation_id,
+                actor=context.actor,
+                scope=payment_proofs.REVIEW_SCOPE,
+                reason=cleaned_reason,
+                idempotency_key=(
+                    f"admin-cancel-stale-payment-intent:{intent_id}:{action.proof_id}"
+                ),
+            )
+            db_session_adapter.release_read_transaction(db)
+            payment_proofs.reject_proof(
+                db,
+                str(action.proof_id),
+                context=proof_context,
+                verified_by=str(auth.get("principal_id")),
+                review_notes=cleaned_reason,
+            )
+        elif (
+            action.kind
+            is payment_intent_management.PaymentIntentCancellationKind.unsubmitted_direct_transfer
+        ):
+            db_session_adapter.release_read_transaction(db)
+            payment_intent_management.cancel_unsubmitted_direct_transfer(
+                db,
+                payment_intent_management.CancelPaymentIntentCommand(
+                    context=_payment_intent_command_context(
+                        auth, intent_id=intent_id, reason=cleaned_reason
+                    ),
+                    account_id=customer_id,
+                    intent_id=intent_id,
+                    source=DirectTransferCancellationSource.admin_customer_billing,
+                ),
+            )
+        else:
+            raise ValueError("Payment intent cancellation action is unsupported")
     except (DomainError, ValueError) as exc:
         message = exc.message if isinstance(exc, DomainError) else str(exc)
         return RedirectResponse(

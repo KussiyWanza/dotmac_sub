@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -74,8 +75,9 @@ def test_reconcile_task_fetches_typed_erp_snapshot_and_enters_owner() -> None:
         def __init__(self, actual_db) -> None:
             assert actual_db is db
 
-        def get_staff_access_projection(self, *, entity, limit):
+        def get_staff_access_projection(self, *, entity, updated_after, limit):
             assert limit == 500
+            assert updated_after is None
             return pages[entity]
 
     def _reconcile(actual_db, command):
@@ -123,3 +125,82 @@ def test_reconcile_task_fetches_typed_erp_snapshot_and_enters_owner() -> None:
         "2026-09-03T23:00:00+00:00"
     )
     assert command.account_statuses[0].account_status == "active"
+
+
+def test_reconcile_task_paginates_full_erp_projection_pages() -> None:
+    db = MagicMock()
+    session_context = MagicMock()
+    session_context.__enter__.return_value = db
+    session_context.__exit__.return_value = False
+    first_updated_at = datetime(2026, 9, 3, 1, 30, tzinfo=UTC)
+    second_updated_at = first_updated_at + timedelta(seconds=1)
+    leave_item = _leave_page().items[0]
+    account_item = _account_page().items[0]
+    calls = []
+    captured = []
+
+    class _Client:
+        def __init__(self, actual_db) -> None:
+            assert actual_db is db
+
+        def get_staff_access_projection(self, *, entity, updated_after, limit):
+            assert limit == 500
+            calls.append((entity, updated_after))
+            item = leave_item if entity == "leave_restriction" else account_item
+            if updated_after is None:
+                return ErpStaffAccessProjectionPage(
+                    contract_version="staff.access.projection.v1",
+                    entity=entity,
+                    items=(item,) * limit,
+                )
+            assert updated_after == first_updated_at
+            return ErpStaffAccessProjectionPage(
+                contract_version="staff.access.projection.v1",
+                entity=entity,
+                items=(item.model_copy(update={"updated_at": second_updated_at}),),
+            )
+
+    def _reconcile(actual_db, command):
+        assert actual_db is db
+        captured.append(command)
+        return SimpleNamespace(
+            leave_restrictions_seen=len(command.leave_restrictions),
+            account_statuses_seen=len(command.account_statuses),
+            applied=2,
+            ignored=1000,
+        )
+
+    with (
+        patch(
+            "app.services.db_session_adapter.db_session_adapter.session",
+            return_value=session_context,
+        ),
+        patch(
+            "app.services.integrations.erp_capability.ErpCapabilityClient",
+            _Client,
+        ),
+        patch(
+            "app.services.erp_staff_access.reconcile_staff_access_snapshot",
+            side_effect=_reconcile,
+        ),
+        patch(
+            "app.services.db_session_adapter.db_session_adapter.release_read_transaction"
+        ),
+    ):
+        result = dotmac_erp_outbox.reconcile_erp_staff_access.run()
+
+    assert calls == [
+        ("leave_restriction", None),
+        ("leave_restriction", first_updated_at),
+        ("account_status", None),
+        ("account_status", first_updated_at),
+    ]
+    assert len(captured[0].leave_restrictions) == 501
+    assert len(captured[0].account_statuses) == 501
+    assert result == {
+        "leave_restrictions_seen": 501,
+        "account_statuses_seen": 501,
+        "unmapped_seen": 0,
+        "applied": 2,
+        "ignored": 1000,
+    }

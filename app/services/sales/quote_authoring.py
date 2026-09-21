@@ -1,4 +1,4 @@
-"""Atomic Lead-backed Draft/Sent Quote authoring."""
+"""Atomic Lead- or customer-backed Draft/Sent Quote authoring."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ from app.models.sales import (
     QuoteLineItem,
     QuoteStatus,
 )
+from app.models.subscriber import Subscriber
 from app.models.system_user import SystemUser
 from app.services.audit_adapter import stage_audit_event
 from app.services.common import round_money
@@ -37,12 +38,11 @@ from app.services.owner_commands import (
     OwnerCommandDefinition,
     execute_owner_command,
 )
-from app.services.sales.customer_quote_linkage import resolve_customer_quote_lead
 from app.services.sales.selfserve import compute_feasibility
 
 _AUTHOR_QUOTE = OwnerCommandDefinition(
     owner="sales.quote_authoring",
-    concern="atomic Lead-backed Draft/Sent Quote authoring",
+    concern="atomic Lead- or customer-backed Draft/Sent Quote authoring",
     name="author_quote",
 )
 _CHANGE_QUOTE_DISCOUNT = OwnerCommandDefinition(
@@ -408,6 +408,35 @@ def _lead(db: Session, lead_id: UUID) -> Lead:
     return lead
 
 
+def _customer(db: Session, customer_id: UUID) -> Subscriber:
+    customer = db.scalars(
+        select(Subscriber).where(Subscriber.id == customer_id).with_for_update()
+    ).one_or_none()
+    if customer is None:
+        raise _error(
+            "customer_not_found",
+            "Select a valid Customer.",
+            field="customer_id",
+        )
+    if not customer.is_active:
+        raise _error(
+            "customer_not_eligible",
+            "The selected Customer is inactive and cannot receive a new Quote.",
+            field="customer_id",
+        )
+    return customer
+
+
+def _customer_name(customer: Subscriber) -> str:
+    return str(
+        customer.company_name
+        or customer.display_name
+        or customer.full_name
+        or customer.email
+        or customer.id
+    ).strip()
+
+
 def _validated_lines(
     db: Session, drafts: tuple[QuoteLineDraft, ...]
 ) -> tuple[tuple[QuoteLineDraft, Decimal], ...]:
@@ -580,14 +609,17 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
             "Select exactly one eligible Lead or Customer.",
             field="recipient",
         )
-    customer_id: UUID | None = None
+    lead: Lead | None = None
+    customer: Subscriber | None = None
     if command.customer_id is not None:
-        resolution = resolve_customer_quote_lead(db, customer_id=command.customer_id)
-        lead = _lead(db, resolution.lead_id)
-        customer_id = resolution.customer_id
+        customer = _customer(db, command.customer_id)
+        recipient_name = _customer_name(customer)
+        recipient_party_id = customer.party_id
     else:
         assert command.lead_id is not None
         lead = _lead(db, command.lead_id)
+        recipient_name = lead.party.display_name
+        recipient_party_id = lead.party_id
     currency = command.currency.strip().upper()
     if len(currency) != 3 or not currency.isascii() or not currency.isalpha():
         raise _error(
@@ -634,13 +666,13 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
 
     metadata: dict[str, object] = {
         "source": "admin",
-        "quote_name": lead.party.display_name,
+        "quote_name": recipient_name,
         "authoring_key": str(command.quote_id),
         "authoring_fingerprint": fingerprint,
         "authoring_actor_system_user_id": str(actor.id),
     }
-    if customer_id is not None:
-        metadata["customer_quote_linkage"] = {"subscriber_id": str(customer_id)}
+    if customer is not None:
+        metadata["customer_quote"] = {"subscriber_id": str(customer.id)}
     # Compatibility projection for readers that predate the typed Quote
     # column. Fulfillment reads ``Quote.project_type`` as the authority.
     metadata["project_type"] = command.project_type.value
@@ -662,8 +694,8 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
     )
     quote = Quote(
         id=command.quote_id,
-        lead_id=lead.id,
-        subscriber_id=customer_id,
+        lead_id=lead.id if lead is not None else None,
+        subscriber_id=customer.id if customer is not None else None,
         owner_person_id=actor.id,
         status=command.status.value,
         project_type=command.project_type.value,
@@ -756,9 +788,9 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
         EventType.quote_created,
         {
             "quote_id": str(quote.id),
-            "lead_id": str(lead.id),
-            "subscriber_id": str(customer_id) if customer_id else None,
-            "person_id": str(lead.party_id),
+            "lead_id": str(lead.id) if lead is not None else None,
+            "subscriber_id": str(customer.id) if customer is not None else None,
+            "person_id": str(recipient_party_id) if recipient_party_id else None,
             "status": command.status.value,
             "currency": quote.currency,
             "total": str(quote.total),
@@ -773,9 +805,9 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
         actor_id=str(actor.id),
         request_id=str(command.context.command_id),
         metadata={
-            "lead_id": str(lead.id),
-            "subscriber_id": str(customer_id) if customer_id else None,
-            "person_id": str(lead.party_id),
+            "lead_id": str(lead.id) if lead is not None else None,
+            "subscriber_id": str(customer.id) if customer is not None else None,
+            "person_id": str(recipient_party_id) if recipient_party_id else None,
             "status": command.status.value,
             "line_count": len(lines),
         },
@@ -785,7 +817,7 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
 
 
 def author_quote(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
-    """Create one Lead-backed Draft/Sent Quote and its lines atomically."""
+    """Create one Lead- or customer-backed Quote and its lines atomically."""
 
     return execute_owner_command(
         db,

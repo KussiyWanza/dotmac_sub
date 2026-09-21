@@ -11,7 +11,8 @@ The provider-neutral Selfcare contracts are
 `workforce.attendance.read.v1` and `workforce.attendance.punch.v1`. The current
 `dotmac.erp` 1.1.0 connector implements them using server-side credentials.
 Browser requests terminate at CSRF-protected `/admin/dashboard/attendance/*`
-routes and never receive the ERP credential.
+routes. Native field-app requests terminate at bearer-authenticated
+`/api/v1/field/attendance/*` routes. Neither client receives the ERP credential.
 
 Identity is fixed by the authenticated Selfcare `SystemUser.id`. ERP resolves
 that subject to exactly one active, Selfcare-enabled employee through
@@ -19,11 +20,26 @@ that subject to exactly one active, Selfcare-enabled employee through
 Email, browser-supplied employee IDs, and browser-supplied organization IDs are
 not fallback identities.
 
-Each punch captures fresh browser latitude, longitude, accuracy, and observation
-time. Selfcare forwards those untrusted observations unchanged after schema
+Each punch captures fresh browser or native-device latitude, longitude,
+accuracy, and observation time. Selfcare forwards those untrusted observations unchanged after schema
 validation. ERP server time is authoritative, and ERP alone accepts or rejects
 the geofence result. Mutations use ERP platform idempotency and the dashboard
 reads ERP after an ambiguous timeout rather than inferring success.
+
+The field app offers `Check In`, `On shift`, and `Check Out` in its location
+card. After a fresh ERP observation confirms `checked_in`, the field app
+immediately requests location sharing with presence status `on_shift`; the
+field location-sharing adapter repeats that attendance check server-side before
+it accepts enablement. If that follow-up request fails, the confirmed attendance
+state remains visible and `On shift` provides an explicit retry rather than
+implying that sharing started. Attendance punches are online-only and are never
+written to the mobile offline queue. After ERP confirms checkout, the client
+immediately stops local tracking and requests the server presence projection be
+switched to `off_shift`.
+
+Attendance is synchronous request/response capability traffic, not a webhook.
+ERP material-status and staff-access webhooks are separate contracts and do not
+change attendance state.
 
 The compact dashboard action control is a user-specific lazy partial beside the
 Add Customer action, outside the shared dashboard cache. ERP failure degrades

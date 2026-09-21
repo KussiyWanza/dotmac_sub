@@ -32,7 +32,7 @@ class GeolocatorLocationSource implements LocationSource {
   bool _permanentlyDenied = false;
 
   @override
-  Future<GeoPoint?> current() async {
+  Future<LocationFix?> current() async {
     if (_permanentlyDenied) return null;
     try {
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -58,7 +58,12 @@ class GeolocatorLocationSource implements LocationSource {
       final lastKnown = await Geolocator.getLastKnownPosition();
       if (lastKnown != null &&
           DateTime.now().difference(lastKnown.timestamp).inMinutes < 2) {
-        return (latitude: lastKnown.latitude, longitude: lastKnown.longitude);
+        return (
+          latitude: lastKnown.latitude,
+          longitude: lastKnown.longitude,
+          accuracy: lastKnown.accuracy,
+          timestamp: lastKnown.timestamp,
+        );
       }
       final position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
@@ -66,7 +71,12 @@ class GeolocatorLocationSource implements LocationSource {
           timeLimit: Duration(seconds: 5),
         ),
       );
-      return (latitude: position.latitude, longitude: position.longitude);
+      return (
+        latitude: position.latitude,
+        longitude: position.longitude,
+        accuracy: position.accuracy,
+        timestamp: position.timestamp,
+      );
     } catch (_) {
       // GPS failure must never break a transition or capture.
       return null;
@@ -74,7 +84,7 @@ class GeolocatorLocationSource implements LocationSource {
   }
 
   @override
-  Stream<GeoPoint> positions() async* {
+  Stream<LocationFix> positions() async* {
     if (_permanentlyDenied) return;
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     var permission = await Geolocator.checkPermission();
@@ -99,7 +109,14 @@ class GeolocatorLocationSource implements LocationSource {
     }
     yield* Geolocator.getPositionStream(
       locationSettings: _backgroundSettings(),
-    ).map((p) => (latitude: p.latitude, longitude: p.longitude));
+    ).map(
+      (p) => (
+        latitude: p.latitude,
+        longitude: p.longitude,
+        accuracy: p.accuracy,
+        timestamp: p.timestamp,
+      ),
+    );
   }
 
   /// Platform settings that keep fixes flowing while backgrounded: an Android

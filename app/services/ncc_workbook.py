@@ -1,11 +1,11 @@
-"""NCC complaints-return workbook: the XLSX a compliance officer files.
+"""NCC complaints-return artifact: the CSV a compliance officer files.
 
 Ported from dotmac_crm's ``app/web/admin/reports.py`` for the CRM exit — CRM
 owns NCC return ① (Quarterly Complaints) today and leaves the operation, so
-the workbook comes with it. The builder is pure: it takes already-derived
-records and emits bytes, touching no models. It hand-writes OOXML (zip + cell
-XML) because neither repo carries an Excel library and the format needs are
-narrow — two sheets, styles, column widths, and data validation.
+the filing artifact comes with it. The builder is pure: it takes
+already-derived records and emits bytes, touching no models. It still carries
+the validated workbook builder for operator review, but the provider filing
+artifact is a single CSV file.
 
 What the officer relies on, preserved exactly from CRM:
 
@@ -24,9 +24,10 @@ their own ``ncc_reference`` module rather than copying them.
 
 from __future__ import annotations
 
+import csv
 import io
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from xml.sax.saxutils import escape  # nosec B406 — escaping XML output, never parsing
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -35,6 +36,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 OPERATOR_NAME = "Dotmac"
 OPERATOR_PREFIX = "DOTMAC"
 EXPORT_TITLE = "Dotmac NCC Report"
+CSV_CONTENT_TYPE = "text/csv; charset=utf-8"
 
 COLUMNS = [
     "MSISDN",
@@ -1713,16 +1715,25 @@ def excel_serial_from_display_timestamp(value: str) -> float | None:
     return delta.days + (delta.seconds / 86400)
 
 
-def _submission_week(value: datetime) -> int:
-    return ((value.day - 1) // 7) + 1
-
-
 def export_filename(value: datetime | None = None) -> str:
-    """``<Operator>_Week<N>_<YYYYMM>.xlsx`` — the name NCC expects."""
+    """``<ISO_WEEK>_<ISO_YEAR>_COMPLAINTS_<OPERATOR>.csv`` for Box upload."""
     report_dt = value or datetime.now(UTC)
     if report_dt.tzinfo is None:
         report_dt = report_dt.replace(tzinfo=UTC)
-    return f"{OPERATOR_NAME}_Week{_submission_week(report_dt)}_{report_dt:%Y%m}.xlsx"
+    iso_year, iso_week, _ = report_dt.isocalendar()
+    return f"{iso_week:02d}_{iso_year}_COMPLAINTS_{OPERATOR_PREFIX}.csv"
+
+
+def export_filename_for_window(*, start: datetime, end: datetime) -> str:
+    """Name a bounded report by the inclusive reporting end date.
+
+    Accepts inclusive or exclusive ``end`` timestamps. A Monday 00:00 end for a
+    Monday-Sunday report still belongs to the previous ISO week.
+    """
+    start_dt = start if start.tzinfo is not None else start.replace(tzinfo=UTC)
+    end_dt = end if end.tzinfo is not None else end.replace(tzinfo=UTC)
+    reporting_dt = end_dt - timedelta(microseconds=1) if end_dt > start_dt else end_dt
+    return export_filename(reporting_dt)
 
 
 def regulatory_pack_filename(
@@ -2402,8 +2413,31 @@ def _row_value(row: dict[str, str], column: str) -> str:
     return ""
 
 
+def build_csv(records: list[dict[str, str]], columns: list[str]) -> bytes:
+    """Build the single provider CSV filed to NCC through Box."""
+    output_columns = [
+        TEMPLATE_COLUMN_BY_INTERNAL.get(column, column) for column in columns
+    ]
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(
+        output,
+        fieldnames=output_columns,
+        extrasaction="ignore",
+        lineterminator="\r\n",
+    )
+    writer.writeheader()
+    for row in records:
+        writer.writerow(
+            {
+                column: " ".join(str(_row_value(row, column) or "").strip().split())
+                for column in output_columns
+            }
+        )
+    return output.getvalue().encode("utf-8")
+
+
 def build_workbook(records: list[dict[str, str]], columns: list[str]) -> bytes:
-    """The filing workbook: the official Data Entry sheet plus hidden Lookups.
+    """Validation workbook: the official Data Entry sheet plus hidden Lookups.
 
     Rows shade green/red from their VALIDATION STATUS so the officer can see
     at a glance what needs fixing before submission.

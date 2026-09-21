@@ -393,6 +393,10 @@ Clearing the route value restores default sender resolution. Reapplying routing
 from the authoritative route recreates the conversation-team projection; SMTP
 credentials remain owned by notification settings and never enter route metadata.
 
+Operator-started email follows the same ownership rule: the selected team's
+active primary mailbox route supplies its sender key. If that team has no
+primary mailbox route, the system default sender is used deliberately.
+
 **Still open, and not code:** forward one low-volume mailbox to the inbound
 listener, confirm the probe and conversation materialization, then move the
 rest. That is an MX or per-mailbox forwarding change on the mail side, and a

@@ -619,6 +619,7 @@ def ont_set_wifi_ssid(
     ont_id: str,
     db: Session = Depends(get_db),
     ssid: str = Form(""),
+    timeout_sec: int | None = Form(None),
 ) -> JSONResponse:
     """Set WiFi SSID on ONT via GenieACS TR-069."""
     denied = _ensure_ont_write_scope(request, db, ont_id)
@@ -628,7 +629,7 @@ def ont_set_wifi_ssid(
     if not ssid:
         ssid = request.query_params.get("ssid", "")
     result = web_network_ont_actions_service.set_wifi_ssid(
-        db, ont_id, ssid, request=request
+        db, ont_id, ssid, timeout_sec=timeout_sec, request=request
     )
     return _action_result_response(
         result=result,
@@ -647,18 +648,22 @@ def ont_set_wifi_password(
     ont_id: str,
     db: Session = Depends(get_db),
     password: str = Form(""),
+    timeout_sec: int | None = Form(None),
 ) -> JSONResponse:
     """Set WiFi password on ONT via the reconciler (sync mode).
 
     Updates ``OntDesiredState.wifi_password_ref`` durably; the actual push
     to the device happens on the next BOOTSTRAP event (e.g. after a factory
     reset). Use ``/wifi-password/push`` to force an immediate push.
+
+    ``timeout_sec``: optional operator override of the reconciler's outer
+    deadline (default 60s), for slow OLT shelves.
     """
     denied = _ensure_ont_write_scope(request, db, ont_id)
     if denied is not None:
         return denied
     result = web_network_ont_actions_service.set_wifi_password(
-        db, ont_id, password, request=request
+        db, ont_id, password, timeout_sec=timeout_sec, request=request
     )
     return _action_result_response(
         result=result,
@@ -677,6 +682,7 @@ def ont_force_push_wifi_password(
     ont_id: str,
     db: Session = Depends(get_db),
     password: str = Form(""),
+    timeout_sec: int | None = Form(None),
 ) -> JSONResponse:
     """Force an immediate WiFi password push to the device.
 
@@ -684,12 +690,15 @@ def ont_force_push_wifi_password(
     ``AcsSetWifiPassword`` action regardless of whether the device is
     currently present and observed. Restores legacy "push every time"
     semantics for operators who need them.
+
+    ``timeout_sec``: optional operator override of the reconciler's outer
+    deadline (default 60s), for slow OLT shelves.
     """
     denied = _ensure_ont_write_scope(request, db, ont_id)
     if denied is not None:
         return denied
     result = web_network_ont_actions_service.force_push_wifi_password(
-        db, ont_id, password, request=request
+        db, ont_id, password, timeout_sec=timeout_sec, request=request
     )
     return _action_result_response(
         result=result,
@@ -707,6 +716,7 @@ def ont_force_resync(
     request: Request,
     ont_id: str,
     db: Session = Depends(get_db),
+    timeout_sec: int | None = Form(None),
 ) -> JSONResponse:
     """Force a sweep-mode reconcile — clears an ``out_of_sync`` row.
 
@@ -714,12 +724,15 @@ def ont_force_resync(
     has to acknowledge the prior failure before mutating state further.
     This endpoint is the explicit acknowledgement: re-run reconciliation
     of the existing desired state against the live OLT/ACS state.
+
+    ``timeout_sec``: optional operator override of the reconciler's outer
+    deadline (default 60s), for slow OLT shelves.
     """
     denied = _ensure_ont_write_scope(request, db, ont_id)
     if denied is not None:
         return denied
     result = web_network_ont_actions_service.force_resync_ont(
-        db, ont_id, request=request
+        db, ont_id, timeout_sec=timeout_sec, request=request
     )
     return _action_result_response(
         result=result,
@@ -1655,6 +1668,7 @@ def ont_set_pppoe_credentials(
     password = _form_str(form, "pppoe_password").strip()
     instance_index_raw = _form_str(form, "instance_index").strip()
     wan_vlan_raw = _form_str(form, "wan_vlan").strip()
+    timeout_sec_raw = _form_str(form, "timeout_sec").strip()
 
     if not username or not password:
         return _action_json_response(
@@ -1667,6 +1681,7 @@ def ont_set_pppoe_credentials(
 
     instance_index = int(instance_index_raw) if instance_index_raw.isdigit() else 1
     wan_vlan = int(wan_vlan_raw) if wan_vlan_raw.isdigit() else None
+    timeout_sec = int(timeout_sec_raw) if timeout_sec_raw.isdigit() else None
 
     result = web_network_ont_actions_service.set_pppoe_credentials(
         db,
@@ -1675,6 +1690,7 @@ def ont_set_pppoe_credentials(
         password=password,
         instance_index=instance_index,
         wan_vlan=wan_vlan,
+        timeout_sec=timeout_sec,
         request=request,
     )
     return _action_result_response(

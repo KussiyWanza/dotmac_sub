@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import cast
 from uuid import uuid4
 
@@ -85,6 +86,7 @@ def build_new_form_state(
     invoice_alias: str | None,
     account_id: str | None,
     account_alias: str | None,
+    amount: str | None = None,
 ) -> dict[str, object]:
     """Build state for payment create form."""
     prefill: dict[str, object] = {}
@@ -119,6 +121,18 @@ def build_new_form_state(
             )
         except Exception:
             selected_account = None
+
+    # An account-scoped workflow may suggest the amount being received, but it
+    # never asserts settlement. The normal payment preview/confirmation owner
+    # still validates and records the receipt. Invoice-specific amounts remain
+    # authoritative and therefore take precedence over this convenience value.
+    if not resolved_invoice_id and amount:
+        try:
+            suggested_amount = Decimal(amount)
+        except (InvalidOperation, ValueError):
+            suggested_amount = Decimal("0.00")
+        if suggested_amount.is_finite() and suggested_amount > 0:
+            prefill["amount"] = suggested_amount
 
     collection_accounts = billing_service.collection_accounts.list(
         db=db,

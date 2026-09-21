@@ -1159,49 +1159,63 @@ DOMAIN = DomainSOT(
             name="ui.field_live_map_projection",
             module="app.services.field_maps",
             owns=(
-                "admin field-map sharing-authorized technician position projection",
-                "admin field-map searchable fields and focus coordinates",
-                "admin field-map stale-position semantics",
+                "dispatch field-map sharing-authorized technician position projection",
+                "dispatch field-map searchable fields and focus coordinates",
+                "dispatch field-map stale-position semantics",
+                "selected technician nearest-address projection",
             ),
             depends_on=(
                 "customer.accounts",
+                "gis.geocoding",
                 "operations.work_orders",
             ),
             notes=(
-                "field_maps owns the typed admin live-map feed and search "
+                "field_maps owns the typed dispatch live-map feed and search "
                 "projection. Technician visibility fails closed when location "
                 "sharing is disabled. Search resolves technician identity and "
                 "native work-order/customer/service-address facts before "
-                "returning only results with focusable coordinates. The admin "
-                "web adapter enforces operations:dispatch:read and the sidebar "
-                "uses the same permission for discoverability."
+                "returning only results with valid, focusable coordinates. The "
+                "selected-technician detail rechecks sharing and delegates its "
+                "on-demand nearest-address lookup to gis.geocoding. The "
+                "admin-web and manager-mobile adapters both enforce "
+                "operations:dispatch:read, and their navigation uses the same "
+                "permission for discoverability."
             ),
             contract=ServiceContract(
                 concerns=(
                     ConcernContract(
                         name=(
-                            "admin field-map sharing-authorized technician "
+                            "dispatch field-map sharing-authorized technician "
                             "position projection"
                         ),
                         role=OwnerRole.RESOLVER,
                         input_names=("native field-technician presence facts",),
                     ),
                     ConcernContract(
-                        name="admin field-map searchable fields and focus coordinates",
+                        name="dispatch field-map searchable fields and focus coordinates",
                         role=OwnerRole.RESOLVER,
                         input_names=(
                             "native field-technician presence facts",
                             "canonical work-order map facts",
                             "canonical subscriber service-address facts",
-                            "admin field-map search input",
+                            "dispatch field-map search input",
                         ),
                     ),
                     ConcernContract(
-                        name="admin field-map stale-position semantics",
+                        name="dispatch field-map stale-position semantics",
                         role=OwnerRole.POLICY,
                         input_names=(
                             "native field-technician presence facts",
-                            "admin field-map freshness input",
+                            "dispatch field-map freshness input",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="selected technician nearest-address projection",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "native field-technician presence facts",
+                            "provider-neutral reverse-geocode result",
+                            "dispatch field-map freshness input",
                         ),
                     ),
                 ),
@@ -1235,23 +1249,33 @@ DOMAIN = DomainSOT(
                         ),
                     ),
                     AuthorityInput(
-                        name="admin field-map search input",
+                        name="dispatch field-map search input",
                         owner="ui.field_live_map_projection",
                         kind=AuthorityKind.CONTROL_INPUT,
                         source="typed normalized search text and bounded result limit",
                     ),
                     AuthorityInput(
-                        name="admin field-map freshness input",
+                        name="dispatch field-map freshness input",
                         owner="ui.field_live_map_projection",
                         kind=AuthorityKind.CONTROL_INPUT,
                         source="typed bounded stale-after duration",
+                    ),
+                    AuthorityInput(
+                        name="provider-neutral reverse-geocode result",
+                        owner="gis.geocoding",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "typed nearest-address lookup for the selected, "
+                            "sharing-authorized technician coordinates"
+                        ),
                     ),
                 ),
                 transaction=TransactionContract(
                     mode=TransactionMode.READ_ONLY,
                     boundary=(
-                        "Feed and search queries read one adapter-owned session and "
-                        "perform no ORM mutation or transaction completion."
+                        "Feed, search, and selected-detail queries read one "
+                        "adapter-owned session and perform no ORM mutation or "
+                        "transaction completion."
                     ),
                     locking="No locks; the projection is observational and read-only.",
                     idempotency=(
@@ -1265,11 +1289,12 @@ DOMAIN = DomainSOT(
                         "ui.field_live_map_projection.invalid_search",
                         "ui.field_live_map_projection.unauthorized",
                     ),
-                    mapping_owner="admin field-map web adapter",
+                    mapping_owner="admin-web and manager-mobile field-map adapters",
                     fail_closed_on=(
                         "missing operations:dispatch:read permission",
                         "disabled technician location sharing",
-                        "missing focus coordinates",
+                        "missing or invalid focus coordinates",
+                        "missing selected-technician location detail",
                     ),
                 ),
                 migration=MigrationContract(
@@ -1280,12 +1305,12 @@ DOMAIN = DomainSOT(
                     ),
                     new_owner="ui.field_live_map_projection",
                     verification=(
-                        "typed feed/search contracts, sharing/privacy tests, street "
-                        "search tests, route permission tests, and UI focus tests"
+                        "typed feed/search/detail contracts, sharing/privacy tests, "
+                        "street search tests, route permission tests, and UI focus tests"
                     ),
                     cutover_gate=(
-                        "Routes return owner-provided typed outcomes and the template "
-                        "only renders or focuses those outcomes."
+                        "Routes return owner-provided typed outcomes; web and mobile "
+                        "clients only render or focus those outcomes."
                     ),
                     fallback_retirement=(
                         "The feed no longer exposes non-sharing technicians and no "
@@ -1296,9 +1321,11 @@ DOMAIN = DomainSOT(
                 design_refs=(
                     "docs/SOT_RELATIONSHIP_MAP.md",
                     "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    "docs/designs/FIELD_MANAGER_TEAM_MAP.md",
                 ),
                 test_refs=(
                     "tests/test_admin_maps_web.py",
+                    "field_mobile/test/manager_team_map_test.dart",
                     "tests/architecture/test_field_live_map_boundary.py",
                 ),
             ),
@@ -1546,7 +1573,10 @@ DOMAIN = DomainSOT(
                 "authenticated staff identity, live ERP categories, active vendor "
                 "labels, and only the actor's claims. It supplies action eligibility, "
                 "field errors, category rules, totals input, and honest ERP delivery "
-                "states; the route and template do not infer financial state."
+                "states. Awaiting approval, not applicable, pending, failed, and "
+                "unavailable remain distinct; failed delivery detail comes only from "
+                "typed allowlisted diagnostics. The route and template do not infer "
+                "financial state."
             ),
             contract=ServiceContract(
                 concerns=(
@@ -1583,7 +1613,10 @@ DOMAIN = DomainSOT(
                         name="canonical work-order expense scope",
                         owner="operations.work_orders",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                        source="Exact active native WorkOrder ID and public identity",
+                        source=(
+                            "Exact active native WorkOrder ID, public identity, and "
+                            "current technician-assignment evidence"
+                        ),
                     ),
                     AuthorityInput(
                         name="authenticated requester scope",
@@ -1591,8 +1624,8 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.CONTROL_INPUT,
                         source=(
                             "Authenticated active SystemUser identity and exact global, "
-                            "reseller, or region dispatch-read decision for viewing and "
-                            "dispatch-write decision for expense submission"
+                            "reseller, or region dispatch-read decision for both viewing "
+                            "and expense submission"
                         ),
                     ),
                     AuthorityInput(
@@ -1610,7 +1643,8 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source=(
                             "Actor-owned FieldExpenseRequest state plus durable ERP "
-                            "outbox acceptance, rejection, failure, and reference facts"
+                            "outbox acceptance, rejection, failure, reference facts, "
+                            "and allowlisted request-correlation diagnostics"
                         ),
                     ),
                     AuthorityInput(
@@ -1649,6 +1683,7 @@ DOMAIN = DomainSOT(
                     retryable_codes=(),
                     fail_closed_on=(
                         "missing or inactive work order or requester",
+                        "work order without a current technician assignment",
                         "unavailable ERP category rules",
                         "invalid amount or receipt evidence",
                     ),
@@ -2541,10 +2576,12 @@ DOMAIN = DomainSOT(
                 "communications.notification_service",
                 "observability.audit_log",
                 "sales.quote_delivery",
+                "sales.quote_payment_review",
                 "sales.service",
             ),
             notes=(
                 "The Quote detail builder presents delivery eligibility and the "
+                "staff-owned payment-review state and actions alongside the "
                 "official Quote timeline from authoritative Quote, immutable audit, "
                 "and durable notification records. It does not infer final mailbox "
                 "receipt from SMTP transport acceptance."
@@ -2560,6 +2597,7 @@ DOMAIN = DomainSOT(
                             "canonical Quote detail state",
                             "canonical Quote audit evidence",
                             "canonical Quote delivery outcome",
+                            "canonical Quote payment-review decision",
                         ),
                     ),
                 ),
@@ -2578,6 +2616,15 @@ DOMAIN = DomainSOT(
                         owner="observability.audit_log",
                         kind=AuthorityKind.OBSERVATION,
                         source="immutable Quote-scoped action and actor evidence",
+                    ),
+                    AuthorityInput(
+                        name="canonical Quote payment-review decision",
+                        owner="sales.quote_payment_review",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "review status, revision, reviewer, decision time, "
+                            "reason, and current-snapshot eligibility"
+                        ),
                     ),
                     AuthorityInput(
                         name="canonical Quote delivery outcome",
@@ -2612,6 +2659,7 @@ DOMAIN = DomainSOT(
                 ),
                 test_refs=(
                     "tests/test_quote_documents_and_delivery.py",
+                    "tests/test_quote_payment_review.py",
                     "tests/architecture/test_quote_document_delivery_boundary.py",
                 ),
             ),

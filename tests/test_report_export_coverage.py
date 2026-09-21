@@ -31,7 +31,7 @@ def test_usage_by_plan_exposes_accessible_client_search() -> None:
     source = (REPORT_TEMPLATES / "usage_by_plan.html").read_text(encoding="utf-8")
 
     assert 'id="usage-plan-search"' in source
-    assert 'data-usage-plan-row' in source
+    assert "data-usage-plan-row" in source
     assert 'aria-live="polite"' in source
 
 

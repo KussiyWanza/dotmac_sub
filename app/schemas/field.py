@@ -152,12 +152,14 @@ class FieldNoteCreate(BaseModel):
     body: str = Field(min_length=1, max_length=10000)
     is_internal: bool = True
     attachment_ids: list[UUID] = Field(default_factory=list, max_length=20)
+    client_ref: UUID | None = None
 
 
 class FieldNoteRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    client_ref: UUID | None = None
     body: str
     is_internal: bool
     author_person_id: UUID | None = None
@@ -401,6 +403,11 @@ class FieldMaterialRequestSubmit(FieldMaterialRequestCreate):
     client_ref: UUID
 
 
+class FieldMaterialRequestCancel(BaseModel):
+    client_ref: UUID
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class FieldMaterialRequestItemRead(BaseModel):
     id: UUID
     item_id: UUID
@@ -417,20 +424,40 @@ class FieldMaterialRequestRead(BaseModel):
     # Material needs can originate from a ticket, project, project task, or
     # work order. Only the last of those has a work-order public identifier.
     work_order_id: str | None = None
+    project_id: UUID | None = None
+    project_task_id: UUID | None = None
+    ticket_id: UUID | None = None
+    context_label: str
     crm_material_request_id: str | None = None
     requested_by_person_id: UUID
     requested_by_system_user_id: UUID | None = None
-    status: str
+    status: Literal[
+        "draft",
+        "submitted",
+        "approved",
+        "rejected",
+        "issued",
+        "fulfilled",
+        "canceled",
+        "accepted_by_erp",
+        "pending_stock",
+        "cancellation_pending",
+        "sync_failed",
+    ]
     priority: str
     notes: str | None = None
     source_warehouse_code: str | None = None
+    fulfillment_channel: Literal["manual", "erp"]
     support_system: str | None = None
     support_reference: str | None = None
     support_status: str | None = None
+    can_cancel: bool = False
     submitted_at: datetime | None = None
     approved_at: datetime | None = None
     rejected_at: datetime | None = None
+    issued_at: datetime | None = None
     fulfilled_at: datetime | None = None
+    rejection_reason: str | None = None
     created_at: datetime
     updated_at: datetime
     items: list[FieldMaterialRequestItemRead] = Field(default_factory=list)
@@ -484,6 +511,51 @@ class FieldExpenseVendorRead(BaseModel):
     label: str
 
 
+class FieldExpenseApproverRead(BaseModel):
+    erp_employee_id: UUID
+    system_user_id: UUID
+    display_name: str
+    email: str
+
+
+class FieldExpenseBankRead(BaseModel):
+    bank_code: str
+    bank_name: str
+
+
+class FieldExpenseProfileDestinationRead(BaseModel):
+    available: bool
+    bank_code: str | None = None
+    bank_name: str | None = None
+    masked_account_number: str | None = None
+    beneficiary_name: str | None = None
+
+
+class FieldExpenseFormContextRead(BaseModel):
+    approvers: list[FieldExpenseApproverRead] = Field(default_factory=list)
+    banks: list[FieldExpenseBankRead] = Field(default_factory=list)
+    profile_destination: FieldExpenseProfileDestinationRead
+
+
+class FieldExpenseDestinationVerify(BaseModel):
+    source_claim_id: UUID
+    mode: Literal["erp_profile", "expense_override"]
+    bank_code: str | None = Field(default=None, min_length=2, max_length=20)
+    account_number: str | None = Field(default=None, min_length=6, max_length=30)
+    beneficiary_name: str | None = Field(default=None, min_length=2, max_length=150)
+
+
+class FieldExpenseDestinationRead(BaseModel):
+    destination_token: str = Field(min_length=20, max_length=4096, repr=False)
+    mode: Literal["erp_profile", "expense_override"]
+    bank_code: str
+    bank_name: str
+    masked_account_number: str
+    verified_beneficiary_name: str
+    verified_at: datetime
+    expires_at: datetime
+
+
 class FieldExpenseRequestCreate(WorkOrderCompatibilityInput):
     purpose: str = Field(min_length=1, max_length=500)
     expense_date: date | None = None
@@ -495,6 +567,8 @@ class FieldExpenseRequestCreate(WorkOrderCompatibilityInput):
 
 class FieldExpenseRequestSubmit(FieldExpenseRequestCreate):
     client_ref: UUID
+    selected_approver: FieldExpenseApproverRead
+    payment_destination: FieldExpenseDestinationRead
 
 
 class FieldExpenseRequestItemRead(BaseModel):
@@ -516,6 +590,14 @@ class FieldExpenseRequestRead(BaseModel):
     crm_expense_request_id: str | None = None
     requested_by_person_id: UUID
     requested_by_system_user_id: UUID | None = None
+    requested_by_name: str | None = None
+    selected_approver_erp_id: UUID | None = None
+    selected_approver_name: str | None = None
+    selected_approver_email: str | None = None
+    payment_destination_mode: str | None = None
+    recipient_bank_name: str | None = None
+    masked_account_number: str | None = None
+    verified_beneficiary_name: str | None = None
     status: str
     purpose: str
     expense_date: date | None = None
@@ -528,6 +610,9 @@ class FieldExpenseRequestRead(BaseModel):
     expense_claim_status: str | None = None
     erp_sync_status: str | None = None
     erp_sync_error: str | None = None
+    payment_status: str | None = None
+    payment_intent_id: str | None = None
+    payment_error: str | None = None
     client_ref: UUID | None = None
     total_amount: Decimal
     submitted_at: datetime | None = None
@@ -546,6 +631,59 @@ class FieldExpenseApprovalRead(BaseModel):
     erp_sync_status: str
     erp_sync_event_id: UUID | None = None
     erp_sync_error: str | None = None
+
+
+class FieldExpenseRejectionRead(BaseModel):
+    id: UUID
+    status: Literal["rejected"]
+    rejected_at: datetime
+    rejection_reason: str
+    erp_sync_event_id: UUID | None = None
+
+
+class FieldExpenseRecoveryPreviewRead(BaseModel):
+    dead_event_id: UUID
+    expense_request_id: UUID
+    replacement_idempotency_key: str
+    fingerprint: str
+    erp_claim_status: str | None = None
+
+
+class FieldExpenseRecoveryRequest(BaseModel):
+    preview_fingerprint: str = Field(min_length=64, max_length=64)
+
+
+class FieldExpenseRecoveryRead(BaseModel):
+    original_event_id: UUID
+    replacement_event_id: UUID
+    replacement_idempotency_key: str
+    replayed: bool
+
+
+class FieldExpensePaymentRecoveryPreviewRead(BaseModel):
+    dead_event_id: UUID
+    expense_request_id: UUID
+    idempotency_key: str
+    fingerprint: str
+    erp_claim_status: Literal["approved"]
+
+
+class FieldExpensePaymentRecoveryRequest(BaseModel):
+    preview_fingerprint: str = Field(min_length=64, max_length=64)
+
+
+class FieldExpensePaymentRecoveryRead(BaseModel):
+    event_id: UUID
+    idempotency_key: str
+    replayed: bool
+
+
+class FieldExpensePaymentRead(BaseModel):
+    id: UUID
+    status: Literal["approved"]
+    payment_status: Literal["queued"]
+    payment_command_id: UUID
+    erp_sync_event_id: UUID
 
 
 class FieldJobHistoryItem(BaseModel):
@@ -645,6 +783,11 @@ class LocationPingInput(BaseModel):
     crm_work_order_id: str | None = Field(default=None, max_length=64)
     source: str = Field(default="mobile", max_length=32)
     status: str | None = Field(default=None, max_length=20)
+    # Optional: a stable id the client mints once per ping attempt so a retry
+    # after an ambiguous network failure replays instead of duplicating.
+    # Omitted by app builds that predate this field; dedup then simply
+    # doesn't run for that ping, matching today's behavior.
+    client_observation_id: UUID | None = None
 
 
 class LocationPingBatch(BaseModel):
@@ -674,6 +817,10 @@ class LocationIngestResponse(BaseModel):
     errors: list[dict[str, Any]] = Field(default_factory=list)
     presence: FieldPresenceRead
     transitions: list[dict[str, Any]] = Field(default_factory=list)
+    # Observability only: a replayed row is already counted in `accepted`
+    # above (never as an error), so an old client's `accepted + len(errors)
+    # == total_sent` check is unaffected whether or not it reads this field.
+    replays: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class VoiceExtractRequest(BaseModel):
@@ -766,6 +913,17 @@ class FieldLiveMapFeed(BaseModel):
     live_count: int
     stale_after_seconds: int
     items: list[FieldLiveMapPosition]
+
+
+class FieldLiveMapTechnicianDetailQuery(BaseModel):
+    technician_id: UUID
+    stale_after_seconds: int = Field(default=120, ge=15, le=3600)
+
+
+class FieldLiveMapTechnicianDetail(BaseModel):
+    position: FieldLiveMapPosition
+    address_text: str | None = None
+    address_status: Literal["available", "unavailable"]
 
 
 class FieldLiveMapSearchQuery(BaseModel):
@@ -1243,12 +1401,13 @@ class FieldManagerTechnician(BaseModel):
     status: str
     location_sharing_enabled: bool
     is_live: bool
-    last_latitude: float | None = None
-    last_longitude: float | None = None
-    accuracy_m: float | None = None
-    last_location_at: datetime | None = None
     last_seen_at: datetime | None = None
     active_work_order: FieldManagerActiveWorkOrder | None = None
+
+
+class FieldManagerTechniciansQuery(BaseModel):
+    stale_after_seconds: int = Field(default=120, ge=15, le=3600)
+    limit: int = Field(default=500, ge=1, le=500)
 
 
 class FieldManagerTechniciansResponse(BaseModel):

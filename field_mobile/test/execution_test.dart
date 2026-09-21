@@ -40,7 +40,12 @@ void main() {
     connectivity = FakeConnectivity(
       online: false,
     ); // keep entries queued for inspection
-    location = FakeLocation((latitude: 6.43, longitude: 3.42));
+    location = FakeLocation((
+      latitude: 6.43,
+      longitude: 3.42,
+      accuracy: 5.0,
+      timestamp: DateTime.utc(2026, 6, 1, 8),
+    ));
     final adapter = FakeHttpAdapter();
     final tokens = InMemoryTokenStore();
     final dio = Dio(BaseOptions(baseUrl: 'https://test.local'));
@@ -147,16 +152,17 @@ void main() {
   group('work order notes', () {
     test('addNote queues a technician note for the job', () async {
       final controller = container.read(executionControllerProvider.notifier);
-      final clientRef = await controller.addNote('wo-1', '  ONT replaced  ');
+      final outcome = await controller.addNote('wo-1', '  ONT replaced  ');
 
       final payloads = await queued('note');
       expect(payloads.single['work_order_id'], 'wo-1');
       expect(payloads.single['body'], 'ONT replaced');
       expect(payloads.single['is_internal'], isTrue);
       expect(payloads.single['attachment_ids'], isEmpty);
+      expect(outcome.deliveryState, MutationDeliveryState.queued);
 
       final rows = await db.select(db.outboxEntries).get();
-      expect(rows.single.clientRef, clientRef);
+      expect(rows.single.clientRef, outcome.clientRef);
     });
 
     test('addNote rejects blank notes', () async {
@@ -182,10 +188,11 @@ void main() {
       );
 
       final controller = container.read(executionControllerProvider.notifier);
-      final clientRef = await controller.addNote('wo-1', '  ONT replaced  ');
+      final outcome = await controller.addNote('wo-1', '  ONT replaced  ');
 
       final payloads = await queued('note');
-      expect(clientRef, isNotEmpty);
+      expect(outcome.clientRef, isNotEmpty);
+      expect(outcome.deliveryState, MutationDeliveryState.queued);
       expect(payloads.single['body'], 'ONT replaced');
     });
 

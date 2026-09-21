@@ -40,13 +40,15 @@ class DraftStore {
     final database = db;
     final scope = scopeKey;
     if (database == null || scope == null) return null;
-    final row =
-        await (database.select(database.draftEntries)..where(
-              (entry) => entry.scopeKey.equals(scope) & entry.id.equals(id),
-            ))
-            .getSingleOrNull();
-    if (row == null) return null;
-    return _decode(row.id, row.payloadJson);
+    return database.work.run(() async {
+      final row =
+          await (database.select(database.draftEntries)..where(
+                (entry) => entry.scopeKey.equals(scope) & entry.id.equals(id),
+              ))
+              .getSingleOrNull();
+      if (row == null) return null;
+      return _decode(row.id, row.payloadJson);
+    });
   }
 
   Future<void> save({
@@ -58,56 +60,62 @@ class DraftStore {
     final envelope = cipher;
     final scope = scopeKey;
     if (database == null || envelope == null || scope == null) return;
-    final now = DateTime.now().toUtc();
-    await database
-        .into(database.draftEntries)
-        .insertOnConflictUpdate(
-          DraftEntriesCompanion.insert(
-            scopeKey: scope,
-            id: id,
-            type: type,
-            payloadJson: envelope.sealText(
-              jsonEncode(payload),
-              context: evidenceContext(scope, 'draft', id),
+    await database.work.run(() async {
+      final now = DateTime.now().toUtc();
+      await database
+          .into(database.draftEntries)
+          .insertOnConflictUpdate(
+            DraftEntriesCompanion.insert(
+              scopeKey: scope,
+              id: id,
+              type: type,
+              payloadJson: envelope.sealText(
+                jsonEncode(payload),
+                context: evidenceContext(scope, 'draft', id),
+              ),
+              updatedAt: now,
             ),
-            updatedAt: now,
-          ),
-        );
+          );
+    });
   }
 
   Future<void> delete(String id) async {
     final database = db;
     final scope = scopeKey;
     if (database == null || scope == null) return;
-    await (database.delete(
-          database.draftEntries,
-        )..where((entry) => entry.scopeKey.equals(scope) & entry.id.equals(id)))
-        .go();
+    await database.work.run(() async {
+      await (database.delete(database.draftEntries)..where(
+            (entry) => entry.scopeKey.equals(scope) & entry.id.equals(id),
+          ))
+          .go();
+    });
   }
 
   Future<List<SavedDraft>> list(String type) async {
     final database = db;
     final scope = scopeKey;
     if (database == null || scope == null) return const [];
-    final rows =
-        await (database.select(database.draftEntries)
-              ..where(
-                (entry) =>
-                    entry.scopeKey.equals(scope) & entry.type.equals(type),
-              )
-              ..orderBy([(entry) => OrderingTerm.desc(entry.updatedAt)]))
-            .get();
-    final drafts = <SavedDraft>[];
-    for (final row in rows) {
-      final payload = _decode(row.id, row.payloadJson);
-      // An envelope that will not open belongs to a key we no longer hold. It
-      // is skipped rather than surfaced: a draft we cannot read is not a draft.
-      if (payload == null) continue;
-      drafts.add(
-        SavedDraft(id: row.id, payload: payload, updatedAt: row.updatedAt),
-      );
-    }
-    return drafts;
+    return database.work.run(() async {
+      final rows =
+          await (database.select(database.draftEntries)
+                ..where(
+                  (entry) =>
+                      entry.scopeKey.equals(scope) & entry.type.equals(type),
+                )
+                ..orderBy([(entry) => OrderingTerm.desc(entry.updatedAt)]))
+              .get();
+      final drafts = <SavedDraft>[];
+      for (final row in rows) {
+        final payload = _decode(row.id, row.payloadJson);
+        // An envelope that will not open belongs to a key we no longer hold.
+        // It is skipped rather than surfaced: unreadable is not a draft.
+        if (payload == null) continue;
+        drafts.add(
+          SavedDraft(id: row.id, payload: payload, updatedAt: row.updatedAt),
+        );
+      }
+      return drafts;
+    });
   }
 
   Map<String, dynamic>? _decode(String id, String envelope) {

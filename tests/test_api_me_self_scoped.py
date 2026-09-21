@@ -128,6 +128,157 @@ def test_wifi_update_forces_principal_scope_and_queues_with_idempotency(monkeypa
     assert captured["context"].idempotency_key == "mobile-request-1"
 
 
+def test_wifi_update_refusal_maps_a_distinct_domain_code_and_is_recorded(
+    monkeypatch,
+):
+    """A distinct admission-scope domain code (see
+    ``_load_customer_wifi_admission_scope``) is mapped onto its own stable
+    adapter code, and the refusal is durably recorded with the original
+    domain code and evidence preserved."""
+    from app.schemas.customer_device_commands import CustomerWifiUpdateRequest
+    from app.services import customer_device_commands
+
+    principal = _subscriber_principal()
+    subscription_id = uuid.uuid4()
+    recorded = []
+
+    @contextmanager
+    def fake_owner_session(db):
+        yield db
+
+    def fake_refused(*_args, **_kwargs):
+        raise customer_device_commands.CustomerDeviceCommandError(
+            "device_assignment_ambiguous",
+            "Multiple active devices are linked to this service; contact support.",
+            details={
+                "domain_code": (
+                    "network.ont_service_configuration.customer_ambiguous_assignment"
+                ),
+                "domain_details": {"candidate_count": 2},
+            },
+        )
+
+    def fake_record(**kwargs):
+        recorded.append(kwargs)
+
+    monkeypatch.setattr(me_api, "owner_session", fake_owner_session)
+    monkeypatch.setattr(
+        customer_device_commands, "update_subscription_wifi", fake_refused
+    )
+    monkeypatch.setattr(
+        customer_device_commands, "record_device_command_refusal", fake_record
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        me_api.update_my_subscription_wifi(
+            subscription_id,
+            CustomerWifiUpdateRequest(
+                ssid="Home Network",
+                password="password123",
+                idempotency_key="mobile-request-2",
+            ),
+            db=object(),
+            principal=principal,
+        )
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail["code"] == "device_assignment_ambiguous"
+    assert len(recorded) == 1
+    assert (
+        recorded[0]["kind"]
+        is customer_device_commands.CustomerDeviceCommandKind.wifi_update
+    )
+    assert recorded[0]["code"] == "device_assignment_ambiguous"
+    assert recorded[0]["details"]["domain_code"].endswith(
+        "customer_ambiguous_assignment"
+    )
+    assert recorded[0]["details"]["domain_details"] == {"candidate_count": 2}
+
+
+def test_wifi_update_success_never_records_a_refusal(monkeypatch):
+    from app.schemas.customer_device_commands import CustomerWifiUpdateRequest
+    from app.services import customer_device_commands
+
+    principal = _subscriber_principal()
+    subscription_id = uuid.uuid4()
+
+    @contextmanager
+    def fake_owner_session(db):
+        yield db
+
+    def fake_success(db, *, subscriber_id, subscription_id, context, ssid, password):
+        return customer_device_commands.CustomerDeviceCommandOutcome(
+            command=customer_device_commands.CustomerDeviceCommandKind.wifi_update,
+            status=customer_device_commands.CustomerDeviceCommandStatus.queued,
+            subscription_id=subscription_id,
+            device_id=uuid.uuid4(),
+            operation_id=uuid.uuid4(),
+            message="WiFi update queued.",
+        )
+
+    def fail_if_called(**_kwargs):
+        raise AssertionError(
+            "record_device_command_refusal must not fire on a successful command"
+        )
+
+    monkeypatch.setattr(me_api, "owner_session", fake_owner_session)
+    monkeypatch.setattr(
+        customer_device_commands, "update_subscription_wifi", fake_success
+    )
+    monkeypatch.setattr(
+        customer_device_commands, "record_device_command_refusal", fail_if_called
+    )
+
+    outcome = me_api.update_my_subscription_wifi(
+        subscription_id,
+        CustomerWifiUpdateRequest(
+            ssid="Home Network",
+            password="password123",
+            idempotency_key="mobile-request-3",
+        ),
+        db=object(),
+        principal=principal,
+    )
+
+    assert outcome.status is customer_device_commands.CustomerDeviceCommandStatus.queued
+
+
+def test_reboot_refusal_is_recorded(monkeypatch):
+    from app.services import customer_device_commands
+
+    principal = _subscriber_principal()
+    subscription_id = uuid.uuid4()
+    recorded = []
+
+    def fake_refused(db, *, subscriber_id, subscription_id, actor_id):
+        raise customer_device_commands.CustomerDeviceCommandError(
+            "device_not_assigned",
+            "No active device is linked to this service",
+        )
+
+    def fake_record(**kwargs):
+        recorded.append(kwargs)
+
+    monkeypatch.setattr(
+        customer_device_commands, "reboot_subscription_device", fake_refused
+    )
+    monkeypatch.setattr(
+        customer_device_commands, "record_device_command_refusal", fake_record
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        me_api.reboot_my_subscription_device(
+            subscription_id, db=None, principal=principal
+        )
+
+    assert excinfo.value.status_code == 409
+    assert len(recorded) == 1
+    assert (
+        recorded[0]["kind"] is customer_device_commands.CustomerDeviceCommandKind.reboot
+    )
+    assert recorded[0]["code"] == "device_not_assigned"
+
+
 def test_subscriber_id_helper_rejects_non_subscriber():
     with pytest.raises(HTTPException) as exc:
         me_api._subscriber_id(_system_user_principal())

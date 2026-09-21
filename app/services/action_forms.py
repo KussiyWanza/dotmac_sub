@@ -11,6 +11,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.services.action_readiness import ActionReadiness
 
 
 class ActionFieldKind(StrEnum):
@@ -247,3 +251,27 @@ class ActionForm:
             if field.key == key:
                 return field
         raise KeyError(key)
+
+    def gated_by(
+        self, readiness: ActionReadiness, *, customer_facing: bool = False
+    ) -> ActionForm:
+        """Return a copy whose `allowed`/`disabled_reason` follow `readiness`.
+
+        The owning domain service still decides eligibility; `readiness` is
+        just that decision's transport-neutral shape. This form's `key` must
+        match `readiness.action_key`.
+        """
+
+        if readiness.action_key != self.key:
+            raise ValueError(
+                f"Readiness for {readiness.action_key} cannot gate {self.key}"
+            )
+        if readiness.is_ready:
+            return replace(self, allowed=True, disabled_reason=None)
+        blocker = readiness.primary_blocker
+        reason = (
+            (blocker.customer_message if customer_facing else blocker.staff_detail)
+            if blocker is not None
+            else None
+        )
+        return replace(self, allowed=False, disabled_reason=reason)

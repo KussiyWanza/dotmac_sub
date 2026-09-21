@@ -95,14 +95,60 @@ request ID, and nearest application caller. SQL text, parameters, results,
 credentials, and customer data are never logged. Transactions lasting at least
 thirty seconds emit a request-correlated duration span.
 
+## Structured operational summaries
+
+Completed ERP synchronization, notification-queue, and billing-enforcement
+runs emit one `operational_task_outcome` record through
+`observability.structured_operational_logs`. The event carries only a closed
+event name, closed outcome, component, and numeric counters. Routine retries,
+domain refusals, and zero/non-zero bookkeeping counters remain INFO evidence;
+they are not application-error alerts.
+
+Log alerts must select structured `ERROR` or `CRITICAL` records and group by a
+stable exception fingerprint. They must not search arbitrary message text for
+`failed`, `rejected`, `errors`, or `retry_failed`. A multiline traceback is
+attached to its one root event and must be counted by that root fingerprint,
+not by individual lines. Resource alerts use exact runtime evidence such as
+`OOMKilled` or a structured `resource_exhausted` event; where a temporary
+text query is unavoidable, it must use `\\boom\\b` rather than a substring
+match.
+
+## Application failures and payment verification
+
+`observability.application_failures` records one bounded exception fingerprint
+for each unhandled HTTP failure and the closed outcome of customer payment
+verification. It records no payment reference, provider payload, account, or
+customer identity. The payment owner remains the settlement and idempotency
+owner; this observer never retries provider work or changes a payment result.
+
+`application_exceptions_total` is grouped by `surface` and exception class.
+`payment_verification_outcomes_total` is grouped by the adapter channel and
+one of `settled`, `pending_provider_confirmation`, `business_refusal`, or
+`unexpected_failure`. The rules in
+`deploy/observability/application_failures.rules.yml` page only on sustained
+unexpected volume: five application exceptions or three unexpected payment
+verification failures in fifteen minutes. Pending-provider and business-refusal
+outcomes are dashboard signals, not pages.
+
 ## UI cutover
 
 The NOC page shows the three operational evidence checks and exact per-router
 collector failures. Installed Integrations shows the last observed runtime
-result and the CRM capability contract instead of generic health badges.
-Templates do not calculate freshness, classify failures, or decide retries.
+result and the CRM capability contract instead of generic health badges. The
+admin control-plane projection consumes the same typed installation/evidence
+boundary: it presents the exact last result and source timestamp, marks an
+administratively disabled installation as disabled, and otherwise makes no
+aggregate health claim. Templates do not calculate freshness, classify
+failures, or decide retries.
 
 The fleet-wide `network.device_state` owner now exposes only
 `working`/`not_working`. Collector freshness and retry evidence remain internal
 verification inputs; templates consume the owner result and reason without
 creating another state.
+
+
+Structured task summaries belong to `observability.structured_operational_logs`
+in `app.services.operational_logging`. Its closed event/outcome types and bounded
+counters are separate from the existing persistence and heartbeat recording
+owner. All task-summary callers use this module directly; no parallel helper
+remains in `app.services.observability`.

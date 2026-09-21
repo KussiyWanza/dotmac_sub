@@ -11,17 +11,23 @@ from __future__ import annotations
 
 import json
 import uuid
+from pathlib import Path
 
+from app.models.catalog import RegionZone
 from app.models.network import OLTDevice, OntUnit, PonPort
 from app.models.network_monitoring import NetworkDevice
 from app.services import network_explorer as explorer
 from app.services.network.forwarding_topology import ForwardingGraph
 from app.services.topology import affected
+from tests.network_fixture_helpers import attach_test_olt_config_pack
+from tests.subscription_fixture_helpers import activate_test_subscription
 
 
 def _olt(db, name="Gudu OLT"):
+    unique = uuid.uuid4().hex[:10]
+    region = RegionZone(name=f"Explorer Region {unique}", code=f"EX-{unique}")
     olt = OLTDevice(name=name, mgmt_ip="10.0.0.2")
-    db.add(olt)
+    attach_test_olt_config_pack(db, olt=olt, region=region)
     db.commit()
     db.refresh(olt)
     return olt
@@ -427,7 +433,7 @@ def test_pop_site_inspector_links_existing_map(db_session):
 
 
 def test_coverage_is_calculated_per_subscription(db_session, subscriber, catalog_offer):
-    from app.models.catalog import BillingMode, SubscriptionStatus
+    from app.models.catalog import BillingMode
     from app.schemas.catalog import SubscriptionCreate
     from app.services import catalog as catalog_service
 
@@ -436,8 +442,8 @@ def test_coverage_is_calculated_per_subscription(db_session, subscriber, catalog
         SubscriptionCreate(account_id=subscriber.id, offer_id=catalog_offer.id),
     )
     subscription.billing_mode = BillingMode.postpaid
-    subscription.status = SubscriptionStatus.active
     db_session.commit()
+    activate_test_subscription(db_session, subscription)
 
     coverage = explorer.build_network_coverage(db_session)
 
@@ -498,3 +504,18 @@ def test_zero_worklists_present_as_clear(db_session):
     assert clear, "expected at least one empty worklist in an empty database"
     assert all(m.presentation.value == "clear" for m in clear)
     assert all(m.presentation.tone.value == "positive" for m in clear)
+    assignment_metric = next(
+        metric
+        for metric in coverage.metrics
+        if metric.key == "live_devices_without_assignment"
+    )
+    assert assignment_metric.href == "#live-devices-without-assignment"
+    assert coverage.assignment_drift.total_count == 0
+
+
+def test_coverage_template_exposes_read_only_assignment_review_queue() -> None:
+    source = Path("templates/admin/network/explorer/coverage.html").read_text()
+
+    assert 'data-testid="live-device-assignment-queue"' in source
+    assert "never create or reactivate" in source
+    assert "row.observed_at|local_datetime" in source

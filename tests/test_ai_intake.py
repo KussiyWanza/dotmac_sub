@@ -10,7 +10,12 @@ from app.models.ai_intake import AiIntakeConfig
 from app.models.service_team import ServiceTeam
 from app.schemas.ai_intake import (
     CUSTOMER_TYPE_FOLLOW_UP_QUESTION,
+    NATURAL_CLARIFICATION_QUESTION,
+    AiClassifierAttemptStatus,
+    AiClassifierFailureKind,
     AiCustomerResponseCompositionRequest,
+    AiIntakeAffectAssessment,
+    AiIntakeAffectLevel,
     AiIntakeCategory,
     AiIntakeContextMessage,
     AiIntakeExtractedFacts,
@@ -30,9 +35,18 @@ from app.services.ai.client import AIClientError, AIResponse
 
 
 class _Gateway:
-    def __init__(self, content: str | None = None, error: Exception | None = None):
+    def __init__(
+        self,
+        content: str | None = None,
+        error: Exception | None = None,
+        *,
+        provider: str = "test-provider",
+        model: str = "test-model",
+    ):
         self.content = content
         self.error = error
+        self.provider = provider
+        self.model = model
         self.calls: list[dict[str, object]] = []
 
     def generate_with_fallback(self, _db, **kwargs):
@@ -44,8 +58,8 @@ class _Gateway:
                 content=str(self.content or ""),
                 tokens_in=10,
                 tokens_out=20,
-                model="test-model",
-                provider="test-provider",
+                model=self.model,
+                provider=self.provider,
             ),
             {"endpoint": "primary", "fallback_used": False},
         )
@@ -100,6 +114,7 @@ def _classification(
     confidence: float = 0.94,
     party_type: str = "unknown",
     party_type_confidence: float = 0.0,
+    message_affect: dict[str, object] | None = None,
 ) -> str:
     return json.dumps(
         {
@@ -112,6 +127,31 @@ def _classification(
             "summary": "Customer reports a service issue.",
             "party_type": party_type,
             "party_type_confidence": party_type_confidence,
+            **({"message_affect": message_affect} if message_affect else {}),
+        }
+    )
+
+
+def _deepseek_null_default_classification() -> str:
+    return json.dumps(
+        {
+            "intent": "technical_support",
+            "category": "no_internet",
+            "confidence": 0.96,
+            "department": None,
+            "requires_follow_up": False,
+            "follow_up_question": None,
+            "summary": "Service is unavailable.",
+            "party_type": None,
+            "party_type_confidence": None,
+            "message_facts": dict.fromkeys(AiIntakeExtractedFacts.model_fields),
+            "message_affect": {
+                "frustration_level": None,
+                "agitation_level": None,
+                "repeated_complaint": None,
+                "repeated_failed_steps": None,
+                "prior_failed_interaction": None,
+            },
         }
     )
 
@@ -241,6 +281,36 @@ def test_valid_technical_and_billing_results_use_controlled_registry(
     assert billing.classification.department == "billing_issue"
 
 
+def test_model_affect_candidate_is_bounded_and_backend_owns_provenance(
+    db_session, monkeypatch
+):
+    _config(db_session)
+    gateway = _Gateway(
+        _classification(
+            message_affect={
+                "frustration_level": "high",
+                "agitation_level": "moderate",
+                "repeated_complaint": True,
+                "repeated_failed_steps": False,
+                "prior_failed_interaction": True,
+            }
+        )
+    )
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+
+    outcome = ai_intake.classify_message(
+        db_session,
+        _request(body="I am fed up; I contacted support before."),
+    )
+
+    assert outcome.classification is not None
+    affect = outcome.classification.message_affect
+    assert affect.frustration_level is AiIntakeAffectLevel.high
+    assert affect.agitation_level is AiIntakeAffectLevel.moderate
+    assert affect.repeated_complaint is True
+    assert [source.value for source in affect.sources] == ["model"]
+
+
 def test_department_mapping_overrides_default(db_session, monkeypatch):
     _config(
         db_session,
@@ -322,12 +392,117 @@ def test_unknown_intent_malformed_json_and_invalid_confidence_fail_closed(
     gateway.content = _classification(confidence=1.2)
     invalid_confidence = ai_intake.classify_message(db_session, _request())
 
-    assert unknown.reason is AiIntakeReason.invalid_model_output
-    assert malformed.reason is AiIntakeReason.invalid_model_output
-    assert invalid_confidence.reason is AiIntakeReason.invalid_model_output
+    assert unknown.reason is AiIntakeReason.classifier_invalid_output
+    assert malformed.reason is AiIntakeReason.classifier_invalid_output
+    assert invalid_confidence.reason is AiIntakeReason.classifier_invalid_output
     assert all(
-        outcome.status is AiIntakeStatus.failed
+        outcome.status is AiIntakeStatus.classification_unavailable
         for outcome in (unknown, malformed, invalid_confidence)
+    )
+    assert all(
+        outcome.classifier_attempt.status is AiClassifierAttemptStatus.invalid_output
+        for outcome in (unknown, malformed, invalid_confidence)
+    )
+    assert unknown.classifier_attempt.failure_kind is (
+        AiClassifierFailureKind.schema_validation_failure
+    )
+    assert malformed.classifier_attempt.failure_kind is (
+        AiClassifierFailureKind.invalid_model_output
+    )
+    assert invalid_confidence.classifier_attempt.failure_kind is (
+        AiClassifierFailureKind.schema_validation_failure
+    )
+    assert malformed.provider == "test-provider"
+    assert malformed.model == "test-model"
+    assert malformed.classifier_attempt.retry_count == 1
+    assert malformed.classifier_attempt.retry_limit == 1
+    assert malformed.classifier_attempt.retries_exhausted is False
+
+
+def test_deepseek_null_defaults_are_normalized_without_relaxing_schema(
+    db_session, monkeypatch
+):
+    _config(db_session)
+    gateway = _Gateway(
+        _deepseek_null_default_classification(),
+        provider="primary",
+        model="deepseek-flash",
+    )
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+
+    outcome = ai_intake.classify_message(db_session, _request())
+
+    assert outcome.status is AiIntakeStatus.classified
+    assert outcome.classification is not None
+    assert outcome.classification.message_facts.connectivity_state.value == "unknown"
+    assert outcome.classification.message_facts.human_requested is False
+    assert outcome.classification.message_affect.frustration_level.value == "none"
+    assert outcome.classifier_attempt.validation_issues == ()
+
+    gateway.provider = "another-provider"
+    gateway.model = "another-model"
+    rejected = ai_intake.classify_message(db_session, _request())
+    assert rejected.status is AiIntakeStatus.classification_unavailable
+    assert rejected.classifier_attempt.failure_kind is (
+        AiClassifierFailureKind.schema_validation_failure
+    )
+
+
+def test_classifier_validation_logging_is_structural_and_sanitized(
+    db_session, monkeypatch, caplog
+):
+    _config(db_session)
+    secret = "CUSTOMER-AND-MODEL-TEXT-MUST-NOT-APPEAR"
+    payload = json.loads(_deepseek_null_default_classification())
+    payload["confidence"] = secret
+    gateway = _Gateway(json.dumps(payload), provider="primary", model="deepseek-flash")
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+    session_id = uuid4()
+    inbound_id = uuid4()
+    policy_version_id = uuid4()
+
+    with caplog.at_level("WARNING", logger="app.services.ai_intake"):
+        outcome = ai_intake.classify_message(
+            db_session,
+            _request(
+                session_id=session_id,
+                persisted_inbound_message_id=inbound_id,
+                policy_version_id=policy_version_id,
+            ),
+        )
+
+    assert outcome.status is AiIntakeStatus.classification_unavailable
+    [issue] = outcome.classifier_attempt.validation_issues
+    assert issue.location == "confidence"
+    assert issue.error_type == "float_type"
+    assert issue.expected_type == "strict_number_0_to_1"
+    assert issue.actual_type == "str"
+    invalid_record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "ai_intake_invalid_model_output"
+    )
+    assert invalid_record.session_id == str(session_id)
+    assert invalid_record.inbound_message_id == str(inbound_id)
+    assert invalid_record.policy_version_id == str(policy_version_id)
+    assert invalid_record.classifier_attempt_number == 1
+    assert secret not in json.dumps(invalid_record.__dict__, default=str)
+
+
+def test_classifier_unknown_intent_is_no_accepted_intent(db_session, monkeypatch):
+    _config(db_session)
+    gateway = _Gateway(_classification(intent="unknown", category="unknown"))
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+
+    outcome = ai_intake.classify_message(db_session, _request())
+
+    assert outcome.status is AiIntakeStatus.classification_unavailable
+    assert outcome.reason is AiIntakeReason.classifier_unavailable
+    assert outcome.classifier_attempt.status is (
+        AiClassifierAttemptStatus.no_accepted_intent
+    )
+    assert outcome.classifier_attempt.failure_kind is (
+        AiClassifierFailureKind.no_accepted_intent
     )
 
 
@@ -396,9 +571,13 @@ def _composition_request() -> AiCustomerResponseCompositionRequest:
             approved_instruction=(
                 "Ask whether the slowdown is the same on Wi-Fi and Ethernet."
             ),
+            question_purpose=(
+                "determine whether the slowdown differs by connection medium"
+            ),
+            expected_fact="connection_medium",
         ),
         business_tone="Warm, concise and practical.",
-        issue_already_acknowledged=False,
+        issue_acknowledged=False,
     )
 
 
@@ -466,6 +645,58 @@ def test_response_validator_rejects_invented_monitoring_and_falls_back(
     assert "since yesterday" in outcome.response_text
 
 
+def test_response_composer_failure_uses_safe_configured_question(
+    db_session, monkeypatch
+):
+    gateway = _Gateway(error=AIClientError("composer unavailable"))
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+
+    outcome = ai_intake.compose_customer_response(
+        db_session,
+        request=_composition_request().model_copy(
+            update={"issue_acknowledgement_required": True}
+        ),
+        fallback_text="Is it the same over Wi-Fi and Ethernet?",
+        fallback_source="template",
+    )
+
+    assert outcome.response_source == "template"
+    assert outcome.safety_reason == "composition_unavailable"
+    assert outcome.follow_up_fact_key == "connection_medium"
+    assert outcome.response_text.endswith("Is it the same over Wi-Fi and Ethernet?")
+    assert outcome.acknowledges_issue is True
+
+
+def test_validator_rejects_missing_required_issue_acknowledgement(
+    db_session, monkeypatch
+):
+    gateway = _Gateway(
+        json.dumps(
+            {
+                "response_text": "Is it the same over Wi-Fi and Ethernet?",
+                "purpose": "acknowledgement_question",
+                "follow_up_fact_key": "connection_medium",
+                "acknowledges_issue": False,
+                "acknowledges_frustration": False,
+            }
+        )
+    )
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+
+    outcome = ai_intake.compose_customer_response(
+        db_session,
+        request=_composition_request().model_copy(
+            update={"issue_acknowledgement_required": True}
+        ),
+        fallback_text="Is it the same over Wi-Fi and Ethernet?",
+        fallback_source="template",
+    )
+
+    assert outcome.response_source == "template"
+    assert outcome.safety_reason == "missing_required_issue_acknowledgement"
+    assert outcome.acknowledges_issue is True
+
+
 def test_response_validator_does_not_treat_monitoring_no_data_as_offline(
     db_session, monkeypatch
 ):
@@ -519,7 +750,7 @@ def test_response_validator_does_not_treat_monitoring_no_data_as_offline(
         ),
         (
             "I'm sorry again. Is it the same over Wi-Fi and Ethernet?",
-            {"issue_already_acknowledged": True},
+            {"issue_acknowledged": True},
             "connection_medium",
             "repeated_apology",
         ),
@@ -600,6 +831,137 @@ def test_response_validator_rejects_unsafe_model_compositions(
     assert outcome.response_text != response_text
 
 
+def _frustrated_device_scope_request() -> AiCustomerResponseCompositionRequest:
+    return _composition_request().model_copy(
+        update={
+            "latest_customer_statement": "I'm fucking fed up of you guys",
+            "facts": AiIntakeExtractedFacts(),
+            "missing_fact_keys": ("device_scope",),
+            "playbook_step": AiIntakePlaybookStepContext(
+                key="device_scope",
+                action=AiIntakeNextAction.ask_question,
+                approved_instruction=(
+                    "determine whether the problem is limited to one device or "
+                    "is connection-wide, without assuming device ownership"
+                ),
+                question_purpose=(
+                    "determine whether the problem is limited to one device or "
+                    "is connection-wide, without assuming device ownership"
+                ),
+                expected_fact="device_scope",
+            ),
+            "affect": AiIntakeAffectAssessment(
+                frustration_level=AiIntakeAffectLevel.high,
+                agitation_level=AiIntakeAffectLevel.high,
+            ),
+            "acknowledgement_required": True,
+            "issue_acknowledged": True,
+            "frustration_acknowledged": False,
+        }
+    )
+
+
+def test_validator_rejects_bare_question_when_frustration_requires_acknowledgement(
+    db_session, monkeypatch
+):
+    gateway = _Gateway(
+        json.dumps(
+            {
+                "response_text": "If possible, does this also happen on another device?",
+                "purpose": "acknowledgement_question",
+                "follow_up_fact_key": "device_scope",
+                "acknowledges_issue": False,
+                "acknowledges_frustration": False,
+            }
+        )
+    )
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+
+    outcome = ai_intake.compose_customer_response(
+        db_session,
+        request=_frustrated_device_scope_request(),
+        fallback_text="If possible, does this also happen on another device?",
+        fallback_source="template",
+    )
+
+    assert outcome.response_source == "template"
+    assert outcome.safety_reason == "missing_required_acknowledgement"
+    assert outcome.acknowledges_frustration is True
+    assert outcome.response_text.index("difficult") < outcome.response_text.index("?")
+    composition_projection = json.loads(str(gateway.calls[0]["prompt"]))
+    assert composition_projection["playbook_step"]["expected_fact"] == "device_scope"
+    assert (
+        "without assuming device ownership"
+        in composition_projection["playbook_step"]["question_purpose"]
+    )
+    assert "Is the issue affecting every device or only one device?" not in str(
+        gateway.calls[0]["prompt"]
+    )
+
+
+def test_validator_accepts_natural_acknowledgement_and_neutral_question(
+    db_session, monkeypatch
+):
+    response = (
+        "I hear you—this has been a difficult experience. If you can check "
+        "another device, does the same problem happen there?"
+    )
+    gateway = _Gateway(
+        json.dumps(
+            {
+                "response_text": response,
+                "purpose": "acknowledgement_question",
+                "follow_up_fact_key": "device_scope",
+                "acknowledges_issue": False,
+                "acknowledges_frustration": True,
+            }
+        )
+    )
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+
+    outcome = ai_intake.compose_customer_response(
+        db_session,
+        request=_frustrated_device_scope_request(),
+        fallback_text="If possible, does this also happen on another device?",
+        fallback_source="template",
+    )
+
+    assert outcome.response_source == "model"
+    assert outcome.response_text == response
+    assert outcome.acknowledges_frustration is True
+
+
+def test_validator_rejects_device_scope_wording_that_assumes_multiple_devices(
+    db_session, monkeypatch
+):
+    gateway = _Gateway(
+        json.dumps(
+            {
+                "response_text": "Is this affecting every device or only one device?",
+                "purpose": "acknowledgement_question",
+                "follow_up_fact_key": "device_scope",
+                "acknowledges_issue": False,
+                "acknowledges_frustration": False,
+            }
+        )
+    )
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+    request = _frustrated_device_scope_request().model_copy(
+        update={"acknowledgement_required": False}
+    )
+
+    outcome = ai_intake.compose_customer_response(
+        db_session,
+        request=request,
+        fallback_text="If possible, does this also happen on another device?",
+        fallback_source="template",
+    )
+
+    assert outcome.response_source == "template"
+    assert outcome.safety_reason == "unsupported_device_ownership_assumption"
+    assert "every device" not in outcome.response_text.lower()
+
+
 def test_low_confidence_allows_one_controlled_follow_up_then_fallback(
     db_session, monkeypatch
 ):
@@ -621,9 +983,7 @@ def test_low_confidence_allows_one_controlled_follow_up_then_fallback(
     assert first.status is AiIntakeStatus.awaiting_follow_up
     assert first.follow_up_count == 1
     assert first.classification is not None
-    assert first.classification.follow_up_question == (
-        ai_intake.GENERIC_FOLLOW_UP_QUESTION
-    )
+    assert first.classification.follow_up_question == NATURAL_CLARIFICATION_QUESTION
     assert second.status is AiIntakeStatus.fallback
     assert second.reason is AiIntakeReason.follow_up_limit_reached
 
@@ -653,6 +1013,30 @@ def test_configured_clarification_questions_are_used(db_session, monkeypatch):
     assert outcome.classification is not None
     assert outcome.classification.follow_up_question == (
         "Is the connection for you or your organization?"
+    )
+
+
+def test_category_menu_requires_explicit_configuration(db_session, monkeypatch):
+    _config(
+        db_session,
+        confidence_threshold=0.8,
+        metadata_={
+            "clarification_questions": [
+                ai_intake.GENERIC_FOLLOW_UP_QUESTION,
+                CUSTOMER_TYPE_FOLLOW_UP_QUESTION,
+            ],
+            "allow_category_menu_clarification": True,
+        },
+    )
+    gateway = _Gateway(_classification(confidence=0.4))
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+
+    outcome = ai_intake.classify_message(db_session, _request())
+
+    assert outcome.classification is not None
+    assert (
+        outcome.classification.follow_up_question
+        == ai_intake.GENERIC_FOLLOW_UP_QUESTION
     )
 
 
@@ -690,13 +1074,44 @@ def test_active_ai_session_keeps_existing_conversation_eligible(db_session):
     assert outcome.reason is AiIntakeReason.classified
 
 
-def test_gateway_failure_returns_fallback_metadata(db_session, monkeypatch):
+def test_gateway_failure_returns_classifier_unavailable_metadata(
+    db_session, monkeypatch
+):
     _config(db_session)
     gateway = _Gateway(error=AIClientError("provider unavailable"))
     monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
 
     outcome = ai_intake.classify_message(db_session, _request())
 
-    assert outcome.status is AiIntakeStatus.failed
-    assert outcome.reason is AiIntakeReason.gateway_unavailable
-    assert ai_intake.route_metadata(outcome)["ai_intake_status"] == "failed"
+    assert outcome.status is AiIntakeStatus.classification_unavailable
+    assert outcome.reason is AiIntakeReason.classifier_unavailable
+    assert outcome.classifier_attempt.status is AiClassifierAttemptStatus.unavailable
+    assert outcome.classifier_attempt.failure_kind is (
+        AiClassifierFailureKind.classifier_unavailable
+    )
+    assert ai_intake.route_metadata(outcome)["ai_intake_status"] == (
+        "classification_unavailable"
+    )
+
+
+def test_classifier_failure_uses_existing_clarification_limit(db_session, monkeypatch):
+    _config(db_session, max_clarification_turns=1)
+    gateway = _Gateway("not-json")
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+
+    first = ai_intake.classify_message(db_session, _request())
+    exhausted = ai_intake.classify_message(
+        db_session,
+        _request(follow_up_count=1, classifier_failure_count=1),
+    )
+
+    assert first.reason is AiIntakeReason.classifier_invalid_output
+    assert first.follow_up_count == 1
+    assert first.classifier_attempt.retries_exhausted is False
+    assert exhausted.reason is AiIntakeReason.classifier_unavailable_after_retries
+    assert (
+        exhausted.classifier_attempt.reason is AiIntakeReason.classifier_invalid_output
+    )
+    assert exhausted.follow_up_count == 1
+    assert exhausted.classifier_attempt.retry_count == 2
+    assert exhausted.classifier_attempt.retries_exhausted is True

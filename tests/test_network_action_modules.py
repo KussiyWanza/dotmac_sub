@@ -208,3 +208,39 @@ def test_focused_olt_action_modules_importable() -> None:
     assert callable(bind_tr069_server_profile)
     assert callable(get_line_profiles)
     assert callable(get_tr069_server_profiles)
+
+
+def test_clear_ont_ipconfig_treats_missing_ip_interface_as_absent(monkeypatch) -> None:
+    from app.services.network.huawei_cli_response import HuaweiDeviceOutcome
+    from app.services.network.olt_ssh_ont import iphost
+
+    def fake_run(*_args: object, **_kwargs: object) -> HuaweiDeviceOutcome:
+        return HuaweiDeviceOutcome.rejected_by_device(
+            "Failure: The IP interface does not exist"
+        )
+
+    monkeypatch.setattr(iphost, "_run_ont_config_command_outcome", fake_run)
+
+    ok, message = iphost.clear_ont_ipconfig(
+        SimpleNamespace(name="Karsana Huawei OLT"), "0/1/12", 0, ip_index=0
+    )
+
+    assert ok is True
+    assert message == "ONT ipconfig already absent for ip-index 0"
+
+
+def test_clear_ont_ipconfig_keeps_unexpected_olt_rejection_failed(monkeypatch) -> None:
+    from app.services.network.huawei_cli_response import HuaweiDeviceOutcome
+    from app.services.network.olt_ssh_ont import iphost
+
+    def fake_run(*_args: object, **_kwargs: object) -> HuaweiDeviceOutcome:
+        return HuaweiDeviceOutcome.rejected_by_device("Failure: command denied")
+
+    monkeypatch.setattr(iphost, "_run_ont_config_command_outcome", fake_run)
+
+    ok, message = iphost.clear_ont_ipconfig(
+        SimpleNamespace(name="Karsana Huawei OLT"), "0/1/12", 0, ip_index=0
+    )
+
+    assert ok is False
+    assert "command denied" in message

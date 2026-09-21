@@ -38,6 +38,59 @@ def resolve_migration_lock_timeout(raw: str | None = None) -> str:
     return value if _LOCK_TIMEOUT_RE.fullmatch(value) else "5s"
 
 
+_IDLE_TRANSACTION_TIMEOUT_RE = re.compile(r"\d+(ms|s|min)?")
+
+
+def resolve_migration_idle_transaction_timeout(raw: str | None = None) -> str:
+    """Validated Postgres ``idle_in_transaction_session_timeout`` for the
+    migration connection.
+
+    Bounds how long the ALEMBIC MIGRATION connection may sit idle-in-transaction
+    with no query activity. ``context.run_migrations()`` has to load, import
+    and topologically sort every file under ``alembic/versions/`` (632+ and
+    growing) INSIDE the already-open migration transaction before the first
+    real statement runs — pure Python work, zero DB activity, whose duration
+    grows with the history and with load on the machine doing it. Production's
+    session-level ``idle_in_transaction_session_timeout`` is sized for request
+    connections, not this one-shot setup cost, and killed the migration
+    connection before a single migration statement ran (2026-09-09 failed
+    deploy). Defaults to ``10min`` — a judgment call sized to comfortably cover
+    that setup under real production load, not a precisely measured figure;
+    tune it from observed timing as that data accumulates. Override via
+    ``ALEMBIC_IDLE_TRANSACTION_TIMEOUT`` (e.g. ``0`` to disable). Malformed
+    input falls back to the default — the value is interpolated into a ``SET``
+    statement. The raw value is owned by
+    ``settings.alembic_idle_transaction_timeout`` (the config owner reads
+    ``ALEMBIC_IDLE_TRANSACTION_TIMEOUT``), not read here directly.
+    """
+    value = (
+        raw if raw is not None else settings.alembic_idle_transaction_timeout
+    ).strip()
+    return value if _IDLE_TRANSACTION_TIMEOUT_RE.fullmatch(value) else "10min"
+
+
+def apply_migration_idle_transaction_timeout(connection) -> None:
+    """Issue the resolved ``idle_in_transaction_session_timeout`` on the given
+    ALEMBIC MIGRATION connection.
+
+    Session-level ``SET`` (not ``SET LOCAL``): this connection is dedicated to
+    the whole migration run — a single ``NullPool`` connection opened once in
+    ``alembic/env.py``'s ``run_migrations_online``, never shared or returned to
+    a pool — so there is nothing for a session-scoped setting to leak into.
+    Mirrors ``resolve_migration_lock_timeout``'s sibling setter
+    (``_set_migration_lock_timeout`` in ``alembic/env.py``), which sets
+    ``lock_timeout`` with a plain session-level ``SET`` on the same
+    connection for the same reason. Postgres only — SQLite (the test DB) has
+    no such setting.
+    """
+    if connection.dialect.name != "postgresql":
+        return
+    connection.exec_driver_sql(
+        "SET idle_in_transaction_session_timeout = "
+        f"'{resolve_migration_idle_transaction_timeout()}'"
+    )
+
+
 def get_engine():
     connect_args = {}
     if settings.database_url.startswith(("postgresql://", "postgresql+")):

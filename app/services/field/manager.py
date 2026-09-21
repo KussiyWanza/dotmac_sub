@@ -8,7 +8,7 @@ approvals. All writes remain inside their declared Sub owners.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
@@ -25,6 +25,16 @@ from app.models.field_location import FieldTechPresence
 from app.models.subscriber import Subscriber
 from app.models.system_user import SystemUser
 from app.models.work_order import WorkOrder
+from app.schemas.field import (
+    FieldLiveMapFeedQuery,
+    FieldManagerTechnician,
+    FieldManagerTechniciansQuery,
+    FieldManagerTechniciansResponse,
+)
+from app.schemas.field import (
+    FieldManagerActiveWorkOrder as ActiveWorkOrderOutcome,
+)
+from app.services import field_maps
 from app.services.common import apply_pagination, coerce_uuid
 from app.services.field.jobs import (
     OPEN_STATUSES,
@@ -37,10 +47,6 @@ from app.services.status_presentation import work_order_status_presentation
 from app.services.work_order_commands import work_order_commands
 
 DEFAULT_STALE_AFTER_SECONDS = 120
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -119,24 +125,30 @@ def _active_orders_by_technician(
 class FieldManager:
     @staticmethod
     def me(db: Session, principal: dict[str, Any]) -> dict:
+        permission_keys = principal.get("permission_keys") or principal.get("scopes")
         return {
             "person_id": str(principal.get("principal_id") or ""),
             "name": _manager_name(db, principal),
             "roles": list(principal.get("roles") or []),
-            "permissions": list(principal.get("scopes") or []),
+            "permissions": sorted(str(key) for key in permission_keys or []),
             "is_manager": True,
         }
 
     @staticmethod
     def list_technicians(
         db: Session,
-        *,
-        stale_after_seconds: int = DEFAULT_STALE_AFTER_SECONDS,
-        limit: int = 500,
-    ) -> list[dict]:
-        safe_limit = max(1, min(int(limit or 500), 500))
-        window = max(int(stale_after_seconds or DEFAULT_STALE_AFTER_SECONDS), 30)
-        cutoff = _now() - timedelta(seconds=window)
+        query: FieldManagerTechniciansQuery,
+    ) -> FieldManagerTechniciansResponse:
+        map_feed = field_maps.list_technician_positions(
+            db=db,
+            query=FieldLiveMapFeedQuery(
+                stale_after_seconds=query.stale_after_seconds,
+                limit=2000,
+            ),
+        )
+        map_position_by_technician_id = {
+            position.technician_id: position for position in map_feed.items
+        }
 
         rows = (
             db.query(TechnicianProfile, FieldTechPresence)
@@ -146,60 +158,51 @@ class FieldManager:
             )
             .filter(TechnicianProfile.is_active.is_(True))
             .order_by(TechnicianProfile.created_at.asc())
-            .limit(safe_limit)
+            .limit(query.limit)
             .all()
         )
         profiles = [profile for profile, _presence in rows]
         active_orders = _active_orders_by_technician(db, profiles)
 
-        items: list[dict] = []
+        items: list[FieldManagerTechnician] = []
         for profile, presence in rows:
-            last_location_at = _as_utc(presence.last_location_at) if presence else None
-            is_live = bool(
-                presence
-                and presence.location_sharing_enabled
-                and last_location_at is not None
-                and last_location_at >= cutoff
-            )
+            map_position = map_position_by_technician_id.get(profile.id)
             order = active_orders.get(profile.id)
             items.append(
-                {
-                    "technician_id": profile.id,
-                    "person_id": profile.person_id,
-                    "person_label": _technician_name(
-                        profile, _system_user(db, profile)
-                    ),
-                    "title": profile.title,
-                    "region": profile.region,
-                    "status": presence.status if presence else "off_shift",
-                    "location_sharing_enabled": bool(
+                FieldManagerTechnician(
+                    technician_id=profile.id,
+                    person_id=profile.person_id,
+                    person_label=_technician_name(profile, _system_user(db, profile)),
+                    title=profile.title,
+                    region=profile.region,
+                    status=presence.status if presence else "off_shift",
+                    location_sharing_enabled=bool(
                         presence and presence.location_sharing_enabled
                     ),
-                    "is_live": is_live,
-                    "last_latitude": presence.last_latitude if presence else None,
-                    "last_longitude": presence.last_longitude if presence else None,
-                    "accuracy_m": (
-                        presence.last_location_accuracy_m if presence else None
-                    ),
-                    "last_location_at": last_location_at,
-                    "last_seen_at": _as_utc(presence.last_seen_at)
-                    if presence
-                    else None,
-                    "active_work_order": (
-                        {
-                            "id": order.public_id,
-                            "title": order.title,
-                            "status": order.status,
-                            "status_presentation": work_order_status_presentation(
+                    is_live=map_position.is_live if map_position is not None else False,
+                    last_seen_at=(_as_utc(presence.last_seen_at) if presence else None),
+                    active_work_order=(
+                        ActiveWorkOrderOutcome(
+                            id=order.public_id,
+                            title=order.title,
+                            status=order.status,
+                            status_presentation=work_order_status_presentation(
                                 order.status
                             ),
-                        }
+                        )
                         if order is not None
                         else None
                     ),
-                }
+                )
             )
-        return items
+        return FieldManagerTechniciansResponse(
+            items=items,
+            count=len(items),
+            live_count=sum(1 for item in items if item.is_live),
+            sharing_count=sum(1 for item in items if item.location_sharing_enabled),
+            limit=query.limit,
+            offset=0,
+        )
 
     @staticmethod
     def summary(
@@ -208,7 +211,10 @@ class FieldManager:
         stale_after_seconds: int = DEFAULT_STALE_AFTER_SECONDS,
     ) -> dict:
         technicians = FieldManager.list_technicians(
-            db, stale_after_seconds=stale_after_seconds
+            db,
+            FieldManagerTechniciansQuery(
+                stale_after_seconds=stale_after_seconds,
+            ),
         )
         open_query = (
             db.query(WorkOrder)
@@ -234,11 +240,9 @@ class FieldManager:
             .count()
         )
         return {
-            "technicians_total": len(technicians),
-            "technicians_live": sum(1 for item in technicians if item["is_live"]),
-            "technicians_sharing": sum(
-                1 for item in technicians if item["location_sharing_enabled"]
-            ),
+            "technicians_total": technicians.count,
+            "technicians_live": technicians.live_count,
+            "technicians_sharing": technicians.sharing_count,
             "open_jobs": open_jobs,
             "unassigned_jobs": unassigned_jobs,
             "pending_expenses": pending_expenses,

@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.models.party import Party
 from app.models.service_team import ServiceTeam, ServiceTeamMember
@@ -10,7 +10,9 @@ from app.models.team_inbox import (
     InboxConversation,
     InboxConversationAssignment,
     InboxConversationQueueEntry,
+    InboxConversationStatus,
 )
+from app.services import team_inbox_operations, team_inbox_status
 from app.services.owner_commands import CommandContext
 from app.services.team_inbox_assignment import (
     InboxQueueSweepCommand,
@@ -20,6 +22,7 @@ from app.services.team_inbox_assignment import (
     team_capacity_snapshot,
     team_capacity_snapshots,
 )
+from app.services.team_inbox_queue_notifications import current_visible_position
 
 
 def _team(db_session) -> ServiceTeam:
@@ -151,7 +154,7 @@ def test_sweep_promotes_oldest_when_capacity_appears(db_session):
 def test_wait_estimate_uses_fifo_position_and_capacity():
     assert (
         estimate_queue_wait_minutes(
-            queue_position=1,
+            current_visible_position=1,
             active_assignments=2,
             total_capacity=2,
             average_handle_minutes=10,
@@ -160,7 +163,7 @@ def test_wait_estimate_uses_fifo_position_and_capacity():
     )
     assert (
         estimate_queue_wait_minutes(
-            queue_position=3,
+            current_visible_position=3,
             active_assignments=2,
             total_capacity=2,
             average_handle_minutes=10,
@@ -169,7 +172,7 @@ def test_wait_estimate_uses_fifo_position_and_capacity():
     )
     assert (
         estimate_queue_wait_minutes(
-            queue_position=1,
+            current_visible_position=1,
             active_assignments=0,
             total_capacity=2,
         )
@@ -177,7 +180,7 @@ def test_wait_estimate_uses_fifo_position_and_capacity():
     )
     assert (
         estimate_queue_wait_minutes(
-            queue_position=1, active_assignments=0, total_capacity=0
+            current_visible_position=1, active_assignments=0, total_capacity=0
         )
         is None
     )
@@ -206,3 +209,147 @@ def test_team_capacity_snapshots_preserve_per_team_capacity(db_session):
     assert snapshots[second_team.id].active_assignments == 0
     assert snapshots[second_team.id].total_capacity == 3
     assert team_capacity_snapshot(db_session, first_team.id) == snapshots[first_team.id]
+
+
+def test_visible_positions_compress_when_queue_head_leaves(db_session):
+    team = _team(db_session)
+    conversations = [_conversation(db_session) for _ in range(3)]
+    now = datetime(2026, 8, 6, 10, 0, tzinfo=UTC)
+    for offset, conversation in enumerate(conversations):
+        queue_conversation_for_team(
+            db_session,
+            conversation=conversation,
+            service_team_id=team.id,
+            now=now + timedelta(seconds=offset),
+        )
+    entries = (
+        db_session.query(InboxConversationQueueEntry)
+        .order_by(
+            InboxConversationQueueEntry.entered_at,
+            InboxConversationQueueEntry.queue_position,
+        )
+        .all()
+    )
+
+    assert [current_visible_position(db_session, row) for row in entries] == [1, 2, 3]
+    entries[0].status = "cancelled"
+    entries[0].settled_at = now + timedelta(minutes=1)
+    db_session.flush()
+    assert [current_visible_position(db_session, row) for row in entries[1:]] == [1, 2]
+
+
+def test_team_aware_sweep_does_not_starve_team_beyond_global_batch(db_session):
+    blocked_team = _team(db_session)
+    eligible_team = _team(db_session)
+    eligible_agent = _agent(db_session, eligible_team, capacity=1)
+    now = datetime(2026, 8, 6, 10, 0, tzinfo=UTC)
+    for offset in range(201):
+        queue_conversation_for_team(
+            db_session,
+            conversation=_conversation(db_session),
+            service_team_id=blocked_team.id,
+            now=now + timedelta(seconds=offset),
+        )
+    eligible = _conversation(db_session)
+    queue_conversation_for_team(
+        db_session,
+        conversation=eligible,
+        service_team_id=eligible_team.id,
+        now=now + timedelta(minutes=10),
+    )
+    db_session.commit()
+
+    result = sweep_queued_conversations(
+        db_session,
+        InboxQueueSweepCommand(
+            context=CommandContext.system(
+                actor="test", scope="team-inbox:routing-command", reason="test"
+            ),
+            limit=200,
+            now=now + timedelta(minutes=11),
+        ),
+    )
+
+    assert result.promoted == 1
+    assignment = db_session.query(InboxConversationAssignment).one()
+    assert assignment.conversation_id == eligible.id
+    assert assignment.person_id == eligible_agent.id
+
+
+def test_requeue_starts_new_generation_at_team_tail(db_session):
+    team = _team(db_session)
+    first = _conversation(db_session)
+    second = _conversation(db_session)
+    now = datetime(2026, 8, 6, 10, 0, tzinfo=UTC)
+    first_result = queue_conversation_for_team(
+        db_session, conversation=first, service_team_id=team.id, now=now
+    )
+    queue_conversation_for_team(
+        db_session,
+        conversation=second,
+        service_team_id=team.id,
+        now=now + timedelta(seconds=1),
+    )
+    entry = db_session.get(
+        InboxConversationQueueEntry, UUID(str(first_result.queue_entry_id))
+    )
+    entry.status = "cancelled"
+    entry.settled_at = now + timedelta(seconds=2)
+    db_session.flush()
+
+    queue_conversation_for_team(
+        db_session,
+        conversation=first,
+        service_team_id=team.id,
+        now=now + timedelta(seconds=3),
+    )
+
+    assert entry.admission_generation == 2
+    assert entry.queue_position == 3
+    assert current_visible_position(db_session, entry) == 2
+
+
+def test_team_transfer_reconciles_active_queue_ownership(db_session):
+    first_team = _team(db_session)
+    second_team = _team(db_session)
+    conversation = _conversation(db_session)
+    queue_conversation_for_team(
+        db_session,
+        conversation=conversation,
+        service_team_id=first_team.id,
+    )
+    entry = db_session.query(InboxConversationQueueEntry).one()
+
+    team_inbox_operations.route_to_service_team(
+        db_session,
+        conversation=conversation,
+        service_team_id=second_team.id,
+        source="test_transfer",
+    )
+
+    assert conversation.primary_service_team_id == second_team.id
+    assert entry.service_team_id == second_team.id
+    assert entry.status == "queued"
+    assert entry.admission_generation == 2
+
+
+def test_resolution_cancels_active_queue_membership(db_session):
+    team = _team(db_session)
+    conversation = _conversation(db_session)
+    queue_conversation_for_team(
+        db_session,
+        conversation=conversation,
+        service_team_id=team.id,
+    )
+    entry = db_session.query(InboxConversationQueueEntry).one()
+
+    team_inbox_status.apply_status_transition(
+        db_session,
+        conversation=conversation,
+        status=InboxConversationStatus.resolved,
+        actor_person_id=None,
+        reason=team_inbox_status.InboxStatusReason.operator_change,
+    )
+
+    assert entry.status == "cancelled"
+    assert entry.settled_at is not None

@@ -142,6 +142,10 @@ class Quote {
     required this.total,
     required this.depositAmount,
     required this.depositPaid,
+    this.paymentReviewStatus = 'pending',
+    this.paymentReviewMessage =
+        'Your estimate is under staff review. We will notify you before payment.',
+    this.canPayDeposit = false,
     required this.estimateProvisional,
     required this.feasibility,
     this.depositPercent,
@@ -154,6 +158,7 @@ class Quote {
     this.projectId,
     this.createdAt,
     this.expiresAt,
+    this.paymentReviewedAt,
   });
 
   final String id;
@@ -163,6 +168,10 @@ class Quote {
   final String depositAmount;
   final int? depositPercent;
   final bool depositPaid;
+  final String paymentReviewStatus; // pending | approved | rejected
+  final String paymentReviewMessage;
+  final bool canPayDeposit;
+  final DateTime? paymentReviewedAt;
   final bool estimateProvisional;
   final QuoteFeasibility feasibility;
   final String? address;
@@ -176,12 +185,11 @@ class Quote {
   final DateTime? expiresAt;
 
   bool get isAccepted => status == 'accepted';
-  bool get canPayDeposit =>
-      !isAccepted && !depositPaid && (double.tryParse(depositAmount) ?? 0) > 0;
-
   String get statusLabel => switch (status) {
-        'draft' => depositPaid ? 'Deposit paid' : 'Awaiting deposit',
-        'sent' => 'Awaiting deposit',
+        'draft' ||
+        'sent' when paymentReviewStatus == 'approved' =>
+          'Approved — payment required',
+        'draft' || 'sent' => 'Awaiting staff review',
         'accepted' => 'Accepted — installation scheduled',
         'rejected' => 'Declined',
         'expired' => 'Expired',
@@ -196,6 +204,12 @@ class Quote {
         depositAmount: _str(json['deposit_amount'] ?? '0'),
         depositPercent: json['deposit_percent'] as int?,
         depositPaid: json['deposit_paid'] as bool? ?? false,
+        paymentReviewStatus:
+            json['payment_review_status'] as String? ?? 'pending',
+        paymentReviewMessage: json['payment_review_message'] as String? ??
+            'Your estimate is under staff review. We will notify you before payment.',
+        canPayDeposit: json['can_pay_deposit'] as bool? ?? false,
+        paymentReviewedAt: _toDate(json['payment_reviewed_at']),
         estimateProvisional: json['estimate_provisional'] as bool? ?? false,
         feasibility: QuoteFeasibility.fromJson(_asMap(json['feasibility'])),
         address: json['address'] as String?,

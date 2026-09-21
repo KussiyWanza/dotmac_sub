@@ -1,4 +1,4 @@
-"""Atomic Lead -> accepted Quote -> implementation workflow."""
+"""Atomic Lead/Customer -> accepted Quote -> implementation workflow."""
 
 from __future__ import annotations
 
@@ -148,6 +148,31 @@ def _quote(
     return quote
 
 
+def _customer_quote(
+    db,
+    subscriber: Subscriber,
+    project_type: ProjectType = ProjectType.fiber_optics_installation,
+) -> Quote:
+    quote = sales_service.quotes.create(
+        db,
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            project_type=project_type,
+            currency="NGN",
+        ),
+    )
+    sales_service.quote_line_items.create(
+        db,
+        QuoteLineItemCreate(
+            quote_id=quote.id,
+            description="Fiber installation",
+            quantity="1",
+            unit_price="150000.00",
+        ),
+    )
+    return quote
+
+
 def _command(
     quote_id: UUID,
     *,
@@ -194,6 +219,29 @@ def test_lead_and_draft_quote_create_no_downstream_records(db_session):
     assert db_session.query(Project).count() == 0
     assert db_session.query(ProjectTask).count() == 0
     assert db_session.query(WorkOrder).count() == 0
+
+
+def test_customer_quote_acceptance_uses_subscriber_without_manufacturing_lead(
+    db_session,
+    subscriber,
+):
+    _template(db_session)
+    lead_count = db_session.query(Lead).count()
+    quote = _customer_quote(db_session, subscriber)
+
+    outcome = _accept(db_session, quote.id)
+
+    accepted = db_session.get(Quote, quote.id)
+    order = db_session.get(SalesOrder, outcome.sales_order_id)
+    project = db_session.get(Project, outcome.project_id)
+    assert outcome.lead_id is None
+    assert outcome.subscriber_id == subscriber.id
+    assert accepted.lead_id is None
+    assert accepted.subscriber_id == subscriber.id
+    assert accepted.status == QuoteStatus.accepted.value
+    assert order.subscriber_id == subscriber.id
+    assert project.subscriber_id == subscriber.id
+    assert db_session.query(Lead).count() == lead_count
 
 
 def test_quote_acceptance_converts_every_record_in_one_workflow(db_session):

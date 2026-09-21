@@ -249,7 +249,9 @@ def reconcile_ont(
             # If we crash mid-pass, the rollback wipes this and the next
             # reconcile sees the previous status; if we exit normally it gets
             # overwritten with synced/out_of_sync at the end.
-            ont.sync_status = OntSyncStatus.reconciling
+            from app.services.network.ont_status import set_sync_status
+
+            set_sync_status(ont, OntSyncStatus.reconciling, reason="reconcile_started")
             ont.last_reconcile_started_at = started_at
 
             # ── Resolve desired ─────────────────────────────────────────────
@@ -294,6 +296,8 @@ def reconcile_ont(
                         actions_applied=(),
                         drift_before=(),
                         drift_after=(),
+                        observed_surfaces=frozenset(),
+                        olt_read_status=None,
                     )
             else:
                 target = desired_current
@@ -320,6 +324,32 @@ def reconcile_ont(
                 if cached_wifi_observation is not None
                 else None
             )
+            # ``olt_adapter is None`` at this point means no OLT I/O will
+            # happen this pass at all — the WiFi-only delivery path
+            # substitutes ``olt_observed_fallback`` (cached prior evidence,
+            # or a synthesized absence when there is none) instead of paying
+            # for a live SSH read. That substitution is still classified
+            # present/absent by ``_read_observed_parallel`` so planning can
+            # use it (see ``olt_observed_fallback`` above), but it must not
+            # be recorded as this pass having actually observed the OLT
+            # surface — ``_surfaces_observed``/``_observed_olt_read_status``
+            # key off this flag, not off the substituted status, to keep
+            # ``olt_observed_at``/``olt_read_status`` honest. ``olt_adapter``
+            # is never reassigned after this point, so the same flag applies
+            # to both the pre-apply read below and the post-apply verify read.
+            olt_read_attempted = olt_adapter is not None
+            # Symmetric case: ``acs_client is None`` at this point means the
+            # OLT-only profile-change pass (``olt_only_profile_change``)
+            # deliberately skipped ACS I/O and substitutes
+            # ``acs_observed_fallback`` (cached prior evidence) instead of
+            # paying for a live GenieACS read. Same treatment as
+            # ``olt_read_attempted`` above — the substitution is still
+            # classified present/absent for planning, but must not be
+            # recorded as this pass having actually observed the ACS
+            # surface. ``acs_client`` is never reassigned after this point,
+            # so the same flag applies to both the pre-apply read below and
+            # the post-apply verify read.
+            acs_read_attempted = acs_client is not None
 
             # ── Read observed (parallel OLT + ACS) ──────────────────────────
             olt_result, acs_result = _read_observed_parallel(
@@ -358,6 +388,44 @@ def reconcile_ont(
                 acs=acs_result.observed or _absent_acs(),
             )
 
+            # ── Refuse before planning if the OLT read can't be trusted ─────
+            # An unavailable OLT read (transport failure OR a reachable but
+            # unparseable/rejected reply) must never be treated as "the
+            # device is absent" — that false absence is what previously drove
+            # a live OltAuthorize / IPHOST rewrite / WiFi+PSK push against a
+            # device we simply failed to observe. Refuse here, before
+            # ``compute_plan`` ever sees the substituted placeholder, and
+            # preserve whatever OLT evidence is already on file (see
+            # ``observed_surfaces`` below).
+            if olt_result.status == "unavailable":
+                olt_unavailable_reason = _olt_unavailable_reason(olt_result)
+                return _finalise(
+                    db,
+                    ont,
+                    success=False,
+                    failure=ReconcileFailure(
+                        reason=olt_unavailable_reason,
+                        message=(
+                            "OLT observation unavailable: "
+                            f"{olt_result.error or 'no detail'}"
+                        ),
+                    ),
+                    started_monotonic=started_monotonic,
+                    observed_after=observed_before,
+                    actions_applied=(),
+                    drift_before=(),
+                    drift_after=(),
+                    observed_surfaces=_surfaces_observed(
+                        olt_result,
+                        acs_result,
+                        olt_read_attempted=olt_read_attempted,
+                        acs_read_attempted=acs_read_attempted,
+                    ),
+                    olt_read_status=_observed_olt_read_status(
+                        olt_result, read_attempted=olt_read_attempted
+                    ),
+                )
+
             # ── Compute plan ────────────────────────────────────────────────
             plan = compute_plan(
                 target,
@@ -368,6 +436,9 @@ def reconcile_ont(
             )
 
             # ── Precondition: surfaces the plan needs must be reachable ─────
+            # OLT-unavailable already returned above, before ``compute_plan``
+            # ran at all — this set only ever gains "acs" in practice now,
+            # kept as a set for the shared ``blocked`` logic below.
             unreachable: set[WriteSurface] = set()
             if olt_result.unreachable:
                 unreachable.add("olt")
@@ -403,24 +474,51 @@ def reconcile_ont(
                     actions_applied=(),
                     drift_before=plan.drifts,
                     drift_after=plan.drifts,
+                    observed_surfaces=_surfaces_observed(
+                        olt_result,
+                        acs_result,
+                        olt_read_attempted=olt_read_attempted,
+                        acs_read_attempted=acs_read_attempted,
+                    ),
+                    olt_read_status=_observed_olt_read_status(
+                        olt_result, read_attempted=olt_read_attempted
+                    ),
                 )
 
             # ── Apply ───────────────────────────────────────────────────────
             if readback_only:
-                acs_wait = _acs_wait_failure(plan)
-                if acs_wait is not None:
+                plan_wait = _plan_wait_failure(plan)
+                if plan_wait is not None:
                     return _finalise(
                         db,
                         ont,
                         success=False,
-                        failure=acs_wait,
+                        failure=plan_wait,
                         started_monotonic=started_monotonic,
                         observed_after=observed_before,
                         actions_applied=(),
                         drift_before=plan.drifts,
                         drift_after=plan.drifts,
+                        observed_surfaces=_surfaces_observed(
+                            olt_result,
+                            acs_result,
+                            olt_read_attempted=olt_read_attempted,
+                            acs_read_attempted=acs_read_attempted,
+                        ),
+                        olt_read_status=_observed_olt_read_status(
+                            olt_result, read_attempted=olt_read_attempted
+                        ),
                     )
-                if plan.actions:
+                if plan.actions or plan.drifts:
+                    # ``plan.actions`` empty does NOT mean "no drift" — a
+                    # non-repairable drift (e.g. a service port mismatched at
+                    # its allocated index) can be recorded with no
+                    # corresponding action and no ``olt_wait_reason``. Gating
+                    # on drift, not action count, mirrors the write path's own
+                    # gate (``verify_debt = verify_plan.drifts + ...`` below)
+                    # so a readback pass can never claim convergence, and
+                    # therefore can never clear ``out_of_sync``, while
+                    # unrelated drift remains on record.
                     return _finalise(
                         db,
                         ont,
@@ -441,6 +539,15 @@ def reconcile_ont(
                         actions_applied=(),
                         drift_before=plan.drifts,
                         drift_after=plan.drifts,
+                        observed_surfaces=_surfaces_observed(
+                            olt_result,
+                            acs_result,
+                            olt_read_attempted=olt_read_attempted,
+                            acs_read_attempted=acs_read_attempted,
+                        ),
+                        olt_read_status=_observed_olt_read_status(
+                            olt_result, read_attempted=olt_read_attempted
+                        ),
                     )
                 return _finalise(
                     db,
@@ -452,6 +559,15 @@ def reconcile_ont(
                     actions_applied=(),
                     drift_before=plan.drifts,
                     drift_after=(),
+                    observed_surfaces=_surfaces_observed(
+                        olt_result,
+                        acs_result,
+                        olt_read_attempted=olt_read_attempted,
+                        acs_read_attempted=acs_read_attempted,
+                    ),
+                    olt_read_status=_observed_olt_read_status(
+                        olt_result, read_attempted=olt_read_attempted
+                    ),
                 )
 
             # Resolve delivery-time PPP authorization from the service-intent
@@ -493,6 +609,15 @@ def reconcile_ont(
                     actions_applied=apply_outcome.actions_applied,
                     drift_before=plan.drifts,
                     drift_after=plan.drifts,
+                    observed_surfaces=_surfaces_observed(
+                        olt_result,
+                        acs_result,
+                        olt_read_attempted=olt_read_attempted,
+                        acs_read_attempted=acs_read_attempted,
+                    ),
+                    olt_read_status=_observed_olt_read_status(
+                        olt_result, read_attempted=olt_read_attempted
+                    ),
                 )
 
             # Reset the sweep-unreachable counter on any successful reconcile.
@@ -532,24 +657,33 @@ def reconcile_ont(
             # can re-read and confirm the planner produces an empty plan
             # against the post-apply state. If actions_applied is empty
             # (drift was zero from the start), there is nothing to verify.
-            acs_wait = _acs_wait_failure(plan)
+            plan_wait = _plan_wait_failure(plan)
 
             # A plan whose every action was refused also applies nothing, and
             # must not take the "nothing to verify" shortcut: that path reports
             # zero drift, which is exactly the false convergence this gate
             # exists to prevent.
             if not apply_outcome.actions_applied and not residual_ppp_drift:
-                if acs_wait is not None:
+                if plan_wait is not None:
                     return _finalise(
                         db,
                         ont,
                         success=False,
-                        failure=acs_wait,
+                        failure=plan_wait,
                         started_monotonic=started_monotonic,
                         observed_after=observed_before,
                         actions_applied=(),
                         drift_before=plan.drifts,
                         drift_after=plan.drifts,
+                        observed_surfaces=_surfaces_observed(
+                            olt_result,
+                            acs_result,
+                            olt_read_attempted=olt_read_attempted,
+                            acs_read_attempted=acs_read_attempted,
+                        ),
+                        olt_read_status=_observed_olt_read_status(
+                            olt_result, read_attempted=olt_read_attempted
+                        ),
                     )
                 if proposed_values and persist_proposed_values:
                     apply_proposed_change(
@@ -567,6 +701,15 @@ def reconcile_ont(
                     actions_applied=apply_outcome.actions_applied,
                     drift_before=plan.drifts,
                     drift_after=residual_ppp_drift,
+                    observed_surfaces=_surfaces_observed(
+                        olt_result,
+                        acs_result,
+                        olt_read_attempted=olt_read_attempted,
+                        acs_read_attempted=acs_read_attempted,
+                    ),
+                    olt_read_status=_observed_olt_read_status(
+                        olt_result, read_attempted=olt_read_attempted
+                    ),
                 )
 
             verify_olt_result, verify_acs_result = _read_observed_parallel(
@@ -596,16 +739,21 @@ def reconcile_ont(
             )
 
             # Verify-read couldn't reach OLT or ACS → can't confirm
-            # convergence, refuse to mark synced.
-            if verify_olt_result.unreachable:
+            # convergence, refuse to mark synced. An unparseable-but-reachable
+            # verify reply is the same hazard as a pre-apply one: substituting
+            # absence here would overwrite the just-applied evidence with a
+            # fabricated "not there" and could still report false convergence
+            # if the plan happened to be a delete-only pass.
+            if verify_olt_result.status == "unavailable":
+                verify_olt_reason = _olt_unavailable_reason(verify_olt_result)
                 return _finalise(
                     db,
                     ont,
                     success=False,
                     failure=ReconcileFailure(
-                        reason=ReconcileFailureReason.OLT_UNREACHABLE,
+                        reason=verify_olt_reason,
                         message=(
-                            "Post-apply verification could not reach OLT: "
+                            "Post-apply verification could not confirm OLT state: "
                             f"{verify_olt_result.error or 'no detail'}"
                         ),
                     ),
@@ -614,8 +762,17 @@ def reconcile_ont(
                     actions_applied=apply_outcome.actions_applied,
                     drift_before=plan.drifts,
                     drift_after=plan.drifts,
+                    observed_surfaces=_surfaces_observed(
+                        verify_olt_result,
+                        verify_acs_result,
+                        olt_read_attempted=olt_read_attempted,
+                        acs_read_attempted=acs_read_attempted,
+                    ),
+                    olt_read_status=_observed_olt_read_status(
+                        verify_olt_result, read_attempted=olt_read_attempted
+                    ),
                 )
-            if verify_acs_result.unreachable:
+            if verify_acs_result.status == "unavailable":
                 return _finalise(
                     db,
                     ont,
@@ -632,6 +789,15 @@ def reconcile_ont(
                     actions_applied=apply_outcome.actions_applied,
                     drift_before=plan.drifts,
                     drift_after=plan.drifts,
+                    observed_surfaces=_surfaces_observed(
+                        verify_olt_result,
+                        verify_acs_result,
+                        olt_read_attempted=olt_read_attempted,
+                        acs_read_attempted=acs_read_attempted,
+                    ),
+                    olt_read_status=_observed_olt_read_status(
+                        verify_olt_result, read_attempted=olt_read_attempted
+                    ),
                 )
 
             verify_plan = compute_plan(
@@ -641,6 +807,18 @@ def reconcile_ont(
                 proposed_fields=proposed_fields,
                 force_proposed_writes=False,
             )
+            # Every planned service-port CREATE also recorded an entry in
+            # ``verification_debt`` (never observable as ordinary "drift" at
+            # plan time — the port doesn't exist yet, so there is no
+            # divergent value to diff against). Combined here — rather than
+            # trusting ``verify_plan.drifts`` alone, or the much weaker
+            # ``verify_plan.actions`` (which bootstrap mode always
+            # repopulates with the WiFi/PSK push regardless of whether
+            # anything is actually wrong) — so a create the OLT silently
+            # no-op'd cannot re-plan as "another driftless create" and slip
+            # past this gate reporting false convergence.
+            verify_debt = verify_plan.drifts + verify_plan.verification_debt
+
             # Drift that only exists because delivery authorization withheld
             # the repair is not a verification failure -- the reconciler did
             # not fail to converge it, it was forbidden from trying. Left
@@ -652,11 +830,9 @@ def reconcile_ont(
             # have no repair. Every drift not attributable to the withheld PPP
             # work is preserved and still fails verification.
             unattributed = tuple(
-                drift
-                for drift in verify_plan.drifts
-                if not is_ppp_attributable_drift(drift)
+                drift for drift in verify_debt if not is_ppp_attributable_drift(drift)
             )
-            if verify_plan.drifts and residual_ppp_drift and not unattributed:
+            if verify_debt and residual_ppp_drift and not unattributed:
                 return _finalise(
                     db,
                     ont,
@@ -667,15 +843,24 @@ def reconcile_ont(
                     actions_applied=apply_outcome.actions_applied,
                     drift_before=plan.drifts,
                     drift_after=residual_ppp_drift,
+                    observed_surfaces=_surfaces_observed(
+                        verify_olt_result,
+                        verify_acs_result,
+                        olt_read_attempted=olt_read_attempted,
+                        acs_read_attempted=acs_read_attempted,
+                    ),
+                    olt_read_status=_observed_olt_read_status(
+                        verify_olt_result, read_attempted=olt_read_attempted
+                    ),
                 )
 
-            if verify_plan.drifts:
+            if verify_debt:
                 # Classify residual drift as ACS inform-lag or genuine. This
                 # reconcile pass still returns VERIFICATION_MISMATCH; the
                 # durable configuration lifecycle uses readback_pending
                 # evidence to schedule bounded delayed verification.
                 _cache_lag, _genuine = _classify_verify_drifts(
-                    verify_plan.drifts, apply_outcome.actions_applied
+                    verify_debt, apply_outcome.actions_applied
                 )
                 logger.warning(
                     "acs_verify_mismatch",
@@ -683,15 +868,13 @@ def reconcile_ont(
                         "event": "acs_verify_mismatch",
                         "ont_id": str(ont.id),
                         "mode": mode,
-                        "total_drifts": len(verify_plan.drifts),
+                        "total_drifts": len(verify_debt),
                         "acs_cache_lag_candidates": len(_cache_lag),
                         "genuine_drifts": len(_genuine),
                         # If true, a lifecycle owner may wait for a fresh Inform
                         # rather than treating stale cache as a terminal fault.
                         "would_be_graced": not _genuine,
-                        "drift_fields": [
-                            f"{d.surface}:{d.field}" for d in verify_plan.drifts
-                        ],
+                        "drift_fields": [f"{d.surface}:{d.field}" for d in verify_debt],
                     },
                 )
                 return _finalise(
@@ -702,13 +885,13 @@ def reconcile_ont(
                         reason=ReconcileFailureReason.VERIFICATION_MISMATCH,
                         message=(
                             "Post-apply state still diverges from desired: "
-                            f"{_summarise_drifts(verify_plan.drifts)}"
+                            f"{_summarise_drifts(verify_debt)}"
                         ),
                         evidence={
                             "readback_pending": not _genuine,
                             "drift_fields": [
                                 f"{drift.surface}:{drift.field}"
-                                for drift in verify_plan.drifts
+                                for drift in verify_debt
                             ],
                         },
                     ),
@@ -716,24 +899,43 @@ def reconcile_ont(
                     observed_after=observed_after,
                     actions_applied=apply_outcome.actions_applied,
                     drift_before=plan.drifts,
-                    drift_after=verify_plan.drifts,
+                    drift_after=verify_debt,
+                    observed_surfaces=_surfaces_observed(
+                        verify_olt_result,
+                        verify_acs_result,
+                        olt_read_attempted=olt_read_attempted,
+                        acs_read_attempted=acs_read_attempted,
+                    ),
+                    olt_read_status=_observed_olt_read_status(
+                        verify_olt_result, read_attempted=olt_read_attempted
+                    ),
                 )
 
-            if acs_wait is not None:
-                # The OLT half converged, but the ACS half was never planned:
-                # this device has no ACS document, or no unambiguous GenieACS
-                # ``_id``. Reporting success here would tell an operator the
-                # CPE was configured when nothing was delivered to it.
+            if plan_wait is not None:
+                # Either the ACS half was never planned (no ACS document, or
+                # no unambiguous GenieACS ``_id``) or the OLT half withheld
+                # its service-port deletes (both indices unallocated).
+                # Reporting success here would tell an operator the device
+                # was fully configured when part of the plan was withheld.
                 return _finalise(
                     db,
                     ont,
                     success=False,
-                    failure=acs_wait,
+                    failure=plan_wait,
                     started_monotonic=started_monotonic,
                     observed_after=observed_after,
                     actions_applied=apply_outcome.actions_applied,
                     drift_before=plan.drifts,
                     drift_after=plan.drifts,
+                    observed_surfaces=_surfaces_observed(
+                        verify_olt_result,
+                        verify_acs_result,
+                        olt_read_attempted=olt_read_attempted,
+                        acs_read_attempted=acs_read_attempted,
+                    ),
+                    olt_read_status=_observed_olt_read_status(
+                        verify_olt_result, read_attempted=olt_read_attempted
+                    ),
                 )
 
             if proposed_values and persist_proposed_values:
@@ -752,6 +954,15 @@ def reconcile_ont(
                 actions_applied=apply_outcome.actions_applied,
                 drift_before=plan.drifts,
                 drift_after=residual_ppp_drift,
+                observed_surfaces=_surfaces_observed(
+                    verify_olt_result,
+                    verify_acs_result,
+                    olt_read_attempted=olt_read_attempted,
+                    acs_read_attempted=acs_read_attempted,
+                ),
+                olt_read_status=_observed_olt_read_status(
+                    verify_olt_result, read_attempted=olt_read_attempted
+                ),
             )
 
     except OntNotFound as exc:
@@ -800,6 +1011,39 @@ def _acs_wait_failure(plan) -> ReconcileFailure | None:
         message=plan.acs_wait_detail or "ACS configuration could not be delivered.",
         evidence={"acs_wait_reason": plan.acs_wait_reason},
     )
+
+
+def _olt_wait_failure(plan) -> ReconcileFailure | None:
+    """Translate a plan's OLT service-port-index gate into a failure record.
+
+    ``Plan.olt_wait_reason`` is set when ``compute_plan`` withheld every
+    ``OltDeleteServicePort`` action for this ONT because neither the mgmt nor
+    the WAN service-port index has been allocated. Deleting every observed
+    service port in that state would be unconditional and unrecoverable (the
+    create branch requires a real index, so nothing would be recreated), so
+    the planner refuses instead of claiming convergence.
+    """
+    if plan.olt_wait_reason is None:
+        return None
+    return ReconcileFailure(
+        reason=plan.olt_wait_reason,
+        message=(
+            plan.olt_wait_detail
+            or "OLT service-port index is unallocated; refusing to delete "
+            "observed ports."
+        ),
+        evidence={"olt_wait_reason": plan.olt_wait_reason},
+    )
+
+
+def _plan_wait_failure(plan) -> ReconcileFailure | None:
+    """Combine the OLT and ACS wait gates into a single failure, if either fired.
+
+    OLT is checked first: its actions precede ACS in write order, and an
+    unallocated service-port index is a more fundamental refusal (nothing
+    named it, versus ACS merely being unreachable/ambiguous).
+    """
+    return _olt_wait_failure(plan) or _acs_wait_failure(plan)
 
 
 def _resolve_olt_adapter(db: Session, ont: OntUnit) -> Any:
@@ -863,30 +1107,37 @@ def _read_observed_parallel(
     The readers themselves don't share state, so no synchronisation needed.
     """
     if olt_adapter is None:
+        # No adapter means the caller deliberately skipped OLT I/O (the
+        # WiFi-only delivery path substitutes the last cached observation
+        # instead of paying for a live SSH read) — never that a real read
+        # was attempted and came back empty. The caller (``reconcile_ont``)
+        # is responsible for treating this ``ReadResult`` as a cached
+        # substitution rather than a fresh observation — see
+        # ``_surfaces_observed``'s ``olt_read_attempted`` parameter.
+        olt_observed = olt_observed_fallback or _absent_olt()
         olt_result = ReadResult(
-            success=True,
-            unreachable=False,
-            observed=olt_observed_fallback or _absent_olt(),
+            status="present" if olt_observed.olt_present else "absent",
+            observed=olt_observed,
             error=None,
         )
         if acs_client is None:
+            acs_observed = acs_observed_fallback or _absent_acs()
             return (
                 olt_result,
                 ReadResult(
-                    success=True,
-                    unreachable=False,
-                    observed=acs_observed_fallback or _absent_acs(),
+                    status="present" if acs_observed.acs_present else "absent",
+                    observed=acs_observed,
                     error=None,
                 ),
             )
         return olt_result, read_acs_state(acs_client, desired, deadline=deadline)
     if acs_client is None:
+        acs_observed = acs_observed_fallback or _absent_acs()
         return (
             read_olt_state(olt_adapter, desired, deadline=deadline),
             ReadResult(
-                success=True,
-                unreachable=False,
-                observed=acs_observed_fallback or _absent_acs(),
+                status="present" if acs_observed.acs_present else "absent",
+                observed=acs_observed,
                 error=None,
             ),
         )
@@ -967,6 +1218,74 @@ def _absent_acs() -> AcsObservedFields:
     )
 
 
+def _olt_unavailable_reason(result: ReadResult) -> str:
+    """Map an ``"unavailable"`` OLT ``ReadResult`` to its specific failure reason.
+
+    Three distinct causes share the tri-state's ``"unavailable"`` bucket —
+    couldn't contact the device at all, a reachable-but-untrustworthy reply,
+    and a physical-identity problem (Astra Bug 1: a registration found at a
+    different fsp/onu_id than the desired target, or with no target to
+    compare against at all) — and each gets its own operator-facing reason
+    rather than collapsing into the generic ``OLT_OBSERVATION_UNAVAILABLE``.
+    """
+    if result.unreachable:
+        return ReconcileFailureReason.OLT_UNREACHABLE
+    if result.identity_status == "mismatch":
+        return ReconcileFailureReason.OLT_IDENTITY_MISMATCH
+    if result.identity_status == "unresolved":
+        return ReconcileFailureReason.OLT_IDENTITY_UNRESOLVED
+    return ReconcileFailureReason.OLT_OBSERVATION_UNAVAILABLE
+
+
+def _surfaces_observed(
+    olt_result: ReadResult,
+    acs_result: ReadResult,
+    *,
+    olt_read_attempted: bool = True,
+    acs_read_attempted: bool = True,
+) -> frozenset[WriteSurface]:
+    """Which surfaces this pass actually produced a trustworthy read for.
+
+    ``"unavailable"`` on either surface means that surface's half of
+    ``observed_before``/``observed_after`` is a synthesized placeholder, not
+    real evidence — ``upsert_ont_observation`` must not let it overwrite the
+    last genuine observation for that surface.
+
+    ``olt_read_attempted``/``acs_read_attempted`` are each a separate axis
+    from their respective result's ``.status``: a WiFi-only delivery pass
+    never builds an OLT adapter at all, and an OLT-only profile-change pass
+    never builds an ACS client at all — both substitute the last cached
+    observation instead (see ``reconcile_ont`` and
+    ``_read_observed_parallel``). That substitution is still classified
+    ``"present"``/``"absent"`` — the cached data is real and usable for
+    planning — but no I/O happened this pass for that surface, so it must
+    not count as this pass having observed it. Callers that never skip a
+    given surface's I/O pass no override for that flag and get the original
+    behaviour.
+    """
+    surfaces: set[WriteSurface] = set()
+    if olt_result.status != "unavailable" and olt_read_attempted:
+        surfaces.add("olt")
+    if acs_result.status != "unavailable" and acs_read_attempted:
+        surfaces.add("acs")
+    return frozenset(surfaces)
+
+
+def _observed_olt_read_status(
+    result: ReadResult, *, read_attempted: bool = True
+) -> str | None:
+    """The freshness signal to stamp on the observation row's ``olt_read_status``.
+
+    ``None`` when this pass performed no real OLT I/O (``read_attempted ==
+    False`` — a WiFi-only delivery pass substituting cached OLT data).
+    Stamping ``result.status`` in that case would record a live
+    present/absent verdict for a read that never happened.
+    ``upsert_ont_observation`` treats ``None`` as "leave the column exactly
+    as it was," not as "clear it."
+    """
+    return result.status if read_attempted else None
+
+
 def _finalise(
     db: Session,
     ont: OntUnit,
@@ -978,12 +1297,27 @@ def _finalise(
     actions_applied,
     drift_before,
     drift_after,
+    observed_surfaces: frozenset[WriteSurface],
+    olt_read_status: str | None,
 ) -> ReconcileResult:
     """Persist state on the OntUnit row + observation table, build the result.
 
     Called inside the lock context — the caller's transaction commits when
     the context exits normally.
+
+    ``observed_surfaces`` names which of ``observed_after.olt``/``.acs`` are
+    real reads this pass — the other surface's columns on the observation row
+    are left untouched rather than overwritten with a synthesized "absent".
+    ``olt_read_status`` is stamped on the row whenever this pass genuinely
+    attempted an OLT read (even one that came back ``"unavailable"``), so the
+    row carries an honest freshness signal: "the last successful observation
+    is these values, but the last attempt was unavailable at this time." When
+    no OLT read was attempted at all — a WiFi-only delivery pass substituting
+    cached data, via ``_observed_olt_read_status`` returning ``None`` — the
+    column is left exactly as it was; there is no "attempt" to record.
     """
+    from app.services.network.ont_status import set_sync_status
+
     now = datetime.now(UTC)
     duration_ms = int((time.monotonic() - started_monotonic) * 1000)
 
@@ -992,10 +1326,10 @@ def _finalise(
         # Not `synced` (which asserts zero residual drift) and not a failure
         # either -- no write was rejected. The drift stays visible so the
         # withheld PPP work is discoverable rather than silently absent.
-        ont.sync_status = OntSyncStatus.out_of_sync
+        set_sync_status(ont, OntSyncStatus.out_of_sync, reason="drift_withheld")
         ont.last_error = None
     elif success:
-        ont.sync_status = OntSyncStatus.synced
+        set_sync_status(ont, OntSyncStatus.synced, reason="reconcile_succeeded")
         ont.last_error = None
         cleared = clear_acs_delivery_fault(ont)
         if cleared:
@@ -1005,13 +1339,19 @@ def _finalise(
                 before=cleared,
             )
     else:
-        ont.sync_status = OntSyncStatus.out_of_sync
+        set_sync_status(ont, OntSyncStatus.out_of_sync, reason="reconcile_failed")
         ont.last_error = failure.message if failure else "unknown failure"
         _record_acs_delivery_fault(ont, failure)
     ont.last_reconciled_at = now
 
     if observed_after is not None:
-        upsert_ont_observation(db, ont.id, observed_after)
+        upsert_ont_observation(
+            db,
+            ont.id,
+            observed_after,
+            observed_surfaces=observed_surfaces,
+            olt_read_status=olt_read_status,
+        )
 
     return ReconcileResult(
         success=success,

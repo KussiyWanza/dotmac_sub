@@ -86,8 +86,12 @@ def test_routes_tasks_and_templates_remain_projection_adapters() -> None:
         "last_verification_at",
         "blocks_another_attempt",
         "customer_retry_allowed",
+        "cancellation_action",
     ):
         assert projected_field in admin_template
+    assert "cancellation.impact" in admin_template
+    assert "cancellation.confirmation_message" in admin_template
+    assert "Review transfer proof" in admin_template
     assert "tojson" not in admin_template
     assert "metadata" not in admin_template
 

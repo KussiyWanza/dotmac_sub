@@ -477,7 +477,7 @@ class TestMikrotikCommands:
         reviewed cleanup operation, not a builder concern.
         """
         cmds = _mikrotik_commands(
-            mock_subscription, mock_profile, ConnectionType.pppoe, action
+            None, mock_subscription, mock_profile, ConnectionType.pppoe, action
         )
 
         assert cmds == []
@@ -490,7 +490,7 @@ class TestMikrotikCommands:
             command
             for action in ("create", "delete", "suspend", "unsuspend", "change_ip")
             for command in _mikrotik_commands(
-                mock_subscription, mock_profile, ConnectionType.pppoe, action
+                None, mock_subscription, mock_profile, ConnectionType.pppoe, action
             )
         ]
 
@@ -498,7 +498,7 @@ class TestMikrotikCommands:
 
     def test_dhcp_create(self, mock_subscription, mock_profile):
         cmds = _mikrotik_commands(
-            mock_subscription, mock_profile, ConnectionType.dhcp, "create"
+            None, mock_subscription, mock_profile, ConnectionType.dhcp, "create"
         )
         assert len(cmds) == 1
         assert "/ip dhcp-server lease add" in cmds[0]
@@ -506,14 +506,14 @@ class TestMikrotikCommands:
 
     def test_dhcp_delete(self, mock_subscription, mock_profile):
         cmds = _mikrotik_commands(
-            mock_subscription, mock_profile, ConnectionType.dhcp, "delete"
+            None, mock_subscription, mock_profile, ConnectionType.dhcp, "delete"
         )
         assert len(cmds) == 1
         assert "/ip dhcp-server lease remove" in cmds[0]
 
     def test_hotspot_create(self, mock_subscription, mock_profile):
         cmds = _mikrotik_commands(
-            mock_subscription, mock_profile, ConnectionType.hotspot, "create"
+            None, mock_subscription, mock_profile, ConnectionType.hotspot, "create"
         )
         assert len(cmds) == 1
         assert "/ip hotspot user add" in cmds[0]
@@ -521,7 +521,7 @@ class TestMikrotikCommands:
 
     def test_hotspot_suspend(self, mock_subscription, mock_profile):
         cmds = _mikrotik_commands(
-            mock_subscription, mock_profile, ConnectionType.hotspot, "suspend"
+            None, mock_subscription, mock_profile, ConnectionType.hotspot, "suspend"
         )
         assert len(cmds) == 2
         assert "disabled=yes" in cmds[0]
@@ -529,15 +529,50 @@ class TestMikrotikCommands:
 
     def test_static_suspend(self, mock_subscription, mock_profile):
         cmds = _mikrotik_commands(
-            mock_subscription, mock_profile, ConnectionType.static, "suspend"
+            None, mock_subscription, mock_profile, ConnectionType.static, "suspend"
         )
         assert len(cmds) == 1
-        assert "blocked-subscribers" in cmds[0]
+        # No db => the module default list name, resolved dynamically rather
+        # than hardcoded (a hardcoded name here would write to a list nothing
+        # reads — see app/services/radius_address_lists.py).
+        assert "suspended" in cmds[0]
+
+    def test_static_unsuspend(self, mock_subscription, mock_profile):
+        cmds = _mikrotik_commands(
+            None, mock_subscription, mock_profile, ConnectionType.static, "unsuspend"
+        )
+        assert len(cmds) == 1
+        assert "/ip firewall address-list remove" in cmds[0]
+        # Quoted the same way as suspend — an operator-configured list name
+        # can contain a space, and suspend/unsuspend must parse it identically
+        # or a block can stick with no way to lift it.
+        assert 'list="suspended"' in cmds[0]
 
     def test_ipoe_create(self, mock_subscription, mock_profile):
         cmds = _mikrotik_commands(
-            mock_subscription, mock_profile, ConnectionType.ipoe, "create"
+            None, mock_subscription, mock_profile, ConnectionType.ipoe, "create"
         )
         assert len(cmds) == 1
         assert "/ip dhcp-server lease add" in cmds[0]
         assert "use-src-mac=yes" in cmds[0]
+
+    def test_ipoe_suspend(self, mock_subscription, mock_profile):
+        """Previously missing entirely: build_nas_provisioning_commands was
+        never called with action="suspend" for any connection type, and IPoE
+        had no suspend/unsuspend branch at all. Mirrors ConnectionType.dhcp's
+        lease-disable toggle since IPoE create/delete already reuse the DHCP
+        lease primitive."""
+        cmds = _mikrotik_commands(
+            None, mock_subscription, mock_profile, ConnectionType.ipoe, "suspend"
+        )
+        assert len(cmds) == 1
+        assert "/ip dhcp-server lease set" in cmds[0]
+        assert "disabled=yes" in cmds[0]
+
+    def test_ipoe_unsuspend(self, mock_subscription, mock_profile):
+        cmds = _mikrotik_commands(
+            None, mock_subscription, mock_profile, ConnectionType.ipoe, "unsuspend"
+        )
+        assert len(cmds) == 1
+        assert "/ip dhcp-server lease set" in cmds[0]
+        assert "disabled=no" in cmds[0]

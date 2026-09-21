@@ -124,6 +124,41 @@ def test_force_push_failure_surfaces_with_actionable_for_cr_failed(
     assert result.data["failure_reason"] == ReconcileFailureReason.ACS_CR_FAILED
 
 
+def test_force_push_passes_explicit_timeout_sec_to_reconcile_ont(
+    db_session, ont, monkeypatch
+):
+    """An operator-supplied ``timeout_sec`` must reach ``reconcile_ont`` so a
+    slow OLT shelf (e.g. Huawei MA5608T under ``slow_send`` pacing) can be
+    given a longer apply/idle-in-transaction budget than the 60s default."""
+    captured: dict = {}
+
+    def _fake_reconcile(db, ont_unit_id, *, proposed_change, mode, **kwargs):
+        captured["kwargs"] = kwargs
+        return _stub_result(True)
+
+    monkeypatch.setattr("app.services.network.reconcile.reconcile_ont", _fake_reconcile)
+
+    force_push_wifi_password(db_session, str(ont.id), "newpw", timeout_sec=180)
+
+    assert captured["kwargs"].get("timeout_sec") == 180
+
+
+def test_force_push_omits_timeout_sec_when_not_supplied(db_session, ont, monkeypatch):
+    """No explicit override means ``reconcile_ont`` keeps using its own
+    default (60s) — this change must not alter default behavior."""
+    captured: dict = {}
+
+    def _fake_reconcile(db, ont_unit_id, *, proposed_change, mode, **kwargs):
+        captured["kwargs"] = kwargs
+        return _stub_result(True)
+
+    monkeypatch.setattr("app.services.network.reconcile.reconcile_ont", _fake_reconcile)
+
+    force_push_wifi_password(db_session, str(ont.id), "newpw")
+
+    assert "timeout_sec" not in captured["kwargs"]
+
+
 def test_force_push_audit_action_name(db_session, ont, monkeypatch):
     """The audit log entry uses ``force_push_wifi_password`` (distinct from
     the legacy ``set_wifi_password`` name) so historical filtering can
@@ -185,6 +220,36 @@ def test_force_resync_clears_out_of_sync_path(db_session, ont, monkeypatch):
     result = force_resync_ont(db_session, str(ont.id))
     assert result.success is True
     assert result.data["sync_status"] == "synced"
+
+
+def test_force_resync_passes_explicit_timeout_sec_to_reconcile_ont(
+    db_session, ont, monkeypatch
+):
+    captured: dict = {}
+
+    def _fake_reconcile(db, ont_unit_id, *, proposed_change, mode, **kwargs):
+        captured["kwargs"] = kwargs
+        return _stub_result(True)
+
+    monkeypatch.setattr("app.services.network.reconcile.reconcile_ont", _fake_reconcile)
+
+    force_resync_ont(db_session, str(ont.id), timeout_sec=180)
+
+    assert captured["kwargs"].get("timeout_sec") == 180
+
+
+def test_force_resync_omits_timeout_sec_when_not_supplied(db_session, ont, monkeypatch):
+    captured: dict = {}
+
+    def _fake_reconcile(db, ont_unit_id, *, proposed_change, mode, **kwargs):
+        captured["kwargs"] = kwargs
+        return _stub_result(True)
+
+    monkeypatch.setattr("app.services.network.reconcile.reconcile_ont", _fake_reconcile)
+
+    force_resync_ont(db_session, str(ont.id))
+
+    assert "timeout_sec" not in captured["kwargs"]
 
 
 def test_force_resync_audit_action_name(db_session, ont, monkeypatch):

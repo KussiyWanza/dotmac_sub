@@ -34,7 +34,7 @@ jobs:
     outputs:
       source_revision: ${{ steps.candidate.outputs.sha }}
       source_tree: ${{ steps.candidate.outputs.tree }}
-      image_digest: ${{ steps.build.outputs.digest }}
+      image_digest: ${{ steps.accepted.outputs.image_digest }}
     steps:
       - name: Checkout current main
         uses: actions/checkout@v4
@@ -123,25 +123,208 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Refuse duplicate candidate build
+      # A `candidate-<sha>` tag can already exist for this commit because an
+      # earlier run for the same SHA built and pushed successfully but then
+      # failed a LATER step (the digest-visibility check below is exactly the
+      # flaky one seen in production on 2026-09-09, a transient GHCR
+      # propagation delay). The old guard here refused to run again for that
+      # commit forever, and the only recovery was deleting the GHCR package
+      # version by hand. The steps below reconcile the existing tag instead of
+      # treating its mere presence as a reason to refuse.
+      - name: Inspect existing candidate tag
+        id: inspect-tag
         env:
           SOURCE_REVISION: ${{ steps.candidate.outputs.sha }}
         run: |
           set -euo pipefail
           candidate_ref="${REGISTRY}/${IMAGE_NAME}:candidate-${SOURCE_REVISION}"
-          manifest_error=""
-          if manifest_error="$(docker manifest inspect "$candidate_ref" 2>&1)"; then
-            echo "Candidate image already exists for $SOURCE_REVISION; refusing to rebuild it." >&2
-            exit 1
+          attempt=1
+          max_attempts=3
+          while true; do
+            if manifest_json="$(docker buildx imagetools inspect "$candidate_ref" --format '{{json .Manifest}}' 2>"$RUNNER_TEMP/inspect-tag.err")"; then
+              digest="$(jq -r '.digest' <<<"$manifest_json")"
+              # A malformed value here (truncated output, a wrong field, a
+              # tool-version format change) must not silently reach the next
+              # step's `docker pull`, which would misreport it as
+              # "readable=false" (unreadable provenance) rather than naming
+              # the real problem -- a digest is not a secret, so the value is
+              # named in full. Mirrors the exact digest shape this workflow
+              # already requires in "Verify published digest" below.
+              if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+                echo "Candidate tag inspection returned a value that is not a valid OCI digest: $digest" >&2
+                exit 1
+              fi
+              echo "present=true" >> "$GITHUB_OUTPUT"
+              echo "digest=$digest" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            manifest_error="$(cat "$RUNNER_TEMP/inspect-tag.err")"
+            # A definite negative is resolved on the first attempt, never
+            # retried: retrying a "this commit was never built" answer only
+            # spends the normal-build budget on a question that already has a
+            # confident answer.
+            #
+            # `docker buildx imagetools inspect` (used here, not the older
+            # `docker manifest inspect`) reports a missing ref as
+            # `ERROR: <ref>: not found` -- a different string from the
+            # `manifest unknown`/`no such manifest` shapes this guard
+            # originally anticipated. Confirmed live against GHCR
+            # 2026-09-10: a genuinely nonexistent candidate tag produced
+            # exactly this text and exhausted the retry budget as a false
+            # "ambiguous" read, incorrectly failing closed on the first
+            # dispatch of a brand-new candidate. Anchored on the line start
+            # so an unrelated network error that merely contains the words
+            # "not found" (e.g. a DNS failure) cannot be misread as this
+            # specific, well-known CLI shape.
+            if grep -qiE 'manifest unknown|no such manifest|^error: .*: not found$' <<<"$manifest_error"; then
+              echo "present=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "Cannot safely determine whether $candidate_ref already exists." >&2
+              printf '%s\n' "$manifest_error" >&2
+              exit 1
+            fi
+            sleep "$((attempt * 3))"
+            attempt=$((attempt + 1))
+          done
+
+      - name: Read provenance of existing candidate
+        id: read-provenance
+        if: steps.inspect-tag.outputs.present == 'true'
+        env:
+          IMAGE_DIGEST: ${{ steps.inspect-tag.outputs.digest }}
+        run: |
+          set -euo pipefail
+          candidate_ref="${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}"
+          if ! docker pull "$candidate_ref" >/dev/null 2>&1; then
+            echo "readable=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          if ! grep -qiE 'manifest unknown|no such manifest' <<<"$manifest_error"; then
-            echo "Cannot safely determine whether $candidate_ref already exists." >&2
-            printf '%s\n' "$manifest_error" >&2
+          revision="$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$candidate_ref" 2>/dev/null || true)"
+          source_tree="$(docker inspect --format '{{index .Config.Labels "io.dotmac.release.source-tree"}}' "$candidate_ref" 2>/dev/null || true)"
+          build_run_id="$(docker inspect --format '{{index .Config.Labels "io.dotmac.release.build-run"}}' "$candidate_ref" 2>/dev/null || true)"
+          if [ -z "$revision" ] || [ -z "$source_tree" ] || [ -z "$build_run_id" ]; then
+            echo "readable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "readable=true" >> "$GITHUB_OUTPUT"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "source_tree=$source_tree" >> "$GITHUB_OUTPUT"
+          echo "build_run_id=$build_run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Find prior candidate evidence
+        id: prior-evidence
+        if: steps.inspect-tag.outputs.present == 'true'
+        uses: actions/github-script@v7
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        with:
+          script: |
+            const sha = process.env.CANDIDATE_SHA;
+            const response = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head_sha: sha,
+              event: "workflow_dispatch",
+              per_page: 100,
+            });
+            // Absence of an artifact is never proof "never verified" -- the
+            // 90-day retention window makes that indistinguishable from
+            // expiry, so it is treated as UNKNOWN, not as a negative.
+            const candidateRuns = response.data.workflow_runs
+              .filter((run) => run.head_sha === sha
+                && run.event === "workflow_dispatch"
+                && run.name === "Build release candidate once"
+                && run.id !== context.runId
+                && run.status === "completed"
+                && run.conclusion === "success")
+              .sort((left, right) => right.id - left.id);
+            for (const run of candidateRuns) {
+              const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+              });
+              const match = artifacts.data.artifacts.find(
+                (artifact) => artifact.name === "release-candidate-evidence" && !artifact.expired
+              );
+              if (match) {
+                core.setOutput("found", "true");
+                core.setOutput("run_id", String(run.id));
+                return;
+              }
+            }
+            core.setOutput("found", "false");
+
+      - name: Download prior candidate evidence
+        if: steps.inspect-tag.outputs.present == 'true' && steps.prior-evidence.outputs.found == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: release-candidate-evidence
+          path: ${{ runner.temp }}/prior-candidate-evidence
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.prior-evidence.outputs.run_id }}
+
+      - name: Read prior candidate evidence
+        id: prior-evidence-doc
+        if: steps.inspect-tag.outputs.present == 'true' && steps.prior-evidence.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          path="$RUNNER_TEMP/prior-candidate-evidence/candidate.json"
+          test -f "$path"
+          echo "image_digest=$(jq -r '.image_digest' "$path")" >> "$GITHUB_OUTPUT"
+          echo "source_revision=$(jq -r '.source_revision' "$path")" >> "$GITHUB_OUTPUT"
+          echo "source_tree=$(jq -r '.source_tree' "$path")" >> "$GITHUB_OUTPUT"
+
+      - name: Reconcile candidate provenance
+        id: reconcile
+        env:
+          SOURCE_REVISION: ${{ steps.candidate.outputs.sha }}
+          SOURCE_TREE: ${{ steps.candidate.outputs.tree }}
+          TAG_PRESENT: ${{ steps.inspect-tag.outputs.present }}
+          TAG_DIGEST: ${{ steps.inspect-tag.outputs.digest }}
+          LABEL_READABLE: ${{ steps.read-provenance.outputs.readable }}
+          LABEL_REVISION: ${{ steps.read-provenance.outputs.revision }}
+          LABEL_SOURCE_TREE: ${{ steps.read-provenance.outputs.source_tree }}
+          LABEL_BUILD_RUN_ID: ${{ steps.read-provenance.outputs.build_run_id }}
+          PRIOR_FOUND: ${{ steps.prior-evidence.outputs.found }}
+          PRIOR_IMAGE_DIGEST: ${{ steps.prior-evidence-doc.outputs.image_digest }}
+          PRIOR_SOURCE_REVISION: ${{ steps.prior-evidence-doc.outputs.source_revision }}
+          PRIOR_SOURCE_TREE: ${{ steps.prior-evidence-doc.outputs.source_tree }}
+        run: |
+          set -euo pipefail
+          args=(
+            --expected-source-revision "$SOURCE_REVISION"
+            --expected-source-tree "$SOURCE_TREE"
+            --github-output "$GITHUB_OUTPUT"
+          )
+          if [ "$TAG_PRESENT" = "true" ]; then
+            args+=(--tag-present --tag-digest "$TAG_DIGEST")
+            if [ "$LABEL_READABLE" = "true" ]; then
+              args+=(
+                --label-revision "$LABEL_REVISION"
+                --label-tree "$LABEL_SOURCE_TREE"
+                --label-build-run-id "$LABEL_BUILD_RUN_ID"
+              )
+            fi
+            if [ "$PRIOR_FOUND" = "true" ]; then
+              args+=(
+                --prior-evidence-digest "$PRIOR_IMAGE_DIGEST"
+                --prior-evidence-revision "$PRIOR_SOURCE_REVISION"
+                --prior-evidence-tree "$PRIOR_SOURCE_TREE"
+              )
+            fi
+          fi
+          if ! python -m scripts.release_candidate_reconciliation resolve "${args[@]}"; then
+            echo "Refusing candidate build: existing candidate image disagrees with this commit's provenance." >&2
             exit 1
           fi
 
       - name: Build and push candidate once
         id: build
+        if: steps.reconcile.outputs.mode == 'build'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -157,29 +340,90 @@ jobs:
           secrets: |
             forgejo_token=${{ secrets.FORGEJO_READ_TOKEN }}
 
+      # Runs in EVERY accepted mode (build or reuse), never gated: even the
+      # "already done" reuse path must re-derive and re-upload evidence under
+      # THIS run, because staging-deploy.yml triggers off this run's
+      # completion and downloads its artifact from this run's ID.
+      - name: Resolve accepted candidate digest
+        id: accepted
+        env:
+          MODE: ${{ steps.reconcile.outputs.mode }}
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+          RESOLVED_DIGEST: ${{ steps.reconcile.outputs.resolved_digest }}
+          RESOLVED_BUILD_RUN_ID: ${{ steps.reconcile.outputs.resolved_build_run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = "build" ]; then
+            echo "image_digest=$BUILD_DIGEST" >> "$GITHUB_OUTPUT"
+            echo "build_run_id=$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+          else
+            echo "image_digest=$RESOLVED_DIGEST" >> "$GITHUB_OUTPUT"
+            echo "build_run_id=$RESOLVED_BUILD_RUN_ID" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The digest-visibility read below is the actual flaky step from the
+      # 2026-09-09 incident: GHCR sometimes has not yet propagated a digest it
+      # just accepted. REGISTRY_VISIBILITY_MAX_ATTEMPTS is a tunable default
+      # with no measured basis -- adjust it by repository variable if GHCR
+      # propagation is observed to routinely take longer.
       - name: Verify published digest
         env:
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_DIGEST: ${{ steps.accepted.outputs.image_digest }}
+          MAX_ATTEMPTS: ${{ vars.REGISTRY_VISIBILITY_MAX_ATTEMPTS || '8' }}
         run: |
           set -euo pipefail
           if ! printf '%s' "$IMAGE_DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
             echo "Build did not return an immutable OCI digest." >&2
             exit 1
           fi
-          docker buildx imagetools inspect \
-            "${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}" >/dev/null
+          backoffs=(2 4 8 15 15 30 30)
+          attempt=1
+          while true; do
+            if docker buildx imagetools inspect \
+              "${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}" >/dev/null \
+              2>"$RUNNER_TEMP/verify-digest.err"; then
+              exit 0
+            fi
+            error="$(cat "$RUNNER_TEMP/verify-digest.err")"
+            if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
+              echo "Published digest still not visible after $attempt attempts." >&2
+              printf '%s\n' "$error" >&2
+              exit 1
+            fi
+            delay="${backoffs[$((attempt - 1))]:-30}"
+            echo "Digest not yet visible (attempt $attempt/$MAX_ATTEMPTS); retrying in ${delay}s." >&2
+            sleep "$delay"
+            attempt=$((attempt + 1))
+          done
 
       - name: Extract and verify the embedded product manifest
         id: product-manifest
         env:
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_DIGEST: ${{ steps.accepted.outputs.image_digest }}
+          MAX_ATTEMPTS: ${{ vars.REGISTRY_VISIBILITY_MAX_ATTEMPTS || '8' }}
         run: |
           set -euo pipefail
           candidate_ref="${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}"
           evidence_dir="$RUNNER_TEMP/release-candidate-evidence"
           manifest_path="$evidence_dir/product-manifest.json"
           mkdir -p "$evidence_dir"
-          docker pull "$candidate_ref"
+          backoffs=(2 4 8 15 15 30 30)
+          attempt=1
+          while true; do
+            if docker pull "$candidate_ref" 2>"$RUNNER_TEMP/pull.err"; then
+              break
+            fi
+            error="$(cat "$RUNNER_TEMP/pull.err")"
+            if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
+              echo "Candidate image still not pullable after $attempt attempts." >&2
+              printf '%s\n' "$error" >&2
+              exit 1
+            fi
+            delay="${backoffs[$((attempt - 1))]:-30}"
+            echo "Pull not yet possible (attempt $attempt/$MAX_ATTEMPTS); retrying in ${delay}s." >&2
+            sleep "$delay"
+            attempt=$((attempt + 1))
+          done
           container_id="$(docker create "$candidate_ref")"
           cleanup() {
             docker rm -f "$container_id" >/dev/null 2>&1 || true
@@ -197,9 +441,10 @@ jobs:
         env:
           SOURCE_REVISION: ${{ steps.candidate.outputs.sha }}
           SOURCE_TREE: ${{ steps.candidate.outputs.tree }}
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_DIGEST: ${{ steps.accepted.outputs.image_digest }}
           PRODUCT_MANIFEST_DIGEST: ${{ steps.product-manifest.outputs.digest }}
-          BUILD_RUN_ID: ${{ github.run_id }}
+          BUILD_RUN_ID: ${{ steps.accepted.outputs.build_run_id }}
+          EVIDENCE_RUN_ID: ${{ github.run_id }}
         run: |
           mkdir -p "$RUNNER_TEMP/release-candidate-evidence"
           python -m scripts.release_candidate_evidence write-candidate \
@@ -208,6 +453,7 @@ jobs:
             --image-digest "$IMAGE_DIGEST" \
             --product-manifest-digest "$PRODUCT_MANIFEST_DIGEST" \
             --build-run-id "$BUILD_RUN_ID" \
+            --evidence-run-id "$EVIDENCE_RUN_ID" \
             --output "$RUNNER_TEMP/release-candidate-evidence/candidate.json"
 
       - name: Upload candidate evidence

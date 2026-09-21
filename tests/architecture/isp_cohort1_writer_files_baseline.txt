@@ -18,6 +18,11 @@
 # `customer_location_requests` fell 6 sites to 1 in the same change and the
 # total fell 101 -> 99, so the surface shrank while ownership concentrated.
 # The census is authority-blind by design; it counts files, not owners.
+#
+# 2026-09-11 — `service|app/services/customer_canonical_profile_patch.py`
+# ADDED deliberately. It is the registered `customer.canonical_profile_patch`
+# participant, isolated from `customer.accounts`, and applies only an explicit
+# typed field set inside its calling coordinator's transaction.
 
 cli_script|scripts/migration/backfill_crm_subscriber_links.py
 cli_script|scripts/migration/backfill_party_status.py
@@ -38,6 +43,7 @@ service|app/services/brand_profiles.py
 service|app/services/crm_customer_name_repair.py
 service|app/services/crm_portal.py
 service|app/services/crm_ticket_pull.py
+service|app/services/customer_canonical_profile_patch.py
 service|app/services/customer_location_requests.py
 service|app/services/customer_portal_contacts.py
 service|app/services/customer_portal_notifications.py

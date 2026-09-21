@@ -1,4 +1,4 @@
-"""Atomic, idempotent Lead-to-service conversion owned by Quote acceptance."""
+"""Atomic, idempotent Quote-to-service conversion owned by Quote acceptance."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from app.models.audit import AuditActorType
 from app.models.party import Party, PartyContactPoint, PartyContactPointType, PartyType
 from app.models.project import ProjectTask, ProjectTemplateTask
 from app.models.sales import Quote, QuoteStatus
-from app.models.subscriber import SubscriberCategory
+from app.models.subscriber import Subscriber, SubscriberCategory
 from app.models.work_order import WorkOrder
 from app.schemas.subscriber import SubscriberCreate
 from app.services import projects, sales_fulfillment, sales_orders
@@ -80,7 +80,7 @@ class QuoteAcceptanceDepositEvidence:
 @dataclass(frozen=True)
 class QuoteAcceptanceOutcome:
     quote_id: UUID
-    lead_id: UUID
+    lead_id: UUID | None
     subscriber_id: UUID
     sales_order_id: UUID
     project_id: UUID
@@ -160,17 +160,26 @@ def _locked_quote(db: Session, quote_id: UUID) -> Quote:
     quote = db.scalars(
         select(Quote)
         .where(Quote.id == quote_id)
-        .options(selectinload(Quote.lead), selectinload(Quote.line_items))
+        .options(
+            selectinload(Quote.lead),
+            selectinload(Quote.subscriber),
+            selectinload(Quote.line_items),
+        )
         .with_for_update()
     ).one_or_none()
     if quote is None or not quote.is_active:
         raise _error("quote_not_found", "Quote not found")
-    if quote.lead is None or quote.lead_id is None:
-        raise _error("lead_required", "Quote acceptance requires an exact Lead")
-    if quote.lead.party_id is None:
+    if quote.lead_id is None and quote.subscriber_id is None:
+        raise _error(
+            "recipient_required",
+            "Quote acceptance requires an exact Lead or Customer",
+        )
+    if quote.lead_id is not None and quote.lead is None:
+        raise _error("lead_not_found", "The Quote Lead was not found")
+    if quote.lead is not None and quote.lead.party_id is None:
         raise _error(
             "lead_party_required",
-            "Quote acceptance requires a reviewed Party-bound Lead",
+            "A Lead-backed Quote requires a reviewed Party-bound Lead",
         )
     return quote
 
@@ -267,6 +276,25 @@ def _convert_account(db: Session, quote: Quote, actor: str) -> UUID:
     return result.subscriber_id
 
 
+def _resolve_customer_account(db: Session, quote: Quote) -> UUID:
+    subscriber_id = quote.subscriber_id
+    assert subscriber_id is not None
+    subscriber = db.scalars(
+        select(Subscriber).where(Subscriber.id == subscriber_id).with_for_update()
+    ).one_or_none()
+    if subscriber is None:
+        raise _error(
+            "customer_not_found",
+            "The Customer selected for this Quote was not found",
+        )
+    if not subscriber.is_active:
+        raise _error(
+            "customer_not_eligible",
+            "The Customer selected for this Quote is inactive",
+        )
+    return subscriber.id
+
+
 def _stage_deposit_evidence(
     quote: Quote,
     deposit: QuoteAcceptanceDeposit | None,
@@ -327,6 +355,7 @@ def _automated_work_orders(
         .where(
             ProjectTask.project_id == project_id,
             ProjectTask.is_active.is_(True),
+            projects.current_project_task_plan_clause(),
         )
         .order_by(ProjectTemplateTask.sort_order.asc(), ProjectTask.id.asc())
     ).all()
@@ -388,10 +417,12 @@ def _stage_accept_quote(
         )
     deposit_evidence = _stage_deposit_evidence(quote, command.deposit)
 
-    subscriber_id = _convert_account(db, quote, command.context.actor)
     lead = quote.lead
-    assert lead is not None
-    lead_lifecycle.stage_quote_acceptance(db, lead=lead)
+    if lead is not None:
+        subscriber_id = _convert_account(db, quote, command.context.actor)
+        lead_lifecycle.stage_quote_acceptance(db, lead=lead)
+    else:
+        subscriber_id = _resolve_customer_account(db, quote)
 
     order = sales_orders.sales_orders._stage_from_quote_acceptance(
         db, quote=quote, subscriber_id=subscriber_id
@@ -413,6 +444,7 @@ def _stage_accept_quote(
             .where(
                 ProjectTask.project_id == scope.project.id,
                 ProjectTask.is_active.is_(True),
+                projects.current_project_task_plan_clause(),
             )
             .order_by(ProjectTask.created_at.asc(), ProjectTask.id.asc())
         ).all()
@@ -447,7 +479,7 @@ def _stage_accept_quote(
             EventType.quote_accepted,
             {
                 "quote_id": str(quote.id),
-                "lead_id": str(lead.id),
+                "lead_id": str(lead.id) if lead is not None else None,
                 "subscriber_id": str(subscriber_id),
                 "sales_order_id": str(order.id),
                 "project_id": str(scope.project.id),
@@ -467,7 +499,7 @@ def _stage_accept_quote(
             actor_id=command.context.actor,
             request_id=str(command.context.command_id),
             metadata={
-                "lead_id": str(lead.id),
+                "lead_id": str(lead.id) if lead is not None else None,
                 "subscriber_id": str(subscriber_id),
                 "sales_order_id": str(order.id),
                 "project_id": str(scope.project.id),
@@ -479,7 +511,7 @@ def _stage_accept_quote(
     db.flush()
     return QuoteAcceptanceOutcome(
         quote_id=quote.id,
-        lead_id=lead.id,
+        lead_id=lead.id if lead is not None else None,
         subscriber_id=subscriber_id,
         sales_order_id=order.id,
         project_id=scope.project.id,

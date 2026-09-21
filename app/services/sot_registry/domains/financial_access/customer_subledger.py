@@ -182,9 +182,11 @@ SERVICES: tuple[SOTService, ...] = (
         module="app.services.billing.subledger_opening",
         owns=(
             "reviewed customer-subledger opening-position capture",
+            "reviewed customer-subledger opening-position correction",
             "customer-subledger authority cutover activation",
         ),
         depends_on=(
+            "auth.permission_gate",
             "billing.shadow_verification",
             "customer.accounts",
             "events.dispatcher",
@@ -207,7 +209,9 @@ SERVICES: tuple[SOTService, ...] = (
             "the initial cutover gate. A separate migrated-account repair binds "
             "one content-addressed finance evidence document, its exact original-"
             "cutoff position, retained migrated identity, and current shadow lanes "
-            "into the same two-approval capture protocol."
+            "into the same two-approval capture protocol. An incorrect immutable "
+            "opening is repaired only by an append-only, fingerprint-bound "
+            "correction and matching position effect."
         ),
         contract=ServiceContract(
             concerns=(
@@ -217,6 +221,16 @@ SERVICES: tuple[SOTService, ...] = (
                     input_names=(
                         "approved opening-position verification run",
                         "verified prepaid funding position",
+                        "recorded customer postings",
+                        "canonical customer account",
+                    ),
+                    canonical_writer=("financial.customer_subledger_opening_positions"),
+                ),
+                ConcernContract(
+                    name=("reviewed customer-subledger opening-position correction"),
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=(
+                        "reviewed opening correction command",
                         "recorded customer postings",
                         "canonical customer account",
                     ),
@@ -233,6 +247,17 @@ SERVICES: tuple[SOTService, ...] = (
                 ),
             ),
             authoritative_inputs=(
+                AuthorityInput(
+                    name="reviewed opening correction command",
+                    owner="auth.permission_gate",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "billing:customer_subledger_opening:correct permission "
+                        "checked against a named active staff principal, exact "
+                        "preview fingerprint, corrected amount, reason, review "
+                        "reference, command, correlation, and idempotency evidence"
+                    ),
+                ),
                 AuthorityInput(
                     name="approved opening-position verification run",
                     owner="billing.shadow_verification",
@@ -290,19 +315,24 @@ SERVICES: tuple[SOTService, ...] = (
                     "once; every opening evidence row, posting group, and capture "
                     "event commits or rolls back as one transaction. A bounded "
                     "post-cutover capture uses the same owner transaction and "
-                    "never updates the authority record."
+                    "never updates the authority record. A correction uses the "
+                    "same boundary for its immutable evidence, position effect, "
+                    "and domain event."
                 ),
                 locking=(
                     "The approved verification run is locked before capture; "
                     "a post-cutover run then locks and recomputes its one selected "
                     "account against the immutable original cutoff; "
                     "unique account/currency and posting idempotency constraints "
-                    "arbitrate concurrent attempts."
+                    "arbitrate concurrent attempts; corrections lock the customer "
+                    "account before recomputing the reviewed preview."
                 ),
                 idempotency=(
                     "One immutable opening per account/currency. Exact replay of "
                     "the same reviewed run returns the recorded cohort; changed "
-                    "rows, selected-account evidence, or fingerprints fail closed."
+                    "rows, selected-account evidence, or fingerprints fail closed. "
+                    "Corrections use a unique idempotency key and reject stale "
+                    "preview fingerprints."
                 ),
                 retries=(
                     "Retry the complete command with the same approved run and "
@@ -316,11 +346,23 @@ SERVICES: tuple[SOTService, ...] = (
                     ),
                     (
                         "financial.customer_subledger_opening_positions."
+                        "account_not_found"
+                    ),
+                    (
+                        "financial.customer_subledger_opening_positions."
                         "approval_required"
                     ),
                     (
                         "financial.customer_subledger_opening_positions."
                         "authority_already_activated"
+                    ),
+                    (
+                        "financial.customer_subledger_opening_positions."
+                        "authority_not_active"
+                    ),
+                    (
+                        "financial.customer_subledger_opening_positions."
+                        "correction_posting_missing"
                     ),
                     (
                         "financial.customer_subledger_opening_positions."
@@ -332,19 +374,38 @@ SERVICES: tuple[SOTService, ...] = (
                     ),
                     (
                         "financial.customer_subledger_opening_positions."
+                        "invalid_corrected_amount"
+                    ),
+                    ("financial.customer_subledger_opening_positions.invalid_currency"),
+                    (
+                        "financial.customer_subledger_opening_positions."
+                        "invalid_idempotency_key"
+                    ),
+                    (
+                        "financial.customer_subledger_opening_positions."
                         "invalid_result_fingerprint"
                     ),
                     (
                         "financial.customer_subledger_opening_positions."
                         "missing_idempotency_key"
                     ),
+                    ("financial.customer_subledger_opening_positions.missing_reason"),
                     (
                         "financial.customer_subledger_opening_positions."
                         "missing_review_reference"
                     ),
+                    ("financial.customer_subledger_opening_positions.no_change"),
+                    (
+                        "financial.customer_subledger_opening_positions."
+                        "opening_position_not_found"
+                    ),
                     (
                         "financial.customer_subledger_opening_positions."
                         "opening_position_already_captured"
+                    ),
+                    (
+                        "financial.customer_subledger_opening_positions."
+                        "permission_denied"
                     ),
                     (
                         "financial.customer_subledger_opening_positions."
@@ -368,10 +429,14 @@ SERVICES: tuple[SOTService, ...] = (
                     "invalid or changed migrated-account evidence, identity, amount, "
                     "or original cutoff",
                     "an existing account/currency opening",
+                    "a missing opening, inactive authority, stale correction preview, "
+                    "or conflicting correction idempotency key",
+                    "a correction requested without its dedicated staff permission",
                 ),
             ),
             events=EventContract(
                 event_types=(
+                    "customer_subledger.opening_position_corrected",
                     "customer_subledger.opening_positions_captured",
                     "customer_subledger.authority_activated",
                 ),
@@ -380,11 +445,13 @@ SERVICES: tuple[SOTService, ...] = (
                 compatibility=(
                     "Version 1 carries run, fingerprint, currency, captured count, "
                     "the compatibility quarantined_count fixed at zero, and "
-                    "authority_moved=false."
+                    "authority_moved=false. Correction events carry the immutable "
+                    "correction and opening identities plus exact before, after, "
+                    "delta, currency, account, and review reference."
                 ),
                 replay=(
                     "Rebuild consumers from immutable opening evidence and "
-                    "posting groups; capture replay emits no second event."
+                    "posting groups; capture and correction replay emit no second event."
                 ),
             ),
             migration=MigrationContract(

@@ -4,6 +4,7 @@
     status_badge, card, animation_styles
 %}
 {% from "components/forms/action_form.html" import action_form with context %}
+{% from "components/actions/action_readiness.html" import action_readiness_panel %}
 
 {% block title %}Payment Proof Detail - Admin{% endblock %}
 
@@ -134,6 +135,11 @@
         {% endcall %}
 
     </div>
+
+    {# Readiness panel is fully projected by ui.action_readiness_contracts. #}
+    {% if review_readiness_panel %}
+    {{ action_readiness_panel(review_readiness_panel, heading="Verify readiness") }}
+    {% endif %}
 
     {# Review actions are fully projected by ui.action_form_contracts. #}
     {% if review_actions %}

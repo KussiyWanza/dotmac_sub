@@ -11,8 +11,12 @@ from celery.signals import (
     task_retry,
     worker_process_init,
 )
+from celery.signals import (
+    setup_logging as celery_setup_logging,
+)
 from kombu import Queue
 
+from app.logging import configure_logging
 from app.services.scheduler_config import (
     build_beat_schedule,
     find_unregistered_scheduled_tasks,
@@ -20,6 +24,13 @@ from app.services.scheduler_config import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@celery_setup_logging.connect
+def _configure_worker_logging(**_kwargs) -> None:
+    """Keep structured ``extra`` fields when Celery configures worker logs."""
+
+    configure_logging()
 
 
 def _running_under_pytest() -> bool:
@@ -142,6 +153,7 @@ celery_app.conf.task_routes = {
     "app.tasks.dotmac_erp_outbox.refresh_material_request_statuses": {"queue": "crm"},
     "app.tasks.dotmac_erp_outbox.refresh_material_catalog": {"queue": "crm"},
     "app.tasks.dotmac_erp_outbox.repair_purchase_invoice_sync": {"queue": "crm"},
+    "app.tasks.dotmac_erp_outbox.repair_purchase_order_writebacks": {"queue": "crm"},
     "app.tasks.dotmac_erp_outbox.refresh_purchase_invoice_statuses": {"queue": "crm"},
     "app.tasks.dotmac_erp_outbox.sync_erp_operational_domains": {"queue": "crm"},
     "app.tasks.dotmac_erp_outbox.reconcile_erp_staff_access": {"queue": "crm"},

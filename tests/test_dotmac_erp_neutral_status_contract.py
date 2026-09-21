@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -112,12 +113,54 @@ def test_staff_access_reconcile_uses_typed_neutral_projection_route() -> None:
         client,
         capability_id=ERP_STAFF_ACCESS_RECONCILE_CAPABILITY,
         action="read_staff_access_projection",
-        params={"entity": "account_status", "limit": 500},
+        params={
+            "entity": "account_status",
+            "updated_after": "2026-09-03T01:30:00+00:00",
+            "limit": 500,
+        },
         idempotency_key="staff-access-reconcile",
     )
 
     assert result["contract_version"] == "staff.access.projection.v1"
     client.get_staff_access_projection.assert_called_once_with(
         entity="account_status",
+        updated_after="2026-09-03T01:30:00+00:00",
         limit=500,
     )
+
+
+def test_staff_access_capability_serializes_updated_after_cursor(monkeypatch) -> None:
+    client = ErpCapabilityClient(MagicMock())
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def execute(
+        _capability_id: str,
+        action: str,
+        params: dict[str, Any],
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        calls.append((action, params))
+        return {
+            "contract_version": "staff.access.projection.v1",
+            "entity": "account_status",
+            "items": [],
+        }
+
+    monkeypatch.setattr(client, "_execute", execute)
+
+    client.get_staff_access_projection(
+        entity="account_status",
+        updated_after=datetime(2026, 9, 3, 1, 30, tzinfo=UTC),
+        limit=500,
+    )
+
+    assert calls == [
+        (
+            "read_staff_access_projection",
+            {
+                "entity": "account_status",
+                "updated_after": "2026-09-03T01:30:00+00:00",
+                "limit": 500,
+            },
+        )
+    ]

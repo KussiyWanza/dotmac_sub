@@ -861,6 +861,46 @@ def test_external_nas_lifecycle_helpers_do_not_read_or_return_secrets(
     assert remaining == [("10.0.0.2",)]
 
 
+def test_external_sync_nas_skips_and_warns_for_device_with_no_secret(tmp_path, caplog):
+    db_path = tmp_path / "radius-nas-no-secret.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "CREATE TABLE nas (nasname TEXT, shortname TEXT, type TEXT, "
+            "secret TEXT, description TEXT)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    config = _fake_external_config(db_path)
+
+    device_no_secret = NasDevice(
+        name="no-secret-router",
+        vendor=NasVendor.mikrotik,
+        nas_ip="10.50.0.1",
+        shared_secret=None,
+        is_active=True,
+    )
+
+    with caplog.at_level("WARNING"):
+        result = radius_service._external_sync_nas(config, [device_no_secret])
+
+    # Unchanged behavior: a NAS with no configured secret is excluded.
+    assert result == {"external_nas_synced": 0}
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = list(conn.execute("SELECT nasname FROM nas"))
+    finally:
+        conn.close()
+    assert rows == []
+
+    # New behavior: the skip is no longer silent — it names the device.
+    assert any(
+        "no-secret-router" in record.getMessage() and "10.50.0.1" in record.getMessage()
+        for record in caplog.records
+    )
+
+
 def test_authoritative_external_radius_db_url_requires_one_target(
     db_session, monkeypatch
 ):

@@ -15,6 +15,7 @@ from app.models.domain_settings import SettingDomain
 from app.models.field_erp_sync import (
     FieldErpSyncEvent,
     FieldErpSyncFlow,
+    FieldErpSyncStatus,
     flow_owned_by_sub,
 )
 from app.models.vendor_routes import (
@@ -226,23 +227,40 @@ def build_purchase_invoice_payload(
 def enqueue_purchase_invoice(
     db: Session, invoice: VendorPurchaseInvoice, *, isolate: bool = True
 ) -> FieldErpSyncEvent | None:
-    """Queue a new-only invoice only after this flow has moved to Sub."""
+    """Queue a new-only invoice only after this flow has moved to Sub.
+
+    ``payables_submission_error`` is only cleared for a GENUINELY NEW enqueue
+    attempt. ``outbox.enqueue`` is idempotent on the key and returns the
+    existing row untouched when one is already on file (e.g. a delivered
+    ``sent``/``accepted`` row awaiting write-back repair) — clearing the error
+    in that no-op case would erase the only diagnostic evidence of what is
+    actually wrong without fixing anything (see
+    ``repair_purchase_invoice_sync``, which is the caller this matters for).
+    """
     if not flow_owned_by_sub(db, FieldErpSyncFlow.purchase_invoice):
         return None
     reason = purchase_invoice_eligibility_error(invoice)
     if reason:
         invoice.payables_submission_error = reason[:500]
         return None
+    idempotency_key = purchase_invoice_idempotency_key(invoice)
+    is_new_enqueue = (
+        db.query(FieldErpSyncEvent)
+        .filter(FieldErpSyncEvent.idempotency_key == idempotency_key)
+        .first()
+        is None
+    )
     erp_tax_profile = purchase_invoice_erp_tax_profile(db)
     invoice.procurement_order_reference = invoice.project.procurement_order_reference
     invoice.payables_system = PROVIDER
-    invoice.payables_submission_error = None
+    if is_new_enqueue:
+        invoice.payables_submission_error = None
     return outbox.enqueue(
         db,
         flow=FieldErpSyncFlow.purchase_invoice,
         entity_type=ENTITY_TYPE,
         entity_id=invoice.id,
-        idempotency_key=purchase_invoice_idempotency_key(invoice),
+        idempotency_key=idempotency_key,
         payload=build_purchase_invoice_payload(
             invoice,
             erp_tax_profile=erp_tax_profile,
@@ -331,8 +349,42 @@ def upload_attachment(db: Session, invoice: VendorPurchaseInvoice) -> bool:
     return True
 
 
+_DELIVERED_STATUSES = (FieldErpSyncStatus.accepted.value, FieldErpSyncStatus.sent.value)
+
+
 def repair_purchase_invoice_sync(db: Session, *, limit: int = 100) -> dict:
-    """Queue newly eligible invoices and retry post-create attachments."""
+    """Queue newly eligible invoices; repair delivered-but-unlinked write-backs.
+
+    Three distinct cases for an invoice still missing
+    ``payables_document_reference``, told apart by whether an outbox row
+    already exists for it:
+
+    1. **No outbox row at all** — genuinely new. ``enqueue_purchase_invoice``
+       as before.
+    2. **A delivered (``sent``/``accepted``) outbox row exists** — its
+       write-back landed in ``deliver_pending``'s transaction but never
+       reached the invoice (see ``purchase_order_sync
+       .repair_purchase_order_writebacks`` for the identical pattern: this
+       makes NO new ERP call, it re-applies ``apply_erp_response`` against
+       the response ALREADY stored on the row). If that stored response has
+       no usable id, this does NOT touch ``payables_submission_error`` (no
+       erasure of whatever diagnostic is already there) and counts the row
+       under ``unlinked`` rather than ``enqueued`` — the sweep's own numbers
+       must not claim to have repaired something it did not.
+    3. **A pending/rejected/dead outbox row exists** — left alone; normal
+       delivery retry or dead-letter handling owns it, not this repair.
+
+    OWNERSHIP GUARD: this is a scheduled sweep left running across cutovers —
+    ``sync_flow_ownership`` can move a flow away from Sub after this repair was
+    first wired, and a stale schedule must not keep acting on a flow it no
+    longer owns. Checked ONCE per run (ownership is a per-flow switch, not
+    per-row), before either repair consequence below: re-applying a stored
+    response (a state mutation implying ERP involvement) and uploading an
+    attachment (a genuine ERP call). A row is skipped, not errored, when sub
+    does not currently own this flow, and counted under
+    ``skipped_not_owned`` so the sweep's own numbers stay honest.
+    """
+    owned = flow_owned_by_sub(db, FieldErpSyncFlow.purchase_invoice)
     rows = (
         db.query(VendorPurchaseInvoice)
         .filter(VendorPurchaseInvoice.is_active.is_(True))
@@ -346,13 +398,39 @@ def repair_purchase_invoice_sync(db: Session, *, limit: int = 100) -> dict:
     processed = 0
     enqueued = 0
     attachments = 0
+    unlinked = 0
+    skipped_not_owned = 0
     errors: list[str] = []
     for invoice in rows:
         processed += 1
+        if not owned:
+            skipped_not_owned += 1
+            logger.info(
+                "purchase_invoice_sync: skipping repair for invoice %s — sub "
+                "does not own flow 'purchase_invoice' (sync_flow_ownership)",
+                invoice.id,
+            )
+            continue
         try:
             if not invoice.payables_document_reference:
-                if enqueue_purchase_invoice(db, invoice) is not None:
-                    enqueued += 1
+                existing_event = (
+                    db.query(FieldErpSyncEvent)
+                    .filter(
+                        FieldErpSyncEvent.idempotency_key
+                        == purchase_invoice_idempotency_key(invoice)
+                    )
+                    .first()
+                )
+                if existing_event is None:
+                    if enqueue_purchase_invoice(db, invoice) is not None:
+                        enqueued += 1
+                elif existing_event.status in _DELIVERED_STATUSES:
+                    erp_id = _extract_erp_invoice_id(existing_event.erp_response)
+                    if erp_id:
+                        apply_erp_response(db, existing_event)
+                    else:
+                        unlinked += 1
+                # else: pending/rejected/dead — not this repair's job.
             elif upload_attachment(db, invoice):
                 attachments += 1
             db.commit()
@@ -367,6 +445,8 @@ def repair_purchase_invoice_sync(db: Session, *, limit: int = 100) -> dict:
         "processed": processed,
         "enqueued": enqueued,
         "attachments": attachments,
+        "unlinked": unlinked,
+        "skipped_not_owned": skipped_not_owned,
         "errors": errors,
     }
 
@@ -395,6 +475,67 @@ def _record_status_error(
         db.commit()
 
 
+def _poll_unlinked_purchase_invoices(
+    db: Session,
+    *,
+    client: _PurchaseInvoiceStatusClient,
+    limit: int,
+) -> tuple[int, int, list[str]]:
+    """Poll ``sent``/``accepted`` outbox rows whose invoice never got a reference.
+
+    Distinct from the strict, already-linked payment-observation loop below:
+    that loop VALIDATES a response against an EXISTING
+    ``payables_document_reference`` and refuses to run without one — it can
+    never see a row this closes the gap for. This resolves the reference in
+    the first place for a row ERP already accepted delivery of but whose
+    same-transaction write-back never landed (see ``outbox
+    .unlinked_delivered_events``). Keyed by Sub's own invoice id, never the
+    ERP id — see ``client.get_purchase_invoice_status``'s docstring.
+
+    OWNERSHIP GUARD: ``flow_owned_by_sub`` is checked once up front. A status
+    poll is a real ERP API call about a row that may belong to a flow
+    ownership has since moved away from Sub — never made when not owned. Rows
+    skipped this way are counted separately so the caller's own numbers stay
+    honest about how much was actually polled.
+    """
+    processed = 0
+    skipped_not_owned = 0
+    errors: list[str] = []
+    owned = flow_owned_by_sub(db, FieldErpSyncFlow.purchase_invoice)
+    for row in outbox.unlinked_delivered_events(
+        db, flow=FieldErpSyncFlow.purchase_invoice, limit=limit
+    ):
+        invoice = db.get(VendorPurchaseInvoice, row.entity_id)
+        if invoice is None or invoice.payables_document_reference:
+            continue
+        if not owned:
+            skipped_not_owned += 1
+            logger.info(
+                "purchase_invoice_sync: skipping unlinked status poll for %s — "
+                "sub does not own flow 'purchase_invoice' (sync_flow_ownership)",
+                row.id,
+            )
+            continue
+        processed += 1
+        try:
+            response = client.get_purchase_invoice_status(str(invoice.id))
+        except Exception as exc:  # noqa: BLE001 — one bad row can't stall the batch
+            if db.in_transaction():
+                db.rollback()
+            errors.append(f"{row.id}: {exc}")
+            logger.warning(
+                "purchase_invoice_sync: unlinked status poll failed for %s: %s",
+                row.id,
+                exc,
+            )
+            continue
+        if not response:
+            continue
+        outbox.record_polled_outcome(db, row, response)
+        db.commit()
+    return processed, skipped_not_owned, errors
+
+
 def refresh_purchase_invoice_statuses(
     db: Session,
     *,
@@ -404,12 +545,31 @@ def refresh_purchase_invoice_statuses(
 ) -> dict:
     """Refresh ERP-owned AP settlement observations for linked vendor invoices.
 
+    Also polls delivered-but-unlinked outbox rows first (see
+    ``_poll_unlinked_purchase_invoices``) so a ``sent`` row — one that, by
+    construction, never carries a reference — is not excluded from every
+    future status check forever. Those counts fold into ``processed`` /
+    ``errors`` below; they are not payment observations, so they do not touch
+    ``observed`` / ``changed``, which stay reserved for the validated
+    settlement projection.
+
     Candidate identifiers are snapshotted and the read transaction is closed
     before any network call. Each response is validated, then the source row is
     re-locked and its ERP link rechecked before the observation is projected.
     Repeated responses are safe; a failure retains the last good observation.
     """
     limit = max(1, min(int(limit or 100), 500))
+
+    owned_client = client
+    created_client = False
+    if owned_client is None:
+        owned_client = capability_client(db)
+        created_client = True
+
+    # Snapshot the already-linked candidate set BEFORE running the unlinked
+    # poll: an invoice the unlinked poll resolves THIS run must not also be
+    # re-polled below with an already-exhausted (or now-stale) status
+    # response — that is next run's job, once it is genuinely "linked".
     candidates = (
         db.query(
             VendorPurchaseInvoice.id,
@@ -426,29 +586,31 @@ def refresh_purchase_invoice_statuses(
         .limit(limit)
         .all()
     )
-    result: dict[str, object] = {
-        "processed": 0,
-        "observed": 0,
-        "changed": 0,
-        "errors": [],
-    }
-    if not candidates:
-        return result
 
-    owned_client = client
-    created_client = False
-    if owned_client is None:
-        owned_client = capability_client(db)
-        created_client = True
+    unlinked_processed, unlinked_skipped_not_owned, unlinked_errors = (
+        _poll_unlinked_purchase_invoices(db, client=owned_client, limit=limit)
+    )
+    errors: list[str] = list(unlinked_errors)
+    processed = unlinked_processed
+    skipped_not_owned = unlinked_skipped_not_owned
+    observed = 0
+    changed = 0
+
+    if not candidates:
+        if created_client:
+            owned_client.close()
+        return {
+            "processed": processed,
+            "observed": observed,
+            "changed": changed,
+            "skipped_not_owned": skipped_not_owned,
+            "errors": errors,
+        }
 
     # Never hold a database transaction open across the ERP request. The
     # candidate read is complete and has no writes, so closing it by commit is
     # safe and does not give the completed read rollback/failure semantics.
     db.commit()
-    errors: list[str] = []
-    processed = 0
-    observed = 0
-    changed = 0
     try:
         for invoice_id, linked_erp_id, currency in candidates:
             expected_erp_id = str(linked_erp_id)
@@ -546,13 +708,13 @@ def refresh_purchase_invoice_statuses(
         if created_client:
             owned_client.close()
 
-    result.update(
-        processed=processed,
-        observed=observed,
-        changed=changed,
-        errors=errors,
-    )
-    return result
+    return {
+        "processed": processed,
+        "observed": observed,
+        "changed": changed,
+        "skipped_not_owned": skipped_not_owned,
+        "errors": errors,
+    }
 
 
 def run_repair_purchase_invoice_sync() -> dict[str, object]:

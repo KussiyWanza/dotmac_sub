@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -12,6 +13,11 @@ from fastapi.testclient import TestClient
 from app.api.field import router
 from app.db import get_db
 from app.models.dispatch import TechnicianProfile
+from app.models.field_erp_sync import (
+    FieldErpSyncFlow,
+    SyncFlowOwner,
+    SyncFlowOwnership,
+)
 from app.models.field_expense import FieldExpenseRequest
 from app.models.stored_file import StoredFile
 from app.models.subscriber import Subscriber, UserType
@@ -20,13 +26,31 @@ from app.models.vendor_routes import Vendor
 from app.models.work_order import WorkOrder
 from app.services.auth_dependencies import require_user_auth
 from app.services.field import attachments as attachments_module
+from app.services.field import expense_categories as expense_categories_module
 from app.services.field.attachments import field_attachments
 from app.services.field.expense_requests import (
+    CancelFieldExpenseRequest,
+    ExpenseCategoryRule,
+    ExpenseRequestLineInput,
+    ExpenseRequestStatus,
+    ExpenseWorkOrderIdentity,
+    FieldExpenseRequestError,
     ListFieldExpenseVendors,
+    RequesterExpenseDetailQuery,
+    RequesterExpenseHistoryQuery,
+    ResolvedFieldExpenseSubmissionContext,
+    SelectedExpenseApprover,
+    SubmitFieldExpenseRequest,
+    VerifiedExpenseDestinationInput,
+    cancel_field_expense_request_command,
     field_expense_requests,
+    get_requester_expense_request,
     list_expense_vendors,
+    list_requester_expense_requests,
+    submit_field_expense_request_command,
 )
 from app.services.field.jobs import field_jobs
+from app.services.owner_commands import CommandContext
 
 
 @dataclass
@@ -73,6 +97,22 @@ def fake_uploads(monkeypatch):
     fake = _FakeUploads()
     monkeypatch.setattr(attachments_module, "file_uploads", fake)
     return fake
+
+
+@pytest.fixture(autouse=True)
+def _authoritative_expense_rules(monkeypatch):
+    monkeypatch.setattr(
+        expense_categories_module,
+        "list_expense_categories",
+        lambda _db, _query: (
+            ExpenseCategoryRule(
+                category_code="transport",
+                category_name="Transport",
+                requires_receipt=False,
+                max_amount_per_claim=Decimal("10000.00"),
+            ),
+        ),
+    )
 
 
 def _user(db_session, name: str = "Expense") -> SystemUser:
@@ -162,6 +202,101 @@ def _expense_items(**overrides):
     return [item]
 
 
+def _command_context(user: SystemUser, command_id=None) -> CommandContext:
+    resolved_id = command_id or uuid4()
+    return CommandContext(
+        command_id=resolved_id,
+        correlation_id=resolved_id,
+        actor=f"user:{user.id}",
+        scope="field:expense_requests:write",
+        reason="test expense submission",
+        idempotency_key=str(resolved_id),
+    )
+
+
+def _enable_expense_flow(db_session) -> None:
+    flow = FieldErpSyncFlow.expense_claim.value
+    ownership = (
+        db_session.query(SyncFlowOwnership)
+        .filter(SyncFlowOwnership.flow == flow)
+        .one_or_none()
+    )
+    if ownership is None:
+        db_session.add(SyncFlowOwnership(flow=flow, owner=SyncFlowOwner.sub.value))
+    else:
+        ownership.owner = SyncFlowOwner.sub.value
+
+
+def _submit_expense(
+    db_session,
+    user: SystemUser,
+    work_order: WorkOrder,
+    *,
+    request_id=None,
+    purpose="Transport",
+    notes=None,
+    items=None,
+):
+    _enable_expense_flow(db_session)
+    resolved_id = request_id or uuid4()
+    user_id = user.id
+    work_order_public_id = work_order.public_id
+    db_session.commit()
+    outcome = submit_field_expense_request_command(
+        db_session,
+        SubmitFieldExpenseRequest(
+            context=CommandContext(
+                command_id=resolved_id,
+                correlation_id=resolved_id,
+                actor=f"user:{user_id}",
+                scope="field:expense_requests:write",
+                reason="test expense submission",
+                idempotency_key=str(resolved_id),
+            ),
+            requester_person_id=user_id,
+            work_order=ExpenseWorkOrderIdentity(public_id=work_order_public_id),
+            request_id=resolved_id,
+            purpose=purpose,
+            expense_date=date.today(),
+            currency="NGN",
+            notes=notes,
+            items=tuple(
+                ExpenseRequestLineInput(
+                    category_code=item["category_code"],
+                    category_name=item.get("category_name"),
+                    description=item["description"],
+                    amount=Decimal(str(item["amount"])),
+                    expense_date=item.get("expense_date"),
+                    vendor_name=item.get("vendor_name"),
+                    receipt_url=item.get("receipt_url"),
+                    receipt_attachment_id=item.get("receipt_attachment_id"),
+                    notes=item.get("notes"),
+                )
+                for item in (items or _expense_items())
+            ),
+        ),
+    )
+    return field_expense_requests.get(db_session, _auth(user), str(outcome.id))
+
+
+def _cancel_expense(db_session, user: SystemUser, request_id):
+    user_id = user.id
+    db_session.commit()
+    outcome = cancel_field_expense_request_command(
+        db_session,
+        command=CancelFieldExpenseRequest(
+            context=CommandContext.system(
+                actor=f"user:{user_id}",
+                scope="field:expense_requests:write",
+                reason="test expense cancellation",
+            ),
+            expense_request_id=request_id,
+            requester_person_id=user_id,
+        ),
+    )
+    return field_expense_requests.get(db_session, _auth(user), str(outcome.id))
+
+
 def test_create_submit_cancel_and_surface_expense_in_job_detail(db_session):
     user = _user(db_session)
     _profile(db_session, user)
@@ -172,49 +307,37 @@ def test_create_submit_cancel_and_surface_expense_in_job_detail(db_session):
     client_ref = uuid4()
     db_session.commit()
 
-    created = field_expense_requests.create(
+    created = _submit_expense(
         db_session,
-        _auth(user),
-        crm_work_order_id="wo-expense-flow",
+        user,
+        work_order,
+        request_id=client_ref,
         purpose="Transport for extra drop cable",
-        expense_date=date.today(),
-        currency="ngn",
         notes="Customer site was missing materials",
-        client_ref=client_ref,
-        items=_expense_items(),
     )
-    replayed = field_expense_requests.create(
+    replayed = _submit_expense(
         db_session,
-        _auth(user),
-        crm_work_order_id="wo-expense-flow",
+        user,
+        work_order,
+        request_id=client_ref,
         purpose="Transport for extra drop cable",
-        expense_date=date.today(),
-        currency="NGN",
-        notes=None,
-        client_ref=client_ref,
-        items=_expense_items(),
+        notes="Customer site was missing materials",
     )
 
     assert replayed["id"] == created["id"]
-    assert created["status"] == "draft"
+    assert created["id"] == client_ref
+    assert created["client_ref"] == client_ref
+    assert created["status"] == "submitted"
     assert str(created["total_amount"]) == "2500.00"
     db_session.refresh(work_order)
     assert work_order.metadata_["native_field_source"] == "sub"
     assert "expense_requests" in work_order.metadata_["native_field_activity"]
 
-    submitted = field_expense_requests.submit(
-        db_session, _auth(user), str(created["id"])
-    )
-    assert submitted["status"] == "submitted"
-    assert submitted["submitted_at"] is not None
-
     detail = field_jobs.get_detail(db_session, _auth(user), "wo-expense-flow")
     assert len(detail.expense_requests) == 1
     assert detail.expense_requests[0].status == "submitted"
 
-    canceled = field_expense_requests.cancel(
-        db_session, _auth(user), str(created["id"])
-    )
+    canceled = _cancel_expense(db_session, user, created["id"])
     assert canceled["status"] == "canceled"
 
 
@@ -229,16 +352,8 @@ def test_expense_history_survives_completion_and_reassignment(db_session):
     )
     db_session.commit()
 
-    created = field_expense_requests.create(
-        db_session,
-        _auth(user),
-        crm_work_order_id=work_order.public_id,
-        purpose="Completion history",
-        expense_date=date.today(),
-        currency="NGN",
-        notes=None,
-        client_ref=uuid4(),
-        items=_expense_items(),
+    created = _submit_expense(
+        db_session, user, work_order, purpose="Completion history"
     )
     work_order.status = "completed"
     work_order.assigned_to_crm_person_id = "other-expense-history-tech"
@@ -257,12 +372,7 @@ def test_expense_history_survives_completion_and_reassignment(db_session):
     with pytest.raises(HTTPException) as other_detail:
         field_expense_requests.get(db_session, _auth(other), str(created["id"]))
     assert other_detail.value.status_code == 404
-    assert (
-        field_expense_requests.cancel(db_session, _auth(user), str(created["id"]))[
-            "status"
-        ]
-        == "canceled"
-    )
+    assert _cancel_expense(db_session, user, created["id"])["status"] == "canceled"
 
 
 def test_expense_history_supports_person_and_legacy_user_ownership(db_session):
@@ -280,17 +390,7 @@ def test_expense_history_supports_person_and_legacy_user_ownership(db_session):
     )
     db_session.commit()
 
-    created = field_expense_requests.create(
-        db_session,
-        _auth(user),
-        crm_work_order_id=work_order.public_id,
-        purpose="Identity history",
-        expense_date=date.today(),
-        currency="NGN",
-        notes=None,
-        client_ref=uuid4(),
-        items=_expense_items(),
-    )
+    created = _submit_expense(db_session, user, work_order, purpose="Identity history")
     row = db_session.get(FieldExpenseRequest, created["id"])
     assert row is not None
 
@@ -314,6 +414,137 @@ def test_expense_history_supports_person_and_legacy_user_ownership(db_session):
         item["id"] for item in field_expense_requests.list_mine(db_session, _auth(user))
     ] == [created["id"]]
     assert field_expense_requests.list_mine(db_session, _auth(other)) == []
+
+
+def test_requester_expense_history_survives_inactive_profile_and_counts_total(
+    db_session,
+):
+    user = _user(db_session, "InactiveHistory")
+    profile = _profile(db_session, user, crm_person_id="inactive-expense-history-tech")
+    other = _user(db_session, "OtherHistory")
+    _profile(db_session, other, crm_person_id="other-inactive-expense-history-tech")
+    subscriber = _subscriber(db_session)
+    work_order = _work_order(
+        db_session,
+        subscriber,
+        crm_work_order_id="wo-inactive-expense-history",
+        assigned_to_crm_person_id="inactive-expense-history-tech",
+    )
+    db_session.commit()
+
+    first = _submit_expense(db_session, user, work_order, purpose="First history")
+    second = _submit_expense(db_session, user, work_order, purpose="Second history")
+    for request_id in (first["id"], second["id"]):
+        row = db_session.get(FieldExpenseRequest, request_id)
+        assert row is not None
+        row.requested_by_person_id = uuid4()
+        row.requested_by_system_user_id = None
+    profile.is_active = False
+    db_session.commit()
+
+    page = list_requester_expense_requests(
+        db_session,
+        RequesterExpenseHistoryQuery(
+            system_user_id=user.id,
+            status=ExpenseRequestStatus.SUBMITTED,
+            limit=1,
+        ),
+    )
+
+    assert page.total == 2
+    assert len(page.items) == 1
+    assert page.items[0].id == second["id"]
+    assert (
+        get_requester_expense_request(
+            db_session,
+            RequesterExpenseDetailQuery(
+                system_user_id=user.id,
+                request_id=first["id"],
+            ),
+        ).id
+        == first["id"]
+    )
+    assert (
+        list_requester_expense_requests(
+            db_session,
+            RequesterExpenseHistoryQuery(system_user_id=other.id),
+        ).items
+        == ()
+    )
+
+
+def test_requester_expense_history_uses_system_user_without_profile(db_session):
+    user = _user(db_session, "ProfilelessHistory")
+    profile = _profile(
+        db_session, user, crm_person_id="profileless-expense-history-tech"
+    )
+    subscriber = _subscriber(db_session)
+    work_order = _work_order(
+        db_session,
+        subscriber,
+        crm_work_order_id="wo-profileless-expense-history",
+        assigned_to_crm_person_id="profileless-expense-history-tech",
+    )
+    db_session.commit()
+
+    created = _submit_expense(
+        db_session, user, work_order, purpose="Profileless history"
+    )
+    row = db_session.get(FieldExpenseRequest, created["id"])
+    assert row is not None
+    row.requested_by_technician_id = None
+    db_session.delete(profile)
+    db_session.commit()
+
+    page = list_requester_expense_requests(
+        db_session,
+        RequesterExpenseHistoryQuery(system_user_id=user.id),
+    )
+
+    assert page.total == 1
+    assert [item.id for item in page.items] == [created["id"]]
+
+    with pytest.raises(FieldExpenseRequestError) as invalid_page:
+        list_requester_expense_requests(
+            db_session,
+            RequesterExpenseHistoryQuery(system_user_id=user.id, limit=0),
+        )
+    assert invalid_page.value.code == "operations.expense_requests.invalid_request"
+
+
+def test_accepted_historical_claim_identity_remains_readable_and_unchanged(
+    db_session,
+):
+    user = _user(db_session, "HistoricalIdentity")
+    _profile(db_session, user, crm_person_id="historical-expense-identity-tech")
+    subscriber = _subscriber(db_session)
+    work_order = _work_order(
+        db_session,
+        subscriber,
+        crm_work_order_id="wo-historical-expense-identity",
+        assigned_to_crm_person_id="historical-expense-identity-tech",
+    )
+    db_session.commit()
+
+    created = _submit_expense(db_session, user, work_order)
+    request = db_session.get(FieldExpenseRequest, created["id"])
+    assert request is not None
+    historical_client_ref = uuid4()
+    request.client_ref = historical_client_ref
+    request.status = "approved"
+    request.approved_at = datetime.now(UTC)
+    request.expense_claim_reference = "ERP-HISTORICAL-CLAIM"
+    db_session.commit()
+
+    detail = field_expense_requests.get(db_session, _auth(user), str(request.id))
+
+    assert detail["id"] == request.id
+    assert detail["client_ref"] == historical_client_ref
+    assert detail["status"] == "approved"
+    persisted = db_session.get(FieldExpenseRequest, request.id)
+    assert persisted is not None
+    assert persisted.client_ref == historical_client_ref
+    assert persisted.expense_claim_reference == "ERP-HISTORICAL-CLAIM"
 
 
 def test_expense_request_scope_and_receipt_attachment_validation(
@@ -344,29 +575,15 @@ def test_expense_request_scope_and_receipt_attachment_validation(
         crm_work_order_id=visible.crm_work_order_id,
     )
 
-    with pytest.raises(HTTPException) as hidden_exc:
-        field_expense_requests.create(
-            db_session,
-            _auth(user),
-            crm_work_order_id=hidden.crm_work_order_id,
-            purpose="Hidden",
-            expense_date=None,
-            currency="NGN",
-            notes=None,
-            client_ref=None,
-            items=_expense_items(),
-        )
-    assert hidden_exc.value.status_code == 404
+    with pytest.raises(FieldExpenseRequestError) as hidden_exc:
+        _submit_expense(db_session, user, hidden, purpose="Hidden")
+    assert hidden_exc.value.code == "operations.expense_requests.work_order_not_found"
 
-    created = field_expense_requests.create(
+    created = _submit_expense(
         db_session,
-        _auth(user),
-        crm_work_order_id=visible.crm_work_order_id,
+        user,
+        visible,
         purpose="Receipt linked",
-        expense_date=None,
-        currency="NGN",
-        notes=None,
-        client_ref=None,
         items=_expense_items(receipt_attachment_id=receipt["id"]),
     )
     assert created["items"][0]["receipt_attachment_id"] == receipt["id"]
@@ -388,14 +605,16 @@ def test_expense_vendor_picker_lists_active_vendors(db_session):
     ]
 
 
-def test_expense_request_api(db_session, fake_uploads):
+def test_expense_request_api(db_session, fake_uploads, monkeypatch):
     user = _user(db_session)
+    approver = _user(db_session, "Approver")
     _profile(db_session, user)
     subscriber = _subscriber(db_session)
-    _work_order(db_session, subscriber, crm_work_order_id="wo-expense-api")
+    work_order = _work_order(db_session, subscriber, crm_work_order_id="wo-expense-api")
     alpha = _vendor(db_session, "Alpha Logistics")
     zed = _vendor(db_session, "Zed Supplies")
     _vendor(db_session, "Inactive Vendor", is_active=False)
+    _enable_expense_flow(db_session)
     db_session.commit()
 
     app = FastAPI()
@@ -403,6 +622,30 @@ def test_expense_request_api(db_session, fake_uploads):
     app.dependency_overrides[get_db] = lambda: db_session
     app.dependency_overrides[require_user_auth] = lambda: _auth(user)
     client = TestClient(app)
+    client_ref = uuid4()
+    approver_erp_id = uuid4()
+    now = datetime.now(UTC)
+    monkeypatch.setattr(
+        "app.api.field.expense_requests.resolve_field_expense_submission_context",
+        lambda **_kwargs: ResolvedFieldExpenseSubmissionContext(
+            selected_approver=SelectedExpenseApprover(
+                erp_employee_id=approver_erp_id,
+                system_user_id=approver.id,
+                display_name=approver.display_name,
+                email=approver.email,
+            ),
+            payment_destination=VerifiedExpenseDestinationInput(
+                mode="erp_profile",
+                destination_token="verified-destination-token",
+                bank_code="058",
+                bank_name="Example Bank",
+                masked_account_number="******6789",
+                verified_beneficiary_name=user.display_name,
+                verified_at=now,
+                expires_at=now + timedelta(minutes=10),
+            ),
+        ),
+    )
 
     vendors = client.get("/api/v1/field/expense-requests/vendors?limit=25")
     assert vendors.status_code == 200
@@ -428,7 +671,7 @@ def test_expense_request_api(db_session, fake_uploads):
     assert receipt.status_code == 201
     assert receipt.json()["work_order_id"] == "wo-expense-api"
 
-    created = client.post(
+    retired = client.post(
         "/api/v1/field/expense-requests",
         json={
             "work_order_id": "wo-expense-api",
@@ -443,25 +686,71 @@ def test_expense_request_api(db_session, fake_uploads):
             ],
         },
     )
+    assert retired.status_code == 410
+
+    created = client.post(
+        "/api/v1/field/expense-requests/submit",
+        json={
+            "client_ref": str(client_ref),
+            "work_order_id": "wo-expense-api",
+            "purpose": "Transport",
+            "currency": "NGN",
+            "selected_approver": {
+                "erp_employee_id": str(approver_erp_id),
+                "system_user_id": str(approver.id),
+                "display_name": approver.display_name,
+                "email": approver.email,
+            },
+            "payment_destination": {
+                "destination_token": "verified-destination-token",
+                "mode": "erp_profile",
+                "bank_code": "058",
+                "bank_name": "Example Bank",
+                "masked_account_number": "******6789",
+                "verified_beneficiary_name": user.display_name,
+                "verified_at": now.isoformat(),
+                "expires_at": (now + timedelta(minutes=10)).isoformat(),
+            },
+            "items": [
+                {
+                    "category_code": "transport",
+                    "description": "Bike delivery",
+                    "amount": "1800.00",
+                }
+            ],
+        },
+    )
     assert created.status_code == 201
     assert created.json()["work_order_id"] == "wo-expense-api"
     request_id = created.json()["id"]
 
-    listed = client.get("/api/v1/field/expense-requests?status=draft")
+    second = _submit_expense(
+        db_session, user, work_order, purpose="Second paginated expense"
+    )
+    listed = client.get("/api/v1/field/expense-requests?status=submitted&limit=1")
     assert listed.status_code == 200
-    assert listed.json()["items"][0]["id"] == request_id
+    assert listed.json()["count"] == 2
+    assert len(listed.json()["items"]) == 1
+    assert listed.json()["items"][0]["id"] == str(second["id"])
 
-    submitted = client.post(f"/api/v1/field/expense-requests/{request_id}/submit")
-    assert submitted.status_code == 200
-    assert submitted.json()["status"] == "submitted"
-    assert db_session.query(FieldExpenseRequest).count() == 1
+    detail = client.get(f"/api/v1/field/expense-requests/{request_id}")
+    assert detail.status_code == 200
+    assert detail.json()["id"] == request_id
+
+    legacy_submit = client.post(f"/api/v1/field/expense-requests/{request_id}/submit")
+    assert legacy_submit.status_code == 410
+    assert db_session.query(FieldExpenseRequest).count() == 2
 
 
-def test_atomic_expense_submission_replays_and_rejects_changed_payload(db_session):
+def test_atomic_expense_submission_replays_and_rejects_changed_payload(
+    db_session, monkeypatch
+):
     user = _user(db_session)
+    approver = _user(db_session, "Approver")
     _profile(db_session, user)
     subscriber = _subscriber(db_session)
     _work_order(db_session, subscriber, crm_work_order_id="wo-expense-atomic")
+    _enable_expense_flow(db_session)
     db_session.commit()
 
     app = FastAPI()
@@ -470,11 +759,50 @@ def test_atomic_expense_submission_replays_and_rejects_changed_payload(db_sessio
     app.dependency_overrides[require_user_auth] = lambda: _auth(user)
     client = TestClient(app)
     client_ref = str(uuid4())
+    approver_erp_id = uuid4()
+    now = datetime.now(UTC)
+    monkeypatch.setattr(
+        "app.api.field.expense_requests.resolve_field_expense_submission_context",
+        lambda **_kwargs: ResolvedFieldExpenseSubmissionContext(
+            selected_approver=SelectedExpenseApprover(
+                erp_employee_id=approver_erp_id,
+                system_user_id=approver.id,
+                display_name=approver.display_name,
+                email=approver.email,
+            ),
+            payment_destination=VerifiedExpenseDestinationInput(
+                mode="erp_profile",
+                destination_token="verified-destination-token",
+                bank_code="058",
+                bank_name="Example Bank",
+                masked_account_number="******6789",
+                verified_beneficiary_name=user.display_name,
+                verified_at=now,
+                expires_at=now + timedelta(minutes=10),
+            ),
+        ),
+    )
     payload = {
         "client_ref": client_ref,
         "work_order_id": "wo-expense-atomic",
         "purpose": "Transport",
         "currency": "NGN",
+        "selected_approver": {
+            "erp_employee_id": str(approver_erp_id),
+            "system_user_id": str(approver.id),
+            "display_name": approver.display_name,
+            "email": approver.email,
+        },
+        "payment_destination": {
+            "destination_token": "verified-destination-token",
+            "mode": "erp_profile",
+            "bank_code": "058",
+            "bank_name": "Example Bank",
+            "masked_account_number": "******6789",
+            "verified_beneficiary_name": user.display_name,
+            "verified_at": now.isoformat(),
+            "expires_at": (now + timedelta(minutes=10)).isoformat(),
+        },
         "items": [
             {
                 "category_code": "transport",
@@ -486,6 +814,7 @@ def test_atomic_expense_submission_replays_and_rejects_changed_payload(db_sessio
 
     created = client.post("/api/v1/field/expense-requests/submit", json=payload)
     replayed = client.post("/api/v1/field/expense-requests/submit", json=payload)
+    listed = client.get("/api/v1/field/expense-requests")
     changed = client.post(
         "/api/v1/field/expense-requests/submit",
         json={**payload, "purpose": "Different purpose"},
@@ -493,7 +822,11 @@ def test_atomic_expense_submission_replays_and_rejects_changed_payload(db_sessio
 
     assert created.status_code == 201
     assert created.json()["status"] == "submitted"
+    assert created.json()["id"] == client_ref
+    assert created.json()["client_ref"] == client_ref
     assert replayed.status_code == 201
     assert replayed.json()["id"] == created.json()["id"]
+    assert listed.status_code == 200
+    assert [item["id"] for item in listed.json()["items"]] == [created.json()["id"]]
     assert changed.status_code == 409
     assert db_session.query(FieldExpenseRequest).count() == 1

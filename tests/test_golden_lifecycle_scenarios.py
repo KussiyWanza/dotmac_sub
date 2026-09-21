@@ -283,6 +283,20 @@ class TestPrepaidTopupRenewalRowShapes:
             payload={"payment_id": str(payment.id)},
             account_id=subscriber.id,
         )
+        # A real `EventStore` row, not just an in-memory `Event` (2026-09
+        # round 8): the handler is called directly here (staying inside this
+        # test's own transaction rather than going through the real
+        # dispatcher), but `evaluate_prepaid_service_after_settlement`'s
+        # fail-closed guard now requires `event_id` to resolve to a real,
+        # durable row -- exactly what the real dispatcher persists before
+        # invoking any handler. The second `handle()` call below then
+        # exercises genuine receipt-level replay (not just this owner's
+        # separate period-level idempotency), since both calls share the
+        # same event/event_id.
+        from app.services import event_store as event_store_service
+
+        event_store_service.create_event_record(db_session, funding_event)
+        db_session.flush()
         handler = PrepaidRenewalHandler()
         handler.handle(db_session, funding_event)
         handler.handle(db_session, funding_event)

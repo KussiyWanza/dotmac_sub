@@ -1361,6 +1361,7 @@ DOMAIN = DomainSOT(
                 "provider-neutral workforce attendance query translation",
                 "provider-neutral workforce attendance punch transport",
                 "ERP attendance response normalization",
+                "field location-sharing attendance eligibility",
             ),
             depends_on=(
                 "auth.permission_gate",
@@ -1368,7 +1369,7 @@ DOMAIN = DomainSOT(
             ),
             notes=(
                 "Selfcare authenticates the staff subject and transports fresh, "
-                "untrusted browser location evidence through the enabled attendance "
+                "untrusted browser or field-device location evidence through the enabled attendance "
                 "capability. Dotmac ERP alone owns employee resolution, shift and "
                 "timezone policy, geofence decisions, attendance state, and persistence."
             ),
@@ -1390,7 +1391,7 @@ DOMAIN = DomainSOT(
                         role=OwnerRole.TRANSPORT,
                         input_names=(
                             "authenticated Selfcare staff subject",
-                            "fresh browser location observation",
+                            "fresh staff-client location observation",
                             "enabled workforce attendance capability binding",
                             "ERP attendance observation",
                         ),
@@ -1398,6 +1399,11 @@ DOMAIN = DomainSOT(
                     ConcernContract(
                         name="ERP attendance response normalization",
                         role=OwnerRole.RESOLVER,
+                        input_names=("ERP attendance observation",),
+                    ),
+                    ConcernContract(
+                        name="field location-sharing attendance eligibility",
+                        role=OwnerRole.POLICY,
                         input_names=("ERP attendance observation",),
                     ),
                 ),
@@ -1412,12 +1418,12 @@ DOMAIN = DomainSOT(
                         ),
                     ),
                     AuthorityInput(
-                        name="fresh browser location observation",
-                        owner="external:staff_browser",
+                        name="fresh staff-client location observation",
+                        owner="external:staff_client",
                         kind=AuthorityKind.EXTERNAL_OBSERVATION,
                         source=(
                             "schema-validated latitude, longitude, accuracy, and browser "
-                            "observation time captured for the individual punch"
+                            "or native-device observation time captured for the individual punch"
                         ),
                     ),
                     AuthorityInput(
@@ -1463,6 +1469,8 @@ DOMAIN = DomainSOT(
                 errors=ErrorContract(
                     domain_codes=(
                         "attendance_unavailable",
+                        "attendance_unconfirmed",
+                        "attendance_rate_limited",
                         "invalid_provider_response",
                         "employee_not_linked",
                         "employee_mapping_ambiguous",
@@ -1477,7 +1485,7 @@ DOMAIN = DomainSOT(
                         "overnight_shift_not_supported",
                         "authorization_failed",
                     ),
-                    mapping_owner="app.services.web_admin_attendance",
+                    mapping_owner="web and field attendance adapters",
                     retryable_codes=("attendance_unavailable",),
                     fail_closed_on=(
                         "missing or mismatched authenticated staff subject",
@@ -1499,6 +1507,8 @@ DOMAIN = DomainSOT(
                 test_refs=(
                     "tests/test_workforce_attendance_capability.py",
                     "tests/test_admin_dashboard_attendance.py",
+                    "tests/test_field_attendance_api.py",
+                    "field_mobile/test/attendance_test.dart",
                     "tests/architecture/test_integration_platform_boundary.py",
                 ),
             ),
@@ -2263,8 +2273,9 @@ DOMAIN = DomainSOT(
                     mode=TransactionMode.COORDINATOR_MANAGED,
                     boundary=(
                         "Approval enqueues through the material owner transaction; each "
-                        "accepted delivery or scheduled poll asks that owner to project "
-                        "one ERP outcome before the surrounding row commit."
+                        "accepted delivery or scheduled poll normalizes one typed ERP "
+                        "observation. Polling releases candidate-read transactions, then "
+                        "enters the material observation owner once per response."
                     ),
                     locking=(
                         "The material owner resolves the active request and rejects a "
@@ -2277,6 +2288,37 @@ DOMAIN = DomainSOT(
                     retries=(
                         "The outbox retries transport with the stable key; scheduled "
                         "reconciliation isolates failures per request and repairs later."
+                    ),
+                ),
+                projections=(
+                    ProjectionContract(
+                        name="ERP material reconciliation freshness",
+                        input_names=(
+                            "canonical material dependency projection target",
+                            "ERP material-support outcome response",
+                            "ERP material-support transport contract",
+                        ),
+                        writer="operations.material_dependencies",
+                        freshness=(
+                            "Every valid webhook or polling response records its UTC "
+                            "observation time in FieldMaterialRequest.last_reconciled_at, "
+                            "including unchanged normalized outcomes."
+                        ),
+                        stale_behavior=(
+                            "Keep the last ERP observation visible without inferring a "
+                            "new outcome; the bounded poller retries stale in-flight rows."
+                        ),
+                        drift_signal=(
+                            "Active ERP-managed in-flight backlog size and oldest "
+                            "last_reconciled_at exceed the page-size/cadence bound, or "
+                            "ERP and Sub normalized status disagree."
+                        ),
+                        rebuild_operation=(
+                            "Run bounded refresh_material_request_statuses cycles; "
+                            "NULL/oldest freshness and UUID ordering rotates through all "
+                            "in-flight rows and invokes observe_erp_material_status."
+                        ),
+                        repair_owner="integration.dotmac_erp_material_support_adapter",
                     ),
                 ),
                 errors=ErrorContract(
@@ -2332,9 +2374,12 @@ DOMAIN = DomainSOT(
                 design_refs=(
                     "docs/SOT_RELATIONSHIP_MAP.md",
                     "docs/designs/SOT_CODING_STANDARDS_REFACTOR.md",
+                    "docs/designs/MATERIALS_VENDOR_ERP_CHAIN.md",
+                    "docs/runbooks/MATERIAL_REQUEST_ERP_CUTOVER.md",
                 ),
                 test_refs=(
                     "tests/test_dotmac_erp_material_sync.py",
+                    "tests/test_erp_material_webhook.py",
                     "tests/test_field_material_requests.py",
                 ),
             ),

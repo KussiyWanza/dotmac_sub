@@ -20,18 +20,32 @@
     {% call project_card() %}
     <form method="post"
           action="{% if form_mode == 'edit' and task %}/admin/projects/tasks/{{ task.number or task.id }}/edit{% else %}/admin/projects/tasks{% endif %}"
-          class="space-y-5">
+          class="space-y-5"
+          x-data='{ selectedProject: {{ prefill.project_id | tojson }}, selectedParent: {{ prefill.parent_task_id | tojson }}, parentOptions: {{ parent_task_options | tojson }} }'>
         <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
 
         <div class="grid gap-4 sm:grid-cols-2">
             <div class="sm:col-span-2">
                 <label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Project <span class="text-red-500">*</span></label>
-                <select name="project_id" required class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                <select name="project_id" required x-model="selectedProject"
+                        @change="if (!parentOptions.some((item) => item.id === selectedParent && item.project_id === selectedProject)) selectedParent = ''"
+                        class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                     <option value="">— Select a project —</option>
                     {% for p in projects %}
                     <option value="{{ p.id }}" {% if prefill.project_id == p.id|string %}selected{% endif %}>{{ p.name }}</option>
                     {% endfor %}
                 </select>
+            </div>
+            <div class="sm:col-span-2">
+                <label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Parent task</label>
+                <select name="parent_task_id" x-model="selectedParent"
+                        class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                    <option value="">Top-level task</option>
+                    <template x-for="option in parentOptions.filter((item) => item.project_id === selectedProject)" :key="option.id">
+                        <option :value="option.id" x-text="option.label"></option>
+                    </template>
+                </select>
+                <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Choose a parent to create an ad-hoc subtask for this project only. The parent cannot be completed until this subtask is done.</p>
             </div>
             <div class="sm:col-span-2">
                 <label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Title <span class="text-red-500">*</span></label>

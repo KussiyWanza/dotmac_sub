@@ -370,3 +370,56 @@ def test_location_owners_are_declared_and_out_of_writer_baseline():
     baseline = Path("tests/architecture/sot_writer_baseline.txt").read_text().split()
     assert "app.services.geocode_reconciler" not in baseline
     assert "app.services.location_capture" not in baseline
+
+
+def test_service_location_requirement_is_operator_controlled(db_session, monkeypatch):
+    subscriber = _subscriber(db_session)
+    monkeypatch.setattr(
+        lc.settings_spec,
+        "resolve_value",
+        lambda _db, _domain, _key: False,
+    )
+    assert not lc.requires_service_location_update(db_session, str(subscriber.id))
+
+    monkeypatch.setattr(
+        lc.settings_spec,
+        "resolve_value",
+        lambda _db, _domain, _key: True,
+    )
+    assert lc.requires_service_location_update(db_session, str(subscriber.id))
+
+
+def test_service_location_requirement_accepts_canonical_coordinates(
+    db_session, monkeypatch
+):
+    subscriber = _subscriber(db_session)
+    monkeypatch.setattr(
+        lc.settings_spec,
+        "resolve_value",
+        lambda _db, _domain, _key: True,
+    )
+    monkeypatch.setattr(
+        lc.service_address_service,
+        "service_address",
+        lambda _db, _subscriber_id: type(
+            "AddressStub", (), {"latitude": 6.43, "longitude": 3.42}
+        )(),
+    )
+    assert not lc.requires_service_location_update(db_session, str(subscriber.id))
+
+
+def test_service_location_requirement_fails_open_on_coordinate_read_error(
+    db_session, monkeypatch
+):
+    subscriber = _subscriber(db_session)
+    monkeypatch.setattr(
+        lc.settings_spec,
+        "resolve_value",
+        lambda _db, _domain, _key: True,
+    )
+
+    def raise_read_error(_db, _subscriber_id):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(lc.service_address_service, "service_address", raise_read_error)
+    assert not lc.requires_service_location_update(db_session, str(subscriber.id))

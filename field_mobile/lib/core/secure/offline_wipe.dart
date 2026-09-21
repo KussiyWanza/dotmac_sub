@@ -79,15 +79,15 @@ abstract class OfflineWipe {
 /// The order is the whole design:
 ///
 /// 1. journal the intent, so a crash at any later point is recoverable;
-/// 2. clear the session tokens, so nothing can authenticate as this principal;
-/// 3. close the live store, so an in-flight write fails instead of recreating
-///    what is about to be deleted;
-/// 4. destroy the scope's keys, after which every byte still on disk is
+/// 2. refuse new work against the live store;
+/// 3. clear the session tokens, so nothing can authenticate as this principal;
+/// 4. drain admitted work and close the live database connection;
+/// 5. destroy the scope's keys, after which every byte still on disk is
 ///    ciphertext nobody can open;
-/// 5. delete the scope directory, and any legacy plaintext residue;
-/// 6. clear the journal entry.
+/// 6. delete the scope directory, and any legacy plaintext residue;
+/// 7. clear the journal entry.
 ///
-/// Because step 4 precedes step 5, an interruption cannot leave readable
+/// Because step 5 precedes step 6, an interruption cannot leave readable
 /// residue. It can only leave unopenable files for the next launch to sweep.
 class ScopedOfflineWipe implements OfflineWipe {
   ScopedOfflineWipe({
@@ -126,10 +126,12 @@ class ScopedOfflineWipe implements OfflineWipe {
   }
 
   Future<void> _destroy(WipeRequest request, {SecureFieldStore? live}) async {
+    final liveStore = live != null && live.scopeKey == request.scopeKey
+        ? live
+        : null;
+    liveStore?.stopAcceptingWork();
     if (request.trigger.endsTheSession) await tokenStore.clear();
-    if (live != null && live.scopeKey == request.scopeKey) {
-      await live.discardAndClose();
-    }
+    await liveStore?.discardAndClose();
     if (request.scopeKey.isNotEmpty) {
       await keyRing.destroy(request.scopeKey);
       await _deleteTree(Directory(p.join(_scopesRoot.path, request.scopeKey)));

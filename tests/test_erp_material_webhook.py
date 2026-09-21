@@ -19,6 +19,9 @@ from app.services.integrations.backoffice_contracts import (
     ERP_MATERIAL_STATUS_WEBHOOK_CAPABILITY,
 )
 from app.services.owner_commands import _validate_manifest
+from scripts.one_off.bootstrap_erp_material_integration import (
+    erp_material_callback_url,
+)
 
 
 class _Request:
@@ -52,12 +55,72 @@ def test_material_status_observation_command_matches_typed_manifest() -> None:
     _validate_manifest(_MATERIAL_OBSERVATION_COMMAND)
 
 
+def test_bootstrap_material_callback_matches_mounted_fastapi_route() -> None:
+    from app.main import app
+
+    binding_id = UUID("00000000-0000-0000-0000-000000000123")
+    expected_path = "/api/v1/webhooks/erp-material/{capability_binding_id}"
+    mounted_paths = {getattr(route, "path", "") for route in app.routes}
+
+    assert expected_path in mounted_paths
+    assert erp_material_callback_url(binding_id) == (
+        f"https://selfcare.dotmac.io/api/v1/webhooks/erp-material/{binding_id}"
+    )
+
+
 def test_material_status_contract_refuses_the_retired_omni_alias() -> None:
     payload = json.loads(_payload(uuid4()))
     payload["omni_id"] = payload["source_request_id"]
 
     with pytest.raises(ValidationError):
         ErpMaterialStatusWebhook.model_validate(payload)
+
+
+def test_webhook_logs_sanitized_validation_diagnostics(
+    db_session, monkeypatch, caplog
+) -> None:
+    secret = "test-webhook-secret"
+    binding_id = uuid4()
+    invalid = json.loads(_payload(uuid4()))
+    invalid["unexpected_status_alias"] = "ISSUED"
+    body = json.dumps(invalid).encode()
+    monkeypatch.setattr(
+        erp_material_webhooks,
+        "build_execution_context",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            binding=SimpleNamespace(
+                capability_id=ERP_MATERIAL_STATUS_WEBHOOK_CAPABILITY,
+                installation_id=uuid4(),
+            ),
+            secret_material={"webhook_signing_secret": secret},
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            erp_material_webhooks.receive_erp_material_status(
+                binding_id,
+                _Request(
+                    body,
+                    secret=secret,
+                    delivery_id="invalid-contract-delivery",
+                ),
+                db_session,
+            )
+        )
+
+    assert exc_info.value.status_code == 422
+    record = next(
+        item
+        for item in caplog.records
+        if item.message == "Rejected invalid ERP material status payload"
+    )
+    assert record.delivery_id == "invalid-contract-delivery"
+    assert record.capability_binding_id == str(binding_id)
+    assert record.validation_errors == [
+        {"location": "unexpected_status_alias", "type": "extra_forbidden"}
+    ]
+    assert not hasattr(record, "payload")
 
 
 def test_webhook_rejects_invalid_signature_before_claim(db_session, monkeypatch):

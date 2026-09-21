@@ -70,7 +70,12 @@ from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session
 
-from app.models.field_erp_sync import FieldErpSyncEvent, FieldErpSyncFlow
+from app.models.field_erp_sync import (
+    FieldErpSyncEvent,
+    FieldErpSyncFlow,
+    FieldErpSyncStatus,
+    flow_owned_by_sub,
+)
 from app.models.vendor_routes import (
     InstallationProject,
     ProjectQuote,
@@ -297,6 +302,7 @@ def enqueue_purchase_order(
         entity_id=installation_project.id,
         idempotency_key=purchase_order_idempotency_key(installation_project),
         payload=payload,
+        isolate=False,
     )
 
 
@@ -382,11 +388,36 @@ def repair_purchase_order_writebacks(db: Session, *, limit: int = 100) -> dict:
     Scans terminal-accepted / sent ``purchase_order`` outbox rows carrying an ERP
     id whose install has an empty back-reference, and writes it back. Idempotent;
     safe to re-run. Read-only against ERP.
+
+    Restricted to ``status IN (accepted, sent)`` — the two statuses meaning "ERP
+    said yes, but our own link may be missing." A ``rejected`` or ``dead`` row can
+    still carry a stale/partial ``erp_response`` payload (e.g. a prior accepted
+    attempt's echoed id before a later terminal rejection), and must never be
+    written back as if ERP had accepted it.
+
+    OWNERSHIP GUARD: this is a scheduled sweep left running across cutovers —
+    ``sync_flow_ownership`` can move the ``purchase_order`` flow back to CRM
+    after this repair was first wired, and a stale schedule must not keep
+    acting on a flow it no longer owns. Checked ONCE per run (ownership is a
+    per-flow switch, not per-row), before the repair consequence below:
+    re-applying a stored response mutates the installation project's
+    procurement fields as if ERP had accepted the PO. A row is skipped, not
+    errored, when sub does not currently own this flow, and counted under
+    ``skipped_not_owned`` so the sweep's own numbers stay honest.
     """
     limit = max(1, min(int(limit or 100), 500))
+    owned = flow_owned_by_sub(db, FieldErpSyncFlow.purchase_order)
     rows = (
         db.query(FieldErpSyncEvent)
         .filter(FieldErpSyncEvent.flow == FieldErpSyncFlow.purchase_order.value)
+        .filter(
+            FieldErpSyncEvent.status.in_(
+                (
+                    FieldErpSyncStatus.accepted.value,
+                    FieldErpSyncStatus.sent.value,
+                )
+            )
+        )
         .filter(FieldErpSyncEvent.erp_response.isnot(None))
         .order_by(FieldErpSyncEvent.updated_at.asc())
         .limit(limit)
@@ -394,8 +425,21 @@ def repair_purchase_order_writebacks(db: Session, *, limit: int = 100) -> dict:
     )
 
     errors: list[str] = []
-    result: dict[str, object] = {"processed": 0, "repaired": 0, "errors": errors}
+    result: dict[str, object] = {
+        "processed": 0,
+        "repaired": 0,
+        "skipped_not_owned": 0,
+        "errors": errors,
+    }
     if not rows:
+        return result
+
+    if not owned:
+        logger.info(
+            "purchase_order_sync: skipping write-back repair — sub does not "
+            "own flow 'purchase_order' (sync_flow_ownership)"
+        )
+        result["skipped_not_owned"] = len(rows)
         return result
 
     processed = 0
@@ -418,3 +462,11 @@ def repair_purchase_order_writebacks(db: Session, *, limit: int = 100) -> dict:
     result["processed"] = processed
     result["repaired"] = repaired
     return result
+
+
+def run_repair_purchase_order_writebacks() -> dict:
+    """Own the background session for PO write-back repair (beat entry point)."""
+    from app.db import task_session
+
+    with task_session() as db:
+        return repair_purchase_order_writebacks(db)

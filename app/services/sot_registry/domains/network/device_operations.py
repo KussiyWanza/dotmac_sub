@@ -989,7 +989,14 @@ SERVICES: tuple[SOTService, ...] = (
             "Owns the assignment/head/revision/operation binding carried by "
             "sync_status and last_error. Return-to-inventory invokes its "
             "flush-only participant only after external cleanup succeeds; a "
-            "failed outer transaction restores the prior fault projection."
+            "failed outer transaction restores the prior fault projection. "
+            "Decision ownership of when/why sync_status transitions is "
+            "unchanged and stays here; the mechanical column write itself "
+            "(validated transition + structured log) now goes through the "
+            "single owning setter, app.services.network.ont_status."
+            "set_sync_status, alongside every other sync_status writer "
+            "(2026-09-09 single-writer consolidation; see "
+            "tests/architecture/test_sync_status_writers.py)."
         ),
         contract=ServiceContract(
             concerns=(

@@ -612,6 +612,22 @@ def _safe_rollback(db: Session) -> None:
             logger.exception("prepaid_balance_sweep_invalidate_failed")
 
 
+def _lock_account_for_sweep(db: Session, account_id: UUID) -> Subscriber | None:
+    """Acquire an account only when no other writer currently owns its row.
+
+    The scheduled sweep is retryable and account-scoped. Waiting behind an
+    interactive or other owner transaction turns one busy account into a
+    PostgreSQL lock timeout for the worker. Skipping that account preserves the
+    other owner's serialization and lets the following sweep re-evaluate it
+    from authoritative facts.
+    """
+    return db.scalar(
+        select(Subscriber)
+        .where(Subscriber.id == account_id)
+        .with_for_update(skip_locked=True)
+    )
+
+
 def run_prepaid_balance_sweep(
     db: Session,
     *,
@@ -649,6 +665,7 @@ def run_prepaid_balance_sweep(
         "delivery_unavailable": 0,
         "state_drift": 0,
         "budget_deferred": 0,
+        "lock_deferred": 0,
         "ok": 0,
         "errors": 0,
     }
@@ -707,12 +724,25 @@ def run_prepaid_balance_sweep(
             )
             break
         try:
-            account = db.execute(
-                select(Subscriber)
-                .where(Subscriber.id == coerce_uuid(str(account_id)))
-                .with_for_update()
-            ).scalar_one_or_none()
+            account_uuid = coerce_uuid(str(account_id))
+            if account_uuid is None:
+                stats["errors"] = int(stats["errors"]) + 1
+                logger.error("prepaid_balance_sweep_invalid_candidate_id")
+                continue
+            account = _lock_account_for_sweep(db, account_uuid)
             if account is None:
+                # A candidate that still exists but could not be locked is
+                # deliberately deferred. End this read transaction immediately
+                # before continuing so it cannot remain open through the next
+                # account's work.
+                if (
+                    db.scalar(
+                        select(Subscriber.id).where(Subscriber.id == account_uuid)
+                    )
+                    is not None
+                ):
+                    stats["lock_deferred"] = int(stats["lock_deferred"]) + 1
+                _safe_rollback(db)
                 continue
             outcome = _process_account(
                 db,

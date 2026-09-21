@@ -42,22 +42,28 @@ Widget _app() {
 }
 
 void main() {
-  testWidgets('shows the payment action only on the Payments tab',
+  testWidgets('shows a single payment action only on the Payments tab',
       (tester) async {
     await tester.pumpWidget(_app());
     await tester.pumpAndSettle();
 
+    expect(find.byKey(const ValueKey('billing-add-funds')), findsNothing);
+    expect(find.text('Add funds / Pay'), findsNothing);
     expect(find.text('Make payment'), findsNothing);
 
     await tester.tap(find.widgetWithText(Tab, 'Payments'));
     await tester.pumpAndSettle();
 
+    expect(find.byKey(const ValueKey('billing-add-funds')), findsNothing);
+    expect(find.text('Add funds / Pay'), findsNothing);
     expect(find.text('Make payment'), findsOneWidget);
     expect(find.byIcon(Icons.add_card_outlined), findsOneWidget);
 
     await tester.tap(find.widgetWithText(Tab, 'Activity'));
     await tester.pumpAndSettle();
 
+    expect(find.byKey(const ValueKey('billing-add-funds')), findsNothing);
+    expect(find.text('Add funds / Pay'), findsNothing);
     expect(find.text('Make payment'), findsNothing);
   });
 

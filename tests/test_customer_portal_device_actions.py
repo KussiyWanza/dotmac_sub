@@ -125,6 +125,42 @@ def test_service_detail_exposes_customer_reboot_when_ont_is_linked(db_session):
     assert detail["customer_ont"].id == ont.id
 
 
+def test_service_detail_fails_closed_on_ambiguous_active_ont_assignments(db_session):
+    subscriber, subscription, _ont = _active_subscription_with_ont(db_session)
+    second_ont = OntUnit(
+        serial_number="PORTAL-ONT-AMBIGUOUS",
+        is_active=True,
+    )
+    db_session.add(second_ont)
+    db_session.flush()
+    db_session.add(
+        OntAssignment(
+            ont_unit_id=second_ont.id,
+            subscriber_id=subscriber.id,
+            subscription_id=subscription.id,
+            active=True,
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(CustomerDeviceCommandError) as exc:
+        get_subscription_wifi_status(
+            db_session,
+            subscriber_id=subscriber.id,
+            subscription_id=subscription.id,
+        )
+
+    assert exc.value.code == "device_assignment_ambiguous"
+
+    detail = get_service_detail(
+        db_session,
+        {"account_id": str(subscriber.id)},
+        str(subscription.id),
+    )
+    assert detail is not None
+    assert detail["customer_wifi_operation"] is None
+
+
 def test_service_detail_renders_desired_wifi_name(db_session):
     subscriber, subscription, _ont = _active_subscription_with_ont(db_session)
     detail = get_service_detail(
@@ -303,6 +339,52 @@ def test_customer_wifi_status_projects_the_background_lifecycle(
     assert "waiting for the device" in outcome.message
 
 
+def test_customer_wifi_status_delivered_unverified_is_not_labeled_succeeded(
+    db_session, monkeypatch
+):
+    """``delivered_unverified`` must not collapse into ``succeeded`` -- its
+    message already says "exact device readback is unavailable", which
+    contradicts a plain "succeeded" status label."""
+    from app.models.ont_service_configuration import OntServiceConfigurationPhase
+    from app.services.customer_device_commands import CustomerDeviceCommandStatus
+    from app.services.network.ont_service_configuration import (
+        OntConfigurationSection,
+        OntConfigurationSectionDeliveryProjection,
+    )
+
+    subscriber, subscription, _ont = _active_subscription_with_ont(db_session)
+    operation_id = uuid4()
+    monkeypatch.setattr(
+        (
+            "app.services.customer_device_commands."
+            "get_latest_ont_configuration_section_delivery"
+        ),
+        lambda *_args, **_kwargs: OntConfigurationSectionDeliveryProjection(
+            ont_unit_id=_ont.id,
+            assignment_id=uuid4(),
+            section=OntConfigurationSection.wifi,
+            revision=1,
+            operation_id=operation_id,
+            phase=OntServiceConfigurationPhase.delivered_unverified,
+            failure_code=None,
+            failure_message=None,
+        ),
+    )
+
+    outcome = get_subscription_wifi_status(
+        db_session,
+        subscriber_id=subscriber.id,
+        subscription_id=subscription.id,
+    )
+
+    assert outcome.status is CustomerDeviceCommandStatus.needs_verification
+    assert outcome.status.value != "succeeded"
+    # Still treated as a non-failure outcome by the shared `.success` gate a
+    # caller uses to decide whether to keep polling / show a green state.
+    assert outcome.success is True
+    assert "exact device readback is unavailable" in outcome.message
+
+
 def test_customer_reboot_blocked_during_cooldown(db_session, monkeypatch):
     """A recent reboot operation on the same ONT blocks another customer
     reboot until the cooldown elapses (default 300s)."""
@@ -413,3 +495,63 @@ def test_failed_reboot_does_not_arm_cooldown(db_session, monkeypatch):
         actor_id="customer-user-1",
     )
     assert outcome.success is True
+
+
+def test_record_device_command_refusal_logs_and_increments_the_counter(
+    monkeypatch, caplog
+):
+    """The reusable adapter-level recorder does exactly the two documented
+    things: a structured log line and a Prometheus counter increment -- no
+    database write."""
+    import logging
+
+    from app import metrics
+    from app.services.customer_device_commands import (
+        CustomerDeviceCommandKind,
+        record_device_command_refusal,
+    )
+
+    incremented = []
+    monkeypatch.setattr(
+        metrics,
+        "record_customer_device_command_refusal",
+        lambda **kwargs: incremented.append(kwargs),
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger="app.services.customer_device_commands"
+    ):
+        record_device_command_refusal(
+            kind=CustomerDeviceCommandKind.wifi_update,
+            code="device_not_assigned",
+            correlation_id="corr-1",
+            details={"domain_code": "network.ont_service_configuration.x"},
+        )
+
+    assert incremented == [{"command": "wifi_update", "code": "device_not_assigned"}]
+    matching = [
+        record
+        for record in caplog.records
+        if record.message == "customer_device_command_refused"
+    ]
+    assert len(matching) == 1
+    assert matching[0].code == "device_not_assigned"
+    assert matching[0].command == "wifi_update"
+    assert matching[0].correlation_id == "corr-1"
+    assert matching[0].details == {"domain_code": "network.ont_service_configuration.x"}
+
+
+def test_record_device_command_refusal_cannot_touch_a_sql_transaction():
+    """A structural guarantee, not just a behavioral one: the recorder takes
+    no database/session handle at all, so it is impossible for a future
+    change to make it write inside the caller's (already-rolled-back) owner
+    -command transaction without also changing this signature."""
+    import inspect
+
+    from app.services.customer_device_commands import record_device_command_refusal
+
+    parameters = inspect.signature(record_device_command_refusal).parameters
+    assert "db" not in parameters
+    assert not any(
+        "session" in name.lower() or "db" in name.lower() for name in parameters
+    )

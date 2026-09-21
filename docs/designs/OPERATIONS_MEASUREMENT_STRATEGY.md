@@ -193,6 +193,11 @@ Measure p95/p99 latency for:
 
 Standardize job result freshness across critical tasks.
 
+Network collection uses independently retryable OLT tasks, per-device
+exponential backoff, LLDP REST fallback, and bounded RouterOS poll concurrency.
+The concurrency bound protects healthy devices and unrelated executor work when
+a site-wide reachability event makes many RouterOS calls time out together.
+
 Add for critical tasks:
 
 - last success age

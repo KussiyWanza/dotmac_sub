@@ -16,6 +16,7 @@ from app.services.integrations import inbox as integration_inbox
 from app.services.integrations import payment_capability
 from app.services.integrations.inbox import (
     InboxError,
+    InboxLeaseLost,
     ProviderEventIdentityCollision,
 )
 from app.services.integrations.installations import InstallationError
@@ -67,6 +68,7 @@ def _map_payment_webhook_error(error: DomainError) -> _ErrorMapping:
         "topup_intent_mismatch",
         "deposit_rejected",
         "provider_event_rejected",
+        "dispute_resolution_unrecognized",
     }:
         return _ErrorMapping(
             http_status=400 if suffix == "payload_invalid" else 409,
@@ -80,6 +82,13 @@ def _map_payment_webhook_error(error: DomainError) -> _ErrorMapping:
             http_status=500,
             response_status="error",
             inbox_code="payment_settlement_unlinked",
+            max_attempts=10,
+        )
+    if suffix == "provider_event_unresolved":
+        return _ErrorMapping(
+            http_status=500,
+            response_status="error",
+            inbox_code="payment_provider_event_unresolved",
             max_attempts=10,
         )
     return _ErrorMapping(
@@ -138,14 +147,26 @@ def _record_processing_failure(
     error_code: str,
     error_detail: str,
     max_attempts: int,
+    claimed_attempt: int | None = None,
 ) -> None:
-    integration_inbox.fail_claimed_consequence(
-        db,
-        receipt_id=receipt_id,
-        error_code=error_code,
-        error_detail=error_detail,
-        max_attempts=max_attempts,
-    )
+    try:
+        integration_inbox.fail_claimed_consequence(
+            db,
+            receipt_id=receipt_id,
+            error_code=error_code,
+            error_detail=error_detail,
+            max_attempts=max_attempts,
+            claimed_attempt=claimed_attempt,
+        )
+    except InboxLeaseLost:
+        # We are already recording a failure for OUR claim when we learn the
+        # receipt was reclaimed out from under us in between. The current
+        # owner's state is the one that matters now; do not stamp our stale
+        # attempt's failure over it.
+        logger.warning(
+            "payment webhook failure recording superseded (receipt_id=%s)",
+            receipt_id,
+        )
 
 
 def _process_webhook(
@@ -197,8 +218,11 @@ def _process_webhook(
             event_type=identity.event_type,
             payload=payload,
             headers={"provider": provider.value},
+            legacy_provider_event_id=identity.legacy_provider_event_id,
         )
         receipt_id = receipt.id
+        receipt_state = receipt.state
+        claimed_attempt = receipt.attempt_count
         consequence = dict(receipt.consequence_json or {})
         db_session_adapter.release_read_transaction(db)
     except ProviderEventIdentityCollision as exc:
@@ -211,6 +235,15 @@ def _process_webhook(
         return JSONResponse({"status": "event requires replay"}, status_code=500)
 
     if not should_process:
+        if receipt_state == "processing":
+            # A live claim: we have decided nothing yet. Answering 200 here
+            # would tell the provider delivery succeeded when no consequence
+            # exists, and it would stop retrying — exactly the bug this PR
+            # fixes. Keep it retrying instead. Once auto-reclaim is wired in
+            # above, an EXPIRED lease never reaches this branch: it is
+            # reclaimed and processed in the same request instead.
+            _record_ingress_outcome(provider, "claim_in_progress")
+            return JSONResponse({"status": "processing"}, status_code=409)
         _record_ingress_outcome(provider, "duplicate")
         _log_processed_webhook(
             provider=provider,
@@ -233,9 +266,25 @@ def _process_webhook(
             ProcessClaimedPaymentWebhookCommand(
                 receipt_id=receipt_id,
                 provider=provider,
+                claimed_attempt=claimed_attempt,
             ),
             context=context,
         )
+    except InboxLeaseLost:
+        # This claim was reclaimed by someone else before we finished (see
+        # inbox.InboxLeaseLost). The transaction already rolled back any
+        # consequence we were about to commit, so there is nothing of ours to
+        # record — the receipt now belongs to whichever claimant holds the
+        # current attempt. Do not touch it: writing a failure here with our
+        # stale attempt would either be rejected by the same fence or, worse,
+        # stamp over the current owner's state.
+        logger.warning(
+            "%s webhook claim superseded before completion (receipt_id=%s)",
+            provider.value,
+            receipt_id,
+        )
+        _record_ingress_outcome(provider, "claim_superseded")
+        return JSONResponse({"status": "processing"}, status_code=409)
     except DomainError as exc:
         mapping = _map_payment_webhook_error(exc)
         logger.warning(
@@ -250,6 +299,7 @@ def _process_webhook(
             error_code=mapping.inbox_code,
             error_detail=exc.message,
             max_attempts=mapping.max_attempts,
+            claimed_attempt=claimed_attempt,
         )
         _record_ingress_outcome(provider, "rejected")
         return _response_for_error(exc, mapping)
@@ -266,6 +316,7 @@ def _process_webhook(
             error_code="payment_event_processing_failed",
             error_detail=type(exc).__name__,
             max_attempts=10,
+            claimed_attempt=claimed_attempt,
         )
         _record_ingress_outcome(provider, "processing_error")
         return JSONResponse({"status": "error"}, status_code=500)

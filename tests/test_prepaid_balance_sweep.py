@@ -8,6 +8,7 @@ time window.
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 
@@ -22,6 +23,7 @@ from app.models.enforcement_lock import EnforcementLock, EnforcementReason
 from app.models.notification import Notification
 from app.models.subscriber import Subscriber, SubscriberStatus
 from app.services.account_lifecycle import suspend_subscription
+from app.services.collections import prepaid_balance_sweep as prepaid_sweep
 from app.services.collections.prepaid_balance_sweep import run_prepaid_balance_sweep
 from app.services.service_entitlements import (
     ensure_prepaid_entitlements_for_paid_invoice,
@@ -35,6 +37,20 @@ from tests.prepaid_funding_helpers import (
 # A fixed weekday noon (UTC). 2026-07-06 = Monday.
 _MONDAY_NOON = datetime(2026, 7, 6, 12, 0, tzinfo=UTC)
 _SATURDAY_NOON = datetime(2026, 7, 4, 12, 0, tzinfo=UTC)
+
+
+def test_sweep_account_lock_does_not_wait_for_a_busy_account() -> None:
+    captured: list[object] = []
+
+    class _Session:
+        def scalar(self, statement: object) -> None:
+            captured.append(statement)
+            return None
+
+    assert prepaid_sweep._lock_account_for_sweep(_Session(), uuid4()) is None  # type: ignore[arg-type]
+
+    statement = captured.pop()
+    assert statement._for_update_arg.skip_locked is True  # type: ignore[union-attr]
 
 
 def _record_retired_control_rows(db, **_ignored) -> None:

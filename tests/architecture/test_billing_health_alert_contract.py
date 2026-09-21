@@ -28,3 +28,11 @@ def test_money_path_prevention_alerts_use_owner_observations() -> None:
     assert "SubPrepaidFundingQuarantineGrowing" in source
     assert 'signal="prepaid_funding_quarantined",scope="all"}[24h]) > 0' in source
     assert "PrepaidFundingQuarantineActive" not in prepaid_source
+
+
+def test_prepaid_lock_contention_alert_uses_the_bounded_sweep_observation() -> None:
+    source = PREPAID_RULES.read_text(encoding="utf-8")
+
+    assert "PrepaidSweepLockContentionPersistent" in source
+    assert 'signal="lock_deferred"} > 0' in source
+    assert 'runbook: "docs/runbooks/DATABASE_TRANSACTION_PRESSURE.md"' in source

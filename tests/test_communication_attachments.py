@@ -103,8 +103,8 @@ def test_resolve_invoice_pdf_fails_closed_on_account_mismatch(db_session, subscr
         )
 
 
-def test_resolve_ncc_xlsx_verifies_scope_and_digest(db_session):
-    content = b"PK\x03\x04ncc-workbook"
+def test_resolve_ncc_csv_verifies_scope_and_digest(db_session):
+    content = b"MSISDN *,First Name *\r\n2348031234567,Ada\r\n"
     notification = Notification(
         channel=NotificationChannel.email,
         recipient="compliance@example.test",
@@ -121,10 +121,8 @@ def test_resolve_ncc_xlsx_verifies_scope_and_digest(db_session):
         window_end=datetime(2026, 7, 21, 7, 0, tzinfo=UTC),
         configuration_fingerprint="a" * 64,
         status=NccWeeklyReportRunStatus.queued,
-        artifact_filename="ncc-weekly.xlsx",
-        artifact_content_type=(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        ),
+        artifact_filename="29_2026_COMPLAINTS_DOTMAC.csv",
+        artifact_content_type="text/csv; charset=utf-8",
         artifact_content=content,
         artifact_sha256=hashlib.sha256(content).hexdigest(),
         row_count=0,
@@ -139,9 +137,9 @@ def test_resolve_ncc_xlsx_verifies_scope_and_digest(db_session):
         "ncc_weekly_report_run_id": str(run.id),
         "attachments": [
             {
-                "kind": "ncc_weekly_xlsx",
+                "kind": "ncc_weekly_csv",
                 "entity_id": str(run.id),
-                "filename": "../ncc-weekly.xlsx",
+                "filename": "../29_2026_COMPLAINTS_DOTMAC.csv",
                 "content_type": run.artifact_content_type,
             }
         ],
@@ -152,13 +150,14 @@ def test_resolve_ncc_xlsx_verifies_scope_and_digest(db_session):
         db_session, notification
     )
 
-    assert resolved[0].filename == "ncc-weekly.xlsx"
+    assert resolved[0].filename == "29_2026_COMPLAINTS_DOTMAC.csv"
+    assert resolved[0].content_type == "text/csv; charset=utf-8"
     assert resolved[0].content == content
 
     run.artifact_sha256 = "0" * 64
     db_session.flush()
     with pytest.raises(
         communication_attachments.CommunicationAttachmentError,
-        match="ncc_xlsx_integrity_failed",
+        match="ncc_artifact_integrity_failed",
     ):
         communication_attachments.resolve_email_attachments(db_session, notification)

@@ -14,7 +14,7 @@ pagination.Page<T> _emptyPage<T>() =>
 
 void main() {
   testWidgets(
-    'Billing keeps the account-level payment action in the empty state',
+    'Invoices empty state does not show a global payment action',
     (tester) async {
       tester.view.physicalSize = const Size(390, 844);
       tester.view.devicePixelRatio = 1;
@@ -25,11 +25,6 @@ void main() {
         initialLocation: '/billing',
         routes: [
           GoRoute(path: '/billing', builder: (_, __) => const InvoicesScreen()),
-          GoRoute(
-            path: '/topup',
-            builder: (_, __) =>
-                const Scaffold(body: Text('Top-up destination')),
-          ),
         ],
       );
       addTearDown(router.dispose);
@@ -51,12 +46,9 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('No invoices yet.'), findsOneWidget);
-      expect(find.text('Add funds / Pay'), findsOneWidget);
-
-      await tester.tap(find.byKey(const ValueKey('billing-add-funds')));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Top-up destination'), findsOneWidget);
+      expect(find.byKey(const ValueKey('billing-add-funds')), findsNothing);
+      expect(find.text('Add funds / Pay'), findsNothing);
+      expect(find.text('Make payment'), findsNothing);
     },
   );
 

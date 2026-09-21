@@ -30,6 +30,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import tuple_
 from sqlalchemy.orm import Session
 
 from app.models.network_monitoring import AvailabilitySnapshot
@@ -189,6 +190,12 @@ def _infrastructure_downtime(
         session.query(AvailabilitySnapshot)
         .filter(AvailabilitySnapshot.snapshot_date >= start)
         .filter(AvailabilitySnapshot.snapshot_date < end)
+        .filter(
+            tuple_(
+                AvailabilitySnapshot.element_type,
+                AvailabilitySnapshot.element_id,
+            ).in_(keys)
+        )
         .all()
     )
     wanted = set(keys)

@@ -108,7 +108,12 @@ def desired_from_ont_unit(db: Session, ont: OntUnit) -> OntDesiredState:
     )
 
     fsp = _fsp_from_ont(ont)
-    olt_ont_id = parse_ont_id_on_olt(ont.external_id) or 0
+    # ``None`` means genuinely unknown/unparseable — NOT the same as the real
+    # ONT-ID 0, which Huawei OLTs assign in normal operation. Collapsing the
+    # two with ``or 0`` (the historical bug) let an unresolved identity
+    # silently target a live ONT-ID-0 registration. The reader/planner treat
+    # ``None`` as OLT_IDENTITY_UNRESOLVED and emit no OLT action at all.
+    olt_ont_id = parse_ont_id_on_olt(ont.external_id)
     # The effective-config helper exposes two related fields: ``wan_mode`` is
     # the IP-mode (``pppoe``/``bridge``/``static_ip``/...) and ``onu_mode`` is
     # the ONU operating mode (``routing``/``bridging``). Either being "bridge"
@@ -134,7 +139,7 @@ def desired_from_ont_unit(db: Session, ont: OntUnit) -> OntDesiredState:
         serial_number=ont.serial_number,
         olt_id=str(ont.olt_device_id) if ont.olt_device_id else "",
         fsp=fsp,
-        olt_ont_id=int(olt_ont_id),
+        olt_ont_id=olt_ont_id,
         line_profile_id=int(values.get("authorization_line_profile_id") or 0),
         service_profile_id=int(values.get("authorization_service_profile_id") or 0),
         # DEFAULT: description isn't computed by effective_ont_config; the
@@ -189,10 +194,14 @@ def desired_from_ont_unit(db: Session, ont: OntUnit) -> OntDesiredState:
         wifi_password_pushed_at=None,
         # Per-ONT service-port index overrides (operator-set via the
         # configure form, written to ``desired_config`` under the ``olt.*``
-        # section). When None, the planner allocates fresh indices on first
-        # provision. The validator rejects post-allocation changes
-        # (validator.py:107) so the form should disable these once the OLT
-        # observation shows real indices in use.
+        # section). There is no allocator: when None, no index has been
+        # assigned yet, and the planner plans no create for that slot — if
+        # both slots are None while ports are already observed, it refuses
+        # deletes rather than clearing them
+        # (``ReconcileFailureReason.SERVICE_PORT_INDEX_UNALLOCATED``, see
+        # ``planner._plan_service_ports``). The validator rejects
+        # post-allocation changes (validator.py:107) so the form should
+        # disable these once the OLT observation shows real indices in use.
         mgmt_service_port_index=_int_or_none(values.get("mgmt_service_port_index")),
         wan_service_port_index=_int_or_none(values.get("wan_service_port_index")),
         # DEFAULT: forward-compat for legacy-BSS -> in-app Subscriber migration.
@@ -405,7 +414,18 @@ def _resolve_wifi_paths(
         }
     except Tr069PathError:
         return None
-    return Tr069WifiParameterPaths(**resolved)
+    additional_psk_paths = tr069_path_resolver.resolve_vendor_paths_by_prefix(
+        root,
+        "wifi.psk.additional.",
+        db=db,
+        vendor=vendor,
+        model=model,
+        firmware=firmware,
+    )
+    return Tr069WifiParameterPaths(
+        **resolved,
+        additional_psk_paths=additional_psk_paths,
+    )
 
 
 def _resolve_remote_access_paths(
@@ -655,7 +675,11 @@ def observed_from_ont_observation(
             olt_line_profile_id=obs.olt_line_profile_id,
             olt_service_profile_id=obs.olt_service_profile_id,
             olt_tr069_profile_id=obs.olt_tr069_profile_id,
-            olt_service_ports=tuple(obs.olt_service_ports or ()),
+            olt_service_ports=(
+                tuple(obs.olt_service_ports)
+                if obs.olt_service_ports is not None
+                else None
+            ),
         ),
         acs=AcsObservedFields(
             acs_present=obs.acs_present,
@@ -714,8 +738,29 @@ def upsert_ont_observation(
     db: Session,
     ont_unit_id: uuid.UUID | str,
     observed: OntObservedState,
+    *,
+    observed_surfaces: frozenset[Literal["olt", "acs"]],
+    olt_read_status: str | None,
 ) -> OntObservation:
     """Insert or update the 1:1 observation row for an ONT.
+
+    ``observed_surfaces`` names which of ``observed.olt``/``observed.acs``
+    reflect a real read this pass — the caller (``reconcile.core``) builds
+    ``observed`` with a synthesized "absent" placeholder for any surface that
+    was ``"unavailable"``, so this function must not let that placeholder
+    overwrite the previous, genuine observation on the row. A surface absent
+    from ``observed_surfaces`` leaves its columns exactly as they were.
+
+    ``olt_read_status`` is stamped with ``present``/``absent``/``unavailable``
+    whenever this pass genuinely attempted an OLT read, independent of
+    whether the OLT columns themselves were touched — so the row always
+    carries an honest freshness signal for a real attempt. ``None`` means no
+    read was even attempted this pass (e.g. a WiFi-only delivery pass
+    substituting cached data): the column is left exactly as it already was,
+    not cleared, since there is nothing new to report about the last attempt.
+    ``olt_observed_at`` only advances when ``"olt"`` is in
+    ``observed_surfaces`` — it marks the last time we actually saw something,
+    not the last time we merely tried.
 
     The caller is responsible for ``db.commit()``. Returns the persisted ORM
     instance so callers can inspect the assigned UUID / timestamps.
@@ -734,69 +779,87 @@ def upsert_ont_observation(
     row.last_reconciled_at = observed.last_reconciled_at
     row.last_reconcile_duration_ms = observed.last_reconcile_duration_ms
     row.mgmt_ip_pingable = observed.mgmt_ip_pingable
-    row.olt_present = observed.olt.olt_present
-    row.olt_match_state = observed.olt.olt_match_state
-    row.olt_run_state = observed.olt.olt_run_state
-    row.olt_distance_m = observed.olt.olt_distance_m
-    row.olt_rx_dbm = observed.olt.olt_rx_dbm
-    row.olt_tx_dbm = observed.olt.olt_tx_dbm
-    row.olt_temperature_c = observed.olt.olt_temperature_c
-    row.olt_description = observed.olt.olt_description
-    row.olt_mgmt_ip = observed.olt.olt_mgmt_ip
-    row.olt_mgmt_vlan = observed.olt.olt_mgmt_vlan
-    row.olt_line_profile_id = observed.olt.olt_line_profile_id
-    row.olt_service_profile_id = observed.olt.olt_service_profile_id
-    row.olt_tr069_profile_id = observed.olt.olt_tr069_profile_id
-    row.olt_service_ports = list(observed.olt.olt_service_ports)
 
-    row.acs_present = observed.acs.acs_present
-    row.acs_last_inform_at = observed.acs.acs_last_inform_at
-    row.acs_last_boot_at = observed.acs.acs_last_boot_at
-    row.acs_last_bootstrap_at = observed.acs.acs_last_bootstrap_at
-    row.acs_observed_software_version = observed.acs.acs_observed_software_version
-    row.acs_observed_pppoe_username = observed.acs.acs_observed_pppoe_username
-    row.acs_observed_pppoe_enable = observed.acs.acs_observed_pppoe_enable
-    row.acs_observed_wan_vlan = observed.acs.acs_observed_wan_vlan
-    row.acs_observed_wan_external_ip = observed.acs.acs_observed_wan_external_ip
-    row.acs_observed_wan_connection_status = (
-        observed.acs.acs_observed_wan_connection_status
-    )
-    row.acs_observed_nat_enabled = observed.acs.acs_observed_nat_enabled
-    row.acs_observed_dhcp_enabled = observed.acs.acs_observed_dhcp_enabled
-    row.acs_observed_ssid = observed.acs.acs_observed_ssid
-    row.acs_observed_wifi_enabled = observed.acs.acs_observed_wifi_enabled
-    row.acs_observed_wifi_channel = observed.acs.acs_observed_wifi_channel
-    row.acs_observed_wifi_security_mode = observed.acs.acs_observed_wifi_security_mode
-    row.acs_observed_wifi_instance_index = observed.acs.acs_observed_wifi_instance_index
-    row.acs_observed_remote_ssh_enabled = observed.acs.acs_observed_remote_ssh_enabled
-    row.acs_observed_remote_ssh_port = observed.acs.acs_observed_remote_ssh_port
-    row.acs_observed_remote_telnet_enabled = (
-        observed.acs.acs_observed_remote_telnet_enabled
-    )
-    row.acs_observed_remote_telnet_port = observed.acs.acs_observed_remote_telnet_port
-    row.acs_observed_periodic_inform_interval_sec = (
-        observed.acs.acs_observed_periodic_inform_interval_sec
-    )
-    row.acs_observed_cr_username_set = observed.acs.acs_observed_cr_username_set
-    row.acs_observed_cr_password_set = observed.acs.acs_observed_cr_password_set
-    row.acs_observed_wan_wcd_index = observed.acs.acs_observed_wan_wcd_index
-    row.acs_observed_wan_instance_index = observed.acs.acs_observed_wan_instance_index
-    row.acs_data_model_root = observed.acs.acs_data_model_root
-    row.acs_observed_ipv6_enabled = observed.acs.acs_observed_ipv6_enabled
-    row.acs_observed_wan_ip_enable = observed.acs.acs_observed_wan_ip_enable
-    row.acs_observed_wan_addressing_type = observed.acs.acs_observed_wan_addressing_type
-    row.acs_observed_wan_ip_address = observed.acs.acs_observed_wan_ip_address
-    row.acs_observed_wan_subnet_mask = observed.acs.acs_observed_wan_subnet_mask
-    row.acs_observed_wan_gateway = observed.acs.acs_observed_wan_gateway
-    row.acs_observed_wan_dns_servers = observed.acs.acs_observed_wan_dns_servers
-    row.acs_observed_dhcpv6_enabled = observed.acs.acs_observed_dhcpv6_enabled
-    row.acs_observed_dhcpv6_request_prefixes = (
-        observed.acs.acs_observed_dhcpv6_request_prefixes
-    )
-    row.acs_observed_ra_enabled = observed.acs.acs_observed_ra_enabled
+    if olt_read_status is not None:
+        row.olt_read_status = olt_read_status
+    if "olt" in observed_surfaces:
+        row.olt_observed_at = observed.last_reconciled_at
+        row.olt_present = observed.olt.olt_present
+        row.olt_match_state = observed.olt.olt_match_state
+        row.olt_run_state = observed.olt.olt_run_state
+        row.olt_distance_m = observed.olt.olt_distance_m
+        row.olt_rx_dbm = observed.olt.olt_rx_dbm
+        row.olt_tx_dbm = observed.olt.olt_tx_dbm
+        row.olt_temperature_c = observed.olt.olt_temperature_c
+        row.olt_description = observed.olt.olt_description
+        row.olt_mgmt_ip = observed.olt.olt_mgmt_ip
+        row.olt_mgmt_vlan = observed.olt.olt_mgmt_vlan
+        row.olt_line_profile_id = observed.olt.olt_line_profile_id
+        row.olt_service_profile_id = observed.olt.olt_service_profile_id
+        row.olt_tr069_profile_id = observed.olt.olt_tr069_profile_id
+        row.olt_service_ports = (
+            list(observed.olt.olt_service_ports)
+            if observed.olt.olt_service_ports is not None
+            else None
+        )
+    elif existing is None:
+        # First-ever row for this ONT and the OLT read was unavailable on
+        # this very first pass — there is no prior evidence to preserve.
+        # ``olt_present`` is NOT NULL, so record "no evidence yet" rather
+        # than leaving the column unset.
+        row.olt_present = False
+
+    if "acs" in observed_surfaces:
+        row.acs_present = observed.acs.acs_present
+        _apply_acs_observed_fields(row, observed.acs)
+    elif existing is None:
+        row.acs_present = False
 
     db.flush()  # Establish row.id before the caller commits.
     return row
+
+
+def _apply_acs_observed_fields(row: OntObservation, acs: AcsObservedFields) -> None:
+    """Copy every ``acs_observed_*`` column. Split out of ``upsert_ont_observation``
+    so that function's OLT/ACS branches read at a glance."""
+    row.acs_last_inform_at = acs.acs_last_inform_at
+    row.acs_last_boot_at = acs.acs_last_boot_at
+    row.acs_last_bootstrap_at = acs.acs_last_bootstrap_at
+    row.acs_observed_software_version = acs.acs_observed_software_version
+    row.acs_observed_pppoe_username = acs.acs_observed_pppoe_username
+    row.acs_observed_pppoe_enable = acs.acs_observed_pppoe_enable
+    row.acs_observed_wan_vlan = acs.acs_observed_wan_vlan
+    row.acs_observed_wan_external_ip = acs.acs_observed_wan_external_ip
+    row.acs_observed_wan_connection_status = acs.acs_observed_wan_connection_status
+    row.acs_observed_nat_enabled = acs.acs_observed_nat_enabled
+    row.acs_observed_dhcp_enabled = acs.acs_observed_dhcp_enabled
+    row.acs_observed_ssid = acs.acs_observed_ssid
+    row.acs_observed_wifi_enabled = acs.acs_observed_wifi_enabled
+    row.acs_observed_wifi_channel = acs.acs_observed_wifi_channel
+    row.acs_observed_wifi_security_mode = acs.acs_observed_wifi_security_mode
+    row.acs_observed_wifi_instance_index = acs.acs_observed_wifi_instance_index
+    row.acs_observed_remote_ssh_enabled = acs.acs_observed_remote_ssh_enabled
+    row.acs_observed_remote_ssh_port = acs.acs_observed_remote_ssh_port
+    row.acs_observed_remote_telnet_enabled = acs.acs_observed_remote_telnet_enabled
+    row.acs_observed_remote_telnet_port = acs.acs_observed_remote_telnet_port
+    row.acs_observed_periodic_inform_interval_sec = (
+        acs.acs_observed_periodic_inform_interval_sec
+    )
+    row.acs_observed_cr_username_set = acs.acs_observed_cr_username_set
+    row.acs_observed_cr_password_set = acs.acs_observed_cr_password_set
+    row.acs_observed_wan_wcd_index = acs.acs_observed_wan_wcd_index
+    row.acs_observed_wan_instance_index = acs.acs_observed_wan_instance_index
+    row.acs_data_model_root = acs.acs_data_model_root
+    row.acs_observed_ipv6_enabled = acs.acs_observed_ipv6_enabled
+    row.acs_observed_wan_ip_enable = acs.acs_observed_wan_ip_enable
+    row.acs_observed_wan_addressing_type = acs.acs_observed_wan_addressing_type
+    row.acs_observed_wan_ip_address = acs.acs_observed_wan_ip_address
+    row.acs_observed_wan_subnet_mask = acs.acs_observed_wan_subnet_mask
+    row.acs_observed_wan_gateway = acs.acs_observed_wan_gateway
+    row.acs_observed_wan_dns_servers = acs.acs_observed_wan_dns_servers
+    row.acs_observed_dhcpv6_enabled = acs.acs_observed_dhcpv6_enabled
+    row.acs_observed_dhcpv6_request_prefixes = acs.acs_observed_dhcpv6_request_prefixes
+    row.acs_observed_ra_enabled = acs.acs_observed_ra_enabled
 
 
 # ── Internal helpers ────────────────────────────────────────────────────────

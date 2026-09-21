@@ -55,7 +55,8 @@ def test_sidebar_hides_empty_permission_groups() -> None:
 
     assert ">Core<" not in sidebar
     assert ">Operations<" not in sidebar
-    assert ">ADMIN<" not in sidebar
+    assert ">ADMIN<" in sidebar
+    assert 'href="/admin/help"' in sidebar
 
 
 def test_primary_admin_navigation_declares_route_permission_gates() -> None:
@@ -80,7 +81,6 @@ def test_primary_admin_navigation_declares_route_permission_gates() -> None:
         "Provisioning": "provisioning:read",
         "System Overview": "system:settings:read",
         "Settings": "system:settings:read",
-        "Help center": "support:ticket:read",
     }
 
     for label, permission in expected.items():
@@ -95,6 +95,11 @@ def test_primary_admin_navigation_declares_route_permission_gates() -> None:
         )[0]
         assert 'permission="' in call, label
 
+    help_call = source.split('nav_link("Help center"', maxsplit=1)[1].split(
+        ") }}", maxsplit=1
+    )[0]
+    assert 'permission="' not in help_call
+
 
 def test_navigation_macros_fail_closed_and_empty_groups_are_suppressed() -> None:
     source = SIDEBAR.read_text(encoding="utf-8")
@@ -104,6 +109,7 @@ def test_navigation_macros_fail_closed_and_empty_groups_are_suppressed() -> None
     assert (
         '{% if show_operations %}{{ section_label("Operations") }}{% endif %}' in source
     )
+    assert "{% set show_admin = true %}" in source
     assert '{% if show_admin %}{{ section_label("ADMIN") }}{% endif %}' in source
     assert "module_states.get('reports', True) and show_reports" in source
 

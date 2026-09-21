@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -10,7 +12,9 @@ from app.models.integration_platform import IntegrationInstallation
 from app.services.integrations import meta_social_capability
 from app.services.integrations.connectors import meta_social_runtime
 from app.services.integrations.meta_social_contracts import (
+    MetaDirectMessageAttachment,
     MetaDirectMessageCommand,
+    MetaMessageAttachmentType,
     MetaSocialChannel,
 )
 from app.services.integrations.meta_social_installation import (
@@ -413,6 +417,94 @@ def test_runtime_rejected_response_is_not_recorded_as_sent(monkeypatch):
     assert result.status is OperationStatus.rejected
     assert result.output["sent"] is False
     assert result.error_code == "provider_rejected_message"
+
+
+def test_runtime_uploads_private_instagram_attachment_before_sending(monkeypatch):
+    asset_id = uuid4()
+    envelope = _envelope(channel=MetaSocialChannel.instagram_dm).model_copy(
+        update={
+            "payload": {
+                "action": "send_direct_message",
+                "params": {
+                    "channel": "instagram_dm",
+                    "provider_account_id": "ig-1",
+                    "recipient_id": "recipient-1",
+                    "attachment": {
+                        "asset_id": str(asset_id),
+                        "attachment_type": "image",
+                        "filename": "router.jpg",
+                        "content_type": "image/jpeg",
+                        "content_base64": base64.b64encode(b"jpeg-bytes").decode(
+                            "ascii"
+                        ),
+                    },
+                    "preview": False,
+                },
+            }
+        }
+    )
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def provider_post(url, **kwargs):
+        calls.append((url, kwargs))
+        if url.endswith("/message_attachments"):
+            assert url == ("https://graph.instagram.com/v21.0/ig-1/message_attachments")
+            upload_message = json.loads(kwargs["data"]["message"])
+            assert upload_message == {
+                "attachment": {
+                    "type": "image",
+                    "payload": {"is_reusable": False},
+                }
+            }
+            assert kwargs["files"]["filedata"] == (
+                "router.jpg",
+                b"jpeg-bytes",
+                "image/jpeg",
+            )
+            return httpx.Response(
+                200,
+                json={"attachment_id": "meta-attachment-1"},
+                request=httpx.Request("POST", url),
+            )
+        message = json.loads(kwargs["json"]["message"])
+        assert message["attachment"]["payload"] == {
+            "attachment_id": "meta-attachment-1"
+        }
+        return httpx.Response(
+            200,
+            json={"message_id": "mid-media-1", "recipient_id": "recipient-1"},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(meta_social_runtime.httpx, "post", provider_post)
+
+    result = meta_social_runtime.MetaSocialRuntimeRunner().execute(
+        envelope,
+        config=_config(),
+        secret_material=_secrets(),
+    )
+
+    assert result.status is OperationStatus.succeeded
+    assert len(calls) == 2
+    assert result.external_receipt["provider_attachment_id"] == "meta-attachment-1"
+    assert result.external_receipt["provider_message_id"] == "mid-media-1"
+
+
+def test_typed_instagram_message_rejects_document_attachment():
+    with pytest.raises(ValueError, match="do not support file attachments"):
+        MetaDirectMessageCommand(
+            channel=MetaSocialChannel.instagram_dm,
+            provider_account_id="ig-1",
+            recipient_id="recipient-1",
+            attachment=MetaDirectMessageAttachment(
+                asset_id=uuid4(),
+                attachment_type=MetaMessageAttachmentType.file,
+                filename="router.pdf",
+                content_type="application/pdf",
+                content=b"pdf-bytes",
+            ),
+            correlation_id="notification:attachment:1",
+        )
 
 
 def test_runtime_connection_validation_probes_each_bound_account(monkeypatch):

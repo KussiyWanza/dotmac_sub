@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/theme.dart';
+import '../../core/offline/sync_service.dart';
 import '../execution/execution_controller.dart';
 import 'job_models.dart';
 import 'jobs_providers.dart';
@@ -47,7 +48,7 @@ class _JobDetailView extends ConsumerStatefulWidget {
 }
 
 class _JobDetailViewState extends ConsumerState<_JobDetailView> {
-  late List<Map<String, dynamic>> _notes;
+  late List<JobNote> _notes;
   final _noteController = TextEditingController();
   final _noteComposerKey = GlobalKey();
   final _noteFocusNode = FocusNode();
@@ -602,21 +603,25 @@ class _JobDetailViewState extends ConsumerState<_JobDetailView> {
       _noteError = '';
     });
     try {
-      final clientRef = await ref
+      final outcome = await ref
           .read(executionControllerProvider.notifier)
           .addNote(jobId, body, isInternal: _isInternalNote);
       if (!mounted) return;
-      final isInternal = _isInternalNote;
       _noteController.clear();
       setState(() {
         _isAddingNote = false;
         _isSavingNote = false;
         _isInternalNote = true;
       });
-      _addLocalNote(clientRef, body, isInternal: isInternal);
+      _addLocalNote(outcome);
+      final message = switch (outcome.deliveryState) {
+        MutationDeliveryState.delivered => 'Note saved',
+        MutationDeliveryState.queued => 'Note queued for sync',
+        MutationDeliveryState.failed => 'Note could not sync',
+      };
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Note saved')));
+      ).showSnackBar(SnackBar(content: Text(message)));
       unawaited(_refreshJobDetail(jobId));
     } catch (_) {
       if (!mounted) return;
@@ -630,20 +635,23 @@ class _JobDetailViewState extends ConsumerState<_JobDetailView> {
     }
   }
 
-  void _addLocalNote(
-    String clientRef,
-    String body, {
-    required bool isInternal,
-  }) {
+  void _addLocalNote(NoteSubmissionOutcome outcome) {
     setState(() {
       _notes = [
-        {
-          'id': clientRef,
-          'body': body,
-          'is_internal': isInternal,
-          'author_name': 'You',
-          'created_at': DateTime.now().toUtc().toIso8601String(),
-        },
+        JobNote(
+          id: outcome.clientRef,
+          clientRef: outcome.clientRef,
+          body: outcome.body,
+          isInternal: outcome.isInternal,
+          authorName: 'You',
+          createdAt: DateTime.now().toUtc(),
+          deliveryState: switch (outcome.deliveryState) {
+            MutationDeliveryState.delivered => JobNoteDeliveryState.delivered,
+            MutationDeliveryState.queued => JobNoteDeliveryState.queued,
+            MutationDeliveryState.failed => JobNoteDeliveryState.failed,
+          },
+          deliveryError: outcome.error,
+        ),
         ..._notes,
       ];
     });
@@ -847,42 +855,59 @@ class _DestinationTile extends ConsumerWidget {
   }
 }
 
-String _noteBody(Map<String, dynamic> note) {
-  for (final key in ['body', 'text', 'comment', 'note']) {
-    final value = note[key];
-    if (value is String && value.trim().isNotEmpty) return value;
-  }
-  return '';
-}
-
 class _NoteTile extends StatelessWidget {
   const _NoteTile({required this.note});
 
-  final Map<String, dynamic> note;
+  final JobNote note;
 
   @override
   Widget build(BuildContext context) {
     final meta = _noteMeta(note);
-    final isInternal = note['is_internal'];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (isInternal is bool)
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Chip(
+        Wrap(
+          spacing: 8,
+          runSpacing: 4,
+          children: [
+            Chip(
               visualDensity: VisualDensity.compact,
-              label: Text(isInternal ? 'Internal' : 'External'),
+              label: Text(note.isInternal ? 'Internal' : 'External'),
             ),
+            if (note.deliveryState != JobNoteDeliveryState.delivered)
+              Chip(
+                key: Key('note-delivery-${note.id}'),
+                visualDensity: VisualDensity.compact,
+                avatar: Icon(
+                  note.deliveryState == JobNoteDeliveryState.queued
+                      ? Icons.schedule
+                      : Icons.error_outline,
+                  size: 16,
+                ),
+                label: Text(
+                  note.deliveryState == JobNoteDeliveryState.queued
+                      ? 'Queued for sync'
+                      : 'Sync failed',
+                ),
+              ),
+          ],
+        ),
+        Text(
+          meta,
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
           ),
-        if (meta != null)
+        ),
+        Text(note.body),
+        if (note.deliveryState == JobNoteDeliveryState.failed &&
+            note.deliveryError != null &&
+            note.deliveryError!.isNotEmpty)
           Text(
-            meta,
+            note.deliveryError!,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              color: Theme.of(context).colorScheme.error,
             ),
           ),
-        Text(_noteBody(note)),
       ],
     );
   }
@@ -982,25 +1007,10 @@ IconData _historyIcon(String type) {
   };
 }
 
-String? _noteMeta(Map<String, dynamic> note) {
-  final author = _noteString(note, const [
-    'author_name',
-    'author',
-    'created_by_name',
-    'created_by',
-  ]);
-  final createdAt = _noteString(note, const ['created_at', 'createdAt']);
-  if (author == null && createdAt == null) return null;
-  if (author != null && createdAt != null) return '$author · $createdAt';
-  return author ?? createdAt;
-}
-
-String? _noteString(Map<String, dynamic> note, List<String> keys) {
-  for (final key in keys) {
-    final value = note[key];
-    if (value is String && value.trim().isNotEmpty) return value.trim();
-  }
-  return null;
+String _noteMeta(JobNote note) {
+  final createdAt = note.createdAt.toUtc().toIso8601String();
+  if (note.authorName == null || note.authorName!.isEmpty) return createdAt;
+  return '${note.authorName} · $createdAt';
 }
 
 /// Field outcomes for a visit that can't be completed. Keys mirror the backend

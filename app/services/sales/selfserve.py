@@ -586,8 +586,28 @@ class SelfServeQuotes:
                     metadata_=metadata,
                 ),
             )
-        db.refresh(quote)
-        return quote
+        from app.services.sales import quote_payment_review
+
+        quote_uuid = quote.id
+        subscriber_uuid = subscriber.id
+        db_session_adapter.release_read_transaction(db)
+        quote_payment_review.request_quote_payment_review(
+            db,
+            quote_payment_review.RequestQuotePaymentReviewCommand(
+                context=CommandContext.system(
+                    actor=f"subscriber:{subscriber_uuid}",
+                    scope="sales:quote-payment-review-request",
+                    reason="Customer requested an installation estimate",
+                    command_id=quote_uuid,
+                    idempotency_key=f"quote-payment-review-request:{quote_uuid}",
+                ),
+                quote_id=quote_uuid,
+                subscriber_id=subscriber_uuid,
+            ),
+        )
+        return SelfServeQuotes.get_for_subscriber(
+            db, str(subscriber_uuid), str(quote_uuid)
+        )
 
     @staticmethod
     def accept_with_deposit(
@@ -713,6 +733,9 @@ def build_portal_quote_payload(
         if deposit_meta.get("amount")
         else _money(total * Decimal(deposit_percent) / 100)
     )
+    from app.services.sales import quote_payment_review
+
+    payment_review = quote_payment_review.resolve_payment_review(quote)
 
     sales_order = db.query(SalesOrder).filter(SalesOrder.quote_id == quote.id).first()
     # ``project_id`` may be pre-resolved by a batch caller (H1: the list read
@@ -762,6 +785,18 @@ def build_portal_quote_payload(
         "deposit_amount": str(deposit_amount),
         "deposit_paid": bool(deposit_meta.get("paid")),
         "deposit_reference": deposit_meta.get("reference"),
+        "payment_review_status": payment_review.status.value,
+        "payment_review_message": payment_review.message,
+        "payment_reviewed_at": (
+            payment_review.reviewed_at.isoformat()
+            if payment_review.reviewed_at is not None
+            else None
+        ),
+        "can_pay_deposit": bool(
+            payment_review.can_pay_deposit
+            and not deposit_meta.get("paid")
+            and deposit_amount > Decimal("0.00")
+        ),
         "line_items": line_items,
         "sales_order_id": str(sales_order.id) if sales_order else None,
         "project_id": project_id,

@@ -5,6 +5,7 @@ grant scoped to a region only authorizes resources in that region.
 """
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -107,6 +108,16 @@ def test_guard_global_skips_extractor(db_session):
 
     assert _call_guard(auth, db_session, extractor) is auth
     assert called["n"] == 0  # global never consults the resource
+
+
+def test_guard_caches_effective_permission_keys_for_ui_actions(db_session):
+    auth = _setup(db_session)
+
+    assert "permission_keys" not in auth
+    assert _call_guard(auth, db_session, lambda r, d: ("region", "x")) is auth
+    assert auth["permission_keys"] == frozenset({"network:nas:write"})
+    request = SimpleNamespace(state=SimpleNamespace(auth=auth))
+    assert ad.can(request, "network:nas:write") is True
 
 
 def test_guard_region_allows_matching_denies_other(db_session):

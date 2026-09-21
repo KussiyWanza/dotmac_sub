@@ -45,12 +45,37 @@ def _request():
 # ── NCC complaints + pack ────────────────────────────────────────────────────
 
 
-def test_ncc_complaints_export_streams_a_valid_xlsx(db_session):
-    resp = reports_web.reports_ncc_complaints_export(db=db_session)
-    assert resp.media_type.endswith("spreadsheetml.sheet")
-    # The body is a zip (xlsx). Its magic bytes are PK\x03\x04.
-    assert resp.body[:4] == b"PK\x03\x04"
+def test_ncc_complaints_export_streams_a_valid_csv(db_session):
+    resp = reports_web.reports_ncc_complaints_export(
+        date_from="2026-08-31", date_to="2026-09-06", db=db_session
+    )
+    assert resp.media_type == "text/csv; charset=utf-8"
+    assert resp.body.decode("utf-8").splitlines()[0] == ",".join(
+        reports_web.ncc_workbook.TEMPLATE_COLUMNS
+    )
+    assert resp.body[:4] != b"PK\x03\x04"
     assert "attachment; filename=" in resp.headers["Content-Disposition"]
+    assert "36_2026_COMPLAINTS_DOTMAC.csv" in resp.headers["Content-Disposition"]
+
+
+def test_ncc_default_window_is_completed_reporting_week():
+    start, end = reports_web._completed_ncc_reporting_week(
+        datetime(2026, 9, 8, 7, 0, tzinfo=UTC)
+    )
+
+    assert start == datetime(2026, 8, 30, 23, 0, tzinfo=UTC)
+    assert end == datetime(2026, 9, 6, 22, 59, 59, 999999, tzinfo=UTC)
+    assert reports_web._ncc_window_form_dates(start, end) == (
+        "2026-08-31",
+        "2026-09-06",
+    )
+
+
+def test_ncc_explicit_window_uses_lagos_reporting_days():
+    start, end = reports_web._ncc_complaints_window("2026-08-31", "2026-09-06")
+
+    assert start == datetime(2026, 8, 30, 23, 0, tzinfo=UTC)
+    assert end == datetime(2026, 9, 6, 22, 59, 59, 999999, tzinfo=UTC)
 
 
 def test_ncc_complaints_page_renders_twenty_rows_and_pagination(
@@ -142,7 +167,7 @@ def _weekly_configuration_command(*, enabled: bool = True):
         cc_addresses="copy@example.test",
         bcc_addresses="archive@example.test",
         sender_key="",
-        subject="Tuesday NCC workbook",
+        subject="Tuesday NCC CSV",
         body_template=ncc_report_email.DEFAULT_BODY_TEMPLATE,
         local_time="08:00",
         timezone="Africa/Lagos",
@@ -211,8 +236,17 @@ def test_ncc_weekly_owner_only_queues_on_tuesday_after_local_time(
     assert run is not None
     assert run.status is NccWeeklyReportRunStatus.queued
     assert run.artifact_content is not None
-    assert run.artifact_content.startswith(b"PK\x03\x04")
-    assert run.window_end.replace(tzinfo=UTC) == datetime(2026, 7, 21, 7, 0, tzinfo=UTC)
+    assert run.artifact_content.decode("utf-8").splitlines()[0] == ",".join(
+        reports_web.ncc_workbook.TEMPLATE_COLUMNS
+    )
+    assert run.artifact_filename == "29_2026_COMPLAINTS_DOTMAC.csv"
+    assert run.artifact_content_type == "text/csv; charset=utf-8"
+    assert run.window_start.replace(tzinfo=UTC) == datetime(
+        2026, 7, 12, 23, 0, tzinfo=UTC
+    )
+    assert run.window_end.replace(tzinfo=UTC) == datetime(
+        2026, 7, 19, 22, 59, 59, 999999, tzinfo=UTC
+    )
     assert run.notification is not None
     assert run.notification.metadata_["cc"] == ["copy@example.test"]
     assert run.notification.metadata_["bcc"] == ["archive@example.test"]
@@ -227,17 +261,17 @@ def test_ncc_weekly_failed_occurrence_is_durable_and_retried(db_session, monkeyp
     ncc_report_email.update_configuration(
         db=db_session, command=_weekly_configuration_command()
     )
-    original_builder = ncc_report_email.ncc_workbook.build_workbook
+    original_builder = ncc_report_email.ncc_workbook.build_csv
     attempts = 0
 
     def flaky_builder(*args, **kwargs):
         nonlocal attempts
         attempts += 1
         if attempts == 1:
-            raise RuntimeError("simulated workbook failure")
+            raise RuntimeError("simulated CSV failure")
         return original_builder(*args, **kwargs)
 
-    monkeypatch.setattr(ncc_report_email.ncc_workbook, "build_workbook", flaky_builder)
+    monkeypatch.setattr(ncc_report_email.ncc_workbook, "build_csv", flaky_builder)
     failed = ncc_report_email.run_due_delivery(
         db=db_session,
         command=_run_command(datetime(2026, 7, 21, 7, 0, tzinfo=UTC)),

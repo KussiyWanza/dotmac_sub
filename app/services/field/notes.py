@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from fastapi import HTTPException
@@ -13,8 +12,6 @@ from app.models.work_order import WorkOrder
 from app.services.field.jobs import (
     _profile_from_principal,
     _scoped_query,
-    _system_user,
-    _technician_name,
 )
 
 
@@ -26,6 +23,7 @@ def _serialize(note: FieldWorkOrderNote) -> dict:
     ]
     return {
         "id": note.id,
+        "client_ref": note.client_ref,
         "body": note.body,
         "is_internal": note.is_internal,
         "author_person_id": note.author_person_id,
@@ -51,50 +49,6 @@ class FieldNotes:
         )
         return [_serialize(note) for note in notes]
 
-    @staticmethod
-    def create(
-        db: Session,
-        principal: dict[str, Any],
-        crm_work_order_id: str,
-        *,
-        body: str,
-        is_internal: bool = True,
-        attachment_ids: list[str] | None = None,
-    ) -> dict:
-        body = (body or "").strip()
-        if not body:
-            raise HTTPException(status_code=422, detail="Note body is required")
-        profile = _profile_from_principal(db, principal)
-        row = (
-            _scoped_query(db, profile)
-            .filter(WorkOrder.public_id == crm_work_order_id)
-            .one_or_none()
-        )
-        if row is None:
-            raise HTTPException(status_code=404, detail="Job not found")
-        attachments = _validate_attachments(db, profile, row, attachment_ids or [])
-
-        user = _system_user(db, profile)
-        note = FieldWorkOrderNote(
-            work_order_mirror_id=row.id,
-            author_technician_id=profile.id,
-            author_person_id=profile.person_id,
-            author_system_user_id=profile.system_user_id,
-            author_name=_technician_name(profile, user),
-            body=body,
-            is_internal=is_internal,
-            attachments=[
-                _attachment_snapshot(attachment) for attachment in attachments
-            ],
-        )
-        db.add(note)
-        db.flush()
-        for attachment in attachments:
-            attachment.note_id = note.id
-        db.commit()
-        db.refresh(note)
-        return _serialize(note)
-
 
 def _scoped_work_order(
     db: Session,
@@ -115,42 +69,7 @@ def _scoped_work_order(
 field_notes = FieldNotes()
 
 
-def _validate_attachments(
-    db: Session, profile, row: WorkOrder, attachment_ids: list[str]
-):
-    from app.models.field_attachment import FieldAttachment
-
-    attachments: list[FieldAttachment] = []
-    for attachment_id in attachment_ids:
-        attachment = db.get(FieldAttachment, attachment_id)
-        if attachment is None or not attachment.is_active:
-            raise HTTPException(status_code=404, detail="Attachment not found")
-        if attachment.work_order_mirror_id != row.id:
-            raise HTTPException(
-                status_code=422, detail="Attachment belongs to a different job"
-            )
-        if attachment.uploaded_by_technician_id != profile.id:
-            raise HTTPException(
-                status_code=403, detail="Attachment uploaded by someone else"
-            )
-        attachments.append(attachment)
-    return attachments
-
-
 def _serialize_attachment(attachment) -> dict:
     from app.services.field.attachments import serialize_attachment
 
     return serialize_attachment(attachment)
-
-
-def _attachment_snapshot(attachment) -> dict:
-    payload = _serialize_attachment(attachment)
-    return {key: _json_value(value) for key, value in payload.items()}
-
-
-def _json_value(value):
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if hasattr(value, "hex"):
-        return str(value)
-    return value

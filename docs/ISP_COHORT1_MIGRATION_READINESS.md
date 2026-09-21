@@ -23,7 +23,7 @@ decision), `docs/ISP_COHORT1_SOURCE_OWNERSHIP.md` (who writes what today).
 | Source | `asm-dotmac-sub-legacy` — source-authoritative |
 | Target | `asm-dotmac-isp` — candidate, independent database, no deployment owner |
 | Entity types | 12 |
-| Production writers | 27 (7 declared owners, 2 derived projections, 18 parallel) |
+| Production writers | 28 (8 declared owners, 2 derived projections, 18 parallel) |
 | Contract version | 1 |
 | Record schema version | 1 |
 
@@ -202,7 +202,7 @@ Not this work, and not this document's to schedule. What the switch needs:
 - the enforceable legacy Sub transition rule (`dec-isp-003`, open);
 - an operator approval attributable to a person, recorded in Governance;
 - **traffic-zero evidence** for the cohort's Sub write paths: a measured window
-  in which none of the 27 production writers executed. Sub already emits
+  in which none of the 28 production writers executed. Sub already emits
   structured logs and audit events; the evidence is a query over them naming
   each writer and showing no invocation, not an assertion that the surface is
   quiet;
@@ -213,14 +213,14 @@ Not this work, and not this document's to schedule. What the switch needs:
 
 ### 10. Displaced Sub writers are removed and the ratchet is lowered — `ctl-isp-009`
 
-Only after the switch. The ratchet baselines hold 35 entries; the 27 that can
+Only after the switch. The ratchet baselines hold 36 entries; the 28 that can
 still write production are what must reach zero — `displaced_writer_paths()`
 is that set, and every one of them carries a disposition that removes it
 (`RETIRE_AFTER_CUTOVER`, `ROUTE_THROUGH_OWNER_FIRST`, or `UNDECIDED`). A
 displaced writer marked to stay would be a contradiction the ratchet could
 never resolve, so a test refuses one.
 
-Fourteen of the 27 are `ROUTE_THROUGH_OWNER_FIRST`, and those come **earlier**
+Fourteen of the 28 are `ROUTE_THROUGH_OWNER_FIRST`, and those come **earlier**
 than this step: a shadow comparison run against a source with two writers
 cannot tell drift from the second writer. They gate `ctl-isp-007`, not
 `ctl-isp-009`.
@@ -247,7 +247,7 @@ nothing to retire; they remain in the baseline so a *new* fixture seeder or a
 | `ctl-isp-006` | Dotmac Sub technical owner | Every source row dispositioned; idempotent replay proved by digest equality |
 | `ctl-isp-007` | Dotmac ISP technical owner | Zero unexplained drift at an immutable source watermark |
 | `ctl-isp-008` | Michael Ayoade | Sealed switch: approval, delta capture, traffic-zero evidence, rollback conditions |
-| `ctl-isp-009` | Dotmac Sub technical owner | 27 production writers to zero, ratchet lowered writer by writer |
+| `ctl-isp-009` | Dotmac Sub technical owner | 28 production writers to zero, ratchet lowered writer by writer |
 
 A control is verified only in Governance, citing an immutable
 controlled-source reference. Nothing in this repository advances one, and an

@@ -4,12 +4,12 @@ import 'dart:io';
 import 'package:dotmac_field/core/api/token_store.dart';
 import 'package:dotmac_field/core/offline/draft_store.dart';
 import 'package:dotmac_field/core/secure/data_scope.dart';
-import 'package:dotmac_field/core/secure/evidence_files.dart';
 import 'package:dotmac_field/core/secure/offline_wipe.dart';
 import 'package:dotmac_field/core/secure/scope_key_ring.dart';
 import 'package:dotmac_field/core/secure/secret_vault.dart';
 import 'package:dotmac_field/core/secure/secure_field_store.dart';
 import 'package:dotmac_field/core/secure/session_lifecycle.dart';
+import 'package:dotmac_field/core/secure/store_work_gate.dart';
 import 'package:dotmac_field/features/auth/auth_state.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -116,17 +116,6 @@ void main() {
     );
   }
 
-  /// Awaits a future we expect to either complete or fail, because which of the
-  /// two happens depends on where the wipe caught it. What must not vary is the
-  /// state it leaves behind.
-  Future<void> settle(Future<Object?> future) async {
-    try {
-      await future;
-    } on Object {
-      // Both outcomes are acceptable; the assertions are about the aftermath.
-    }
-  }
-
   test('logout, revocation and account switch share one wipe', () async {
     final endings = <_SessionEnding>[
       (
@@ -200,6 +189,42 @@ void main() {
     expect(await draftsIn(second).list('material_request'), isEmpty);
   });
 
+  test(
+    'logout, account switch and re-login use fresh database connections',
+    () async {
+      final context = await signIn('tech-1');
+      final first = context.session.store!;
+
+      await context.device.tokenStore.save(
+        accessToken: tokenFor('tech-2'),
+        refreshToken: 'r2',
+        loginMode: LoginMode.staff,
+      );
+      final second = await context.session.beginSession();
+      expect(second, isNotNull);
+      expect(identical(second!.database, first.database), isFalse);
+
+      await context.session.signOut();
+      await context.device.tokenStore.save(
+        accessToken: tokenFor('tech-1'),
+        refreshToken: 'r3',
+        loginMode: LoginMode.staff,
+      );
+      final third = await context.session.beginSession();
+      expect(third, isNotNull);
+      expect(identical(third!.database, first.database), isFalse);
+      expect(identical(third.database, second.database), isFalse);
+
+      await draftsIn(third).save(
+        id: 'expense_request:new',
+        type: 'expense_request',
+        payload: {'note': 'new session uses its own connection'},
+      );
+      expect(await draftsIn(third).load('expense_request:new'), isNotNull);
+      await context.session.signOut();
+    },
+  );
+
   test('an interrupted wipe leaves no readable residue', () async {
     final context = await signIn('tech-1');
     final device = context.device;
@@ -238,29 +263,20 @@ void main() {
     expect(device.wipe.journalFile.existsSync(), isFalse);
   });
 
-  test('a write in flight at logout cannot recreate the store', () async {
+  test('writes in flight at logout drain before the store closes', () async {
     final context = await signIn('tech-1');
     final store = context.session.store!;
 
-    // A photo write and a draft write are both suspended mid-flight.
-    // Attach the permitted-error handler before logout can win the race. If
-    // the raw futures are left unobserved until after signOut(), a fast runner
-    // reports StoreDiscarded as an unhandled test error even though settle()
-    // accepts that exact outcome a line later.
-    final photo = settle(
-      store.evidence.write(
-        'late.evidence',
-        utf8.encode('captured a heartbeat before logout'),
-        purpose: 'photo',
-        reference: 'ref-late',
-      ),
+    final photo = store.evidence.write(
+      'late.evidence',
+      utf8.encode('captured a heartbeat before logout'),
+      purpose: 'photo',
+      reference: 'ref-late',
     );
-    final draft = settle(
-      draftsIn(store).save(
-        id: 'expense_request:new',
-        type: 'expense_request',
-        payload: {'note': 'typed a heartbeat before logout'},
-      ),
+    final draft = draftsIn(store).save(
+      id: 'expense_request:new',
+      type: 'expense_request',
+      payload: {'note': 'typed a heartbeat before logout'},
     );
 
     await context.session.signOut();

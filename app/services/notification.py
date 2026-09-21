@@ -68,6 +68,87 @@ from app.services.notification_template_renderer import (
 from app.services.response import ListResponseMixin, list_response
 from app.services.session_hooks import run_after_commit
 
+
+@dataclass(frozen=True, slots=True)
+class CancelPendingNotificationsCommand:
+    notification_ids: tuple[UUID, ...]
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class CancelPendingNotificationsOutcome:
+    canceled_notification_ids: tuple[UUID, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SuppressNotificationDeliveryCommand:
+    notification_id: UUID
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class SuppressNotificationDeliveryOutcome:
+    suppressed: bool
+
+
+def cancel_pending_notifications(
+    db: Session,
+    command: CancelPendingNotificationsCommand,
+) -> CancelPendingNotificationsOutcome:
+    """Flush-only notification-owner participant used by owning coordinators."""
+
+    ids = tuple(dict.fromkeys(command.notification_ids))
+    if not ids:
+        return CancelPendingNotificationsOutcome(canceled_notification_ids=())
+    reason = command.reason.strip()
+    if not reason:
+        raise ValueError("Notification cancellation reason is required")
+    rows = (
+        db.query(Notification).filter(Notification.id.in_(ids)).with_for_update().all()
+    )
+    canceled: list[UUID] = []
+    for notification in rows:
+        if notification.status not in {
+            NotificationStatus.queued,
+            NotificationStatus.failed,
+        }:
+            continue
+        notification.status = NotificationStatus.canceled
+        notification.last_error = reason[:255]
+        notification.send_at = None
+        canceled.append(notification.id)
+    db.flush()
+    return CancelPendingNotificationsOutcome(canceled_notification_ids=tuple(canceled))
+
+
+def suppress_notification_delivery(
+    db: Session,
+    command: SuppressNotificationDeliveryCommand,
+) -> SuppressNotificationDeliveryOutcome:
+    """Flush-only delivery-state participant for an owning coordinator."""
+
+    reason = command.reason.strip()
+    if not reason:
+        raise ValueError("Notification suppression reason is required")
+    notification = (
+        db.query(Notification)
+        .filter(Notification.id == command.notification_id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if notification is None or notification.status not in {
+        NotificationStatus.queued,
+        NotificationStatus.failed,
+        NotificationStatus.sending,
+    }:
+        return SuppressNotificationDeliveryOutcome(suppressed=False)
+    notification.status = NotificationStatus.canceled
+    notification.last_error = reason[:255]
+    notification.send_at = None
+    db.flush()
+    return SuppressNotificationDeliveryOutcome(suppressed=True)
+
+
 logger = logging.getLogger(__name__)
 
 # Unrendered double-brace template tokens (e.g. "{{amount}}") that leaked into a

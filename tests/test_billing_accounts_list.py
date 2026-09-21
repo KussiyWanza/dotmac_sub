@@ -40,7 +40,8 @@ def test_billing_accounts_list_applies_search_and_status_filters(db_session):
         status="blocked",
     )
 
-    assert state["accounts"] == [beta]
+    assert [row.account for row in state["accounts"]] == [beta]
+    assert "balance" not in beta.__dict__
     assert state["total"] == 1
     assert state["search"] == "BETA"
     assert state["status_filter"] == "blocked"
@@ -107,8 +108,9 @@ def test_billing_accounts_list_applies_open_balance_filter(db_session):
         customer_ref=None,
         balance_filter="positive",
     )
-    assert positive["accounts"] == [due]
+    assert [row.account for row in positive["accounts"]] == [due]
     assert positive["accounts"][0].balance == Decimal("125.00")
+    assert "balance" not in due.__dict__
     assert positive["total_balance"] == 125.0
 
     credit_state = web_billing_accounts.build_accounts_list_data(
@@ -118,8 +120,9 @@ def test_billing_accounts_list_applies_open_balance_filter(db_session):
         customer_ref=None,
         balance_filter="credit",
     )
-    assert credit_state["accounts"] == [credit]
+    assert [row.account for row in credit_state["accounts"]] == [credit]
     assert credit_state["accounts"][0].balance == Decimal("-25.00")
+    assert "balance" not in credit.__dict__
 
     zero_state = web_billing_accounts.build_accounts_list_data(
         db_session,
@@ -128,8 +131,9 @@ def test_billing_accounts_list_applies_open_balance_filter(db_session):
         customer_ref=None,
         balance_filter="zero",
     )
-    assert zero_state["accounts"] == [zero]
+    assert [row.account for row in zero_state["accounts"]] == [zero]
     assert zero_state["balance_filter"] == "zero"
+    assert "balance" not in zero.__dict__
 
 
 def test_billing_accounts_template_uses_normal_get_filters():

@@ -42,6 +42,14 @@ logger = logging.getLogger(__name__)
 
 _UNRESOLVED_TEMPLATE_RE = re.compile(r"\{\{?\s*[a-zA-Z0-9_]+\s*\}?\}")
 
+# Sentinel `error_message` value meaning "the provider accepted the send (2xx)
+# but the response body could not be parsed as JSON, or carried no message-id
+# field" — distinct from an actual provider error. `send_sms` translates this
+# into `DeliveryStatus.accepted` (sent, unverified) rather than
+# `DeliveryStatus.delivered` (sent, confirmed), and never surfaces it as
+# `notification.last_error` since it is not a failure.
+_UNVERIFIABLE_SENTINEL = "webhook_response_unverifiable"
+
 
 def _sms_credentials() -> tuple[str, str]:
     """The provider credentials, HELD from boot rather than resolved.
@@ -194,9 +202,23 @@ def _send_via_webhook(
                 external_id = (
                     data.get("message_id") or data.get("id") or data.get("sid")
                 )
+                if external_id is None:
+                    logger.warning(
+                        "sms_webhook_unverifiable status=%s: 2xx response has no "
+                        "message-id field (message_id/id/sid); reporting as sent "
+                        "but unverifiable rather than a normal delivered send",
+                        response.status_code,
+                    )
+                    return True, None, _UNVERIFIABLE_SENTINEL
                 return True, external_id, None
             except Exception:
-                return True, None, None
+                logger.warning(
+                    "sms_webhook_unverifiable status=%s: 2xx response body is not "
+                    "JSON; reporting as sent but unverifiable rather than a normal "
+                    "delivered send",
+                    response.status_code,
+                )
+                return True, None, _UNVERIFIABLE_SENTINEL
         else:
             if response.status_code in (401, 403):
                 logger.error(
@@ -357,6 +379,14 @@ def send_sms(
         error_message = f"Unknown SMS provider: {provider}"
         logger.error(error_message)
 
+    # A 2xx response we could not parse/correlate is a real send with no
+    # external id to verify delivery against later — distinct from both a
+    # normal confirmed send and a provider failure. Do not surface the
+    # sentinel as a notification error or lose it into response_body.
+    unverifiable = success and error_message == _UNVERIFIABLE_SENTINEL
+    if unverifiable:
+        error_message = None
+
     # Update notification status
     if notification:
         notification.status = (
@@ -365,12 +395,19 @@ def send_sms(
         notification.sent_at = datetime.now(UTC) if success else None
         notification.last_error = None if success else error_message
 
+        if success:
+            delivery_status = (
+                DeliveryStatus.accepted if unverifiable else DeliveryStatus.delivered
+            )
+        else:
+            delivery_status = DeliveryStatus.failed
+
         # Create delivery record
         delivery = NotificationDelivery(
             notification_id=notification.id,
             provider=str(provider or "sms"),
             provider_message_id=external_id,
-            status=DeliveryStatus.delivered if success else DeliveryStatus.failed,
+            status=delivery_status,
             occurred_at=datetime.now(UTC),
             response_code="sent" if success else "error",
             response_body=error_message if error_message else body[:2000],

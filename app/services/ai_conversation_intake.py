@@ -38,7 +38,10 @@ from app.models.team_inbox import (
 )
 from app.schemas.ai_intake import (
     DEFAULT_CLARIFICATION_QUESTIONS,
+    AiClassifierAttemptStatus,
     AiCustomerResponseCompositionRequest,
+    AiIntakeAffectAssessment,
+    AiIntakeAffectSource,
     AiIntakeCategory,
     AiIntakeClassification,
     AiIntakeContextMessage,
@@ -60,6 +63,7 @@ from app.schemas.ai_operations import (
     AiIntakeConfigUpsert,
     AiIntakeDepartmentMapping,
 )
+from app.schemas.chat import NATIVE_WIDGET_SURFACE_VALUES
 from app.services import (
     ai_intake,
     ai_intake_conversation_engine,
@@ -97,7 +101,6 @@ SUPPORTED_CONVERSATIONAL_CHANNELS = frozenset(
         InboxChannelType.chat_widget.value,
     }
 )
-_NATIVE_WIDGET_AI_SCOPES = frozenset({"customer", "reseller_portal"})
 logger = logging.getLogger(__name__)
 SUPPORTED_CONVERSATION_ENGINE_MODES = frozenset(
     {
@@ -123,8 +126,11 @@ DEFAULT_WELCOME_MESSAGE = (
 )
 DEFAULT_QUEUE_POSITION_UPDATE_MINUTES = 10
 DEFAULT_QUEUE_HEARTBEAT_MINUTES = 30
+DEFAULT_QUEUE_HEARTBEAT_ENABLED = False
 DEFAULT_CUSTOMER_RESPONSE_TIMEOUT_MINUTES = 5
-DEFAULT_CUSTOMER_WAIT_EXPIRY_HOURS = 72
+DEFAULT_CUSTOMER_WAIT_HANDOFF_MINUTES = 10
+MIN_CUSTOMER_WAIT_HANDOFF_MINUTES = 1
+MAX_CUSTOMER_WAIT_HANDOFF_MINUTES = 1440
 DEFAULT_QUEUE_TEMPLATES = {
     "initial": (
         "All our agents are currently engaged. You are number {position} in the "
@@ -132,13 +138,13 @@ DEFAULT_QUEUE_TEMPLATES = {
     ),
     "position_update": "Quick update: you are now number {position} in the queue.",
     "heartbeat": (
-        "You are still number {position} in the queue. We will connect you as "
-        "soon as an agent is available."
+        "We are still working to connect you with an agent. Thank you for "
+        "your patience."
     ),
     "handoff": "Thanks for waiting. An agent has joined and will continue from here.",
 }
 APPROVED_QUEUE_TEMPLATE_VARIABLES = frozenset(
-    {"position", "queue_position", "team_name"}
+    {"current_visible_position", "position", "queue_position", "team_name"}
 )
 SUPPORTED_AI_INTENT_KEYS = frozenset(item.value for item in AiIntakeIntent)
 SUPPORTED_AI_CATEGORY_KEYS = frozenset(item.value for item in AiIntakeCategory)
@@ -262,6 +268,25 @@ class _PreviewConversation:
 
 
 @dataclass(frozen=True, slots=True)
+class CustomerWaitHandoffPolicy:
+    """Typed policy for handing an inactive AI conversation to humans."""
+
+    handoff_minutes: int = DEFAULT_CUSTOMER_WAIT_HANDOFF_MINUTES
+
+    def __post_init__(self) -> None:
+        if isinstance(self.handoff_minutes, bool) or not isinstance(
+            self.handoff_minutes, int
+        ):
+            raise ValueError("Customer wait handoff must be a whole number of minutes")
+        if not (
+            MIN_CUSTOMER_WAIT_HANDOFF_MINUTES
+            <= self.handoff_minutes
+            <= MAX_CUSTOMER_WAIT_HANDOFF_MINUTES
+        ):
+            raise ValueError("Customer wait handoff must be between 1 and 1440 minutes")
+
+
+@dataclass(frozen=True, slots=True)
 class AiPolicyVersionDraftCommand:
     context: CommandContext
     policy_id: UUID
@@ -276,6 +301,7 @@ class AiPolicyVersionDraftCommand:
     intent_team_mappings: tuple[Mapping[str, object], ...] = ()
     queue_templates: Mapping[str, object] | None = None
     escalation_rules: Mapping[str, object] | None = None
+    customer_wait_handoff_policy: CustomerWaitHandoffPolicy | None = None
     data_cleanup_policy: Mapping[str, object] | None = None
     conversational_engine_enabled: bool | None = None
     conversation_engine_mode: str | None = None
@@ -305,6 +331,7 @@ class AiDraftPolicyCommand:
     intent_team_mappings: tuple[Mapping[str, object], ...] = ()
     queue_templates: Mapping[str, object] | None = None
     escalation_rules: Mapping[str, object] | None = None
+    customer_wait_handoff_policy: CustomerWaitHandoffPolicy | None = None
     data_cleanup_policy: Mapping[str, object] | None = None
     conversational_engine_enabled: bool | None = None
     conversation_engine_mode: str | None = None
@@ -538,11 +565,13 @@ def _validate_provider_scope(
     if channel_type == InboxChannelType.chat_widget.value:
         fiber_scope = provider == "fiber_website" and account_scope == "fiber.dotmac.ng"
         native_scope = (
-            provider == "native_widget" and account_scope in _NATIVE_WIDGET_AI_SCOPES
+            provider == "native_widget"
+            and account_scope in NATIVE_WIDGET_SURFACE_VALUES
         )
         if not fiber_scope and not native_scope:
             raise ValueError(
-                "Chat widget AI intake requires a registered Fiber or portal scope"
+                "Chat widget AI intake requires a registered Fiber, portal, or "
+                "mobile-app scope"
             )
         return
     _validate_meta_social_provider_scope(
@@ -650,6 +679,7 @@ def create_draft_policy(
                 intent_team_mappings=command.intent_team_mappings,
                 queue_templates=command.queue_templates,
                 escalation_rules=command.escalation_rules,
+                customer_wait_handoff_policy=command.customer_wait_handoff_policy,
                 data_cleanup_policy=command.data_cleanup_policy,
                 conversational_engine_enabled=command.conversational_engine_enabled,
                 conversation_engine_mode=command.conversation_engine_mode,
@@ -701,10 +731,37 @@ def _mapping_dict(value: object) -> dict[str, object]:
     return {}
 
 
+def _canonical_escalation_rules(
+    rules: Mapping[str, object] | None,
+    *,
+    customer_wait_handoff_policy: CustomerWaitHandoffPolicy | None,
+) -> dict[str, object]:
+    canonical = dict(rules or {})
+    canonical.pop("customer_wait_expiry_hours", None)
+    canonical.pop("customer_wait_expiry_minutes", None)
+    handoff_minutes = (
+        customer_wait_handoff_policy.handoff_minutes
+        if customer_wait_handoff_policy is not None
+        else _customer_wait_handoff_minutes(canonical)
+    )
+    canonical["customer_wait_handoff_minutes"] = handoff_minutes
+    return canonical
+
+
 def _copy_version_payload(
     base: AiIntakePolicyVersion | None,
     command: AiPolicyVersionDraftCommand,
 ) -> dict[str, object | None]:
+    base_escalation_rules = (
+        base.escalation_rules
+        if base is not None and isinstance(base.escalation_rules, Mapping)
+        else None
+    )
+    customer_wait_handoff_policy = command.customer_wait_handoff_policy
+    if customer_wait_handoff_policy is None and command.escalation_rules is None:
+        customer_wait_handoff_policy = CustomerWaitHandoffPolicy(
+            handoff_minutes=_customer_wait_handoff_minutes(base_escalation_rules)
+        )
     policy_text: dict[str, object] = {
         "display_name": command.display_name,
         "welcome_message": command.welcome_message,
@@ -794,9 +851,14 @@ def _copy_version_payload(
         "queue_templates": dict(command.queue_templates or {})
         if command.queue_templates is not None
         else (dict(base.queue_templates or {}) if base is not None else None),
-        "escalation_rules": dict(command.escalation_rules or {})
-        if command.escalation_rules is not None
-        else (dict(base.escalation_rules or {}) if base is not None else None),
+        "escalation_rules": _canonical_escalation_rules(
+            command.escalation_rules
+            if command.escalation_rules is not None
+            else base_escalation_rules,
+            customer_wait_handoff_policy=(
+                customer_wait_handoff_policy or CustomerWaitHandoffPolicy()
+            ),
+        ),
         "data_cleanup_policy": dict(command.data_cleanup_policy or {})
         if command.data_cleanup_policy is not None
         else (dict(base.data_cleanup_policy or {}) if base is not None else None),
@@ -909,7 +971,8 @@ def _validate_queue_templates(queue_templates: object) -> None:
         if unknown:
             raise ValueError(
                 "AI intake queue templates support only "
-                "{{queue_position}}, {{position}} and {{team_name}}"
+                "{{current_visible_position}}, {{position}}, "
+                "{{queue_position}} and {{team_name}}"
             )
     update_minutes = _bounded_int(
         queue_templates.get("position_update_minutes"),
@@ -925,6 +988,16 @@ def _validate_queue_templates(queue_templates: object) -> None:
     )
     if update_minutes < 1 or heartbeat_minutes < 5:
         raise ValueError("AI intake queue notification minutes are invalid")
+    heartbeat_enabled = bool(
+        queue_templates.get("heartbeat_enabled", DEFAULT_QUEUE_HEARTBEAT_ENABLED)
+    )
+    if heartbeat_enabled and (
+        _template_variables(queue_templates.get("heartbeat"))
+        & {"current_visible_position", "position", "queue_position"}
+    ):
+        raise ValueError(
+            "Queue heartbeat templates cannot repeat the customer position"
+        )
 
 
 def _validate_engine_playbooks(
@@ -1003,6 +1076,113 @@ def _validate_engine_playbooks(
                     raise ValueError("AI intake playbook references a disabled tool")
 
 
+def _validate_inquiry_plans(policy: Mapping[str, object]) -> None:
+    def validate_condition(condition: Mapping[str, object]) -> None:
+        condition_type = str(condition.get("type") or "").strip()
+        legacy_condition = any(
+            key in condition for key in ("fact", "intent", "category")
+        )
+        if (
+            condition_type
+            and condition_type
+            not in ai_intake_conversation_engine.SUPPORTED_RULE_CONDITIONS
+        ) or (not condition_type and not legacy_condition):
+            raise ValueError("AI intake inquiry plan condition is unsupported")
+
+    raw_plans = policy.get("inquiry_plans")
+    if raw_plans is None:
+        return
+    if not isinstance(raw_plans, list):
+        raise ValueError("AI intake inquiry plans must be a list")
+    seen_scopes: set[tuple[str, str]] = set()
+    for raw_plan in raw_plans:
+        if not isinstance(raw_plan, Mapping):
+            raise ValueError("AI intake inquiry plan entries must be objects")
+        intent = str(raw_plan.get("intent") or "").strip()
+        category = str(raw_plan.get("category") or "").strip()
+        if intent not in SUPPORTED_AI_INTENT_KEYS:
+            raise ValueError("AI intake inquiry plan intent is unsupported")
+        if category and category not in SUPPORTED_AI_CATEGORY_KEYS:
+            raise ValueError("AI intake inquiry plan category is unsupported")
+        tone_requirements = raw_plan.get("tone_requirements")
+        if tone_requirements is not None and (
+            not isinstance(tone_requirements, str) or len(tone_requirements) > 500
+        ):
+            raise ValueError(
+                "AI intake inquiry plan tone_requirements must be text up to 500 characters"
+            )
+        scope = (intent, category)
+        if scope in seen_scopes:
+            raise ValueError("AI intake inquiry plan scope must be unique")
+        seen_scopes.add(scope)
+        allowed_tools = raw_plan.get("allowed_tools")
+        if not isinstance(allowed_tools, list):
+            raise ValueError("AI intake inquiry plan allowed_tools must be a list")
+        if any(
+            str(tool) not in ai_intake_conversation_engine.TOOL_CATALOG
+            for tool in allowed_tools
+        ):
+            raise ValueError("AI intake inquiry plan references an unknown tool")
+        facts = raw_plan.get("facts")
+        if not isinstance(facts, list):
+            raise ValueError("AI intake inquiry plan facts must be a list")
+        seen_facts: set[str] = set()
+        for raw_fact in facts:
+            if not isinstance(raw_fact, Mapping):
+                raise ValueError("AI intake inquiry plan facts must be objects")
+            fact_key = str(raw_fact.get("key") or raw_fact.get("field") or "").strip()
+            if (
+                fact_key
+                not in ai_intake_conversation_engine.SAFE_FALLBACK_QUESTION_COPY
+            ):
+                raise ValueError("AI intake inquiry plan fact is unsupported")
+            if fact_key in seen_facts:
+                raise ValueError("AI intake inquiry plan fact keys must be unique")
+            seen_facts.add(fact_key)
+            if not str(raw_fact.get("purpose") or "").strip():
+                raise ValueError("AI intake inquiry plan fact purpose is required")
+            try:
+                priority = int(str(raw_fact.get("priority")))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "AI intake inquiry plan fact priority must be an integer"
+                ) from exc
+            if not 0 <= priority <= 1000:
+                raise ValueError(
+                    "AI intake inquiry plan fact priority must be between 0 and 1000"
+                )
+            required = raw_fact.get("required")
+            if required is not None and not isinstance(required, bool):
+                raise ValueError(
+                    "AI intake inquiry plan fact required must be a boolean"
+                )
+            for condition_key in ("when", "skip_when"):
+                condition = raw_fact.get(condition_key)
+                if condition is not None and not isinstance(condition, Mapping):
+                    raise ValueError(
+                        "AI intake inquiry plan fact conditions must be objects"
+                    )
+                if isinstance(condition, Mapping):
+                    validate_condition(condition)
+        escalation_conditions = raw_plan.get("escalation_conditions")
+        if escalation_conditions is not None:
+            if not isinstance(escalation_conditions, list):
+                raise ValueError(
+                    "AI intake inquiry plan escalation_conditions must be a list"
+                )
+            for raw_condition in escalation_conditions:
+                if not isinstance(raw_condition, Mapping):
+                    raise ValueError(
+                        "AI intake inquiry plan escalation conditions must be objects"
+                    )
+                condition = raw_condition.get("condition", raw_condition)
+                if not isinstance(condition, Mapping):
+                    raise ValueError(
+                        "AI intake inquiry plan escalation condition is required"
+                    )
+                validate_condition(condition)
+
+
 def _validate_engine_policy(version: AiIntakePolicyVersion) -> None:
     metadata = (
         dict(version.metadata_ or {}) if isinstance(version.metadata_, dict) else {}
@@ -1021,6 +1201,10 @@ def _validate_engine_policy(version: AiIntakePolicyVersion) -> None:
         raise ValueError("AI intake LangGraph engine requires the langgraph package")
     raw_policy = metadata.get("conversation_policy")
     policy = dict(raw_policy) if isinstance(raw_policy, Mapping) else {}
+    if "inquiry_plans" not in policy and isinstance(
+        metadata.get("inquiry_plans"), list
+    ):
+        policy["inquiry_plans"] = metadata["inquiry_plans"]
     raw_tools = metadata.get("tools")
     tools = dict(raw_tools) if isinstance(raw_tools, Mapping) else {}
     permitted = metadata.get("permitted_identifiers") or []
@@ -1063,6 +1247,7 @@ def _validate_engine_policy(version: AiIntakePolicyVersion) -> None:
                     "or unauthorized"
                 )
     _validate_engine_playbooks(policy, tools)
+    _validate_inquiry_plans(policy)
     rules = policy.get("troubleshooting_rules")
     if rules is not None:
         if not isinstance(rules, list):
@@ -1488,6 +1673,12 @@ def admin_policy_context(db: Session) -> dict[str, object]:
         "customer_response_timeout_minutes",
         _customer_response_timeout_minutes(escalation_rules),
     )
+    escalation_rules.pop("customer_wait_expiry_hours", None)
+    escalation_rules.pop("customer_wait_expiry_minutes", None)
+    escalation_rules.setdefault(
+        "customer_wait_handoff_minutes",
+        _customer_wait_handoff_minutes(escalation_rules),
+    )
     queue_templates = (
         dict(editable_version.queue_templates or {})
         if editable_version is not None
@@ -1654,13 +1845,13 @@ def _customer_response_timeout_minutes(
     )
 
 
-def _customer_wait_expiry_hours(rules: Mapping[str, object] | None) -> int:
+def _customer_wait_handoff_minutes(rules: Mapping[str, object] | None) -> int:
     source = dict(rules or {})
     return _bounded_int(
-        source.get("customer_wait_expiry_hours"),
-        default=DEFAULT_CUSTOMER_WAIT_EXPIRY_HOURS,
-        minimum=24,
-        maximum=720,
+        source.get("customer_wait_handoff_minutes"),
+        default=DEFAULT_CUSTOMER_WAIT_HANDOFF_MINUTES,
+        minimum=MIN_CUSTOMER_WAIT_HANDOFF_MINUTES,
+        maximum=MAX_CUSTOMER_WAIT_HANDOFF_MINUTES,
     )
 
 
@@ -1727,19 +1918,19 @@ def _session_customer_response_timeout_minutes(
     )
 
 
-def _session_customer_wait_expiry_hours(
+def _session_customer_wait_handoff_minutes(
     session: AiIntakeSession,
     *,
     version: AiIntakePolicyVersion | None = None,
 ) -> int:
     if version is not None and isinstance(version.escalation_rules, Mapping):
-        return _customer_wait_expiry_hours(version.escalation_rules)
+        return _customer_wait_handoff_minutes(version.escalation_rules)
     metadata = dict(session.metadata_ or {})
     return _bounded_int(
-        metadata.get("customer_wait_expiry_hours"),
-        default=DEFAULT_CUSTOMER_WAIT_EXPIRY_HOURS,
-        minimum=24,
-        maximum=720,
+        metadata.get("customer_wait_handoff_minutes"),
+        default=DEFAULT_CUSTOMER_WAIT_HANDOFF_MINUTES,
+        minimum=MIN_CUSTOMER_WAIT_HANDOFF_MINUTES,
+        maximum=MAX_CUSTOMER_WAIT_HANDOFF_MINUTES,
     )
 
 
@@ -1752,20 +1943,21 @@ def record_customer_wait(
     now: datetime | None = None,
 ) -> datetime:
     started_at = (now or datetime.now(UTC)).astimezone(UTC)
-    expiry_hours = _session_customer_wait_expiry_hours(session, version=version)
-    expires_at = started_at + timedelta(hours=expiry_hours)
+    handoff_minutes = _session_customer_wait_handoff_minutes(session, version=version)
+    expires_at = started_at + timedelta(minutes=handoff_minutes)
     session.customer_wait_started_at = started_at
-    # This legacy column previously drove a five-minute handoff. It is kept
-    # clear so stale-session recovery cannot confuse customer waiting with AI
-    # failure. ``expires_at`` owns long-term, non-handoff expiry.
-    session.customer_wait_expires_at = None
+    # Keep the compatibility deadline aligned while ``expires_at`` remains the
+    # indexed lifecycle selector for the scheduled handoff owner.
+    session.customer_wait_expires_at = expires_at
     session.expires_at = expires_at
     metadata = dict(session.metadata_ or {})
+    metadata.pop("customer_wait_expiry_hours", None)
+    metadata.pop("customer_wait_expiry_minutes", None)
     metadata.update(
         {
             "customer_wait_started_at": started_at.isoformat(),
-            "customer_wait_expires_at": None,
-            "customer_wait_expiry_hours": expiry_hours,
+            "customer_wait_expires_at": expires_at.isoformat(),
+            "customer_wait_handoff_minutes": handoff_minutes,
             "customer_wait_reason": reason,
             "waiting_reason": "awaiting_customer",
         }
@@ -1783,9 +1975,9 @@ def record_customer_wait(
             if inbound_message_id is not None
             else None,
             "customer_wait_started_at": started_at.isoformat(),
-            "customer_wait_expires_at": None,
+            "customer_wait_expires_at": expires_at.isoformat(),
             "session_expires_at": expires_at.isoformat(),
-            "expiry_hours": expiry_hours,
+            "handoff_minutes": handoff_minutes,
             "reason": reason,
         },
     )
@@ -1892,6 +2084,12 @@ def _sync_active_policy_to_legacy_config(
         if version is not None and isinstance(version.metadata_, Mapping)
         else {}
     )
+    raw_conversation_policy = version_metadata.get("conversation_policy")
+    conversation_policy = (
+        dict(raw_conversation_policy)
+        if isinstance(raw_conversation_policy, Mapping)
+        else {}
+    )
     mappings: list[AiIntakeDepartmentMapping] = []
     for raw in version.intent_team_mappings or []:
         if not isinstance(raw, Mapping) or raw.get("enabled") is False:
@@ -1957,6 +2155,9 @@ def _sync_active_policy_to_legacy_config(
                     approved_isp_information=version.approved_isp_information,
                     intent_definitions=version.intent_definitions or [],
                     clarification_questions=version.clarification_questions or [],
+                    allow_category_menu_clarification=bool(
+                        conversation_policy.get("allow_category_menu_clarification")
+                    ),
                     queue_templates=queue_templates,
                     conversation_templates=version_metadata.get(
                         "conversation_templates"
@@ -2156,12 +2357,12 @@ def disable_policy(
 def active_session_for_conversation(
     db: Session, conversation_id: UUID
 ) -> AiIntakeSession | None:
-    return (
-        db.query(AiIntakeSession)
-        .filter(AiIntakeSession.conversation_id == conversation_id)
-        .filter(AiIntakeSession.completed_at.is_(None))
-        .with_for_update()
-        .one_or_none()
+    from app.services import ai_conversation_ownership
+
+    return ai_conversation_ownership.active_session(
+        db,
+        conversation_id=conversation_id,
+        for_update=True,
     )
 
 
@@ -2307,6 +2508,9 @@ def ensure_policy_version_from_legacy_config(
         "heartbeat_minutes": int(
             metadata.get("queue_heartbeat_minutes") or DEFAULT_QUEUE_HEARTBEAT_MINUTES
         ),
+        "heartbeat_enabled": bool(
+            metadata.get("queue_heartbeat_enabled", DEFAULT_QUEUE_HEARTBEAT_ENABLED)
+        ),
     }
     data_cleanup_policy = metadata.get("data_cleanup_policy")
     if not isinstance(data_cleanup_policy, dict):
@@ -2451,7 +2655,7 @@ def ensure_session_for_outcome(
         # classification can produce a clarification question or handoff.
         state = "welcome_pending"
         policy_metadata = dict(policy.metadata_ or {})
-        expiry_hours = _customer_wait_expiry_hours(version.escalation_rules)
+        handoff_minutes = _customer_wait_handoff_minutes(version.escalation_rules)
         session = AiIntakeSession(
             conversation_id=conversation.id,
             policy_id=policy.id,
@@ -2468,11 +2672,11 @@ def ensure_session_for_outcome(
             if outcome.classification
             else float(policy_metadata.get("confidence_threshold") or 0),
             fallback_team_id=outcome.fallback_team_id or policy.fallback_team_id,
-            expires_at=now + timedelta(hours=expiry_hours),
+            expires_at=now + timedelta(minutes=handoff_minutes),
             metadata_={
                 "ai_handling": True,
                 "created_from": "team_inbox_receive",
-                "customer_wait_expiry_hours": expiry_hours,
+                "customer_wait_handoff_minutes": handoff_minutes,
                 "initial_inbound_message_id": str(initial_inbound_message_id),
             },
         )
@@ -2693,6 +2897,21 @@ def _composition_request(
         }.get(decision.action, AiIntakeNextAction.provide_guidance.value)
     next_action = AiIntakeNextAction(next_action_value)
     question_key = str(decision.metadata.get("question_key") or "").strip() or None
+    expected_fact = (
+        str(decision.metadata.get("expected_fact") or question_key or "").strip()
+        or None
+    )
+    question_purpose = (
+        str(decision.metadata.get("question_purpose") or "").strip()
+        or ai_intake_conversation_engine.DEFAULT_FACT_PURPOSES.get(
+            str(expected_fact or "")
+        )
+        or (
+            "clarify the customer's current support need"
+            if next_action is AiIntakeNextAction.ask_question
+            else ""
+        )
+    )
     policy = ai_intake_conversation_engine._policy(
         version, channel=str(inbound.channel_type)
     )
@@ -2702,7 +2921,15 @@ def _composition_request(
         latest_customer_statement=str(inbound.body or "")[:1200],
         recent_messages=recent,
         facts=_composition_facts(state),
-        missing_fact_keys=tuple(state.missing_facts[-12:]),
+        missing_fact_keys=tuple(
+            dict.fromkeys(
+                [
+                    *state.missing_facts[-12:],
+                    *([expected_fact] if expected_fact else []),
+                    *([question_key] if question_key else []),
+                ]
+            )
+        ),
         asked_question_keys=tuple(item.key for item in state.question_history[-12:]),
         troubleshooting_completed=tuple(state.troubleshooting_completed[-12:]),
         customer_identity=AiIntakeSafeCustomerIdentity(
@@ -2716,16 +2943,44 @@ def _composition_request(
         playbook_step=AiIntakePlaybookStepContext(
             key=question_key,
             action=next_action,
-            approved_instruction=(decision.response_text or "Continue safely.")[:800],
+            approved_instruction=(
+                question_purpose
+                if next_action is AiIntakeNextAction.ask_question
+                else (decision.response_text or "Continue safely.")
+            )[:800],
+            question_purpose=question_purpose or None,
+            expected_fact=expected_fact,
         ),
-        business_tone=str(
-            policy.get("business_tone")
-            or "Warm, calm, concise, practical, and proportionate."
+        business_tone=" ".join(
+            item
+            for item in (
+                str(
+                    policy.get("business_tone")
+                    or "Warm, calm, concise, practical, and proportionate."
+                ).strip(),
+                str(decision.metadata.get("tone_requirements") or "").strip(),
+            )
+            if item
         )[:1000],
         approved_isp_information=(
             str(policy.get("approved_isp_information") or "")[:4000] or None
         ),
-        issue_already_acknowledged=bool(state.acknowledged_issue_key),
+        affect=AiIntakeAffectAssessment(
+            frustration_level=state.frustration_level,
+            agitation_level=state.agitation_level,
+            repeated_complaint=state.repeated_complaint,
+            repeated_failed_steps=state.repeated_failed_steps,
+            prior_failed_interaction=state.prior_failed_interaction,
+            sources=tuple(
+                AiIntakeAffectSource(item)
+                for item in state.affect_sources
+                if item in {source.value for source in AiIntakeAffectSource}
+            ),
+        ),
+        acknowledgement_required=state.acknowledgement_required,
+        issue_acknowledgement_required=state.issue_acknowledgement_required,
+        issue_acknowledged=state.issue_acknowledged,
+        frustration_acknowledged=state.frustration_acknowledged,
     )
 
 
@@ -2914,6 +3169,7 @@ def _process_one_session(
     )
     if inbound is None or not inbound.body:
         return False
+    initial_welcome_turn = session.state == "welcome_pending"
     version = (
         db.get(AiIntakePolicyVersion, session.policy_version_id)
         if session.policy_version_id
@@ -3016,6 +3272,78 @@ def _process_one_session(
             "session_state": session.state,
         },
     )
+    if (
+        initial_welcome_turn
+        and ai_intake_conversation_engine.is_greeting_only(str(inbound.body or ""))
+        and not ai_intake_conversation_engine.category_menu_clarification_enabled(
+            version
+        )
+    ):
+        session.turn_count += 1
+        session.state = "awaiting_customer"
+        metadata.update(
+            {
+                "ai_intake_status": "awaiting_customer",
+                "ai_intake_engine_action": "wait_for_customer",
+                "ai_intake_engine_reason": "greeting_only",
+                "ai_intake_response_source": "welcome",
+            }
+        )
+        inbound.metadata_ = metadata
+        generation = record_generation_attempt(
+            db,
+            session=session,
+            purpose="conversation",
+            status="greeting_only_wait",
+            inbound_message_id=inbound.id,
+            metadata={
+                "selected_action": "wait_for_customer",
+                "response_source": "welcome",
+                "policy_version_id": (
+                    str(session.policy_version_id)
+                    if session.policy_version_id
+                    else None
+                ),
+                "app_revision": get_app_revision(),
+            },
+        )
+        record_customer_wait(
+            session,
+            version=version,
+            inbound_message_id=inbound.id,
+            reason="greeting_only",
+        )
+        transition_conversation_status(
+            db,
+            conversation=conversation,
+            status=InboxConversationStatus.pending,
+            reason=team_inbox_status.InboxStatusReason.ai_awaiting_clarification,
+            source_id=f"ai-intake-greeting:{session.id}:{inbound.id}",
+        )
+        mark_conversation_ai_metadata(conversation, session=session, active=True)
+        mark_inbound_processed(
+            session,
+            inbound_message_id=inbound.id,
+            generation_attempt_id=generation.id,
+        )
+        logger.info(
+            "ai intake greeting entered natural customer wait",
+            extra={
+                "event": "ai_intake_greeting_awaiting_customer",
+                "conversation_id": str(conversation.id),
+                "session_id": str(session.id),
+                "inbound_message_id": str(inbound.id),
+                "policy_version_id": (
+                    str(session.policy_version_id)
+                    if session.policy_version_id
+                    else None
+                ),
+                "selected_action": "wait_for_customer",
+                "response_source": "welcome",
+                "session_state": session.state,
+            },
+        )
+        return True
     was_awaiting_customer = session.state == "awaiting_customer"
     if was_awaiting_customer:
         clear_customer_wait(session, reason="customer_response")
@@ -3071,6 +3399,12 @@ def _process_one_session(
             )
         )
     recent = tuple(recent_items)
+    prior_classifier_failure_count = _bounded_int(
+        dict(session.metadata_ or {}).get("classifier_failure_count"),
+        default=0,
+        minimum=0,
+        maximum=10,
+    )
     request = AiIntakeRequest(
         channel_type=conversation.channel_type,
         provider=session.provider,
@@ -3078,6 +3412,9 @@ def _process_one_session(
         inbound_message_id=str(inbound.external_message_id or inbound.id)[:255],
         body=str(inbound.body or "")[:4000],
         conversation_id=conversation.id,
+        session_id=session.id,
+        policy_version_id=session.policy_version_id,
+        persisted_inbound_message_id=inbound.id,
         recent_messages=recent,
         campaign_attributed=False,
         routing_allows_ai=True,
@@ -3086,14 +3423,27 @@ def _process_one_session(
         has_active_assignment=False,
         awaiting_follow_up=was_awaiting_customer,
         follow_up_count=session.turn_count,
+        classifier_failure_count=prior_classifier_failure_count,
     )
     outcome = ai_intake.classify_message(db, request)
     engine_enabled = _session_engine_enabled(db, session=session, version=version)
+    legacy_classifier_clarification = not engine_enabled and (
+        outcome.status is AiIntakeStatus.awaiting_follow_up
+        or (
+            outcome.status is AiIntakeStatus.classification_unavailable
+            and not outcome.classifier_attempt.retries_exhausted
+        )
+    )
     metadata.update(ai_intake.route_metadata(outcome))
-    if outcome.status == AiIntakeStatus.awaiting_follow_up and not engine_enabled:
+    if legacy_classifier_clarification:
         metadata.setdefault("ai_intake_engine_action", "legacy_clarification")
         metadata.setdefault(
-            "ai_intake_engine_reason", "legacy_classifier_clarification"
+            "ai_intake_engine_reason",
+            (
+                "classifier_unavailable"
+                if outcome.status is AiIntakeStatus.classification_unavailable
+                else "legacy_classifier_clarification"
+            ),
         )
     inbound.metadata_ = metadata
     conversation_metadata = dict(conversation.metadata_ or {})
@@ -3114,15 +3464,124 @@ def _process_one_session(
         model=outcome.model,
         duration_ms=outcome.duration_ms,
         error_code=outcome.reason.value,
+        metadata={
+            "classifier_attempt_status": outcome.classifier_attempt.status.value,
+            "classifier_failure_reason": (
+                outcome.classifier_attempt.reason.value
+                if outcome.classifier_attempt.reason is not None
+                else None
+            ),
+            "classifier_failure_kind": (
+                outcome.classifier_attempt.failure_kind.value
+                if outcome.classifier_attempt.failure_kind is not None
+                else None
+            ),
+            "classifier_retry_count": outcome.classifier_attempt.retry_count,
+            "classifier_retry_limit": outcome.classifier_attempt.retry_limit,
+            "classifier_retries_exhausted": (
+                outcome.classifier_attempt.retries_exhausted
+            ),
+            "classifier_attempt_number": outcome.classifier_attempt.retry_count,
+            "app_revision": get_app_revision(),
+            "validation_issues": [
+                issue.model_dump(mode="json")
+                for issue in outcome.classifier_attempt.validation_issues
+            ],
+        },
     )
     session_metadata = dict(session.metadata_ or {})
     session_metadata["last_generation_attempt_id"] = str(generation.id)
+    session_metadata["classifier_attempt_status"] = (
+        outcome.classifier_attempt.status.value
+    )
+    session_metadata["classifier_failure_reason"] = (
+        outcome.classifier_attempt.reason.value
+        if outcome.classifier_attempt.reason is not None
+        else None
+    )
+    session_metadata["classifier_failure_kind"] = (
+        outcome.classifier_attempt.failure_kind.value
+        if outcome.classifier_attempt.failure_kind is not None
+        else None
+    )
+    session_metadata["classifier_retry_count"] = outcome.classifier_attempt.retry_count
+    session_metadata["classifier_retry_limit"] = outcome.classifier_attempt.retry_limit
+    session_metadata["classifier_retries_exhausted"] = (
+        outcome.classifier_attempt.retries_exhausted
+    )
+    if outcome.classifier_attempt.status is AiClassifierAttemptStatus.accepted:
+        session_metadata["classifier_failure_count"] = 0
+        if prior_classifier_failure_count:
+            session_metadata["classifier_recovered_after_failures"] = (
+                prior_classifier_failure_count
+            )
+    else:
+        session_metadata["classifier_failure_count"] = (
+            outcome.classifier_attempt.retry_count
+        )
     session.metadata_ = session_metadata
+    logger.info(
+        "ai intake classifier attempt recorded",
+        extra={
+            "event": "ai_intake_classifier_attempt_recorded",
+            "conversation_id": str(conversation.id),
+            "session_id": str(session.id),
+            "inbound_message_id": str(inbound.id),
+            "policy_version_id": (
+                str(session.policy_version_id) if session.policy_version_id else None
+            ),
+            "provider": outcome.classifier_attempt.provider,
+            "model": outcome.classifier_attempt.model,
+            "classifier_attempt_status": outcome.classifier_attempt.status.value,
+            "classifier_failure_reason": (
+                outcome.classifier_attempt.reason.value
+                if outcome.classifier_attempt.reason is not None
+                else None
+            ),
+            "classifier_failure_kind": (
+                outcome.classifier_attempt.failure_kind.value
+                if outcome.classifier_attempt.failure_kind is not None
+                else None
+            ),
+            "classifier_retry_count": outcome.classifier_attempt.retry_count,
+            "classifier_retry_limit": outcome.classifier_attempt.retry_limit,
+            "classifier_retries_exhausted": (
+                outcome.classifier_attempt.retries_exhausted
+            ),
+            "classifier_attempt_number": outcome.classifier_attempt.retry_count,
+            "validation_issues": [
+                issue.model_dump(mode="json")
+                for issue in outcome.classifier_attempt.validation_issues
+            ],
+            "app_revision": get_app_revision(),
+        },
+    )
+    if (
+        outcome.classifier_attempt.status is AiClassifierAttemptStatus.accepted
+        and prior_classifier_failure_count
+    ):
+        logger.info(
+            "ai intake classifier recovered",
+            extra={
+                "event": "ai_intake_classifier_recovered",
+                "conversation_id": str(conversation.id),
+                "session_id": str(session.id),
+                "inbound_message_id": str(inbound.id),
+                "policy_version_id": (
+                    str(session.policy_version_id)
+                    if session.policy_version_id
+                    else None
+                ),
+                "provider": outcome.classifier_attempt.provider,
+                "model": outcome.classifier_attempt.model,
+                "recovered_after_failures": prior_classifier_failure_count,
+            },
+        )
     engine_forced_handoff = False
     engine_handoff_state: ai_intake_conversation_engine.ConversationalState | None = (
         None
     )
-    if outcome.status == AiIntakeStatus.awaiting_follow_up and not engine_enabled:
+    if legacy_classifier_clarification:
         delivery_question = " ".join(
             str(
                 metadata.get("ai_intake_follow_up_question")
@@ -3238,6 +3697,7 @@ def _process_one_session(
                     version=version,
                     latest_body=str(inbound.body or ""),
                     classification=outcome.classification,
+                    classifier_attempt=outcome.classifier_attempt,
                     recent_messages=recent,
                 )
                 engine_name = ai_intake_graph.LANGGRAPH_ENGINE_MODE
@@ -3263,6 +3723,7 @@ def _process_one_session(
                     version=version,
                     latest_body=str(inbound.body or ""),
                     classification=outcome.classification,
+                    classifier_attempt=outcome.classifier_attempt,
                 )
                 engine_name = "composable_v1_fallback"
         else:
@@ -3274,12 +3735,35 @@ def _process_one_session(
                 version=version,
                 latest_body=str(inbound.body or ""),
                 classification=outcome.classification,
+                classifier_attempt=outcome.classifier_attempt,
             )
         ai_intake_conversation_engine.persist_state(session, decision.state)
         metadata["ai_intake_engine_requested"] = requested_engine_name
         metadata["ai_intake_engine"] = engine_name
         metadata["ai_intake_engine_action"] = decision.action
+        metadata["ai_intake_selected_action"] = (
+            decision.metadata.get("next_action") or decision.action
+        )
         metadata["ai_intake_engine_reason"] = decision.metadata.get("reason")
+        metadata["ai_intake_classifier_attempt_status"] = (
+            outcome.classifier_attempt.status.value
+        )
+        metadata["ai_intake_classifier_failure_reason"] = (
+            outcome.classifier_attempt.reason.value
+            if outcome.classifier_attempt.reason is not None
+            else None
+        )
+        metadata["ai_intake_classifier_failure_kind"] = (
+            outcome.classifier_attempt.failure_kind.value
+            if outcome.classifier_attempt.failure_kind is not None
+            else None
+        )
+        metadata["ai_intake_classifier_retry_count"] = (
+            outcome.classifier_attempt.retry_count
+        )
+        metadata["ai_intake_classifier_retry_limit"] = (
+            outcome.classifier_attempt.retry_limit
+        )
         raw_node_trace = decision.metadata.get("node_trace")
         node_trace = (
             [str(item) for item in raw_node_trace if str(item)][-40:]
@@ -3293,6 +3777,31 @@ def _process_one_session(
         ]
         metadata["ai_intake_question_key"] = decision.metadata.get("question_key")
         metadata["ai_intake_answer_status"] = decision.metadata.get("answer_status")
+        metadata["ai_intake_affect"] = {
+            "frustration_level": decision.state.frustration_level.value,
+            "agitation_level": decision.state.agitation_level.value,
+            "repeated_complaint": decision.state.repeated_complaint,
+            "repeated_failed_steps": decision.state.repeated_failed_steps,
+            "prior_failed_interaction": decision.state.prior_failed_interaction,
+            "sources": list(decision.state.affect_sources),
+        }
+        metadata["ai_intake_acknowledgement_required"] = (
+            decision.state.acknowledgement_required
+        )
+        metadata["ai_intake_issue_acknowledged"] = decision.state.issue_acknowledged
+        metadata["ai_intake_frustration_acknowledged"] = (
+            decision.state.frustration_acknowledged
+        )
+        metadata["ai_intake_candidate_question_keys"] = list(
+            decision.state.candidate_question_keys
+        )
+        metadata["ai_intake_effective_question_order"] = list(
+            decision.state.effective_question_order
+        )
+        metadata["ai_intake_question_priority"] = decision.metadata.get(
+            "question_priority"
+        )
+        metadata["ai_intake_priority_source"] = decision.metadata.get("priority_source")
         metadata["ai_intake_tool_results"] = [
             {
                 "tool": item.get("tool"),
@@ -3318,32 +3827,102 @@ def _process_one_session(
                 "engine_mode": engine_name,
                 "requested_engine": requested_engine_name,
                 "engine_action": decision.action,
+                "selected_action": (
+                    decision.metadata.get("next_action") or decision.action
+                ),
                 "engine_reason": decision.metadata.get("reason"),
+                "classifier_attempt_status": outcome.classifier_attempt.status.value,
+                "classifier_failure_reason": (
+                    outcome.classifier_attempt.reason.value
+                    if outcome.classifier_attempt.reason is not None
+                    else None
+                ),
+                "classifier_failure_kind": (
+                    outcome.classifier_attempt.failure_kind.value
+                    if outcome.classifier_attempt.failure_kind is not None
+                    else None
+                ),
+                "classifier_retry_count": outcome.classifier_attempt.retry_count,
+                "classifier_retry_limit": outcome.classifier_attempt.retry_limit,
+                "classifier_retries_exhausted": (
+                    outcome.classifier_attempt.retries_exhausted
+                ),
                 "human_requested": decision.state.human_requested,
                 "current_intent": decision.state.current_intent,
                 "previous_intent": decision.state.previous_intent,
                 "category": decision.state.category,
                 "subscriber_id": decision.state.subscriber_id,
                 "missing_facts": decision.state.missing_facts,
+                "affect": metadata["ai_intake_affect"],
+                "acknowledgement_required": (decision.state.acknowledgement_required),
+                "issue_acknowledged": decision.state.issue_acknowledged,
+                "frustration_acknowledged": (decision.state.frustration_acknowledged),
+                "candidate_question_keys": list(decision.state.candidate_question_keys),
+                "effective_question_order": list(
+                    decision.state.effective_question_order
+                ),
+                "selected_question_key": decision.state.selected_question_key,
+                "selected_question_priority": (
+                    decision.state.selected_question_priority
+                ),
+                "priority_source": decision.state.selected_priority_source,
                 "escalation_reason": decision.state.escalation_reason,
             }
         )
         conversation_metadata["ai_intake"] = intake_metadata
         conversation.metadata_ = conversation_metadata
+        logger.info(
+            "ai intake conversation decision selected",
+            extra={
+                "event": "ai_intake_conversation_decision_selected",
+                "conversation_id": str(conversation.id),
+                "session_id": str(session.id),
+                "inbound_message_id": str(inbound.id),
+                "policy_version_id": (
+                    str(session.policy_version_id)
+                    if session.policy_version_id
+                    else None
+                ),
+                "requested_engine": requested_engine_name,
+                "actual_engine": engine_name,
+                "selected_action": (
+                    decision.metadata.get("next_action") or decision.action
+                ),
+                "delivery_action": decision.action,
+                "reason": decision.metadata.get("reason"),
+                "classifier_attempt_status": outcome.classifier_attempt.status.value,
+                "classifier_failure_reason": (
+                    outcome.classifier_attempt.reason.value
+                    if outcome.classifier_attempt.reason is not None
+                    else None
+                ),
+                "classifier_failure_kind": (
+                    outcome.classifier_attempt.failure_kind.value
+                    if outcome.classifier_attempt.failure_kind is not None
+                    else None
+                ),
+                "classifier_retry_count": outcome.classifier_attempt.retry_count,
+                "classifier_retry_limit": outcome.classifier_attempt.retry_limit,
+                "classifier_retries_exhausted": (
+                    outcome.classifier_attempt.retries_exhausted
+                ),
+            },
+        )
         composition_attempt: AiIntakeGenerationAttempt | None = None
         composition = None
         if (
             decision.action in {"respond", "handoff", "resolved"}
             and decision.response_text
         ):
+            composition_request = _composition_request(
+                version=version,
+                inbound=inbound,
+                recent=recent,
+                decision=decision,
+            )
             composition = ai_intake.compose_customer_response(
                 db,
-                request=_composition_request(
-                    version=version,
-                    inbound=inbound,
-                    recent=recent,
-                    decision=decision,
-                ),
+                request=composition_request,
                 fallback_text=decision.response_text,
                 fallback_source=str(
                     decision.metadata.get("response_source") or "template"
@@ -3367,6 +3946,15 @@ def _process_one_session(
                 decision.state.acknowledged_issue_key = (
                     decision.state.category or decision.state.current_intent
                 )
+                decision.state.issue_acknowledged = True
+                decision.state.issue_acknowledgement_required = False
+            if composition.acknowledges_frustration:
+                decision.state.frustration_acknowledged = True
+                decision.state.acknowledgement_required = False
+            decision.state.response_validator_result = (
+                "accepted" if composition.response_source == "model" else "rejected"
+            )
+            decision.state.response_validator_reason = composition.safety_reason
             decision.state.last_response_source = composition.response_source
             ai_intake_conversation_engine.persist_state(session, decision.state)
             composition_attempt = record_generation_attempt(
@@ -3389,13 +3977,68 @@ def _process_one_session(
                     "response_source": composition.response_source,
                     "template_version": ai_intake.RESPONSE_COMPOSITION_VERSION,
                     "question_key": decision.metadata.get("question_key"),
+                    "candidate_question_keys": list(
+                        decision.state.candidate_question_keys
+                    ),
+                    "effective_question_order": list(
+                        decision.state.effective_question_order
+                    ),
+                    "question_priority": decision.metadata.get("question_priority"),
+                    "priority_source": decision.metadata.get("priority_source"),
+                    "acknowledgement_required": (
+                        bool(decision.metadata.get("acknowledgement_required"))
+                    ),
+                    "issue_acknowledgement_required": (
+                        composition_request.issue_acknowledgement_required
+                    ),
+                    "issue_acknowledged": decision.state.issue_acknowledged,
+                    "frustration_acknowledged": (
+                        decision.state.frustration_acknowledged
+                    ),
                     "tokens_in": composition.tokens_in,
                     "tokens_out": composition.tokens_out,
                     "app_revision": get_app_revision(),
                 },
             )
+            logger.info(
+                "ai intake response composition resolved",
+                extra={
+                    "event": "ai_intake_response_composition_resolved",
+                    "conversation_id": str(conversation.id),
+                    "session_id": str(session.id),
+                    "inbound_message_id": str(inbound.id),
+                    "policy_version_id": (
+                        str(session.policy_version_id)
+                        if session.policy_version_id
+                        else None
+                    ),
+                    "provider": composition.provider,
+                    "model": composition.model,
+                    "response_source": composition.response_source,
+                    "validator_result": decision.state.response_validator_result,
+                    "validator_reason": decision.state.response_validator_reason,
+                    "selected_action": (
+                        decision.metadata.get("next_action") or decision.action
+                    ),
+                    "acknowledgement_required": (
+                        bool(decision.metadata.get("acknowledgement_required"))
+                    ),
+                    "issue_acknowledgement_required": (
+                        composition_request.issue_acknowledgement_required
+                    ),
+                    "selected_question_key": decision.metadata.get("question_key"),
+                },
+            )
             metadata["ai_intake_response_source"] = composition.response_source
+            metadata["ai_intake_validator_result"] = (
+                decision.state.response_validator_result
+            )
+            metadata["ai_intake_validator_reason"] = composition.safety_reason
             metadata["ai_intake_question_key"] = decision.metadata.get("question_key")
+            metadata["ai_intake_issue_acknowledged"] = decision.state.issue_acknowledged
+            metadata["ai_intake_frustration_acknowledged"] = (
+                decision.state.frustration_acknowledged
+            )
             metadata["ai_intake_composition_template_version"] = (
                 ai_intake.RESPONSE_COMPOSITION_VERSION
             )
@@ -3403,6 +4046,19 @@ def _process_one_session(
                 0, int((time.perf_counter() - turn_started) * 1000)
             )
             inbound.metadata_ = metadata
+            intake_metadata.update(
+                {
+                    "issue_acknowledged": decision.state.issue_acknowledged,
+                    "frustration_acknowledged": (
+                        decision.state.frustration_acknowledged
+                    ),
+                    "response_source": composition.response_source,
+                    "validator_result": decision.state.response_validator_result,
+                    "validator_reason": decision.state.response_validator_reason,
+                }
+            )
+            conversation_metadata["ai_intake"] = intake_metadata
+            conversation.metadata_ = conversation_metadata
         if decision.action == "respond":
             response_metadata = ai_message_metadata(
                 session=session,
@@ -3420,6 +4076,11 @@ def _process_one_session(
                     ),
                     "ai_question_key": decision.metadata.get("question_key"),
                     "ai_answer_status": decision.metadata.get("answer_status"),
+                    "ai_acknowledgement_required": (
+                        bool(decision.metadata.get("acknowledgement_required"))
+                    ),
+                    "ai_validator_result": decision.state.response_validator_result,
+                    "ai_validator_reason": decision.state.response_validator_reason,
                     "ai_composition_template_version": (
                         ai_intake.RESPONSE_COMPOSITION_VERSION
                     ),
@@ -3473,6 +4134,44 @@ def _process_one_session(
                 mark_conversation_ai_metadata(
                     conversation, session=session, active=True
                 )
+                if decision.metadata.get("reason") == "classifier_unavailable":
+                    logger.info(
+                        "ai intake classifier clarification awaiting customer",
+                        extra={
+                            "event": (
+                                "ai_intake_classifier_clarification_awaiting_customer"
+                            ),
+                            "conversation_id": str(conversation.id),
+                            "session_id": str(session.id),
+                            "inbound_message_id": str(inbound.id),
+                            "policy_version_id": (
+                                str(session.policy_version_id)
+                                if session.policy_version_id
+                                else None
+                            ),
+                            "requested_engine": requested_engine_name,
+                            "actual_engine": engine_name,
+                            "selected_action": "ask_question",
+                            "reason": "classifier_unavailable",
+                            "classifier_failure_reason": (
+                                outcome.classifier_attempt.reason.value
+                                if outcome.classifier_attempt.reason is not None
+                                else None
+                            ),
+                            "classifier_failure_kind": (
+                                outcome.classifier_attempt.failure_kind.value
+                                if outcome.classifier_attempt.failure_kind is not None
+                                else None
+                            ),
+                            "classifier_retry_count": (
+                                outcome.classifier_attempt.retry_count
+                            ),
+                            "classifier_retry_limit": (
+                                outcome.classifier_attempt.retry_limit
+                            ),
+                            "session_state": "awaiting_customer",
+                        },
+                    )
                 mark_inbound_processed(
                     session,
                     inbound_message_id=inbound.id,
@@ -3614,9 +4313,12 @@ def _process_one_session(
             follow_up_question = DEFAULT_CLARIFICATION_QUESTIONS[0]
         metadata["ai_intake_follow_up_question"] = follow_up_question
         inbound.metadata_ = metadata
-    should_deliver_follow_up = (
-        not engine_forced_handoff
-        and outcome.status == AiIntakeStatus.awaiting_follow_up
+    should_deliver_follow_up = not engine_forced_handoff and (
+        outcome.status is AiIntakeStatus.awaiting_follow_up
+        or (
+            outcome.status is AiIntakeStatus.classification_unavailable
+            and not outcome.classifier_attempt.retries_exhausted
+        )
     )
     if should_deliver_follow_up:
         delivery_question = " ".join(
@@ -3823,6 +4525,9 @@ def _process_one_session(
             service_team_id=routing.primary_service_team_id,
             reason="AI intake handoff",
             source="routing_rule",
+            provenance=(
+                team_inbox_assignment.InboxAssignmentProvenance.ai_intake_handoff
+            ),
         )
         if assignment.kind == "assigned" or not cleanup_open:
             complete_session(session)

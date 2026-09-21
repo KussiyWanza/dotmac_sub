@@ -16,6 +16,7 @@ from app.models.network import (
     OntAuthorizationStatus,
     OntProvisioningStatus,
     OntStatusSource,
+    OntSyncStatus,
     OntUnit,
     OnuOfflineReason,
     OnuOnlineStatus,
@@ -120,6 +121,38 @@ _PROVISIONING_TRANSITIONS: dict[
         OntProvisioningStatus.pending_service_config,
         OntProvisioningStatus.unprovisioned,
         OntProvisioningStatus.provisioned,
+    },
+}
+
+# Unlike ``_PROVISIONING_TRANSITIONS`` above, this table does not encode any
+# ordering invariant that current production behavior would violate: every
+# one of the reconciler's own writers (the lock/finalise pair in
+# ``reconcile/core.py`` and ``reconcile/locking.py``), the lifecycle retire
+# path, and the external "please reconcile me" request from
+# ``network_subscriber_bridge.py`` legitimately drives every one of these
+# non-self edges today (verified by reading each call site, not assumed).
+# The table is kept anyway -- for the same single-owner + structured-logging
+# shape as ``_PROVISIONING_TRANSITIONS`` and ``_AUTHORIZATION_TRANSITIONS``,
+# and so a genuinely illegal edge discovered later (e.g. the
+# sync_status/provisioning_status reconciliation work) has somewhere to add
+# a real restriction without re-deriving the whole mechanism.
+_SYNC_TRANSITIONS: dict[OntSyncStatus | None, set[OntSyncStatus]] = {
+    None: {
+        OntSyncStatus.synced,
+        OntSyncStatus.reconciling,
+        OntSyncStatus.out_of_sync,
+    },
+    OntSyncStatus.synced: {
+        OntSyncStatus.reconciling,
+        OntSyncStatus.out_of_sync,
+    },
+    OntSyncStatus.reconciling: {
+        OntSyncStatus.synced,
+        OntSyncStatus.out_of_sync,
+    },
+    OntSyncStatus.out_of_sync: {
+        OntSyncStatus.reconciling,
+        OntSyncStatus.synced,
     },
 }
 
@@ -345,6 +378,12 @@ def _coerce_provisioning_status(
     return OntProvisioningStatus(str(status))
 
 
+def _coerce_sync_status(status: OntSyncStatus | str) -> OntSyncStatus:
+    if isinstance(status, OntSyncStatus):
+        return status
+    return OntSyncStatus(str(status))
+
+
 def set_authorization_status(
     ont: OntUnit,
     status: OntAuthorizationStatus | str,
@@ -411,6 +450,52 @@ def set_provisioning_status(
         },
     )
     ont.provisioning_status = next_status
+
+
+def set_sync_status(
+    ont: OntUnit,
+    status: OntSyncStatus | str,
+    *,
+    reason: str | None = None,
+    strict: bool = True,
+) -> None:
+    """Single owning writer of ``OntUnit.sync_status``.
+
+    Mirrors ``set_provisioning_status``'s shape: validate against the
+    transition table, log the transition, then perform the write. ``reason``
+    is logging-only context (matching ``clear_provisioning_status``'s
+    ``reason`` parameter below) -- it is never written to a column. Callers
+    that also need to update ``last_error`` (or other reconcile bookkeeping
+    columns) keep doing that themselves right after calling this; the actual
+    ``sync_status`` value and the conditions under which each site decides to
+    transition are unchanged from before this function existed.
+    """
+    next_status = _coerce_sync_status(status)
+    current = ont.sync_status
+    if current == next_status:
+        return
+    allowed = _SYNC_TRANSITIONS.get(current, set())
+    is_valid_transition = next_status in allowed
+    if not is_valid_transition:
+        message = (
+            f"Illegal ONT sync status transition: "
+            f"{current.value if current else 'none'} -> {next_status.value}"
+        )
+        if strict:
+            raise ValueError(message)
+        logger.warning(message)
+    extra = {
+        "event": "ont_status_transition",
+        "ont_id": str(ont.id),
+        "field": "sync_status",
+        "from": current.value if current else None,
+        "to": next_status.value,
+        "valid": is_valid_transition,
+    }
+    if reason is not None:
+        extra["reason"] = reason
+    logger.info("ont_status_transition", extra=extra)
+    ont.sync_status = next_status
 
 
 def clear_authorization_status(ont: OntUnit, *, reason: str) -> None:

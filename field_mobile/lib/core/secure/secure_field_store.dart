@@ -8,6 +8,7 @@ import 'encrypted_database.dart';
 import 'evidence_cipher.dart';
 import 'evidence_files.dart';
 import 'scope_key_ring.dart';
+import 'store_work_gate.dart';
 
 /// Everything one principal's offline data lives in: an encrypted database, an
 /// encrypted evidence directory, and the keys that open them. Immutable and
@@ -31,6 +32,8 @@ class SecureFieldStore {
 
   String get scopeKey => scope.key;
 
+  StoreWorkGate get work => database.work;
+
   File get databaseFile => File(p.join(root.path, databaseFileName));
 
   /// The queued location pings. An envelope, not JSON.
@@ -39,10 +42,14 @@ class SecureFieldStore {
   static const databaseFileName = 'field.sqlite';
   static const evidenceDirectoryName = 'evidence';
 
-  /// Kills the store: no further write can succeed and the database connection
-  /// is closed, so an in-flight drift write fails instead of recreating the
-  /// file the wipe is about to remove.
+  /// Refuses any new operation before session credentials are cleared.
+  void stopAcceptingWork() => work.stopAccepting();
+
+  /// Kills the store after every operation admitted before teardown has
+  /// finished. No stale task can retain this database connection across close.
   Future<void> discardAndClose() async {
+    stopAcceptingWork();
+    await work.waitUntilDrained();
     evidence.discard();
     await database.close();
   }
@@ -91,6 +98,7 @@ class SecureStoreOpener {
         ),
         cipher: cipher,
         scopeKey: scope.key,
+        work: database.work,
       ),
     );
   }

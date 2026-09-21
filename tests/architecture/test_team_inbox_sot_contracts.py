@@ -66,6 +66,54 @@ def test_observation_owner_contracts_collision_quarantine() -> None:
     assert "ObservationCollisionPolicy.quarantine" in smtp
 
 
+def test_contact_resolution_owns_lazy_customer_link_options() -> None:
+    service = service_relationship("communications.team_inbox_contact_resolution")
+
+    assert service.contract is not None
+    assert "conversation-aware lazy Customer link-option projection" in service.owns
+    assert "bounded lazy Customer link options" in {
+        projection.name for projection in service.contract.projections
+    }
+
+    owner = (ROOT / "app/services/team_inbox_contact_links.py").read_text(
+        encoding="utf-8"
+    )
+    adapter = (ROOT / "app/web/admin/inbox.py").read_text(encoding="utf-8")
+    template = (ROOT / "templates/admin/inbox/_authoritative_context.html").read_text(
+        encoding="utf-8"
+    )
+    assert "class CustomerLinkOptionsQuery" in owner
+    assert "def customer_link_options(" in owner
+    assert "search_text=q" in adapter
+    assert "data-typeahead-initial-url=" in template
+    assert "customer-link-options" in template
+
+
+def test_contact_link_writes_use_one_typed_serialized_owner_path() -> None:
+    service = service_relationship("communications.team_inbox_contact_resolution")
+    assert service.contract is not None
+    assert service.contract.transaction.locking
+    assert "transaction advisory lock" in service.contract.transaction.locking
+
+    owner = (ROOT / "app/services/team_inbox_contact_links.py").read_text(
+        encoding="utf-8"
+    )
+    coordinator = (ROOT / "app/services/team_inbox_commands.py").read_text(
+        encoding="utf-8"
+    )
+    admin_adapter = (ROOT / "app/web/admin/inbox.py").read_text(encoding="utf-8")
+    support_adapter = (ROOT / "app/api/support.py").read_text(encoding="utf-8")
+
+    assert "class LinkConversationContactCommand" in owner
+    assert "pg_advisory_xact_lock" in owner
+    assert '"team_inbox.contact_link_changed.v1"' in owner
+    assert "command: LinkContactCommand" in coordinator
+    assert "team_inbox_commands.link_contact(" in admin_adapter
+    assert "team_inbox_commands.link_contact(" in support_adapter
+    assert "link_conversation_contact_by_id_committed(" not in admin_adapter
+    assert "link_conversation_contact_by_id_committed(" not in support_adapter
+
+
 def test_routing_owner_contracts_signed_in_agent_presence() -> None:
     service = service_relationship("communications.team_inbox_routing")
     assert service.contract is not None
@@ -90,6 +138,42 @@ def test_routing_owner_contracts_signed_in_agent_presence() -> None:
     assert "agent_availability_snapshots(" in projection
 
 
+def test_queue_correctness_contracts_are_explicit_and_provider_preflighted() -> None:
+    routing = service_relationship("communications.team_inbox_routing")
+    notifications = service_relationship(
+        "communications.team_inbox_queue_notifications"
+    )
+    assert {
+        "strict per-team FIFO head serialization",
+        "current customer-visible queue position projection",
+        "global per-agent active assignment capacity enforcement",
+    } <= set(routing.owns)
+    assert {
+        "queue notification lifecycle deduplication and suppression",
+        "queue notification provider-dispatch validity decision",
+    } <= set(notifications.owns)
+
+    assignment = (ROOT / "app/services/team_inbox_assignment.py").read_text(
+        encoding="utf-8"
+    )
+    notification_owner = (
+        ROOT / "app/services/team_inbox_queue_notifications.py"
+    ).read_text(encoding="utf-8")
+    delivery_adapter = (ROOT / "app/tasks/notifications.py").read_text(encoding="utf-8")
+    assert "def _lock_agent_capacity(" in assignment
+    assert "def _try_lock_team(" in assignment
+    assert "queue-position:{entry.id}:{lifecycle}:{position}" in notification_owner
+    assert "preflight_queue_notification_delivery(" in delivery_adapter
+
+    assignment_constructors = []
+    for path in (ROOT / "app").rglob("*.py"):
+        if path == ROOT / "app/models/team_inbox.py":
+            continue
+        if "InboxConversationAssignment(" in path.read_text(encoding="utf-8"):
+            assignment_constructors.append(path.relative_to(ROOT).as_posix())
+    assert assignment_constructors == ["app/services/team_inbox_assignment.py"]
+
+
 def test_legacy_catch_all_is_retired() -> None:
     baseline = (
         ROOT / "tests/architecture/sot_manifest_legacy_baseline.txt"
@@ -111,6 +195,46 @@ def test_admin_route_delegates_query_contract_and_transactions() -> None:
     assert "get_conversation_projection" in route
     assert ".commit(" not in route
     assert ".rollback(" not in route
+
+
+def test_representative_customer_path_is_conversation_scoped() -> None:
+    contact_owner = (ROOT / "app/services/team_inbox_contact_links.py").read_text(
+        encoding="utf-8"
+    )
+    start = contact_owner.index("def associate_represented_customer(")
+    end = contact_owner.index("\ndef bind_contact_link_party_contact_point(", start)
+    representative_path = contact_owner[start:end]
+    coordinator = (ROOT / "app/services/team_inbox_commands.py").read_text(
+        encoding="utf-8"
+    )
+    model = (ROOT / "app/models/team_inbox.py").read_text(encoding="utf-8")
+    template = (ROOT / "templates/admin/inbox/_authoritative_context.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'representative = "representative"' in model
+    assert "AssociateRepresentedCustomerCommand" in representative_path
+    assert "team_inbox_participants.mark_representative(" in representative_path
+    assert "conversation.subscriber_id = subscriber.id" in representative_path
+    assert "InboxContactLink(" not in representative_path
+    assert "link_conversation_contact(" not in representative_path
+    assert "historical_rows" not in representative_path
+    assert "command: LinkRepresentedCustomerCommand" in coordinator
+    assert "command: LinkRepresentedLeadCommand" in coordinator
+    assert "conversation_lead_relationships.link_conversation_lead_participant(" in (
+        coordinator
+    )
+    assert 'action="inbox_represented_customer_selected"' in coordinator
+    assert (
+        'action="/admin/inbox/{{ contact_context.conversation_id }}/represented-customer"'
+        in template
+    )
+    assert (
+        'action="/admin/inbox/{{ contact_context.conversation_id }}/represented-lead"'
+        in template
+    )
+    assert 'data-typeahead-url="/api/v1/search/subscribers"' in template
+    assert 'data-typeahead-url="/admin/inbox/search/leads"' in template
 
 
 def test_projection_owns_response_cohorts_from_authoritative_inputs() -> None:

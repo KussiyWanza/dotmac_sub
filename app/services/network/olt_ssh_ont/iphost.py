@@ -9,12 +9,15 @@ from collections import defaultdict
 from paramiko.ssh_exception import SSHException
 
 from app.models.network import OLTDevice
-from app.services.network.huawei_cli_response import describe_huawei_rejection
+from app.services.network.huawei_cli_response import (
+    HuaweiCliErrorCode,
+    describe_huawei_rejection,
+)
 from app.services.network.olt_ssh_ont._common import (
     _SSH_CONNECTION_ERRORS,
     OntIphostConfig,
     OntIphostResult,
-    _run_ont_config_command,
+    _run_ont_config_command_outcome,
     invalid_fsp_message,
 )
 from app.services.network.olt_validators import (
@@ -388,12 +391,15 @@ def clear_ont_ipconfig(
     """Best-effort removal of ONT IP configuration for a given IP index."""
     parts = canonical_fsp(fsp)
     port_num = parts.port if parts else "0"
-    return _run_ont_config_command(
+    outcome = _run_ont_config_command_outcome(
         olt,
         fsp,
         f"undo ont ipconfig {port_num} {ont_id} ip-index {ip_index}",
         success_message=f"ONT ipconfig cleared for ip-index {ip_index}",
     )
+    if outcome.code is HuaweiCliErrorCode.IP_INTERFACE_NOT_EXIST:
+        return True, f"ONT ipconfig already absent for ip-index {ip_index}"
+    return outcome.succeeded, outcome.message
 
 
 def get_ont_iphost_config(

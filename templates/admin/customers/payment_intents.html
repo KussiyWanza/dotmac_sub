@@ -30,12 +30,27 @@
                 {% if intent.stored_status == 'pending' and intent.status == 'expired' %}
                 <p class="mt-5 text-xs text-slate-500">Stored legacy status: <span class="font-semibold">{{ intent.stored_status }}</span>; authoritative projection: <span class="font-semibold">{{ intent.status_label }}</span>.</p>
                 {% endif %}
-                {% if can_cancel and intent.can_cancel %}
-                <form method="post" action="/admin/customers/person/{{ customer.id }}/payment-intents/{{ intent.id }}/cancel" class="mt-5 flex flex-col gap-3 border-t border-slate-100 pt-5 sm:flex-row dark:border-slate-700" onsubmit="return confirm('Cancel this pending payment intent?');">
-                    {% include "components/forms/csrf_input.html" %}
-                    <input name="reason" required maxlength="500" placeholder="Reason for cancellation" class="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900">
-                    <button type="submit" class="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700">Cancel intent</button>
-                </form>
+                {% set cancellation = intent.cancellation_action %}
+                {% if cancellation and cancel_permissions.get(cancellation.kind.value, false) %}
+                <section class="mt-5 border-t border-slate-100 pt-5 dark:border-slate-700" aria-labelledby="cancel-intent-{{ intent.id }}">
+                    <div class="flex flex-col gap-3 rounded-xl border border-red-200 bg-red-50 p-4 dark:border-red-900/60 dark:bg-red-950/30">
+                        <div class="min-w-0">
+                            <h2 id="cancel-intent-{{ intent.id }}" class="text-sm font-semibold text-red-900 dark:text-red-100">{{ cancellation.label }}</h2>
+                            <p id="cancel-impact-{{ intent.id }}" class="mt-1 max-w-3xl text-sm leading-6 text-red-800 dark:text-red-200">{{ cancellation.impact }}</p>
+                            {% if cancellation.proof_id %}
+                            <a href="/admin/billing/payment-proofs/{{ cancellation.proof_id }}" class="mt-2 inline-flex min-h-11 items-center text-sm font-semibold text-red-800 underline decoration-red-300 underline-offset-4 hover:text-red-950 focus:outline-none focus:ring-2 focus:ring-red-600 focus:ring-offset-2 dark:text-red-200 dark:hover:text-white">Review transfer proof</a>
+                            {% endif %}
+                        </div>
+                        <form method="post" action="/admin/customers/person/{{ customer.id }}/payment-intents/{{ intent.id }}/cancel" class="flex flex-col gap-3 sm:flex-row sm:items-end" onsubmit="return confirm('{{ cancellation.confirmation_message }}');">
+                            {% include "components/forms/csrf_input.html" %}
+                            <div class="min-w-0 flex-1">
+                                <label for="cancel-reason-{{ intent.id }}" class="block text-sm font-semibold text-red-900 dark:text-red-100">{{ cancellation.reason_label }}</label>
+                                <input id="cancel-reason-{{ intent.id }}" name="reason" required maxlength="500" aria-describedby="cancel-impact-{{ intent.id }}" placeholder="{{ cancellation.reason_placeholder }}" class="mt-1 min-h-11 w-full rounded-lg border border-red-300 bg-white px-3 py-2 text-base text-slate-900 placeholder:text-slate-500 focus:border-red-600 focus:outline-none focus:ring-2 focus:ring-red-600/25 sm:text-sm dark:border-red-800 dark:bg-slate-900 dark:text-white dark:placeholder:text-slate-400">
+                            </div>
+                            <button type="submit" class="inline-flex min-h-11 items-center justify-center rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-600 focus:ring-offset-2 dark:focus:ring-offset-slate-800">{{ cancellation.label }}</button>
+                        </form>
+                    </div>
+                </section>
                 {% endif %}
             </div>
         </details>

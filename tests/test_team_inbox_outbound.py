@@ -4,16 +4,20 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from app.api import support as support_api
+from app.models.ai_intake import AiIntakeSession
 from app.models.notification import (
     CommunicationIntentRecord,
     Notification,
     NotificationChannel,
+    NotificationDelivery,
     NotificationStatus,
 )
-from app.models.service_team import ServiceTeam, ServiceTeamType
+from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
 from app.models.subscriber import Subscriber, SubscriberStatus
 from app.models.subscription_engine import SettingValueType
 from app.models.team_inbox import (
+    InboxAgentPresence,
+    InboxAgentPresenceStatus,
     InboxChannelType,
     InboxConversation,
     InboxConversationStatus,
@@ -35,6 +39,7 @@ from app.services import (
 )
 from app.services.domain_settings import notification_settings
 from app.tasks import notifications as notification_tasks
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 
 def _smtp_sender(db_session, key: str, *, from_email: str) -> None:
@@ -69,6 +74,35 @@ def _team(db_session, name: str, team_type: str) -> ServiceTeam:
     db_session.add(team)
     db_session.flush()
     return team
+
+
+def _eligible_reply_actor(db_session, conversation: InboxConversation):
+    team = (
+        db_session.get(ServiceTeam, conversation.primary_service_team_id)
+        if conversation.primary_service_team_id is not None
+        else None
+    )
+    if team is None:
+        team = _team(
+            db_session,
+            f"Reply Team {uuid4().hex[:10]}",
+            ServiceTeamType.support.value,
+        )
+        conversation.primary_service_team_id = team.id
+    user, person = add_bound_staff_user(db_session)
+    db_session.add_all(
+        [
+            ServiceTeamMember(team_id=team.id, person_id=person.id),
+            InboxAgentPresence(
+                person_id=user.id,
+                status=InboxAgentPresenceStatus.online.value,
+                manual_override_status=InboxAgentPresenceStatus.online.value,
+                last_seen_at=datetime.now(UTC),
+            ),
+        ]
+    )
+    db_session.flush()
+    return user.id
 
 
 def _conversation(db_session, team: ServiceTeam) -> InboxConversation:
@@ -777,6 +811,7 @@ def test_direct_whatsapp_template_reply_uses_approved_template_validation(
     monkeypatch,
 ):
     conversation = _whatsapp_conversation(db_session)
+    actor_id = _eligible_reply_actor(db_session, conversation)
 
     from app.services.integrations import whatsapp_capability
 
@@ -798,7 +833,7 @@ def test_direct_whatsapp_template_reply_uses_approved_template_validation(
         command=team_inbox_commands.ReplyCommand(
             conversation_id=conversation.id,
             body_text="",
-            actor_person_id=uuid4(),
+            actor_person_id=actor_id,
             whatsapp_template_name="service_update",
             whatsapp_template_language="en",
             whatsapp_template_components=(),
@@ -909,6 +944,125 @@ def test_whatsapp_notification_delivers_inbox_attachment_as_media(
     assert message is not None
     assert message.external_message_id == "wamid.media"
     assert message.metadata_["provider_message_ids"] == ["wamid.media"]
+
+
+def test_instagram_notification_uploads_attachment_and_checkpoints_each_leg(
+    db_session, monkeypatch
+):
+    from app.services.integrations import meta_social_capability
+    from app.services.integrations.meta_social_contracts import (
+        MetaDirectMessageOutcome,
+        MetaMessageAttachmentType,
+    )
+
+    conversation = InboxConversation(
+        channel_type=InboxChannelType.instagram_dm.value,
+        subject="Instagram support",
+        contact_address="customer-ig",
+        external_thread_id="instagram_dm:customer-ig",
+        status=InboxConversationStatus.open.value,
+    )
+    db_session.add(conversation)
+    db_session.flush()
+    db_session.add(
+        InboxMessage(
+            conversation_id=conversation.id,
+            channel_type=InboxChannelType.instagram_dm.value,
+            direction=InboxMessageDirection.inbound.value,
+            body="Can you show me?",
+            external_message_id="inbound-instagram-1",
+            received_at=datetime.now(UTC),
+            metadata_={"provider_account_scope": "ig-123"},
+        )
+    )
+    attachment_id = uuid4()
+    monkeypatch.setattr(
+        notification_tasks.team_inbox_media,
+        "resolve_delivery_attachments",
+        lambda *_args, **_kwargs: (
+            team_inbox_media.InboxDeliveryAttachment(
+                asset_id=attachment_id,
+                filename="router.jpg",
+                content_type="image/jpeg",
+                content=b"jpeg-bytes",
+                asset_type="image",
+            ),
+        ),
+    )
+    calls = []
+
+    def send_direct_message(_db, command):
+        calls.append(command)
+        if command.attachment is not None:
+            return MetaDirectMessageOutcome(
+                accepted=True,
+                operation_status="succeeded",
+                provider_message_id="mid-instagram-media",
+                provider_attachment_id="meta-attachment-1",
+            )
+        return MetaDirectMessageOutcome(
+            accepted=True,
+            operation_status="succeeded",
+            provider_message_id="mid-instagram-text",
+        )
+
+    monkeypatch.setattr(
+        meta_social_capability,
+        "send_direct_message",
+        send_direct_message,
+    )
+    db_session.commit()
+
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>Photo attached.</p>",
+            body_text="Photo attached.",
+            metadata={"inbox_attachment_ids": [str(attachment_id)]},
+        ),
+    )
+    notification_tasks._deliver_notification_queue_stats(
+        db_session, notification_id=result.notification_id
+    )
+
+    message = db_session.get(InboxMessage, result.message_id)
+    notification = db_session.get(Notification, result.notification_id)
+    assert len(calls) == 2
+    assert calls[0].attachment is not None
+    assert calls[0].attachment.attachment_type is MetaMessageAttachmentType.image
+    assert calls[0].attachment.content == b"jpeg-bytes"
+    assert calls[1].body == "Photo attached."
+    assert message is not None
+    assert message.external_message_id == "mid-instagram-text"
+    assert message.metadata_["provider_message_ids"] == [
+        "mid-instagram-media",
+        "mid-instagram-text",
+    ]
+    assert message.metadata_["provider_attachment_ids"] == {
+        str(attachment_id): "meta-attachment-1"
+    }
+    completed_legs = {
+        row.response_code
+        for row in db_session.query(NotificationDelivery)
+        .filter(NotificationDelivery.notification_id == result.notification_id)
+        .all()
+    }
+    assert f"attachment:{attachment_id}" in completed_legs
+    assert "text" in completed_legs
+
+    assert notification is not None
+    notification.status = NotificationStatus.failed
+    notification.retry_count = 0
+    notification.send_at = None
+    notification.sent_at = None
+    db_session.commit()
+    notification_tasks._deliver_notification_queue_stats(
+        db_session, notification_id=notification.id
+    )
+
+    assert len(calls) == 2
+    assert notification.status == NotificationStatus.delivered
 
 
 def _social_comment_conversation(
@@ -1067,6 +1221,7 @@ def test_facebook_targeted_comment_reply_dispatches_exact_page_and_comment(
         account_key="page_id",
         account_id="page-123",
     )
+    actor_id = _eligible_reply_actor(db_session, conversation)
     target = (
         db_session.query(InboxMessage)
         .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
@@ -1105,7 +1260,7 @@ def test_facebook_targeted_comment_reply_dispatches_exact_page_and_comment(
         command=team_inbox_commands.ReplyCommand(
             conversation_id=conversation.id,
             body_text="Replying publicly.",
-            actor_person_id=uuid4(),
+            actor_person_id=actor_id,
             reply_to_message_id=target.id,
             idempotency_key="facebook-public-comment-reply",
         ),
@@ -1141,6 +1296,7 @@ def test_instagram_targeted_comment_reply_dispatches_exact_account_and_comment(
         account_key="instagram_account_id",
         account_id="ig-123",
     )
+    actor_id = _eligible_reply_actor(db_session, conversation)
     target = (
         db_session.query(InboxMessage)
         .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
@@ -1181,7 +1337,7 @@ def test_instagram_targeted_comment_reply_dispatches_exact_account_and_comment(
         command=team_inbox_commands.ReplyCommand(
             conversation_id=conversation.id,
             body_text="Instagram public reply.",
-            actor_person_id=uuid4(),
+            actor_person_id=actor_id,
             reply_to_message_id=target.id,
             idempotency_key="instagram-public-comment-reply",
         ),
@@ -1392,6 +1548,16 @@ def test_meta_direct_intake_followups_use_normal_outbound_dispatcher(
         )
         db_session.add(inbound)
         db_session.flush()
+        session = AiIntakeSession(
+            conversation_id=conversation.id,
+            state="collecting_intent",
+            channel_type=channel_type,
+            provider="meta",
+            account_scope=account_id,
+            metadata_={},
+        )
+        db_session.add(session)
+        db_session.flush()
 
         queued = team_inbox_outbound.send_ai_intake_follow_up(
             db_session,
@@ -1400,6 +1566,7 @@ def test_meta_direct_intake_followups_use_normal_outbound_dispatcher(
                 question=GENERIC_FOLLOW_UP_QUESTION,
                 inbound_message_id=inbound.id,
                 config_id=uuid4(),
+                session_id=session.id,
                 follow_up_count=1,
             ),
         )

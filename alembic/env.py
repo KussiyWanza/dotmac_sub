@@ -6,7 +6,11 @@ from sqlalchemy import Column, MetaData, String, Table, engine_from_config, pool
 
 from alembic import context
 from app.config import settings
-from app.db import Base, resolve_migration_lock_timeout
+from app.db import (
+    Base,
+    apply_migration_idle_transaction_timeout,
+    resolve_migration_lock_timeout,
+)
 from app.migration_bindings import (
     ASSEMBLY_MODULE_PLANES,
     ASSEMBLY_PREREQUISITE_BINDINGS,
@@ -149,6 +153,27 @@ def _set_migration_lock_timeout(connection) -> None:
     )
 
 
+def _set_migration_idle_transaction_timeout(connection) -> None:
+    """Bound how long this connection may sit idle-in-transaction with no
+    query activity, so Postgres's ``idle_in_transaction_session_timeout``
+    cannot kill it while ``context.run_migrations()`` loads, imports and
+    topologically sorts every file under ``alembic/versions/`` (632+ and
+    growing) BEFORE the first real migration statement runs — pure Python
+    work with zero DB activity (the 2026-09-09 failed-deploy incident: the
+    connection was terminated on the very first schema-reflection query of
+    the first pending migration, before any real migration ran; the deploy's
+    own rollback fired correctly and production was never touched, but the
+    release couldn't complete). Bounds idle time between statements, NOT
+    total transaction duration, so a long-running data migration that is
+    actually executing statements is unaffected. Postgres only — SQLite (the
+    test DB) has no such setting. Override via
+    ``ALEMBIC_IDLE_TRANSACTION_TIMEOUT`` (e.g. ``0`` to disable). See
+    ``app.db.apply_migration_idle_transaction_timeout`` for the actual
+    ``SET`` and why it is session-level rather than ``SET LOCAL`` here.
+    """
+    apply_migration_idle_transaction_timeout(connection)
+
+
 def run_migrations_online() -> None:
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
@@ -159,6 +184,7 @@ def run_migrations_online() -> None:
     with connectable.connect() as connection:
         ensure_alembic_version_table(connection)
         _set_migration_lock_timeout(connection)
+        _set_migration_idle_transaction_timeout(connection)
         connection.commit()
 
         context.configure(

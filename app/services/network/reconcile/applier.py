@@ -342,6 +342,8 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
         case OltAuthorize():
             _refuse_unset(
                 action,
+                ("olt_ont_id", action.ont_id),
+                ("fsp", action.fsp),
                 ("line_profile_id", action.line_profile_id),
                 ("service_profile_id", action.service_profile_id),
             )
@@ -363,6 +365,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             )
 
         case OltModifyDescription():
+            _refuse_unset(action, ("olt_ont_id", action.ont_id), ("fsp", action.fsp))
             result = ctx.olt_adapter.set_ont_description(
                 action.fsp,
                 action.ont_id,
@@ -379,7 +382,12 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             )
 
         case OltModifyLineProfile():
-            _refuse_unset(action, ("line_profile_id", action.line_profile_id))
+            _refuse_unset(
+                action,
+                ("olt_ont_id", action.ont_id),
+                ("fsp", action.fsp),
+                ("line_profile_id", action.line_profile_id),
+            )
             result = ctx.olt_adapter.update_ont_profiles(
                 action.fsp,
                 action.ont_id,
@@ -396,7 +404,12 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             )
 
         case OltModifyServiceProfile():
-            _refuse_unset(action, ("service_profile_id", action.service_profile_id))
+            _refuse_unset(
+                action,
+                ("olt_ont_id", action.ont_id),
+                ("fsp", action.fsp),
+                ("service_profile_id", action.service_profile_id),
+            )
             result = ctx.olt_adapter.update_ont_profiles(
                 action.fsp,
                 action.ont_id,
@@ -413,6 +426,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             )
 
         case OltClearIphost():
+            _refuse_unset(action, ("olt_ont_id", action.ont_id), ("fsp", action.fsp))
             result = ctx.olt_adapter.clear_iphost_config(
                 action.fsp,
                 action.ont_id,
@@ -429,6 +443,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             )
 
         case OltIpconfig():
+            _refuse_unset(action, ("olt_ont_id", action.ont_id), ("fsp", action.fsp))
             result = ctx.olt_adapter.configure_iphost(
                 action.fsp,
                 action.ont_id,
@@ -451,7 +466,12 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             )
 
         case OltTr069ServerConfig():
-            _refuse_unset(action, ("tr069_profile_id", action.profile_id))
+            _refuse_unset(
+                action,
+                ("olt_ont_id", action.ont_id),
+                ("fsp", action.fsp),
+                ("tr069_profile_id", action.profile_id),
+            )
             result = ctx.olt_adapter.bind_tr069_profile(
                 action.fsp,
                 action.ont_id,
@@ -470,6 +490,8 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
         case OltCreateServicePort():
             _refuse_unset(
                 action,
+                ("olt_ont_id", action.ont_id),
+                ("fsp", action.fsp),
                 *(("wan_vlan", action.vlan),) if action.slot == "wan" else (),
             )
             result = ctx.olt_adapter.create_service_port(
@@ -503,7 +525,12 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             )
 
         case OltOmciPppoe():
-            _refuse_unset(action, ("wan_vlan", action.vlan))
+            _refuse_unset(
+                action,
+                ("olt_ont_id", action.ont_id),
+                ("fsp", action.fsp),
+                ("wan_vlan", action.vlan),
+            )
             password = _resolve_or_fail(ctx, action, action.password_ref)
             result = ctx.olt_adapter.configure_pppoe(
                 action.fsp,
@@ -524,6 +551,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             )
 
         case OltOmciInternetConfig():
+            _refuse_unset(action, ("olt_ont_id", action.ont_id), ("fsp", action.fsp))
             result = ctx.olt_adapter.configure_internet_config(
                 action.fsp,
                 action.ont_id,
@@ -540,6 +568,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             )
 
         case OltOmciWanConfig():
+            _refuse_unset(action, ("olt_ont_id", action.ont_id), ("fsp", action.fsp))
             result = ctx.olt_adapter.configure_wan_config(
                 action.fsp,
                 action.ont_id,
@@ -557,6 +586,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             )
 
         case OltReset():
+            _refuse_unset(action, ("olt_ont_id", action.ont_id), ("fsp", action.fsp))
             result = ctx.olt_adapter.reboot_ont(action.fsp, action.ont_id)
             evidence = _olt_check(action, result)
             return _ok(
@@ -653,7 +683,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             _refuse_unset(action, ("wifi_password_ref", action.password_ref))
             password = _resolve_or_fail(ctx, action, action.password_ref)
             params = {
-                "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.KeyPassphrase": password
+                "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.PreSharedKey": password
             }
             _acs_set(action, ctx, params)
             # Don't include the password in the AppliedAction — log the field name only.
@@ -676,6 +706,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             )
             wifi_params: dict[str, object] = {}
             changed: list[str] = []
+            password_target_count = 0
             if action.enabled is not None:
                 wifi_params[action.paths.enabled] = action.enabled
                 changed.append("wifi_enabled")
@@ -689,9 +720,15 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
                 wifi_params[action.paths.security_mode] = action.security_mode
                 changed.append("wifi_security_mode")
             if action.password_ref is not None:
-                wifi_params[action.paths.psk_path] = _resolve_or_fail(
-                    ctx, action, action.password_ref
+                password = _resolve_or_fail(ctx, action, action.password_ref)
+                psk_paths = tuple(
+                    dict.fromkeys(
+                        (action.paths.psk_path, *action.paths.additional_psk_paths)
+                    )
                 )
+                for psk_path in psk_paths:
+                    wifi_params[psk_path] = password
+                password_target_count = len(psk_paths)
                 changed.append("wifi_password_ref")
             if not wifi_params:
                 raise ApplyError(
@@ -706,7 +743,10 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
                 None,
                 ",".join(changed),
                 started,
-                evidence={"changed_fields": changed},
+                evidence={
+                    "changed_fields": changed,
+                    "password_target_count": password_target_count,
+                },
             )
 
         case AcsSetRemoteAccess():

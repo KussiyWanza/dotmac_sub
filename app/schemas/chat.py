@@ -3,9 +3,32 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, HttpUrl, field_validator
+
+
+class WidgetSurface(StrEnum):
+    """Stable native chat surfaces used for thread identity and policy scope."""
+
+    customer = "customer"
+    customer_mobile = "customer_mobile"
+    reseller_portal = "reseller_portal"
+    reseller_mobile = "reseller_mobile"
+    fiber_website = "fiber_website"
+
+
+CUSTOMER_WIDGET_SURFACES = frozenset(
+    {WidgetSurface.customer, WidgetSurface.customer_mobile}
+)
+RESELLER_WIDGET_SURFACES = frozenset(
+    {WidgetSurface.reseller_portal, WidgetSurface.reseller_mobile}
+)
+NATIVE_WIDGET_SURFACES = CUSTOMER_WIDGET_SURFACES | RESELLER_WIDGET_SURFACES
+NATIVE_WIDGET_SURFACE_VALUES = frozenset(
+    surface.value for surface in NATIVE_WIDGET_SURFACES
+)
 
 
 class FiberChatSessionCreate(BaseModel):

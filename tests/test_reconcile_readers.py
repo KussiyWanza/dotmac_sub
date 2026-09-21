@@ -174,6 +174,144 @@ def test_olt_reader_returns_clean_absent_when_ont_not_registered(monkeypatch):
     assert result.observed.olt_match_state is None
 
 
+def test_serial_found_on_a_different_port_is_not_an_observation(monkeypatch):
+    """The registration found by serial sits at a DIFFERENT fsp/onu_id than
+    the desired-state target — Astra Bug 1. The reader must not read/write
+    against either the stored (unproven) or the found (unrequested)
+    coordinates; ``get_ont_status``/``get_ont_info_detail`` must never be
+    called with either pair.
+    """
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        "app.services.network.reconcile.readers.olt_reader.get_ont_status",
+        lambda olt, fsp, ont_id: (
+            calls.append(("status", fsp, ont_id))
+            or (
+                False,
+                "should not be called",
+                None,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.network.reconcile.readers.olt_reader.get_ont_info_detail",
+        lambda olt, fsp, ont_id: (
+            calls.append(("detail", fsp, ont_id))
+            or (
+                False,
+                "should not be called",
+                None,
+            )
+        ),
+    )
+    # Desired target is fsp=0/1/3, olt_ont_id=11; registration found at a
+    # different port entirely.
+    adapter = _StubAdapter(
+        find_success=True,
+        registration=SimpleNamespace(fsp="0/2/7", onu_id=44),
+    )
+    result = read_olt_state(adapter, _desired())
+
+    # status="unavailable" — NOT "present" — so this can never flow into
+    # upsert_ont_observation and overwrite the last genuine OLT evidence
+    # with a null placeholder while stamping a fresh olt_observed_at. A
+    # "present" result here was the exact re-opened hazard an earlier
+    # version of this fix had: the observed fields all being None doesn't
+    # stop `_surfaces_observed` from treating "present" as a trustworthy
+    # OLT read.
+    assert result.success is False
+    assert result.unreachable is False
+    assert result.observed is None
+    assert result.identity_status == "mismatch"
+    # No per-ONT query was ever attempted against either coordinate pair.
+    assert calls == []
+
+
+def test_unresolved_target_with_a_found_registration_is_not_an_observation(
+    monkeypatch,
+):
+    """The desired state has no fsp/olt_ont_id target at all (unparseable
+    ``external_id``), yet the OLT has this serial registered somewhere. There
+    is nothing to compare the registration against, so this is "unresolved",
+    not a silent pass-through to whatever the registration reports."""
+    adapter = _StubAdapter(
+        find_success=True,
+        registration=SimpleNamespace(fsp="0/2/7", onu_id=44),
+    )
+    result = read_olt_state(adapter, _desired(olt_ont_id=None))
+
+    assert result.success is False
+    assert result.unreachable is False
+    assert result.observed is None
+    assert result.identity_status == "unresolved"
+
+
+def test_matching_fsp_and_onu_id_is_bound_and_reads_normally(monkeypatch):
+    """The registration found by serial matches the stored target exactly —
+    the paired positive to the mismatch test above. Confirms the identity
+    check itself doesn't false-positive on a genuinely correct binding."""
+    adapter = _StubAdapter(
+        find_success=True,
+        registration=SimpleNamespace(fsp="0/1/3", onu_id=11),
+    )
+    monkeypatch.setattr(
+        "app.services.network.reconcile.readers.olt_reader.get_ont_status",
+        lambda olt, fsp, ont_id: (
+            True,
+            "ok",
+            SimpleNamespace(
+                serial_number="HWTC8535819A",
+                run_state="online",
+                match_state="match",
+                config_state="normal",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.network.reconcile.readers.olt_reader.get_ont_info_detail",
+        lambda olt, fsp, ont_id: (True, "ok", {}),
+    )
+    result = read_olt_state(adapter, _desired())
+
+    assert result.success is True
+    assert result.observed.olt_identity_status == "bound"
+    assert result.observed.olt_present is True
+    assert result.observed.olt_run_state == "online"
+
+
+def test_unknown_ont_id_never_becomes_zero(monkeypatch):
+    """A real ONT-ID of 0 is legitimate on Huawei OLTs and must reconcile
+    exactly like any other ONT-ID — it must never be confused with "unknown".
+    Paired negative for the ``or 0`` regression: 0 stays 0, and the reader
+    treats it as bound when the registration agrees."""
+    adapter = _StubAdapter(
+        find_success=True,
+        registration=SimpleNamespace(fsp="0/1/3", onu_id=0),
+    )
+    monkeypatch.setattr(
+        "app.services.network.reconcile.readers.olt_reader.get_ont_status",
+        lambda olt, fsp, ont_id: (
+            True,
+            "ok",
+            SimpleNamespace(
+                serial_number="HWTC8535819A",
+                run_state="online",
+                match_state="match",
+                config_state="normal",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.network.reconcile.readers.olt_reader.get_ont_info_detail",
+        lambda olt, fsp, ont_id: (True, "ok", {}),
+    )
+    result = read_olt_state(adapter, _desired(olt_ont_id=0))
+
+    assert result.success is True
+    assert result.observed.olt_identity_status == "bound"
+    assert result.observed.olt_present is True
+
+
 def test_olt_reader_returns_failure_when_olt_command_errored(monkeypatch):
     adapter = _StubAdapter(
         find_success=False,
@@ -607,9 +745,13 @@ def test_olt_reader_populates_service_ports_from_get_service_ports_for_ont(
     assert isinstance(result.observed.olt_service_ports, tuple)
 
 
-def test_olt_reader_service_ports_empty_on_failure(monkeypatch):
-    """SSH failure on service-port read leaves olt_service_ports as ()
-    without failing the whole read."""
+def test_service_port_read_failure_is_not_an_empty_port_list(monkeypatch):
+    """SSH failure on service-port read must leave ``olt_service_ports`` as
+    ``None`` (unknown), never ``()`` (Astra Bug 2 follow-on). Conflating "the
+    read failed" with "confirmed zero ports" previously planned a CREATE
+    against an index that may already hold a live port, and protected every
+    genuinely stale port from deletion — an empty list looks exactly like a
+    clean sweep to the planner."""
     adapter = _StubAdapter(
         find_success=True,
         registration=SimpleNamespace(fsp="0/1/3", onu_id=11),
@@ -634,6 +776,40 @@ def test_olt_reader_service_ports_empty_on_failure(monkeypatch):
     monkeypatch.setattr(
         "app.services.network.reconcile.readers.olt_reader.get_service_ports_for_ont",
         lambda *_a, **_k: (False, "SSH error", []),
+    )
+    result = read_olt_state(adapter, _desired())
+    assert result.success is True
+    assert result.observed.olt_service_ports is None
+
+
+def test_olt_reader_service_ports_genuinely_empty_stays_an_empty_tuple(monkeypatch):
+    """The paired negative: a SUCCESSFUL read that finds no ports is a real
+    ``()``, not ``None`` — the two must stay distinguishable in both
+    directions."""
+    adapter = _StubAdapter(
+        find_success=True,
+        registration=SimpleNamespace(fsp="0/1/3", onu_id=11),
+    )
+    monkeypatch.setattr(
+        "app.services.network.reconcile.readers.olt_reader.get_ont_status",
+        lambda *_a, **_k: (
+            True,
+            "ok",
+            SimpleNamespace(
+                serial_number="x",
+                run_state="online",
+                match_state="match",
+                config_state="normal",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.network.reconcile.readers.olt_reader.get_ont_info_detail",
+        lambda *_a, **_k: (True, "ok", {}),
+    )
+    monkeypatch.setattr(
+        "app.services.network.reconcile.readers.olt_reader.get_service_ports_for_ont",
+        lambda *_a, **_k: (True, "ok", []),
     )
     result = read_olt_state(adapter, _desired())
     assert result.success is True
@@ -674,7 +850,9 @@ def test_olt_reader_catches_service_ports_exception(monkeypatch):
     )
     result = read_olt_state(adapter, _desired())
     assert result.success is True
-    assert result.observed.olt_service_ports == ()
+    # Not () — the port set is unknown after an exception, not confirmed
+    # empty. See ``test_service_port_read_failure_is_not_an_empty_port_list``.
+    assert result.observed.olt_service_ports is None
 
 
 def test_olt_reader_catches_optical_exception(monkeypatch):

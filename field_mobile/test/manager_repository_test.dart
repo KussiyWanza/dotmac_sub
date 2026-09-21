@@ -55,4 +55,43 @@ void main() {
     expect(outcome.id, 'queue-1');
     expect(outcome.status, 'skipped');
   });
+
+  test(
+    'fetchTechnicianLocationDetail reads the typed address detail',
+    () async {
+      adapter.on(
+        'GET',
+        '/api/v1/field/manager/team-map/tech-1/location-detail',
+        (options) {
+          return (
+            200,
+            {
+              'position': {
+                'technician_id': 'tech-1',
+                'person_id': 'person-1',
+                'label': 'Ada Technician',
+                'status': 'on_shift',
+                'latitude': 6.5244,
+                'longitude': 3.3792,
+                'accuracy_m': 8,
+                'last_location_at': '2026-09-10T10:00:00Z',
+                'is_live': true,
+              },
+              'address_text': 'Marina Road, Lagos',
+              'address_status': 'available',
+            },
+          );
+        },
+      );
+
+      final detail = await container
+          .read(managerRepositoryProvider)
+          .fetchTechnicianLocationDetail(technicianId: 'tech-1');
+
+      expect(detail.position.technicianId, 'tech-1');
+      expect(detail.position.latitude, 6.5244);
+      expect(detail.addressText, 'Marina Road, Lagos');
+      expect(detail.addressStatus, ManagerLocationAddressStatus.available);
+    },
+  );
 }

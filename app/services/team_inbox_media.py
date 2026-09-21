@@ -682,6 +682,16 @@ def validate_staged_asset_ids(
         raise MediaUploadError(
             "One or more attachments are unavailable. Remove them and upload again."
         )
+    unsupported_instagram = [
+        row
+        for row in rows
+        if row.channel_type == "instagram_dm"
+        and row.asset_type not in {"image", "audio", "video"}
+    ]
+    if unsupported_instagram:
+        raise MediaUploadError(
+            "Instagram supports image, audio, and video attachments only."
+        )
     return tuple(str(asset_id) for asset_id in requested)
 
 

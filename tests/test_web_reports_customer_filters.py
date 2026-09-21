@@ -54,13 +54,13 @@ def test_customer_report_breakdowns_scroll_only_beyond_fifteen_records():
     )
 
 
-def test_customer_growth_chart_height_is_reduced_by_forty_percent():
+def test_customer_growth_chart_uses_bounded_compact_height():
     page_template = Path("templates/admin/reports/subscribers.html").read_text(
         encoding="utf-8"
     )
 
     assert 'id="subscriber-growth-chart"' in page_template
-    assert 'style="min-height: 58.8px;"' in page_template
+    assert "height: 35.28px; min-height: 35.28px; max-height: 35.28px;" in page_template
     assert 'style="min-height: 98px;"' not in page_template
 
 
@@ -78,15 +78,16 @@ def test_matching_customers_scrolls_beyond_fifteen_and_has_page_search():
     assert 'class="h-[43.75rem] overflow-auto"' not in page_template
 
 
-def test_by_status_card_height_is_reduced_by_thirty_percent():
+def test_status_and_recent_signup_cards_use_matching_scrollable_heights():
     page_template = Path("templates/admin/reports/subscribers.html").read_text(
         encoding="utf-8"
     )
 
-    assert 'style="height: 21.7rem;"' in page_template
-    assert 'style="min-height: 126px;"' in page_template
+    assert page_template.count('style="height: 13.02rem; overflow: hidden;"') == 2
+    assert page_template.count('style="height: calc(13.02rem - 3.5625rem);"') == 2
+    assert "height: 63px; min-height: 63px; max-height: 63px;" in page_template
     assert 'style="min-height: 180px;"' not in page_template
-    assert page_template.count('class="h-[31rem] [&>div]:h-full"') == 1
+    assert 'class="h-[31rem] [&>div]:h-full"' not in page_template
 
 
 def test_customer_report_includes_usage_for_filtered_period(

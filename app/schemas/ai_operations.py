@@ -70,6 +70,7 @@ class AiIntakeConfigMetadata(BaseModel):
     approved_isp_information: str | None = Field(default=None, max_length=4000)
     intent_definitions: list[dict] | None = None
     clarification_questions: list[str] | None = None
+    allow_category_menu_clarification: bool = False
     queue_templates: dict | None = None
     conversation_templates: dict | None = None
     channel_overrides: dict | None = None

@@ -17,6 +17,7 @@ from app.models.network import (
     OLTDevice,
     OntUnit,
     OntWanServiceInstance,
+    Tr069ParameterMap,
     VendorModelCapability,
     WanConnectionType,
     WanServiceType,
@@ -34,18 +35,22 @@ from app.services.network.reconcile import (
     observed_from_ont_observation,
     upsert_ont_observation,
 )
+from tests.network_fixture_helpers import attach_test_olt_config_pack
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
 
 @pytest.fixture
-def olt(db_session):
+def olt(db_session, region):
     olt = OLTDevice(
         name="OLT-SPDC",
         mgmt_ip="172.20.100.30",
-        is_active=True,
+        is_active=False,
     )
     db_session.add(olt)
+    db_session.flush()
+    attach_test_olt_config_pack(db_session, olt=olt, region=region)
+    olt.is_active = True
     db_session.commit()
     db_session.refresh(olt)
     return olt
@@ -79,6 +84,49 @@ def test_desired_carries_identity_from_ont_unit(db_session, ont, olt):
     assert desired.olt_id == str(olt.id)
     assert desired.fsp == "0/1/3"
     assert desired.olt_ont_id == 11
+
+
+def test_unresolved_external_id_leaves_olt_ont_id_none(db_session, olt):
+    """An unparseable ``external_id`` must resolve to ``None`` (genuinely
+    unknown), never to the legitimate real ONT-ID ``0`` — Astra Bug 1's
+    ``... or 0`` idiom collapsed the two. ``None`` fails the reader's
+    identity-binding check closed rather than authorizing at ONT-ID 0."""
+    ont = OntUnit(
+        serial_number="HWTCUNPARSEABLE",
+        olt_device_id=olt.id,
+        board="0/1",
+        port="4",
+        external_id="not-a-number!",
+        is_active=True,
+        desired_config={},
+    )
+    db_session.add(ont)
+    db_session.commit()
+
+    desired = desired_from_ont_unit(db_session, ont)
+
+    assert desired.olt_ont_id is None
+
+
+def test_a_real_ont_id_of_zero_stays_zero(db_session, olt):
+    """The paired negative: a real, parseable ``external_id`` of ``0`` is a
+    legitimate ONT-ID and must reconcile exactly like any other — it must
+    never be treated as "unknown"."""
+    ont = OntUnit(
+        serial_number="HWTCZEROID",
+        olt_device_id=olt.id,
+        board="0/1",
+        port="5",
+        external_id="0",
+        is_active=True,
+        desired_config={},
+    )
+    db_session.add(ont)
+    db_session.commit()
+
+    desired = desired_from_ont_unit(db_session, ont)
+
+    assert desired.olt_ont_id == 0
 
 
 def test_desired_inherits_acs_assignment_and_interval_from_olt(db_session, ont, olt):
@@ -148,6 +196,43 @@ def test_desired_wifi_credentials_round_trip(db_session, ont):
     assert desired.wifi_security_mode == "WPA2-Personal"
     assert desired.wifi_paths is not None
     assert desired.wifi_paths.ssid.endswith("WLANConfiguration.1.SSID")
+
+
+def test_eg8145v5_capability_resolves_primary_and_secondary_psk_paths(db_session, ont):
+    capability = VendorModelCapability(
+        vendor="Huawei",
+        model="EG8145V5",
+        tr069_root="InternetGatewayDevice",
+        is_active=True,
+    )
+    db_session.add(capability)
+    db_session.flush()
+    db_session.add(
+        Tr069ParameterMap(
+            capability_id=capability.id,
+            canonical_name="wifi.psk.additional.1",
+            tr069_path=("LANDevice.1.WLANConfiguration.5.PreSharedKey.1.PreSharedKey"),
+            writable=True,
+            value_type="string",
+        )
+    )
+    ont.vendor = "Huawei"
+    ont.model = "EG8145V5"
+    ont.tr069_data_model = None
+    db_session.commit()
+
+    desired = desired_from_ont_unit(db_session, ont)
+
+    assert desired.tr069_data_model_root == "InternetGatewayDevice"
+    assert desired.wifi_paths is not None
+    assert desired.wifi_paths.psk_path == (
+        "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1."
+        "PreSharedKey.1.PreSharedKey"
+    )
+    assert desired.wifi_paths.additional_psk_paths == (
+        "InternetGatewayDevice.LANDevice.1.WLANConfiguration.5."
+        "PreSharedKey.1.PreSharedKey",
+    )
 
 
 def test_desired_remote_access_expires_closed_and_resolves_paths(db_session, ont):
@@ -475,8 +560,8 @@ def test_observed_round_trips_olt_and_acs_fields(db_session, ont):
             olt_line_profile_id=40,
             olt_service_profile_id=42,
             olt_service_ports=(
-                {"index": 22, "vlan": 203, "gem": 1, "state": "up"},
-                {"index": 23, "vlan": 201, "gem": 2, "state": "up"},
+                {"index": 22, "vlan_id": 203, "gem_index": 1, "state": "up"},
+                {"index": 23, "vlan_id": 201, "gem_index": 2, "state": "up"},
             ),
         ),
         acs=AcsObservedFields(
@@ -510,7 +595,13 @@ def test_observed_round_trips_olt_and_acs_fields(db_session, ont):
             acs_observed_wan_ppp_locations=((1, 1),),
         ),
     )
-    upsert_ont_observation(db_session, ont.id, observed)
+    upsert_ont_observation(
+        db_session,
+        ont.id,
+        observed,
+        observed_surfaces=frozenset({"olt", "acs"}),
+        olt_read_status="present",
+    )
     db_session.commit()
 
     row = db_session.get(OntObservation, _only_obs_id(db_session, ont.id))
@@ -519,7 +610,7 @@ def test_observed_round_trips_olt_and_acs_fields(db_session, ont):
     assert materialised is not None
     assert materialised.olt.olt_present is True
     assert materialised.olt.olt_description.startswith("Kolawole_Idiaro_2")
-    assert materialised.olt.olt_service_ports[0]["vlan"] == 203
+    assert materialised.olt.olt_service_ports[0]["vlan_id"] == 203
     assert materialised.acs.acs_observed_ssid == "KURSI"
     assert materialised.acs.acs_observed_wifi_enabled is True
     assert materialised.acs.acs_observed_wifi_channel == 6
@@ -582,7 +673,13 @@ def _minimal_observed(*, ssid: str = "KURSI") -> OntObservedState:
 
 
 def test_upsert_creates_a_row_on_first_call(db_session, ont):
-    upsert_ont_observation(db_session, ont.id, _minimal_observed())
+    upsert_ont_observation(
+        db_session,
+        ont.id,
+        _minimal_observed(),
+        observed_surfaces=frozenset({"olt", "acs"}),
+        olt_read_status="present",
+    )
     db_session.commit()
     obs = (
         db_session.query(OntObservation)
@@ -593,9 +690,21 @@ def test_upsert_creates_a_row_on_first_call(db_session, ont):
 
 
 def test_upsert_updates_existing_row_on_subsequent_call(db_session, ont):
-    upsert_ont_observation(db_session, ont.id, _minimal_observed(ssid="OLD"))
+    upsert_ont_observation(
+        db_session,
+        ont.id,
+        _minimal_observed(ssid="OLD"),
+        observed_surfaces=frozenset({"olt", "acs"}),
+        olt_read_status="present",
+    )
     db_session.commit()
-    upsert_ont_observation(db_session, ont.id, _minimal_observed(ssid="NEW"))
+    upsert_ont_observation(
+        db_session,
+        ont.id,
+        _minimal_observed(ssid="NEW"),
+        observed_surfaces=frozenset({"olt", "acs"}),
+        olt_read_status="present",
+    )
     db_session.commit()
 
     rows = (
@@ -607,9 +716,81 @@ def test_upsert_updates_existing_row_on_subsequent_call(db_session, ont):
     assert rows[0].acs_observed_ssid == "NEW"
 
 
+def test_upsert_olt_read_status_none_leaves_the_prior_value_untouched(db_session, ont):
+    """``olt_read_status=None`` means "no OLT read was attempted this pass"
+    (the reconcile core's WiFi-only delivery path, substituting cached data
+    instead of a live SSH read) — it must not overwrite the freshness signal
+    left by the last genuine attempt. Distinct from ``observed_surfaces``
+    excluding ``"olt"``, which already protects the OLT VALUE columns; this
+    protects the ``olt_read_status`` column specifically, which the row
+    docstring stamps "whenever this pass genuinely attempted an OLT read" —
+    ``None`` is exactly "this pass did not."
+    """
+    upsert_ont_observation(
+        db_session,
+        ont.id,
+        _minimal_observed(),
+        observed_surfaces=frozenset({"olt", "acs"}),
+        olt_read_status="unavailable",
+    )
+    db_session.commit()
+
+    upsert_ont_observation(
+        db_session,
+        ont.id,
+        _minimal_observed(ssid="NEW"),
+        observed_surfaces=frozenset({"acs"}),
+        olt_read_status=None,
+    )
+    db_session.commit()
+
+    row = db_session.get(OntObservation, _only_obs_id(db_session, ont.id))
+    assert row.olt_read_status == "unavailable"
+    # The surface exclusion still protects the OLT value columns too.
+    assert row.olt_present is True
+    # The unrelated ACS surface still updates normally.
+    assert row.acs_observed_ssid == "NEW"
+
+
+def test_upsert_olt_read_status_a_real_value_still_overwrites(db_session, ont):
+    """Near-miss for the test above: ``olt_read_status`` is NOT a
+    write-once/sticky field in general — a genuine subsequent attempt (any
+    non-``None`` value) still overwrites the prior one, even when the OLT
+    surface itself was not re-observed this pass (e.g. a genuinely failed
+    read leaves the OLT VALUE columns alone but must still record that the
+    attempt happened and what it found).
+    """
+    upsert_ont_observation(
+        db_session,
+        ont.id,
+        _minimal_observed(),
+        observed_surfaces=frozenset({"olt", "acs"}),
+        olt_read_status="present",
+    )
+    db_session.commit()
+
+    upsert_ont_observation(
+        db_session,
+        ont.id,
+        _minimal_observed(),
+        observed_surfaces=frozenset({"acs"}),
+        olt_read_status="unavailable",
+    )
+    db_session.commit()
+
+    row = db_session.get(OntObservation, _only_obs_id(db_session, ont.id))
+    assert row.olt_read_status == "unavailable"
+
+
 def test_upsert_accepts_string_ont_unit_id(db_session, ont):
     """The reconcile loop may pass str(ont.id); the adapter coerces."""
-    upsert_ont_observation(db_session, str(ont.id), _minimal_observed())
+    upsert_ont_observation(
+        db_session,
+        str(ont.id),
+        _minimal_observed(),
+        observed_surfaces=frozenset({"olt", "acs"}),
+        olt_read_status="present",
+    )
     db_session.commit()
     obs = (
         db_session.query(OntObservation)
@@ -620,7 +801,13 @@ def test_upsert_accepts_string_ont_unit_id(db_session, ont):
 
 
 def test_observation_cascade_deletes_with_ont_unit(db_session, ont):
-    upsert_ont_observation(db_session, ont.id, _minimal_observed())
+    upsert_ont_observation(
+        db_session,
+        ont.id,
+        _minimal_observed(),
+        observed_surfaces=frozenset({"olt", "acs"}),
+        olt_read_status="present",
+    )
     db_session.commit()
     ont_id = ont.id
 

@@ -44,6 +44,7 @@ class HuaweiCliErrorCode(Enum):
     PERMISSION_DENIED = "permission_denied"
     RESOURCE_BUSY = "resource_busy"
     INDEX_OUT_OF_RANGE = "index_out_of_range"
+    IP_INTERFACE_NOT_EXIST = "ip_interface_not_exist"
     CONNECTION_ERROR = "connection_error"
     TIMEOUT = "timeout"
     UNKNOWN_ERROR = "unknown_error"
@@ -255,6 +256,10 @@ _RESPONSE_PATTERNS = (
             r"(?:does\s+not\s+exist|is\s+not\s+exist|not\s+found)"
         ),
         HuaweiCliErrorCode.PROFILE_NOT_EXIST,
+    ),
+    _pattern(
+        _response_line(r"the\s+ip\s+interface\s+does\s+not\s+exist"),
+        HuaweiCliErrorCode.IP_INTERFACE_NOT_EXIST,
     ),
     _pattern(
         _error_line(

@@ -52,6 +52,7 @@ def _artifact(
         image_digest=IMAGE_DIGEST,
         product_manifest_digest=PRODUCT_MANIFEST_DIGEST,
         build_run_id=WorkflowRunId(100),
+        evidence_run_id=WorkflowRunId(100),
         source_ci_conclusion=ci,
     )
 

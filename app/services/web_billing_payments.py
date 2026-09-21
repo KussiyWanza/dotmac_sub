@@ -983,7 +983,6 @@ def build_payments_list_data(
         limit=2000,
         offset=0,
     )
-    total_balance = sum((getattr(account, "balance", 0) or 0) for account in accounts)
     active_count = sum(
         1 for account in accounts if account.status == SubscriberStatus.active
     )
@@ -1017,7 +1016,6 @@ def build_payments_list_data(
         "per_page": page_meta.per_page,
         "total": page_meta.total_items,
         "total_pages": page_meta.total_pages,
-        "total_balance": total_balance,
         "active_count": active_count,
         "suspended_count": suspended_count,
         "customer_ref": customer_ref,

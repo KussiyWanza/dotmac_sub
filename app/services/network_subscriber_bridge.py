@@ -231,7 +231,13 @@ class DefaultSubscriberValidator:
         if not isinstance(desired, dict) or not desired:
             return False
         set_desired_config_values(ont, desired)
-        ont.sync_status = OntSyncStatus.out_of_sync
+        from app.services.network.ont_status import set_sync_status
+
+        set_sync_status(
+            ont,
+            OntSyncStatus.out_of_sync,
+            reason="staged_from_service_order_awaiting_reconcile",
+        )
         ont.last_error = "Staged from provisioning service order; awaiting reconcile"
         return True
 

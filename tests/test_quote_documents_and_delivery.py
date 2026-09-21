@@ -31,10 +31,12 @@ from app.models.sales import (
     QuoteDeliveryRequest,
     QuoteDeliveryRequestStatus,
     QuoteLineItem,
+    QuotePaymentReviewStatus,
     QuotePdfExport,
     QuoteStatus,
 )
 from app.models.stored_file import StoredFile
+from app.models.system_user import SystemUser
 from app.services import document_delivery, quote_deposits
 from app.services.billing.collection_accounts import CollectionAccounts
 from app.services.brand_profiles import ResolvedBrand
@@ -42,7 +44,12 @@ from app.services.brand_theme import contrast_ratio
 from app.services.communication_intents import CommunicationIntentResult
 from app.services.email_template import html_to_text
 from app.services.owner_commands import CommandContext
-from app.services.sales import quote_activity, quote_delivery, quote_documents
+from app.services.sales import (
+    quote_activity,
+    quote_delivery,
+    quote_documents,
+    quote_payment_review,
+)
 
 
 def _brand() -> ResolvedBrand:
@@ -126,6 +133,20 @@ def _quote(
             amount=Decimal("100000.00"),
         )
     )
+    reviewer = SystemUser(
+        first_name="Quote",
+        last_name="Reviewer",
+        email=f"quote-delivery-reviewer-{uuid4()}@example.com",
+        is_active=True,
+    )
+    db_session.add(reviewer)
+    db_session.flush()
+    db_session.refresh(quote, attribute_names=["line_items"])
+    quote.payment_review_status = QuotePaymentReviewStatus.approved.value
+    quote.payment_review_revision = 1
+    quote.payment_reviewed_by_system_user_id = reviewer.id
+    quote.payment_reviewed_at = datetime.now(UTC)
+    quote.payment_review_fingerprint = quote_payment_review.quote_fingerprint(quote)
     if with_transfer_account:
         db_session.add(
             CollectionAccount(
@@ -211,6 +232,24 @@ def test_recipient_uses_primary_active_party_email(db_session, subscriber):
     assert recipient.contact_point_id == primary.id
     assert recipient.email == "amina@example.com"
     assert recipient.display_name == "Amina Bello"
+
+
+def test_recipient_uses_direct_customer_email_without_lead_or_party_binding(
+    db_session,
+    subscriber,
+):
+    quote, _primary, _quote_id = _quote(db_session, subscriber)
+    quote.lead_id = None
+    subscriber.party_id = None
+    db_session.commit()
+    db_session.refresh(quote)
+
+    recipient = quote_documents.resolve_quote_recipient(db_session, quote)
+
+    assert recipient is not None
+    assert recipient.contact_point_id is None
+    assert recipient.email == subscriber.email
+    assert recipient.display_name == subscriber.full_name
 
 
 def test_pdf_export_is_content_addressed_and_audited_once(
@@ -336,6 +375,11 @@ def test_send_email_queues_one_pdf_intent_and_replays(
     assert replay.replayed is True
     assert replay.delivery_request_id == first.delivery_request_id
     assert len(captured) == 1
+    request = db_session.get(QuoteDeliveryRequest, first.delivery_request_id)
+    assert request.recipient_contact_point_id == primary.id
+    assert request.recipient_masked == document_delivery.mask_email(
+        primary.normalized_value
+    )
     assert captured[0].recipients == {
         NotificationChannel.email: primary.normalized_value
     }

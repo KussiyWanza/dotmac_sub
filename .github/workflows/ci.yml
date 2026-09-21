@@ -205,8 +205,17 @@ jobs:
         if: needs.changes.outputs.docs-only == 'true'
         run: echo "Lint and format checks are not needed for documentation-only changes."
 
+      # Deliberately UNGUARDED, unlike every step below it in this job: this
+      # checkout exists for the strict-JSON step at the bottom, which must
+      # run on EVERY invocation of this job, including a docs-only one — see
+      # that step's comment for why. Skipping checkout on docs-only would
+      # leave that step with no files to open at all.
       - uses: actions/checkout@v4
-        if: needs.changes.outputs.docs-only != 'true'
+
+      - name: Verify Kernel composition observations
+        uses: michaelayoade/dotmac_starter_mt/.github/actions/verify-composition-observations@8b4b6d4b42e650c47fe4c04a679a5ccb51c4b2cd
+        with:
+          product: sub
 
       - uses: ./.github/actions/setup-ci-python
         if: needs.changes.outputs.docs-only != 'true'
@@ -220,6 +229,61 @@ jobs:
       - name: Ruff format check
         if: needs.changes.outputs.docs-only != 'true'
         run: poetry run ruff format --check app tests scripts alembic
+
+      # Strict-JSON evidence documents (docs/kernel-runtime-composition.json,
+      # docs/kernel-runtime-readiness.json) are excluded from the two Ruff
+      # steps above (pyproject.toml [tool.ruff] extend-exclude and
+      # .pre-commit-config.yaml's per-hook exclude), because `ruff format`
+      # rewrites a trailing comma into them that `json.load` then refuses.
+      # This step is deliberately the very next one after "Ruff format
+      # check", in the SAME job: it is the one place a formatter that
+      # mangled a file in THIS run is guaranteed to be caught by the step
+      # immediately after it, before anything else runs. It is not
+      # redundant with tests/architecture/test_strict_json_evidence_
+      # documents.py — that test catches a document that arrives broken by
+      # any other route (a hand edit, a bad merge, a different tool
+      # entirely); this step catches only the formatter-in-this-run case,
+      # with the causal ordering Michael's ruling requires. Keep both.
+      #
+      # This step and the checkout above it are DELIBERATELY UNGUARDED,
+      # unlike every other step in this job (Ruff check/format, setup-ci-
+      # python): those guard Python linting, which genuinely has nothing to
+      # do on a docs-only change. This step's entire SUBJECT is a docs/
+      # file — the `changes` job's own docs-only classifier
+      # (`grep -Ev '^(docs/|.*\.md$)'`) treats anything under docs/ as
+      # docs-only, so a pull request that changes ONLY
+      # docs/kernel-runtime-composition.json — precisely the shape every
+      # future record update has — sets docs-only=true. Guarding this step
+      # the same way its neighbours are guarded would make the one check
+      # that exists to catch a corrupted record skip itself on exactly the
+      # PRs most likely to corrupt it: a check that cannot fire when it
+      # matters is the dominant defect class this programme exists to
+      # retire. Do NOT "fix" an apparent guard inconsistency here by adding
+      # the `docs-only != 'true'` condition back — that is precisely how
+      # this defect re-enters. The `lint` job itself is not skipped on a
+      # docs-only change (see its own `if:` above, which runs whenever
+      # `changes` succeeds regardless of docs-only), so this step is always
+      # reached when this job runs at all; it needs only the stdlib
+      # (`json`, `sys` via system `python3`, not `poetry run`), so it does
+      # not need `setup-ci-python`/poetry either.
+      - name: Strict-JSON evidence documents parse after formatting
+        run: |
+          python3 -c "
+          import json, sys
+          paths = [
+              'docs/kernel-runtime-composition.json',
+              'docs/kernel-runtime-readiness.json',
+          ]
+          failed = False
+          for path in paths:
+              try:
+                  with open(path, encoding='utf-8') as handle:
+                      json.load(handle)
+              except json.JSONDecodeError as exc:
+                  failed = True
+                  print(f'::error file={path}::{path} is not valid JSON after formatting: {exc}')
+          sys.exit(1 if failed else 0)
+          "
 
   type-check:
     name: Type Check

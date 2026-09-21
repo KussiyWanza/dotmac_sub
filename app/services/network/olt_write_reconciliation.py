@@ -48,7 +48,7 @@ def _normalize_serial(value: str | None) -> str:
     return normalize_serial(value)
 
 
-def _serial_matches(observed: str | None, expected: str | None) -> bool:
+def serial_matches(observed: str | None, expected: str | None) -> bool:
     """Match serials across Huawei vendor and hex display variants."""
     observed_normalized = normalize_serial(observed)
     expected_candidates = {
@@ -100,7 +100,7 @@ def verify_ont_authorized(
             )
 
         for registered_entry in entries:
-            if not _serial_matches(registered_entry.real_serial, serial_number):
+            if not serial_matches(registered_entry.real_serial, serial_number):
                 continue
             if registered_entry.fsp != fsp:
                 return OltWriteVerification(
@@ -170,7 +170,7 @@ def verify_ont_authorized(
                     msg,
                 ),
             )
-        if status_entry is None or not _serial_matches(
+        if status_entry is None or not serial_matches(
             status_entry.serial_number, serial_number
         ):
             serial_verification = _verify_by_serial("ONT-ID readback mismatch")
@@ -226,7 +226,7 @@ def verify_ont_absent(
             )
 
         for entry in entries:
-            if _serial_matches(entry.real_serial, serial_number):
+            if serial_matches(entry.real_serial, serial_number):
                 return OltWriteVerification(
                     False,
                     "ONT still appears on the OLT after the delete write.",

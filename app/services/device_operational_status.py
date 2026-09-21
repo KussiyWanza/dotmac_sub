@@ -57,6 +57,7 @@ _REASON_LABELS = {
     "health_unhealthy": "Health verification confirmed failure",
     "observed_not_working": "Verification confirmed failure",
     "observed_working": "Verification confirmed operation",
+    "observed_working_poll": "Current OLT poll confirms operation",
     "ping_failed": "Ping verification confirmed failure",
     "verification_error": "Unable to verify — verifier error",
     "verification_expired": "Unable to verify — confirmation expired",
@@ -133,6 +134,32 @@ class OperationalStatus:
             base = self.reason.removesuffix("_linked")
             return _REASON_LABELS.get(base, base.replace("_", " ").capitalize())
         return self.reason.replace("_", " ").capitalize()
+
+
+class VerificationEvidenceState(StrEnum):
+    """Display state for one verifier without inventing a device state."""
+
+    ok = "ok"
+    fail = "fail"
+    expired = "expired"
+    unknown = "unknown"
+    disabled = "disabled"
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationEvidence:
+    state: VerificationEvidenceState
+    summary: str
+    detail: str
+    observed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class OltHealthEvidence:
+    operational: OperationalStatus
+    ping: VerificationEvidence
+    snmp: VerificationEvidence
+    poll: VerificationEvidence | None
 
 
 def warmer_is_stale(now: datetime | None = None) -> bool:
@@ -230,7 +257,7 @@ def _live_status_to_operational(live: str | None, reason_suffix: str):
 def derive_olt_operational_status(
     olt,
     *,
-    linked_live_status: str | None = None,
+    linked_device: object | None = None,
     warm_stale: bool = False,
     now: datetime | None = None,
 ):
@@ -248,17 +275,27 @@ def derive_olt_operational_status(
     last_ping_ok = getattr(olt, "last_ping_ok", None)
     last_ping_at = getattr(olt, "last_ping_at", None)
     poll = _enum_value(getattr(olt, "last_poll_status", None))
+    last_poll_at = getattr(olt, "last_poll_at", None)
+
+    poll_fresh = _is_fresh(last_poll_at, now, _OLT_FRESH_SECONDS)
+    if poll_fresh and poll == "success":
+        return OperationalStatus(WORKING, "observed_working_poll", None, False, None)
 
     direct_fresh = _is_fresh(last_ping_at, now, _OLT_FRESH_SECONDS)
     if direct_fresh and last_ping_ok is True:
-        if poll == "success":
-            return OperationalStatus(WORKING, "observed_working", None, False, None)
-        return OperationalStatus(WORKING, f"poll_{poll or 'none'}", None, False, None)
+        if poll_fresh and poll:
+            return OperationalStatus(WORKING, f"poll_{poll}", None, False, None)
+        return OperationalStatus(WORKING, "observed_working", None, False, None)
     if direct_fresh and last_ping_ok is False:
         return OperationalStatus(NOT_WORKING, "ping_failed", None, False, None)
 
     # Direct telemetry missing/stale — fall back to the linked observation.
-    if linked_live_status and not warm_stale:
+    if linked_device is not None:
+        from app.services.topology.live_status import trusted_live_status
+
+        linked_live_status = trusted_live_status(
+            linked_device, now=now, warm_stale=warm_stale
+        )
         mapped = _live_status_to_operational(linked_live_status, "_linked")
         if mapped is not None:
             return mapped
@@ -268,6 +305,128 @@ def derive_olt_operational_status(
             NOT_WORKING, "verification_not_started", None, False, None
         )
     return OperationalStatus(NOT_WORKING, "verification_expired", None, False, None)
+
+
+def _verification_evidence(
+    *,
+    enabled: bool,
+    successful: bool | None,
+    observed_at: datetime | None,
+    source_active: bool,
+    stale_after_seconds: int,
+    now: datetime,
+    label: str,
+) -> VerificationEvidence:
+    if not enabled:
+        return VerificationEvidence(
+            VerificationEvidenceState.disabled,
+            "Disabled",
+            f"{label} verification is disabled.",
+            observed_at,
+        )
+    if not source_active:
+        return VerificationEvidence(
+            VerificationEvidenceState.expired,
+            "Not current",
+            f"{label} evidence belongs to an inactive monitoring record.",
+            observed_at,
+        )
+    if successful is None or observed_at is None:
+        return VerificationEvidence(
+            VerificationEvidenceState.unknown,
+            "Not checked",
+            f"{label} verification has not completed.",
+            observed_at,
+        )
+    if not _is_fresh(observed_at, now, stale_after_seconds):
+        return VerificationEvidence(
+            VerificationEvidenceState.expired,
+            "Expired",
+            f"{label} evidence is outside its freshness window.",
+            observed_at,
+        )
+    if successful:
+        return VerificationEvidence(
+            VerificationEvidenceState.ok,
+            "Passed",
+            f"Current {label.lower()} evidence confirms reachability.",
+            observed_at,
+        )
+    return VerificationEvidence(
+        VerificationEvidenceState.fail,
+        "Failed",
+        f"Current {label.lower()} evidence confirms failure.",
+        observed_at,
+    )
+
+
+def derive_olt_health_evidence(
+    olt: object,
+    *,
+    linked_device: object | None = None,
+    warm_stale: bool = False,
+    now: datetime | None = None,
+) -> OltHealthEvidence:
+    """Canonical OLT status plus freshness-classified verifier evidence."""
+
+    from app.services.topology.live_status import STALE_POLL_AFTER_SECONDS
+
+    now = now or datetime.now(UTC)
+    operational = derive_olt_operational_status(
+        olt,
+        linked_device=linked_device,
+        warm_stale=warm_stale,
+        now=now,
+    )
+
+    probe_target = linked_device or olt
+    source_active = (
+        getattr(linked_device, "is_active", None) is not False
+        if linked_device is not None
+        else True
+    )
+    ping = _verification_evidence(
+        enabled=bool(getattr(probe_target, "ping_enabled", True)),
+        successful=getattr(probe_target, "last_ping_ok", None),
+        observed_at=getattr(probe_target, "last_ping_at", None),
+        source_active=source_active,
+        stale_after_seconds=(
+            STALE_POLL_AFTER_SECONDS
+            if linked_device is not None
+            else _OLT_FRESH_SECONDS
+        ),
+        now=now,
+        label="Ping",
+    )
+    snmp = _verification_evidence(
+        enabled=bool(getattr(probe_target, "snmp_enabled", False)),
+        successful=getattr(probe_target, "last_snmp_ok", None),
+        observed_at=getattr(probe_target, "last_snmp_at", None),
+        source_active=source_active,
+        stale_after_seconds=STALE_POLL_AFTER_SECONDS,
+        now=now,
+        label="SNMP",
+    )
+
+    poll_status = _enum_value(getattr(olt, "last_poll_status", None))
+    poll_at = getattr(olt, "last_poll_at", None)
+    poll = None
+    if poll_status is not None or poll_at is not None:
+        poll = _verification_evidence(
+            enabled=True,
+            successful=(poll_status == "success" if poll_status else None),
+            observed_at=poll_at,
+            source_active=True,
+            stale_after_seconds=_OLT_FRESH_SECONDS,
+            now=now,
+            label="OLT poll",
+        )
+    return OltHealthEvidence(
+        operational=operational,
+        ping=ping,
+        snmp=snmp,
+        poll=poll,
+    )
 
 
 def derive_ont_operational_status(ont, *, now: datetime | None = None):

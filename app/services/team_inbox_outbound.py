@@ -10,7 +10,13 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
-from app.models.notification import NotificationChannel, NotificationStatus
+from app.models.notification import (
+    DeliveryStatus,
+    Notification,
+    NotificationChannel,
+    NotificationDelivery,
+    NotificationStatus,
+)
 from app.models.team_inbox import (
     InboxChannelType,
     InboxConversation,
@@ -23,6 +29,8 @@ from app.models.team_inbox import (
 from app.schemas.ai_intake import APPROVED_FOLLOW_UP_QUESTIONS
 from app.schemas.notification import NotificationDeliveryLatency
 from app.services import (
+    ai_conversation_ownership,
+    inbox_sla,
     team_inbox_realtime,
     team_inbox_reply_window,
     team_inbox_routing,
@@ -50,6 +58,11 @@ _OUTBOUND_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
     concern="transactional outbound communication intent",
     name="execute_team_inbox_outbound_intent",
+)
+_META_DELIVERY_LEG_RECORD_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="outbound Inbox message attempt projection",
+    name="record_meta_delivery_leg_acceptance",
 )
 
 
@@ -104,6 +117,135 @@ class InboxReplyResult:
     from_address: str | None = None
     to_email: str | None = None
     reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MetaDeliveryLegRecordCommand:
+    """Accepted Meta provider leg that must survive a later delivery retry."""
+
+    notification_id: UUID
+    provider_message_id: str
+    response_code: str
+    response_body: str
+    attachment_asset_id: UUID | None = None
+    provider_attachment_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MetaDeliveryLegRecordOutcome:
+    notification_delivery_id: UUID
+    replayed: bool
+
+
+def record_meta_delivery_leg_acceptance(
+    db: Session,
+    *,
+    command: MetaDeliveryLegRecordCommand,
+    context: CommandContext,
+) -> MetaDeliveryLegRecordOutcome:
+    """Durably record one accepted Meta send under the registered owner."""
+
+    def operation() -> MetaDeliveryLegRecordOutcome:
+        provider_message_id = command.provider_message_id.strip()
+        response_code = command.response_code.strip()
+        response_body = command.response_body.strip()
+        if not provider_message_id or not response_code or not response_body:
+            from app.services.domain_errors import DomainError
+
+            raise DomainError(
+                code=f"{OWNER}.invalid_command",
+                message="A Meta delivery record requires complete provider evidence.",
+            )
+        if (command.attachment_asset_id is None) != (
+            command.provider_attachment_id is None
+        ):
+            from app.services.domain_errors import DomainError
+
+            raise DomainError(
+                code=f"{OWNER}.invalid_command",
+                message=(
+                    "Meta attachment identity and provider attachment evidence "
+                    "must be supplied together."
+                ),
+            )
+
+        notification = (
+            db.query(Notification)
+            .filter(Notification.id == command.notification_id)
+            .with_for_update()
+            .one_or_none()
+        )
+        if notification is None:
+            from app.services.domain_errors import DomainError
+
+            raise DomainError(
+                code=f"{OWNER}.not_found",
+                message="The notification for this Meta delivery leg does not exist.",
+                details={"notification_id": str(command.notification_id)},
+            )
+
+        existing = (
+            db.query(NotificationDelivery)
+            .filter(NotificationDelivery.notification_id == command.notification_id)
+            .filter(NotificationDelivery.is_active.is_(True))
+            .filter(NotificationDelivery.provider == "meta")
+            .filter(NotificationDelivery.status == DeliveryStatus.delivered)
+            .filter(NotificationDelivery.response_code == response_code)
+            .with_for_update()
+            .one_or_none()
+        )
+        if existing is not None:
+            if existing.provider_message_id != provider_message_id:
+                from app.services.domain_errors import DomainError
+
+                raise DomainError(
+                    code=f"{OWNER}.identity_collision",
+                    message=(
+                        "The Meta delivery leg was already recorded with "
+                        "different provider evidence."
+                    ),
+                    details={
+                        "notification_id": str(command.notification_id),
+                        "response_code": response_code,
+                    },
+                )
+            return MetaDeliveryLegRecordOutcome(
+                notification_delivery_id=existing.id,
+                replayed=True,
+            )
+
+        if command.attachment_asset_id is not None:
+            attachment_ids = dict(
+                (notification.metadata_ or {}).get("meta_provider_attachment_ids") or {}
+            )
+            attachment_ids[str(command.attachment_asset_id)] = str(
+                command.provider_attachment_id
+            )
+            metadata = dict(notification.metadata_ or {})
+            metadata["meta_provider_attachment_ids"] = attachment_ids
+            notification.metadata_ = metadata
+
+        delivery = NotificationDelivery(
+            notification_id=notification.id,
+            provider="meta",
+            provider_message_id=provider_message_id,
+            status=DeliveryStatus.delivered,
+            response_code=response_code,
+            response_body=response_body,
+        )
+        db.add(delivery)
+        db.flush()
+        return MetaDeliveryLegRecordOutcome(
+            notification_delivery_id=delivery.id,
+            replayed=False,
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_META_DELIVERY_LEG_RECORD_COMMAND,
+        context=context,
+        operation=operation,
+    )
 
 
 def _coerce_uuid(value: str | UUID | None) -> UUID | None:
@@ -291,6 +433,9 @@ def _queue_outbox_reply(
     if existing_message is None:
         db.add(message)
     conversation.last_message_at = queued_at
+    inbox_sla.record_outbound(
+        db, message, occurred_at=message.sent_at or message.created_at
+    )
     db.flush()
     author_name = str(
         intent_metadata.get("author_name")
@@ -640,11 +785,13 @@ def _send_meta_direct_reply(
     now: datetime | None,
 ) -> InboxReplyResult:
     body_text = _plain_text_reply(payload)
-    if not body_text:
+    attachment_ids = (payload.metadata or {}).get("inbox_attachment_ids")
+    has_attachments = isinstance(attachment_ids, list) and bool(attachment_ids)
+    if not body_text and not has_attachments:
         return InboxReplyResult(
             kind="empty_body",
             conversation_id=str(conversation.id),
-            reason="Reply body is required",
+            reason="Reply body or attachment is required",
         )
     window = team_inbox_reply_window.decide_reply_window(
         db, conversation=conversation, now=now
@@ -725,21 +872,11 @@ def send_inbox_reply(
             reason="Resolved conversations cannot be replied to",
         )
     if payload.sent_by_person_id is not None:
-        try:
-            from app.services import ai_conversation_intake
-
-            session = ai_conversation_intake.active_session_for_conversation(
-                db, conversation.id
-            )
-            if session is not None:
-                ai_conversation_intake.complete_session(
-                    session, state="stopped_human_takeover"
-                )
-                ai_conversation_intake.mark_conversation_ai_metadata(
-                    conversation, session=session, active=False
-                )
-        except Exception:
-            pass
+        ai_conversation_ownership.require_human_control(
+            db,
+            conversation_id=conversation.id,
+            mutation=ai_conversation_ownership.HumanConversationMutation.reply,
+        )
 
     if conversation.channel_type == InboxChannelType.whatsapp.value:
         return _send_whatsapp_reply(

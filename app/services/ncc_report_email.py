@@ -1,8 +1,8 @@
-"""Typed owner for scheduled NCC complaints-workbook delivery.
+"""Typed owner for scheduled NCC complaints CSV delivery.
 
 The scheduler is only a five-minute trigger. This owner resolves the effective
 Tuesday schedule, arbitrates one occurrence per local date, preserves the exact
-XLSX artifact, and stages one durable communication intent atomically.
+CSV artifact, and stages one durable communication intent atomically.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ OWNER = "communications.ncc_weekly_delivery"
 CONFIGURATION_CONCERN = "NCC weekly delivery configuration"
 OCCURRENCE_CONCERN = "NCC weekly report occurrence and artifact"
 SCHEDULE_KEY = "ncc_complaints"
-XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+CSV_CONTENT_TYPE = ncc_workbook.CSV_CONTENT_TYPE
 
 ENABLED_KEY = "ncc_report_email_enabled"
 TO_KEY = "ncc_report_email_to"
@@ -72,8 +72,8 @@ LOOKBACK_KEY = "ncc_report_email_lookback_days"
 
 DEFAULT_SUBJECT = "Weekly NCC Report"
 DEFAULT_BODY_TEMPLATE = (
-    "Please find attached the NCC complaints report for the last "
-    "{lookback_days} day(s).\nRows included: {row_count}.\n"
+    "Please find attached the NCC complaints report for reporting week "
+    "{report_date}.\nRows included: {row_count}.\n"
     "Download: {download_url}"
 )
 DEFAULT_LOCAL_TIME = "08:00"
@@ -604,6 +604,24 @@ def _download_url(run_id: UUID) -> str:
     return f"{base_url}/admin/reports/ncc-weekly-runs/{run_id}/download"
 
 
+def _completed_reporting_week_window(
+    local_date: date, timezone: str
+) -> tuple[datetime, datetime, str]:
+    tzinfo = ZoneInfo(timezone)
+    current_week_start = local_date - timedelta(days=local_date.weekday())
+    reporting_start = current_week_start - timedelta(days=7)
+    reporting_end = current_week_start - timedelta(days=1)
+    start = datetime.combine(reporting_start, time.min, tzinfo=tzinfo).astimezone(UTC)
+    end = datetime.combine(reporting_end, time.max, tzinfo=tzinfo).astimezone(UTC)
+    iso_year, iso_week, _ = reporting_start.isocalendar()
+    label = (
+        f"{iso_year}_{iso_week:02d} "
+        f"({reporting_start.isoformat()} to "
+        f"{reporting_end.isoformat()})"
+    )
+    return start, end, label
+
+
 def _regulator_safe_body_template(template: str) -> str:
     lines = [
         line
@@ -720,8 +738,9 @@ def run_due_delivery(
             config.local_time,
             tzinfo=ZoneInfo(config.timezone),
         )
-        end = scheduled_local.astimezone(UTC)
-        start = end - timedelta(days=config.lookback_days)
+        start, end, reporting_week_label = _completed_reporting_week_window(
+            scheduled_local.date(), config.timezone
+        )
         run = existing or NccWeeklyReportRun(
             schedule_key=SCHEDULE_KEY,
             scheduled_local_date=local_date,
@@ -769,28 +788,29 @@ def run_due_delivery(
                 row_count=snapshot.total_complaints,
                 not_filable_count=not_filable_count,
             )
-            workbook_rows = ncc_workbook.template_export_rows(records)
-            workbook = ncc_workbook.build_workbook(
-                workbook_rows, list(ncc_workbook.TEMPLATE_COLUMNS)
+            csv_rows = ncc_workbook.template_export_rows(records)
+            artifact = ncc_workbook.build_csv(
+                csv_rows, list(ncc_workbook.TEMPLATE_COLUMNS)
             )
-            if not workbook.startswith(b"PK\x03\x04"):
+            expected_header = ",".join(ncc_workbook.TEMPLATE_COLUMNS).encode()
+            if not artifact.startswith(expected_header):
                 raise _error(
                     "artifact_generation_failed",
-                    "The generated NCC workbook is invalid.",
+                    "The generated NCC CSV is invalid.",
                 )
-            if len(workbook) > MAX_EMAIL_ATTACHMENT_BYTES:
+            if len(artifact) > MAX_EMAIL_ATTACHMENT_BYTES:
                 raise _error(
                     "artifact_generation_failed",
-                    "The generated NCC workbook exceeds the email attachment limit.",
+                    "The generated NCC CSV exceeds the email attachment limit.",
                 )
-            filename = ncc_workbook.export_filename(local_now)
-            artifact_sha256 = hashlib.sha256(workbook).hexdigest()
+            filename = ncc_workbook.export_filename_for_window(start=start, end=end)
+            artifact_sha256 = hashlib.sha256(artifact).hexdigest()
             body_text, body_html = _render_body(
                 config,
                 run_id=run.id,
                 row_count=snapshot.total_complaints,
                 not_filable_count=not_filable_count,
-                report_date=local_date_text,
+                report_date=reporting_week_label,
             )
             intent = submit_communication_intent(
                 db,
@@ -818,10 +838,10 @@ def run_due_delivery(
                     },
                     attachments=(
                         CommunicationAttachment(
-                            kind=CommunicationAttachmentKind.ncc_weekly_xlsx,
+                            kind=CommunicationAttachmentKind.ncc_weekly_csv,
                             entity_id=run.id,
                             filename=filename,
-                            content_type=XLSX_CONTENT_TYPE,
+                            content_type=CSV_CONTENT_TYPE,
                         ),
                     ),
                     dedupe_key=f"ncc-weekly:{local_date_text}",
@@ -830,12 +850,12 @@ def run_due_delivery(
             if len(intent.queued) != 1:
                 raise _error(
                     "delivery_intent_failed",
-                    "The NCC workbook delivery could not be queued.",
+                    "The NCC CSV delivery could not be queued.",
                 )
             notification = intent.queued[0]
             run.artifact_filename = filename
-            run.artifact_content_type = XLSX_CONTENT_TYPE
-            run.artifact_content = workbook
+            run.artifact_content_type = CSV_CONTENT_TYPE
+            run.artifact_content = artifact
             run.artifact_sha256 = artifact_sha256
             run.row_count = snapshot.total_complaints
             run.not_filable_count = not_filable_count

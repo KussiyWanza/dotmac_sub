@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.api.field.attachments import router as attachments_router
+from app.api.field.attendance import router as attendance_router
 from app.api.field.devices import router as devices_router
 from app.api.field.equipment import router as equipment_router
 from app.api.field.expense_requests import router as expense_requests_router
@@ -40,6 +41,7 @@ from app.services.field.chat import field_job_chat
 from app.services.field.jobs import field_jobs
 
 router = APIRouter(prefix="/field", tags=["field"])
+router.include_router(attendance_router)
 router.include_router(attachments_router)
 router.include_router(devices_router)
 router.include_router(equipment_router)

@@ -806,7 +806,9 @@ def build_nas_provisioning_commands(
     commands: list[str] = []
 
     if nas_device.vendor == NasVendor.mikrotik:
-        commands = _mikrotik_commands(subscription, profile, connection_type, action)
+        commands = _mikrotik_commands(
+            db, subscription, profile, connection_type, action
+        )
     else:
         # Generic / other vendors: log and return empty (use provisioning templates)
         logger.debug(
@@ -818,6 +820,7 @@ def build_nas_provisioning_commands(
 
 
 def _mikrotik_commands(
+    db: Session | None,
     subscription: Subscription,
     profile: RadiusProfile | None,
     connection_type: ConnectionType,
@@ -825,6 +828,7 @@ def _mikrotik_commands(
 ) -> list[str]:
     """Generate MikroTik RouterOS commands for provisioning."""
     from app.services.enforcement import _sanitize_routeros_value
+    from app.services.radius_address_lists import suspended_address_list
 
     login = _sanitize_routeros_value(subscription.login or "")
     ip = _sanitize_routeros_value(subscription.ipv4_address or "")
@@ -891,18 +895,31 @@ def _mikrotik_commands(
 
     elif connection_type == ConnectionType.static:
         if action == "suspend" and ip:
+            # Resolve the configured list name rather than a literal — every
+            # reconciler that reads this list resolves
+            # ``suspended_address_list(db)`` (app/services/radius_address_lists.py);
+            # a hardcoded name here would write to a list nothing reads.
+            list_name = _sanitize_routeros_value(suspended_address_list(db))
             # Conditional add so a repeated suspend (e.g. duplicate event) is a
             # no-op instead of a "already have such entry" error — matching the
             # enforcement address-list helper.
             commands.append(
                 f":if ([:len [/ip firewall address-list find "
-                f'list="blocked-subscribers" address="{ip}"]] = 0) '
+                f'list="{list_name}" address="{ip}"]] = 0) '
                 f"do={{/ip firewall address-list add "
-                f'list="blocked-subscribers" address="{ip}"}}'
+                f'list="{list_name}" address="{ip}"}}'
             )
         elif action == "unsuspend" and ip:
+            # Quoted the same way as the suspend branch above — an
+            # operator-configured list name (``suspended_address_list(db)``,
+            # no longer a fixed literal) can contain a space, and an
+            # unquoted RouterOS ``find list=...`` argument breaks on the
+            # first space. Suspend and unsuspend must agree, or a block can
+            # stick with no way to lift it.
+            list_name = _sanitize_routeros_value(suspended_address_list(db))
             commands.append(
-                f"/ip firewall address-list remove [find list=blocked-subscribers address={ip}]"
+                f"/ip firewall address-list remove "
+                f'[find list="{list_name}" address="{ip}"]'
             )
 
     elif connection_type == ConnectionType.ipoe:
@@ -914,5 +931,16 @@ def _mikrotik_commands(
             commands.append(" ".join(parts))
         elif action == "delete" and ip:
             commands.append(f"/ip dhcp-server lease remove [find address={ip}]")
+        elif action == "suspend" and ip:
+            # IPoE leases are DHCP-server leases (create/delete above use the
+            # same primitive) — suspend/unsuspend mirrors ConnectionType.dhcp's
+            # lease-disable toggle rather than inventing a new mechanism.
+            commands.append(
+                f"/ip dhcp-server lease set [find address={ip}] disabled=yes"
+            )
+        elif action == "unsuspend" and ip:
+            commands.append(
+                f"/ip dhcp-server lease set [find address={ip}] disabled=no"
+            )
 
     return commands

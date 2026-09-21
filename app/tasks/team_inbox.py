@@ -177,7 +177,9 @@ def recover_stale_ai_intake(*, limit: int = 200) -> dict[str, int]:
                 context=CommandContext.system(
                     actor="task:team-inbox-ai-intake-recovery",
                     scope="team-inbox:maintenance",
-                    reason="route expired AI intake waits through fallback policy",
+                    reason=(
+                        "hand off inactive AI intake sessions through normal human routing"
+                    ),
                 ),
                 limit=limit,
             ),

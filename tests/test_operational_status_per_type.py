@@ -6,7 +6,9 @@ from types import SimpleNamespace
 from app.services.device_operational_status import (
     NOT_WORKING,
     WORKING,
+    VerificationEvidenceState,
     derive_nas_operational_status,
+    derive_olt_health_evidence,
     derive_olt_operational_status,
     derive_ont_operational_status,
     derive_router_operational_status,
@@ -19,11 +21,21 @@ def _enum(value):
     return SimpleNamespace(value=value)
 
 
-def _olt(ping_ok, poll=None, ping_at=NOW):
+def _olt(ping_ok, poll=None, ping_at=NOW, poll_at=None):
     return SimpleNamespace(
         last_ping_ok=ping_ok,
         last_ping_at=ping_at,
         last_poll_status=_enum(poll) if poll else None,
+        last_poll_at=poll_at,
+    )
+
+
+def _linked(*, active=True, live="up", observed_at=NOW):
+    return SimpleNamespace(
+        is_active=active,
+        live_status=live,
+        last_ping_at=observed_at,
+        last_snmp_at=None,
     )
 
 
@@ -35,7 +47,9 @@ def test_olt_positive_ping_and_poll_is_working():
 
 
 def test_olt_positive_ping_with_poll_failure_is_working_and_impaired():
-    op = derive_olt_operational_status(_olt(True, "timeout"), now=NOW)
+    op = derive_olt_operational_status(
+        _olt(True, "timeout", poll_at=NOW - timedelta(minutes=2)), now=NOW
+    )
 
     assert op.status == WORKING
     assert op.reason == "poll_timeout"
@@ -69,7 +83,7 @@ def test_olt_expired_direct_observation_is_not_working():
 def test_olt_expired_direct_observation_uses_current_linked_evidence():
     op = derive_olt_operational_status(
         _olt(True, "success", ping_at=NOW - timedelta(days=60)),
-        linked_live_status="up",
+        linked_device=_linked(),
         warm_stale=False,
         now=NOW,
     )
@@ -80,7 +94,7 @@ def test_olt_expired_direct_observation_uses_current_linked_evidence():
 
 def test_olt_current_direct_negative_beats_linked_positive():
     op = derive_olt_operational_status(
-        _olt(False, "success"), linked_live_status="up", now=NOW
+        _olt(False, "success"), linked_device=_linked(), now=NOW
     )
 
     assert op.status == NOT_WORKING
@@ -89,13 +103,97 @@ def test_olt_current_direct_negative_beats_linked_positive():
 def test_olt_stale_linked_evidence_does_not_confirm_operation():
     op = derive_olt_operational_status(
         _olt(True, "success", ping_at=NOW - timedelta(days=60)),
-        linked_live_status="up",
+        linked_device=_linked(),
         warm_stale=True,
         now=NOW,
     )
 
     assert op.status == NOT_WORKING
     assert op.reason == "verification_expired"
+
+
+def test_olt_fresh_native_poll_proves_operation_when_legacy_ping_is_stale():
+    op = derive_olt_operational_status(
+        _olt(
+            True,
+            "success",
+            ping_at=NOW - timedelta(days=60),
+            poll_at=NOW - timedelta(minutes=2),
+        ),
+        now=NOW,
+    )
+
+    assert op.status == WORKING
+    assert op.reason == "observed_working_poll"
+
+
+def test_olt_inactive_link_cannot_certify_operation():
+    linked = SimpleNamespace(
+        is_active=False,
+        live_status="up",
+        last_ping_at=NOW - timedelta(days=60),
+        last_snmp_at=NOW - timedelta(days=60),
+    )
+
+    op = derive_olt_operational_status(
+        _olt(True, "success", ping_at=NOW - timedelta(days=60)),
+        linked_device=linked,
+        warm_stale=False,
+        now=NOW,
+    )
+
+    assert op.status == NOT_WORKING
+    assert op.reason == "verification_expired"
+
+
+def test_olt_active_current_link_can_certify_operation():
+    linked = SimpleNamespace(
+        is_active=True,
+        live_status="up",
+        last_ping_at=NOW - timedelta(minutes=2),
+        last_snmp_at=None,
+    )
+
+    op = derive_olt_operational_status(
+        _olt(True, "success", ping_at=NOW - timedelta(days=60)),
+        linked_device=linked,
+        warm_stale=False,
+        now=NOW,
+    )
+
+    assert op.status == WORKING
+    assert op.reason == "observed_working_linked"
+
+
+def test_olt_health_evidence_classifies_inactive_probe_rows_as_expired():
+    linked = SimpleNamespace(
+        is_active=False,
+        live_status="up",
+        ping_enabled=True,
+        snmp_enabled=True,
+        last_ping_ok=True,
+        last_ping_at=NOW - timedelta(days=60),
+        last_snmp_ok=True,
+        last_snmp_at=NOW - timedelta(days=60),
+    )
+    evidence = derive_olt_health_evidence(
+        _olt(
+            True,
+            "success",
+            ping_at=NOW - timedelta(days=60),
+            poll_at=NOW - timedelta(minutes=2),
+        ),
+        linked_device=linked,
+        warm_stale=False,
+        now=NOW,
+    )
+
+    assert evidence.operational.status == WORKING
+    assert evidence.operational.reason == "observed_working_poll"
+    assert evidence.poll is not None
+    assert evidence.poll.state is VerificationEvidenceState.ok
+    assert evidence.ping.state is VerificationEvidenceState.expired
+    assert evidence.snmp.state is VerificationEvidenceState.expired
 
 
 def _ont(olt_status=None, acs=None, seen=None, offline_reason=None, olt_seen=True):

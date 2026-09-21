@@ -31,6 +31,7 @@ from __future__ import annotations
 import enum
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
@@ -47,7 +48,6 @@ from app.services.communication_intents import (
 from app.services.domain_errors import DomainError
 from app.services.email_template import render_email_bodies
 from app.services.events import EventType, emit_event
-from app.services.party import EmailRecipient
 
 
 class DocumentDeliveryError(DomainError):
@@ -59,6 +59,19 @@ class DocumentKind(enum.StrEnum):
 
     quote = "quote"
     catalog_share = "catalog_share"
+
+
+class DocumentEmailRecipient(Protocol):
+    """Recipient shape accepted from Party or direct account resolvers."""
+
+    @property
+    def contact_point_id(self) -> UUID | None: ...
+
+    @property
+    def email(self) -> str: ...
+
+    @property
+    def display_name(self) -> str | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +138,8 @@ class DeliveryRecord:
     entity_id: UUID
     artifact_id: UUID
     communication_intent_id: UUID
-    recipient_contact_point_id: UUID
+    recipient_contact_point_id: UUID | None
+    recipient_masked: str
     queued: bool
     idempotency_key: str
     actor_id: UUID | None
@@ -212,7 +226,7 @@ def deliver(
     actor: str | None,
     actor_id: UUID | None,
     request_id: str | None,
-    recipient: EmailRecipient,
+    recipient: DocumentEmailRecipient,
     artifact: DocumentArtifact,
     composition: DocumentComposition,
     subscriber_id: UUID | None,
@@ -291,6 +305,7 @@ def deliver(
             artifact_id=artifact.artifact_id,
             communication_intent_id=intent_result.intent_id,
             recipient_contact_point_id=recipient.contact_point_id,
+            recipient_masked=mask_email(recipient.email),
             queued=queued,
             idempotency_key=idempotency_key,
             actor_id=actor_id,
@@ -312,7 +327,11 @@ def deliver(
             "delivery_id": str(delivery_id),
             "communication_intent_id": str(intent_result.intent_id),
             "artifact_id": str(artifact.artifact_id),
-            "recipient_contact_point_id": str(recipient.contact_point_id),
+            "recipient_contact_point_id": (
+                str(recipient.contact_point_id)
+                if recipient.contact_point_id is not None
+                else None
+            ),
             "recipient_masked": mask_email(recipient.email),
             "suppression_reasons": list(intent_result.suppressed),
         },
